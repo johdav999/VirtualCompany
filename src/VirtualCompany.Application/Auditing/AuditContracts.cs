@@ -267,6 +267,13 @@ public static class AuditEventActions
     public const string AgentToolExecutionDenied = "agent.tool_execution.denied";
     public const string AgentToolExecutionExecuted = "agent.tool_execution.executed";
     public const string FinanceAgentToolAuthorizationEvaluated = "finance.agent_tool.authorization_evaluated";
+    public const string FinanceMutationPreviewCreated = "finance.mutation.preview_created";
+    public const string FinanceMutationConfirmationSubmitted = "finance.mutation.confirmation_submitted";
+    public const string FinanceMutationReconciled = "finance.mutation.reconciled";
+    public const string FinanceConversationRunCreated = "finance.conversation_run.created";
+    public const string FinanceConversationRunTransitioned = "finance.conversation_run.transitioned";
+    public const string FinanceConversationRunCancelled = "finance.conversation_run.cancelled";
+    public const string FinanceConversationRunRedacted = "finance.conversation_run.redacted";
     public const string CompanyDocumentUploaded = "company.document.uploaded";
     public const string CompanyDocumentUploadFailed = "company.document.upload_failed";
     public const string CompanyDocumentProcessed = "company.document.processed";

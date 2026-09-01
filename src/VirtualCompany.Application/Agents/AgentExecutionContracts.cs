@@ -347,3 +347,13 @@ public static class PolicyDecisionReasonCodes
     public const string FinanceApprovalPolicyRequiresReview = "finance_approval_policy_requires_review";
     public const string FinanceCategorizationExceptionApplied = "finance_categorization_exception_applied";
 }
+
+public interface IFinanceDurableToolExecutionService
+{
+    Task<ExecuteAgentToolResultDto> ExecuteDurableAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid persistedActorUserId,
+        ExecuteAgentToolCommand command,
+        CancellationToken cancellationToken);
+}

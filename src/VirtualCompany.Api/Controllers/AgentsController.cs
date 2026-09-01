@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Api.ProblemHandling;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Api.Controllers;
@@ -19,6 +20,7 @@ public sealed class AgentsController : ControllerBase
     private readonly IAgentScheduledTriggerService _agentScheduledTriggerService;
     private readonly IAgentBriefDraftService _agentBriefDraftService;
     private readonly IAgentCapabilityCatalog _agentCapabilityCatalog;
+    private readonly IFinanceAgentCoverageCatalogue _financeAgentCoverageCatalogue;
 
     public AgentsController(
         ICompanyAgentService agentService,
@@ -26,7 +28,8 @@ public sealed class AgentsController : ControllerBase
         IAgentToolExecutionService agentToolExecutionService,
         IAgentScheduledTriggerService agentScheduledTriggerService,
         IAgentBriefDraftService agentBriefDraftService,
-        IAgentCapabilityCatalog agentCapabilityCatalog)
+        IAgentCapabilityCatalog agentCapabilityCatalog,
+        IFinanceAgentCoverageCatalogue financeAgentCoverageCatalogue)
     {
         _agentService = agentService;
         _agentStatusAggregationService = agentStatusAggregationService;
@@ -34,6 +37,28 @@ public sealed class AgentsController : ControllerBase
         _agentScheduledTriggerService = agentScheduledTriggerService;
         _agentBriefDraftService = agentBriefDraftService;
         _agentCapabilityCatalog = agentCapabilityCatalog;
+        _financeAgentCoverageCatalogue = financeAgentCoverageCatalogue;
+    }
+
+    [HttpGet("{agentId:guid}/finance-coverage")]
+    [Authorize(Policy = CompanyPolicies.FinanceView)]
+    public async Task<ActionResult<FinanceAgentEffectiveCoverageDto>> GetFinanceCoverageAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _financeAgentCoverageCatalogue.GetEffectiveCoverageAsync(companyId, agentId, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
     }
 
     [HttpGet("{agentId:guid}/capabilities")]

@@ -134,6 +134,14 @@ public sealed class AgentApiClient
             $"api/companies/{companyId}/agents/{agentId}/capabilities",
             cancellationToken);
 
+    public Task<FinanceAgentEffectiveCoverageViewModel> GetFinanceCoverageAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<FinanceAgentEffectiveCoverageViewModel>(
+            $"api/companies/{companyId}/agents/{agentId}/finance-coverage",
+            cancellationToken);
+
     public Task<AgentQuestionAnswerViewModel> AskQuestionAsync(Guid companyId, Guid agentId, AskAgentQuestionRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<AgentQuestionAnswerViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/questions", request, cancellationToken);
 
@@ -1247,6 +1255,85 @@ public sealed class AgentCapabilityCatalogViewModel
     public string AuthorityVersion { get; set; } = string.Empty;
     public string AuthorityHash { get; set; } = string.Empty;
     public List<EffectiveAgentToolAuthorityViewModel> EffectiveTools { get; set; } = [];
+}
+
+public sealed class FinanceAgentEffectiveCoverageViewModel
+{
+    public string CatalogueVersion { get; set; } = string.Empty;
+    public Guid CompanyId { get; set; }
+    public Guid AgentId { get; set; }
+    public string AgentName { get; set; } = string.Empty;
+    public string AgentStatus { get; set; } = string.Empty;
+    public string AutonomyLevel { get; set; } = string.Empty;
+    public FinanceAgentCoverageCountsViewModel Counts { get; set; } = new();
+    public List<FinanceAgentEffectiveCoverageCapabilityViewModel> Capabilities { get; set; } = [];
+    public List<FinanceAgentCoverageGapViewModel> Gaps { get; set; } = [];
+    public DateTime GeneratedUtc { get; set; }
+    public string AuthorityVersion { get; set; } = string.Empty;
+    public string AuthorityHash { get; set; } = string.Empty;
+}
+
+public sealed class FinanceAgentCoverageCountsViewModel
+{
+    public int TotalCapabilities { get; set; }
+    public int TotalOperations { get; set; }
+    public int RegisteredTools { get; set; }
+    public int ImplementedRead { get; set; }
+    public int ImplementedRecommendDraft { get; set; }
+    public int ImplementedExecute { get; set; }
+    public int ConfigurationDependent { get; set; }
+    public int Unsupported { get; set; }
+    public int HumanOnly { get; set; }
+    public int EffectiveAvailable { get; set; }
+    public int EffectiveApprovalRequired { get; set; }
+    public int EffectiveGaps { get; set; }
+}
+
+public sealed class FinanceAgentEffectiveCoverageCapabilityViewModel
+{
+    public string Id { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string DomainWorkflow { get; set; } = string.Empty;
+    public string Purpose { get; set; } = string.Empty;
+    public List<string> SupportedOperations { get; set; } = [];
+    public List<string> RequiredPermissions { get; set; } = [];
+    public List<string> RequiredScopes { get; set; } = [];
+    public List<string> RiskTiers { get; set; } = [];
+    public List<string> ApprovalBehaviors { get; set; } = [];
+    public List<string> Integrations { get; set; } = [];
+    public List<string> SourceTypes { get; set; } = [];
+    public List<FinanceAgentEffectiveCoverageOperationViewModel> Operations { get; set; } = [];
+}
+
+public sealed class FinanceAgentEffectiveCoverageOperationViewModel
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string ActionClass { get; set; } = string.Empty;
+    public string SupportState { get; set; } = string.Empty;
+    public string EffectiveState { get; set; } = string.Empty;
+    public string RequiredPermission { get; set; } = string.Empty;
+    public string RequiredScope { get; set; } = string.Empty;
+    public string RiskTier { get; set; } = string.Empty;
+    public string ApprovalBehavior { get; set; } = string.Empty;
+    public List<string> Integrations { get; set; } = [];
+    public List<string> SourceTypes { get; set; } = [];
+    public string AvailabilityReasonCode { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public string SafeAlternative { get; set; } = string.Empty;
+    public string? NavigationPath { get; set; }
+    public string? ToolName { get; set; }
+}
+
+public sealed class FinanceAgentCoverageGapViewModel
+{
+    public string CapabilityId { get; set; } = string.Empty;
+    public string OperationId { get; set; } = string.Empty;
+    public string SupportState { get; set; } = string.Empty;
+    public string ReasonCode { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public string SafeAlternative { get; set; } = string.Empty;
+    public string? NavigationPath { get; set; }
 }
 
 public sealed class AgentCapabilityViewModel

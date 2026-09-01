@@ -40,13 +40,13 @@ public sealed class HealthEndpointsIntegrationTests : IDisposable
     {
         using var client = _factory.CreateClient();
         var response = await client.GetAsync(path);
+        var content = await response.Content.ReadAsStringAsync();
 
-        response.EnsureSuccessStatusCode();
+        Assert.True(response.IsSuccessStatusCode, content);
         Assert.True(response.Headers.Contains("X-Correlation-ID"));
         Assert.StartsWith("application/json", response.Content.Headers.ContentType?.MediaType, StringComparison.OrdinalIgnoreCase);
 
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var payload = await JsonDocument.ParseAsync(stream);
+        using var payload = JsonDocument.Parse(content);
 
         Assert.True(payload.RootElement.TryGetProperty("status", out var status));
         Assert.False(string.IsNullOrWhiteSpace(status.GetString()));

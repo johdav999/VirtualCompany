@@ -15,7 +15,7 @@ using VirtualCompany.Shared;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService
+public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService, IFinanceDurableToolExecutionService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
@@ -56,6 +56,24 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         Guid companyId,
         Guid agentId,
         ExecuteAgentToolCommand command,
+        CancellationToken cancellationToken) =>
+        await ExecuteCoreAsync(companyId, agentId, command, null, cancellationToken);
+
+    public async Task<ExecuteAgentToolResultDto> ExecuteDurableAsync(
+        Guid companyId,
+        Guid agentId,
+        Guid persistedActorUserId,
+        ExecuteAgentToolCommand command,
+        CancellationToken cancellationToken) =>
+        await ExecuteCoreAsync(companyId, agentId, command,
+            persistedActorUserId == Guid.Empty ? throw new ArgumentException("Persisted actor is required.", nameof(persistedActorUserId)) : persistedActorUserId,
+            cancellationToken);
+
+    private async Task<ExecuteAgentToolResultDto> ExecuteCoreAsync(
+        Guid companyId,
+        Guid agentId,
+        ExecuteAgentToolCommand command,
+        Guid? durableActorUserId,
         CancellationToken cancellationToken)
     {
         ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
@@ -98,7 +116,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                     command.Scope,
                     command.WorkflowInstanceId,
                     correlationId,
-                    DelegationAuthorityId: command.DelegationAuthorityId),
+                    ActorUserId: durableActorUserId,
+                    DelegationAuthorityId: command.DelegationAuthorityId,
+                    IsDurableRunContinuation: durableActorUserId.HasValue),
                 cancellationToken);
 
             await WriteActorAuthorizationAuditAsync(actorAuthorization, correlationId, cancellationToken);

@@ -76,7 +76,8 @@ public sealed class RateLimitingIntegrationTests : IDisposable
             Assert.Equal(HttpStatusCode.OK, templatesResponse.StatusCode);
 
             var healthResponse = await client.GetAsync("/health");
-            Assert.Equal(HttpStatusCode.OK, healthResponse.StatusCode);
+            Assert.True(healthResponse.StatusCode == HttpStatusCode.OK,
+                await healthResponse.Content.ReadAsStringAsync());
         }
     }
 

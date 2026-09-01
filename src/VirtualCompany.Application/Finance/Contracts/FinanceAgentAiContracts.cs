@@ -15,6 +15,13 @@ public static class FinanceAgentAnalysisTypes
     { CashLiquidity, Payables, Receivables, AccountingTreatment, CloseAnalysis, OperatingCadence };
 }
 
+public static class FinanceAgentAnalysisToolIds
+{
+    // Trusted adapter over IFinanceAgentAnalysisService. It coordinates the six shipped analysis
+    // capabilities without reimplementing any deterministic Finance calculations.
+    public const string Analyze = "analyze_finance_capability";
+}
+
 public interface IFinanceAgentAnalysisService
 {
     Task<RoleAgentAnalysisResult> AnalyzeAsync(Guid companyId, Guid agentId, Guid? actorUserId,

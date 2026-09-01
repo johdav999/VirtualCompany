@@ -6,6 +6,7 @@ public sealed class ObservabilityOptions
 
     public CorrelationIdOptions CorrelationId { get; set; } = new();
     public HealthEndpointOptions Health { get; set; } = new();
+    public DatabaseHealthOptions Database { get; set; } = new();
     public RateLimitingOptions RateLimiting { get; set; } = new();
     public RedisHealthOptions Redis { get; set; } = new();
     public ObjectStorageHealthOptions ObjectStorage { get; set; } = new();
@@ -49,4 +50,9 @@ public sealed class ObjectStorageHealthOptions
     public string? ServiceUri { get; set; }
     public string HealthPath { get; set; } = "/";
     public int TimeoutSeconds { get; set; } = 2;
+}
+
+public sealed class DatabaseHealthOptions
+{
+    public bool ValidatePendingMigrations { get; set; } = true;
 }

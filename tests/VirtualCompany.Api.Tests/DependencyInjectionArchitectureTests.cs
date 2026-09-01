@@ -83,6 +83,7 @@ public sealed class DependencyInjectionArchitectureTests
         "FinanceAnalyticsStartupRefreshBackgroundService",
         "FinanceApprovalTaskBackfillBackgroundService",
         "FinanceBillFortnoxRegistrationReconciliationBackgroundService",
+        "FinanceConversationRunBackgroundService",
         "FinanceInsightsSnapshotBackgroundService",
         "FinanceIntegrationStartupSyncBackgroundService",
         "FinanceSeedBackfillBackgroundService",

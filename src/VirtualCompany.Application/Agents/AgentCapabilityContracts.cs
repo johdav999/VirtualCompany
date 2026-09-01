@@ -17,6 +17,8 @@ public static class AgentCapabilityIds
     public const string FinanceAccountingTreatment = "finance_accounting_treatment";
     public const string FinanceCloseAnalysis = "finance_close_analysis";
     public const string FinanceOperatingCadence = "finance_operating_cadence";
+    public const string FinanceToolPlanning = "finance_tool_planning";
+    public const string FinanceConversationExecution = "finance_conversation_execution";
     public const string SalesLeadIntelligence = "sales_lead_intelligence";
     public const string SalesNextBestAction = "sales_next_best_action";
     public const string SalesDealRisk = "sales_deal_risk";

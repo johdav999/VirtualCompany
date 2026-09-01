@@ -67,9 +67,21 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         FinanceDefinition("recommend_transaction_category", ToolActionType.Recommend, FinanceInputSchemas.TransactionRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
         FinanceDefinition("recommend_invoice_approval_decision", ToolActionType.Recommend, FinanceInputSchemas.InvoiceRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
         FinanceDefinition("evaluate_transaction_anomaly", ToolActionType.Recommend, FinanceInputSchemas.TransactionAnomalyEvaluation(), FinanceOutputSchemas.WithDataProperty("anomalyEvaluation")),
+        FinanceDefinition(FinanceAgentAnalysisToolIds.Analyze, ToolActionType.Recommend, FinanceInputSchemas.AgentAnalysis(), FinanceOutputSchemas.WithDataProperty("analysis")),
         FinanceDefinition("categorize_transaction", ToolActionType.Execute, FinanceInputSchemas.CategorizeTransaction(), FinanceOutputSchemas.WithDataProperty("transaction")),
         FinanceDefinition("approve_invoice", ToolActionType.Execute, FinanceInputSchemas.ApproveInvoice(), FinanceOutputSchemas.WithDataProperty("invoice")),
         FinanceDefinition("post_paid_supplier_bill_expense", ToolActionType.Execute, FinanceInputSchemas.PostPaidSupplierBillExpense(), FinanceOutputSchemas.WithDataProperty("expensePosting")),
+
+        ..FinanceLedgerAgentReadToolIds.All.Select(tool =>
+            FinanceDefinition(tool, ToolActionType.Read, FinanceInputSchemas.LedgerRead(tool),
+                FinanceOutputSchemas.WithDataProperty(LedgerReadProperty(tool)))),
+
+        ..FinanceCloseComplianceAgentToolIds.ReadTools.Select(tool =>
+            FinanceDefinition(tool, ToolActionType.Read, FinanceInputSchemas.CloseCompliance(tool),
+                FinanceOutputSchemas.WithDataProperty(CloseComplianceProperty(tool)))),
+        ..FinanceCloseComplianceAgentToolIds.RecommendationTools.Select(tool =>
+            FinanceDefinition(tool, ToolActionType.Recommend, FinanceInputSchemas.CloseCompliance(tool),
+                FinanceOutputSchemas.WithDataProperty(CloseComplianceProperty(tool)))),
 
         ..AccountingProviderSwitchAgentToolIds.ReadTools.Select(tool =>
             FinanceDefinition(tool, ToolActionType.Read, FinanceInputSchemas.MigrationRead(), FinanceOutputSchemas.WithDataProperty(MigrationReadProperty(tool)))),
@@ -111,6 +123,37 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         string.Equals(toolName, AccountingProviderSwitchAgentToolIds.ReadBriefing, StringComparison.OrdinalIgnoreCase)
             ? "briefing"
             : "evidence";
+
+    private static string LedgerReadProperty(string toolName) => toolName switch
+    {
+        FinanceLedgerAgentReadToolIds.LookupAccounts => "accounts",
+        FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => "fiscalYears",
+        FinanceLedgerAgentReadToolIds.SearchJournals => "journals",
+        FinanceLedgerAgentReadToolIds.ReadGeneralLedger => "generalLedger",
+        FinanceLedgerAgentReadToolIds.ReadTrialBalance => "trialBalance",
+        FinanceLedgerAgentReadToolIds.ReadStatement => "statement",
+        FinanceLedgerAgentReadToolIds.ReadReportDefinitions => "reportDefinitions",
+        FinanceLedgerAgentReadToolIds.ReadReportSnapshot => "reportSnapshot",
+        FinanceLedgerAgentReadToolIds.ReadSourceDrilldown => "drilldown",
+        _ => "result"
+    };
+
+    private static string CloseComplianceProperty(string toolName) => toolName switch
+    {
+        FinanceCloseComplianceAgentToolIds.ReadTemplates => "closeTemplates",
+        FinanceCloseComplianceAgentToolIds.ReadInstance => "closeInstance",
+        FinanceCloseComplianceAgentToolIds.ReadReadiness => "closeReadiness",
+        FinanceCloseComplianceAgentToolIds.ReadPeriodLockHistory => "periodLockHistory",
+        FinanceCloseComplianceAgentToolIds.ReadComplianceObligations => "complianceObligations",
+        FinanceCloseComplianceAgentToolIds.ReadAuditPackages => "auditPackages",
+        FinanceCloseComplianceAgentToolIds.ReadAccountantAccessActivity => "accountantAccessActivity",
+        FinanceCloseComplianceAgentToolIds.ReadYearEnd => "yearEnd",
+        FinanceCloseComplianceAgentToolIds.PrioritizeCloseBlockers => "closeRecommendation",
+        FinanceCloseComplianceAgentToolIds.ExplainCompliancePreparation => "complianceRecommendation",
+        FinanceCloseComplianceAgentToolIds.ExplainAuditPackageCompleteness => "auditRecommendation",
+        FinanceCloseComplianceAgentToolIds.ExplainYearEndPrerequisites => "yearEndRecommendation",
+        _ => "result"
+    };
 
     private static IReadOnlyList<ToolDefinitionManifest> SalesToolDefinitions { get; } =
     [
@@ -254,10 +297,158 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         new(toolName, "1.0.0", actionType, inputSchema, outputSchema,
             actionType == ToolActionType.Execute
                 ? FinanceToolRiskPolicyCatalog.GetRequired(toolName).IsSensitiveByDefault
-                : sensitiveAction);
+                : sensitiveAction,
+            FinanceSelectionMetadata(toolName, actionType));
+
+    private static ToolSelectionMetadata FinanceSelectionMetadata(string toolName, ToolActionType actionType)
+    {
+        var action = actionType.ToStorageValue();
+        var isExecute = actionType == ToolActionType.Execute;
+        var isMigration = toolName.StartsWith("accounting_provider_switch.", StringComparison.OrdinalIgnoreCase);
+        string[] targetTypes = toolName switch
+        {
+            "list_transactions" or "list_uncategorized_transactions" or "recommend_transaction_category" or
+                "evaluate_transaction_anomaly" or "categorize_transaction" => ["transaction"],
+            "list_invoices_awaiting_approval" or "recommend_invoice_approval_decision" or "approve_invoice" =>
+                [FinancePlanningReferenceTypes.Invoice, FinancePlanningReferenceTypes.Customer],
+            "post_paid_supplier_bill_expense" => [FinancePlanningReferenceTypes.Bill, FinancePlanningReferenceTypes.Supplier],
+            FinanceAgentAnalysisToolIds.Analyze => [FinancePlanningReferenceTypes.FiscalPeriod],
+            "get_profit_and_loss_summary" => [FinancePlanningReferenceTypes.FiscalPeriod],
+            FinanceLedgerAgentReadToolIds.LookupAccounts => [FinancePlanningReferenceTypes.Account],
+            FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => [FinancePlanningReferenceTypes.FiscalPeriod],
+            FinanceLedgerAgentReadToolIds.SearchJournals => [FinancePlanningReferenceTypes.Journal, FinancePlanningReferenceTypes.VoucherSeries],
+            FinanceLedgerAgentReadToolIds.ReadGeneralLedger or FinanceLedgerAgentReadToolIds.ReadTrialBalance =>
+                [FinancePlanningReferenceTypes.Account, FinancePlanningReferenceTypes.FiscalPeriod],
+            FinanceLedgerAgentReadToolIds.ReadStatement =>
+                [FinancePlanningReferenceTypes.FiscalPeriod, FinancePlanningReferenceTypes.ReportDefinition],
+            FinanceLedgerAgentReadToolIds.ReadReportDefinitions => [FinancePlanningReferenceTypes.ReportDefinition],
+            FinanceLedgerAgentReadToolIds.ReadReportSnapshot => [FinancePlanningReferenceTypes.ReportDefinition, FinancePlanningReferenceTypes.FiscalPeriod],
+            FinanceLedgerAgentReadToolIds.ReadSourceDrilldown =>
+                [FinancePlanningReferenceTypes.ReportLine, FinancePlanningReferenceTypes.Journal, FinancePlanningReferenceTypes.FiscalPeriod],
+            _ when FinanceCloseComplianceAgentToolIds.Contains(toolName) => [FinancePlanningReferenceTypes.FiscalPeriod],
+            _ when isMigration => [FinancePlanningReferenceTypes.Migration, FinancePlanningReferenceTypes.FiscalPeriod],
+            _ => Array.Empty<string>()
+        };
+        string[] evidence = toolName switch
+        {
+            "get_cash_balance" => ["authoritative_cash_snapshot"],
+            "get_profit_and_loss_summary" => ["posted_ledger_entries", "fiscal_period"],
+            "recommend_transaction_category" or "categorize_transaction" or "evaluate_transaction_anomaly" =>
+                ["finance_transaction"],
+            "recommend_invoice_approval_decision" or "approve_invoice" or "list_invoices_awaiting_approval" =>
+                ["finance_invoice"],
+            "post_paid_supplier_bill_expense" => ["supplier_bill", "posting_eligibility"],
+            FinanceAgentAnalysisToolIds.Analyze => ["authoritative_finance_analysis_evidence"],
+            _ when FinanceLedgerAgentReadToolIds.Contains(toolName) => ["posted_ledger_entries", "fiscal_period", "report_snapshot"],
+            _ when FinanceCloseComplianceAgentToolIds.Contains(toolName) => ["close_evidence", "compliance_evidence", "audit_package_metadata", "year_end_readiness"],
+            _ when isMigration => ["accounting_provider_switch"],
+            _ => ["authoritative_finance_records"]
+        };
+        var purpose = toolName switch
+        {
+            "get_cash_balance" => "Read the current authoritative cash balance.",
+            "list_transactions" => "List bounded Finance transactions for a requested period.",
+            "resolve_finance_agent_query" => "Resolve a supported Finance analysis question from authoritative data.",
+            "list_uncategorized_transactions" => "List transactions that still require categorization.",
+            "list_invoices_awaiting_approval" => "List invoices currently awaiting review.",
+            "get_profit_and_loss_summary" => "Read a profit-and-loss summary for one fiscal month.",
+            "recommend_transaction_category" => "Recommend a category for one grounded transaction.",
+            "recommend_invoice_approval_decision" => "Recommend a review decision for one grounded invoice.",
+            "evaluate_transaction_anomaly" => "Evaluate one grounded transaction for anomaly evidence.",
+            FinanceAgentAnalysisToolIds.Analyze => "Run one of the six existing read-only Finance analysis capabilities over authoritative evidence.",
+            FinanceLedgerAgentReadToolIds.LookupAccounts => "Look up authoritative chart and account metadata.",
+            FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => "Read fiscal-period identity and close or reporting-lock state.",
+            FinanceLedgerAgentReadToolIds.SearchJournals => "Search a bounded journal register with source and voucher evidence.",
+            FinanceLedgerAgentReadToolIds.ReadGeneralLedger => "Read bounded general-ledger detail from immutable posted journals.",
+            FinanceLedgerAgentReadToolIds.ReadTrialBalance => "Read the reconciled trial balance and control totals for one period.",
+            FinanceLedgerAgentReadToolIds.ReadStatement => "Read a supported financial statement with mapping, checksum, and provenance.",
+            FinanceLedgerAgentReadToolIds.ReadReportDefinitions => "Read report definitions and immutable version identities.",
+            FinanceLedgerAgentReadToolIds.ReadReportSnapshot => "Read an immutable report snapshot and verify its checksum.",
+            FinanceLedgerAgentReadToolIds.ReadSourceDrilldown => "Drill from one report line to bounded posted-journal sources.",
+            _ when FinanceCloseComplianceAgentToolIds.Contains(toolName) => "Read or explain authoritative close, compliance, audit-package, accountant, or year-end evidence without final authority.",
+            "categorize_transaction" => "Change the category of one grounded transaction after supervision.",
+            "approve_invoice" => "Change one grounded invoice review status after supervision.",
+            "post_paid_supplier_bill_expense" => "Post an eligible paid supplier bill expense after supervision.",
+            _ when isMigration => "Read, assess, or advance one governed accounting migration.",
+            _ => "Use an authoritative Finance capability for its declared action."
+        };
+        var example = toolName switch
+        {
+            "get_cash_balance" => "How much cash do we have today?",
+            "list_transactions" => "Show this month's transactions.",
+            "list_uncategorized_transactions" => "Which transactions need categorization?",
+            "list_invoices_awaiting_approval" => "Which invoices await approval?",
+            "get_profit_and_loss_summary" => "Show the P&L for August 2026.",
+            "recommend_transaction_category" => "Suggest a category for this transaction.",
+            "recommend_invoice_approval_decision" => "Review invoice 1042.",
+            "evaluate_transaction_anomaly" => "Is this transaction unusual?",
+            FinanceAgentAnalysisToolIds.Analyze => "Analyze cash, payables, receivables, accounting treatment, close blockers, or operating cadence.",
+            FinanceLedgerAgentReadToolIds.LookupAccounts => "Find account 6540.",
+            FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => "Is August 2026 closed?",
+            FinanceLedgerAgentReadToolIds.SearchJournals => "Show August journals in voucher series A.",
+            FinanceLedgerAgentReadToolIds.ReadGeneralLedger => "Show account 6540 ledger detail for August 2026.",
+            FinanceLedgerAgentReadToolIds.ReadTrialBalance => "Show the August 2026 trial balance.",
+            FinanceLedgerAgentReadToolIds.ReadStatement => "Show the closed-period balance sheet snapshot.",
+            FinanceLedgerAgentReadToolIds.ReadReportDefinitions => "Which report definition version is active?",
+            FinanceLedgerAgentReadToolIds.ReadReportSnapshot => "Read this report snapshot using its checksum.",
+            FinanceLedgerAgentReadToolIds.ReadSourceDrilldown => "Show the journals behind this report line.",
+            FinanceCloseComplianceAgentToolIds.PrioritizeCloseBlockers => "What blocks the August close?",
+            FinanceCloseComplianceAgentToolIds.ExplainCompliancePreparation => "What evidence is missing for this filing obligation?",
+            FinanceCloseComplianceAgentToolIds.ExplainAuditPackageCompleteness => "Is this audit package technically complete?",
+            FinanceCloseComplianceAgentToolIds.ExplainYearEndPrerequisites => "What still blocks year-end rollover?",
+            _ when FinanceCloseComplianceAgentToolIds.Contains(toolName) => "Show the current close and compliance evidence.",
+            "categorize_transaction" => "Categorize this transaction as office costs.",
+            "approve_invoice" => "Approve invoice 1042.",
+            "post_paid_supplier_bill_expense" => "Post the expense for paid bill 88.",
+            _ when isMigration => "Show the current migration status.",
+            _ => "Answer this supported Finance request."
+        };
+        var intents = toolName == FinanceAgentAnalysisToolIds.Analyze
+            ? new[] { "cash", "liquidity", "payables", "receivables", "accounting", "treatment", "close", "cadence" }
+            : toolName.Split(['.', '_'], StringSplitOptions.RemoveEmptyEntries)
+                .Where(token => token.Length > 2)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(8)
+                .ToArray();
+
+        return new ToolSelectionMetadata(
+            purpose,
+            action,
+            targetTypes,
+            isExecute ? "May change Finance state only after current policy checkpoints." : "Does not change Finance state.",
+            evidence,
+            toolName is "get_cash_balance" or "list_transactions" or "list_uncategorized_transactions" ? 300 : 86_400,
+            isExecute ? "explicit_confirmation" : "not_required",
+            isExecute ? "policy_determined" : "not_required",
+            actionType == ToolActionType.Recommend
+                ? "Returns a reviewable recommendation, not an executed action."
+                : isExecute
+                    ? "Returns the authoritative post-action state or a non-success status."
+                    : "Returns bounded authoritative Finance data with source semantics.",
+            [example],
+            intents);
+    }
 
     private static class FinanceInputSchemas
     {
+        public static JsonObject AgentAnalysis() =>
+            ParseSchema(
+                """
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "analysisType" ],
+                  "properties": {
+                    "analysisType": { "type": "string", "enum": [ "cash_liquidity", "payables", "receivables", "accounting_treatment", "close_analysis", "operating_cadence" ] },
+                    "subjectId": { "type": "string", "format": "uuid" },
+                    "horizonDays": { "type": "integer", "minimum": 1, "maximum": 365 },
+                    "objective": { "type": "string", "maxLength": 2000 },
+                    "asOfUtc": { "type": "string", "format": "date-time" },
+                    "cadence": { "type": "string", "enum": [ "on_demand", "daily", "weekly", "monthly" ] }
+                  }
+                }
+                """);
+
         public static JsonObject AsOfDate() =>
             ParseSchema(
                 """
@@ -404,6 +595,123 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                   }
                 }
                 """);
+
+        public static JsonObject LedgerRead(string toolName) => toolName switch
+        {
+            FinanceLedgerAgentReadToolIds.LookupAccounts => Object([], new()
+            {
+                ["accountId"] = Uuid(), ["search"] = String(1, 128), ["accountClass"] = String(1, 50),
+                ["status"] = String(1, 30), ["requireUnique"] = Boolean(), ["catalogKey"] = String(1, 100),
+                ["catalogVersion"] = String(1, 100), ["groupCode"] = String(1, 50), ["k2Only"] = Boolean(),
+                ["excludeExisting"] = Boolean(), ["skip"] = Integer(0, 10_000), ["take"] = Integer(1, 100)
+            }),
+            FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => Object([], new()
+            {
+                ["fiscalPeriodId"] = Uuid(), ["reference"] = String(1, 128)
+            }),
+            FinanceLedgerAgentReadToolIds.SearchJournals => Object([], new()
+            {
+                ["ledgerEntryId"] = Uuid(), ["from"] = Date(), ["to"] = Date(), ["skip"] = Integer(0, 100_000),
+                ["take"] = Integer(1, 100), ["search"] = String(1, 128), ["sourceType"] = String(1, 80),
+                ["sourceId"] = String(1, 128), ["sourceVersion"] = String(1, 80),
+                ["postingType"] = String(1, 80), ["voucherSeriesCode"] = String(1, 20)
+            }),
+            FinanceLedgerAgentReadToolIds.ReadGeneralLedger => Object(["fiscalPeriodId"], new()
+            {
+                ["fiscalPeriodId"] = Uuid(), ["accountId"] = Uuid(), ["page"] = Integer(1, 100_000),
+                ["pageSize"] = Integer(1, FinanceLedgerAgentReadContract.MaximumPageSize)
+            }),
+            FinanceLedgerAgentReadToolIds.ReadTrialBalance => Object(["fiscalPeriodId"], new()
+            {
+                ["fiscalPeriodId"] = Uuid()
+            }),
+            FinanceLedgerAgentReadToolIds.ReadStatement => Object(["fiscalPeriodId", "reportKind"], new()
+            {
+                ["fiscalPeriodId"] = Uuid(), ["reportKind"] = String(1, 80), ["cashFlowMethod"] = StringEnum("indirect", "direct"),
+                ["comparisonFiscalPeriodId"] = Uuid(), ["rollingPeriodCount"] = Integer(1, 60), ["asOfDate"] = Date(),
+                ["dimensionTypeId"] = Uuid(), ["dimensionMemberId"] = Uuid(), ["page"] = Integer(1, 100_000),
+                ["pageSize"] = Integer(1, FinanceLedgerAgentReadContract.MaximumPageSize), ["definitionVersionId"] = Uuid()
+            }),
+            FinanceLedgerAgentReadToolIds.ReadReportDefinitions => Object([], new()
+            {
+                ["definitionVersionId"] = Uuid(), ["reference"] = String(1, 128), ["requireUnique"] = Boolean()
+            }),
+            FinanceLedgerAgentReadToolIds.ReadReportSnapshot => Object(["snapshotId"], new()
+            {
+                ["snapshotId"] = Uuid(), ["expectedChecksum"] = String(1, 128), ["definitionVersionId"] = Uuid()
+            }),
+            FinanceLedgerAgentReadToolIds.ReadSourceDrilldown => Object(["fiscalPeriodId", "reportKind", "lineKey"], new()
+            {
+                ["fiscalPeriodId"] = Uuid(), ["reportKind"] = String(1, 80), ["lineKey"] = String(1, 128),
+                ["snapshotId"] = Uuid(), ["page"] = Integer(1, 100_000),
+                ["pageSize"] = Integer(1, FinanceLedgerAgentReadContract.MaximumPageSize)
+            }),
+            _ => throw new ArgumentOutOfRangeException(nameof(toolName))
+        };
+
+        public static JsonObject CloseCompliance(string toolName) => toolName switch
+        {
+            FinanceCloseComplianceAgentToolIds.ReadTemplates => Object([], new()
+            {
+                ["templateId"] = Uuid(), ["status"] = String(1, 30), ["skip"] = Integer(0, 100_000),
+                ["take"] = Integer(1, FinanceCloseComplianceAgentContract.MaximumPageSize)
+            }),
+            FinanceCloseComplianceAgentToolIds.ReadInstance => Object(["closeInstanceId"], new()
+            {
+                ["closeInstanceId"] = Uuid()
+            }),
+            FinanceCloseComplianceAgentToolIds.ReadReadiness or FinanceCloseComplianceAgentToolIds.PrioritizeCloseBlockers =>
+                Object([], new() { ["closeInstanceId"] = Uuid(), ["fiscalPeriodId"] = Uuid() }),
+            FinanceCloseComplianceAgentToolIds.ReadPeriodLockHistory => Object(["fiscalPeriodId"], new()
+            {
+                ["fiscalPeriodId"] = Uuid()
+            }),
+            FinanceCloseComplianceAgentToolIds.ReadComplianceObligations => Object([], new()
+            {
+                ["obligationId"] = Uuid(), ["from"] = Date(), ["to"] = Date()
+            }),
+            FinanceCloseComplianceAgentToolIds.ExplainCompliancePreparation => Object(["obligationId"], new()
+            {
+                ["obligationId"] = Uuid()
+            }),
+            FinanceCloseComplianceAgentToolIds.ReadAuditPackages => Object([], new()
+            {
+                ["packageId"] = Uuid(), ["fiscalPeriodId"] = Uuid(), ["skip"] = Integer(0, 100_000),
+                ["take"] = Integer(1, FinanceCloseComplianceAgentContract.MaximumPageSize)
+            }),
+            FinanceCloseComplianceAgentToolIds.ExplainAuditPackageCompleteness => Object(["packageId"], new()
+            {
+                ["packageId"] = Uuid()
+            }),
+            FinanceCloseComplianceAgentToolIds.ReadAccountantAccessActivity => Object([], new()
+            {
+                ["grantId"] = Uuid(), ["engagementId"] = Uuid()
+            }),
+            FinanceCloseComplianceAgentToolIds.ReadYearEnd => Object([], new()
+            {
+                ["runId"] = Uuid(), ["take"] = Integer(1, 100)
+            }),
+            FinanceCloseComplianceAgentToolIds.ExplainYearEndPrerequisites => Object(["runId"], new()
+            {
+                ["runId"] = Uuid()
+            }),
+            _ => throw new ArgumentOutOfRangeException(nameof(toolName))
+        };
+
+        private static JsonObject Object(IEnumerable<string> required, JsonObject properties) => new()
+        {
+            ["type"] = "object",
+            ["additionalProperties"] = false,
+            ["required"] = new JsonArray(required.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+            ["properties"] = properties
+        };
+
+        private static JsonObject Boolean() => new() { ["type"] = "boolean" };
+        private static JsonObject Integer(int minimum, int maximum) => new()
+        {
+            ["type"] = "integer", ["minimum"] = minimum, ["maximum"] = maximum
+        };
+        private static JsonObject Date() => new() { ["type"] = "string", ["format"] = "date" };
 
         public static JsonObject MigrationRead() =>
             ParseSchema(

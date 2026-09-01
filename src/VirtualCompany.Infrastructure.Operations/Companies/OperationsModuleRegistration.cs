@@ -145,6 +145,43 @@ public static class OperationsModuleRegistration
                     options.ApiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
                 }
             });
+        services.AddOptions<FinanceToolPlannerOptions>()
+            .Bind(configuration.GetSection(FinanceToolPlannerOptions.SectionName))
+            .Validate(options =>
+                options.MaximumSteps is >= 1 and <= 25 &&
+                options.MaximumRecords is >= 1 and <= 50 &&
+                options.MaximumInputCharacters is >= 4_000 and <= 100_000 &&
+                options.MaximumOutputCharacters is >= 4_000 and <= 64_000 &&
+                options.MaximumModelCalls == 1 &&
+                options.MaximumToolCalls is >= 1 and <= 25 &&
+                options.MaximumToolCalls >= options.MaximumSteps &&
+                options.MaximumElapsedSeconds is >= 5 and <= 120 &&
+                options.MaximumEstimatedCost is >= 0 and <= 1_000,
+                "Finance tool planner limits are outside supported safety boundaries.")
+            .ValidateOnStart();
+        services.AddOptions<FinanceConversationExecutionOptions>()
+            .Bind(configuration.GetSection(FinanceConversationExecutionOptions.SectionName))
+            .Validate(options =>
+                options.MaximumElapsedSeconds is >= 5 and <= 120 &&
+                options.MaximumReadAttempts is >= 1 and <= 3 &&
+                options.MaximumPlanRevisions is >= 1 and <= 3 &&
+                options.MaximumValidatedOutputCharacters is >= 4_000 and <= 64_000,
+                "Finance conversational execution limits are outside supported safety boundaries.")
+            .ValidateOnStart();
+        services.AddOptions<FinanceMutationHandoffOptions>()
+            .Bind(configuration.GetSection(FinanceMutationHandoffOptions.SectionName))
+            .Validate(options => options.ConfirmationLifetimeSeconds is >= 30 and <= 900,
+                "Finance mutation confirmation lifetime must be between 30 and 900 seconds.")
+            .ValidateOnStart();
+        services.AddOptions<FinanceConversationRunOptions>()
+            .Bind(configuration.GetSection(FinanceConversationRunOptions.SectionName))
+            .Validate(options => options.BatchSize is >= 1 and <= 25 &&
+                                 options.PollIntervalSeconds is >= 2 and <= 300 &&
+                                 options.LeaseSeconds is >= 15 and <= 300 &&
+                                 options.ConfirmationLifetimeSeconds is >= 30 and <= 900 &&
+                                 options.RetentionDays is >= 7 and <= 365,
+                "Durable Finance conversation run options are outside supported safety boundaries.")
+            .ValidateOnStart();
         services.AddHttpClient(SharedAgentReasoningGateway.ClientName);
         services.AddOptions<AgentMemoryCandidateExpiryOptions>()
             .Bind(configuration.GetSection(AgentMemoryCandidateExpiryOptions.SectionName));
@@ -166,6 +203,7 @@ public static class OperationsModuleRegistration
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+        services.AddHostedService<FinanceConversationRunBackgroundService>();
         services.AddOptions<WorkflowSchedulerOptions>()
             .Bind(configuration.GetSection(WorkflowSchedulerOptions.SectionName));
         services.AddOptions<WorkflowProgressionOptions>()
@@ -255,7 +293,16 @@ public static class OperationsModuleRegistration
         services.AddHostedService<OperatingWorkDispatchBackgroundService>();
         services.AddScoped<IAgentEffectiveAuthorityResolver, AgentEffectiveAuthorityResolver>();
         services.AddScoped<IAgentCapabilityCatalog, AgentCapabilityCatalog>();
+        services.AddScoped<IFinanceAgentCoverageCatalogue, EffectiveFinanceAgentCoverageCatalogue>();
         services.AddScoped<IAgentReasoningGateway, SharedAgentReasoningGateway>();
+        services.AddScoped<IFinancePlanningContextProjector, FinancePlanningContextProjector>();
+        services.AddScoped<IFinanceToolPlanner, FinanceToolPlanner>();
+        services.AddSingleton<FinanceConversationExecutionRegistry>();
+        services.AddScoped<IFinanceConversationExecutionService, FinanceConversationExecutionService>();
+        services.AddSingleton<FinanceMutationConfirmationRegistry>();
+        services.AddScoped<IFinanceMutationHandoffService, FinanceMutationHandoffService>();
+        services.AddScoped<IFinanceConversationRunProcessor, FinanceConversationRunProcessor>();
+        services.AddScoped<IFinanceConversationRunService, FinanceConversationRunService>();
         services.AddScoped<IAgentQuestionAnsweringService, AgentQuestionAnsweringService>();
         services.AddScoped<IAgentRoleBriefingService, AgentRoleBriefingService>();
         services.AddScoped<IAgentWorkPrioritizationService, AgentWorkPrioritizationService>();
@@ -358,7 +405,9 @@ public static class OperationsModuleRegistration
         services.AddScoped<ICompanyMemoryService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
-        services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
+        services.AddScoped<CompanyAgentToolExecutionService>();
+        services.AddScoped<IAgentToolExecutionService>(provider => provider.GetRequiredService<CompanyAgentToolExecutionService>());
+        services.AddScoped<IFinanceDurableToolExecutionService>(provider => provider.GetRequiredService<CompanyAgentToolExecutionService>());
         services.AddScoped<IFinanceAgentAuthorizationService, FinanceAgentAuthorizationService>();
         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
         services.AddSingleton<ICompanyToolRegistry, StaticCompanyToolRegistry>();

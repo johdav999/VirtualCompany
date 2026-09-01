@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "generatedUtc": "2026-09-01T05:42:35.7456429Z",
+  "repositoryRevision": "52b556f643e3473b843efcde9430b36e46119b34",
+  "dirtyWorkingTree": true,
+  "workingTreeManifestChecksum": "ce12e8890a3bcce87518df72b2f9dc2dcc67b6fd9a4b6f0d8d8a13e3433bdbb1",
+  "evaluationPack": {
+    "version": "finance-natural-language-safety-v1",
+    "checksum": "dc1c5c6f26c9676c26195a7ef551ab6b1de6cc2ec2eb8a6c83b651d7de7538dc",
+    "caseCount": 15,
+    "categoryCount": 11,
+    "languages": [
+      "en",
+      "sv"
+    ],
+    "requiredInvariantCount": 8
+  },
+  "modelConfiguration": {
+    "provider": "openai-compatible",
+    "model": "gpt-4.1-mini",
+    "promptVersion": "finance-tool-planner-v1",
+    "planContractVersion": "finance-tool-plan-v1",
+    "synthesisPromptVersion": "finance-conversation-synthesis-v1",
+    "synthesisContractVersion": "finance-conversation-execution-v1",
+    "temperature": 0.1,
+    "maximumPlannerCalls": 1,
+    "maximumConversationModelCalls": 2,
+    "maximumToolCalls": 8,
+    "maximumElapsedMilliseconds": 45000,
+    "maximumEstimatedCost": 5.0
+  },
+  "p1Decision": "no_go",
+  "technicalClassification": "technical_verification_incomplete",
+  "humanAccountingReview": "human_accountant_review_pending",
+  "unresolvedBlockers": [
+    "p0-safety-gates:failed",
+    "sqlserver-finance-lanes:prerequisite_missing",
+    "authenticated-browser-uat-and-restart-recovery:failed"
+  ],
+  "results": [
+    {
+      "name": "fixed-safety-evaluation",
+      "command": "dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --configuration Release --nologo -p:NuGetAudit=false -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false --filter FullyQualifiedName~FinanceNaturalLanguageSafetyEvaluationTests|FullyQualifiedName~FinanceToolPlannerTests|FullyQualifiedName~FinanceConversationExecutionServiceTests|FullyQualifiedName~SharedAgentReasoningGatewayTests --logger trx;LogFileName=finance-agent-p1-evaluation.trx --results-directory C:\\Users\\Johan\\source\\repos\\Virtual Company\\artifacts\\finance-agent-p1\\20260901-072900 --no-restore",
+      "startedUtc": "2026-09-01T05:29:00.6971949Z",
+      "durationSeconds": 2.919,
+      "exitCode": 0,
+      "outcome": "passed",
+      "counts": {
+        "total": 46,
+        "executed": 46,
+        "passed": 46,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\fixed-safety-evaluation.log"
+    },
+    {
+      "name": "authenticated-ui-contracts",
+      "command": "dotnet test tests/VirtualCompany.Web.Tests/VirtualCompany.Web.Tests.csproj --configuration Release --nologo -p:NuGetAudit=false -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false --filter FullyQualifiedName~FinanceAgentWorkbenchSurfaceTests|FullyQualifiedName~FinanceApiClientConversationRunTests|FullyQualifiedName~FinanceConversationRunContractTests --logger trx;LogFileName=finance-agent-p1-ui.trx --results-directory C:\\Users\\Johan\\source\\repos\\Virtual Company\\artifacts\\finance-agent-p1\\20260901-072900 --no-restore",
+      "startedUtc": "2026-09-01T05:29:03.6223923Z",
+      "durationSeconds": 4.505,
+      "exitCode": 0,
+      "outcome": "passed",
+      "counts": {
+        "total": 24,
+        "executed": 24,
+        "passed": 24,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\authenticated-ui-contracts.log"
+    },
+    {
+      "name": "p0-safety-gates",
+      "command": "dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj --configuration Release --nologo -p:NuGetAudit=false -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false --filter FullyQualifiedName~FinanceAgentAuthorityMatrixTests|FullyQualifiedName~FinanceAgentAuthorizationServiceTests|FullyQualifiedName~FinanceToolRiskPolicyTests|FullyQualifiedName~FinanceToolExecutionFlowIntegrationTests|FullyQualifiedName~ApprovalDecisionChainTests|FullyQualifiedName~AgentEffectiveAuthorityResolverTests|FullyQualifiedName~FinanceAgentAuthorityMigrationTests --logger trx;LogFileName=finance-agent-p0-focused.trx --results-directory C:\\Users\\Johan\\source\\repos\\Virtual Company\\artifacts\\finance-agent-p1\\20260901-072900 --no-restore",
+      "startedUtc": "2026-09-01T05:29:08.1278993Z",
+      "durationSeconds": 38.232,
+      "exitCode": 0,
+      "outcome": "failed",
+      "counts": {
+        "total": 149,
+        "executed": 148,
+        "passed": 148,
+        "failed": 0,
+        "skipped": 1
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\p0-safety-gates.log"
+    },
+    {
+      "name": "release-build",
+      "command": "dotnet build VirtualCompany.sln --configuration Release --nologo -p:NuGetAudit=false -m:1 -p:BuildInParallel=false -p:UseSharedCompilation=false --no-restore",
+      "startedUtc": "2026-09-01T05:29:46.3599973Z",
+      "durationSeconds": 11.159,
+      "exitCode": 0,
+      "outcome": "passed",
+      "counts": {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\release-build.log"
+    },
+    {
+      "name": "hermetic-matrix",
+      "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\Johan\\source\\repos\\Virtual Company\\scripts\\test-matrix.ps1 -Lane hermetic -Configuration Release -ResultsRoot C:\\Users\\Johan\\source\\repos\\Virtual Company\\artifacts\\finance-agent-p1\\20260901-072900\\hermetic -NoBuild -NoRestore",
+      "startedUtc": "2026-09-01T05:29:57.5189816Z",
+      "durationSeconds": 752.472,
+      "exitCode": 0,
+      "outcome": "passed",
+      "counts": {
+        "total": 3414,
+        "executed": 3414,
+        "passed": 3414,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\hermetic-matrix.log"
+    },
+    {
+      "name": "ef-pending-model",
+      "command": "dotnet ef migrations has-pending-model-changes --project src/VirtualCompany.Persistence.Migrations/VirtualCompany.Persistence.Migrations.csproj --startup-project src/VirtualCompany.Api/VirtualCompany.Api.csproj --configuration Release --no-build",
+      "startedUtc": "2026-09-01T05:42:30.1875242Z",
+      "durationSeconds": 5.493,
+      "exitCode": 0,
+      "outcome": "passed",
+      "counts": {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\ef-pending-model.log"
+    },
+    {
+      "name": "sqlserver-finance-lanes",
+      "command": "pwsh scripts/test-matrix.ps1 -Lane sqlserver -Configuration Release -NoBuild",
+      "startedUtc": "2026-09-01T05:42:35.6822957Z",
+      "durationSeconds": 0,
+      "exitCode": null,
+      "outcome": "prerequisite_missing",
+      "counts": {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": ""
+    },
+    {
+      "name": "swedish-accounting-evidence-verifier",
+      "command": "python C:/Users/Johan/.codex/skills/swedish-accountant-expert/scripts/verify_virtual_company_evidence.py",
+      "startedUtc": "2026-09-01T05:42:35.6837924Z",
+      "durationSeconds": 0.056,
+      "exitCode": 0,
+      "outcome": "passed",
+      "counts": {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": "artifacts\\finance-agent-p1\\20260901-072900\\swedish-accounting-evidence-verifier.log"
+    },
+    {
+      "name": "authenticated-browser-uat-and-restart-recovery",
+      "command": "browser UAT evidence validation",
+      "startedUtc": "2026-09-01T05:42:35.7417568Z",
+      "durationSeconds": 0,
+      "exitCode": null,
+      "outcome": "failed",
+      "counts": {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": ".codex-build\\uat\\finance-agent-p1-release-2026-09-01\\uat-evidence.json"
+    },
+    {
+      "name": "optional-live-provider-evaluation",
+      "command": "live provider evaluation",
+      "startedUtc": "2026-09-01T05:42:35.7418704Z",
+      "durationSeconds": 0,
+      "exitCode": null,
+      "outcome": "not_applicable",
+      "counts": {
+        "total": 0,
+        "executed": 0,
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0
+      },
+      "log": ""
+    }
+  ],
+  "disclaimer": "Engineering evidence only; not statutory approval or a signed professional opinion.",
+  "manifestCoreChecksum": "65afd4e1ded17416c0c4bde0d4be98a8dcc24a315bb451f44aa208cfba1a8cff",
+  "evidenceChecksum": "683dad7c5615d2b6acbf8cd0b6e84a16630ab65ac430a611726bdd20e92f9acb"
+}

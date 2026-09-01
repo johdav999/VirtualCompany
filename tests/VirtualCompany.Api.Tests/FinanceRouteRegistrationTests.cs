@@ -9,6 +9,7 @@ public sealed class FinanceRouteRegistrationTests
 {
     [Theory]
     [InlineData(typeof(FinancePage), FinanceRoutes.Home)]
+    [InlineData(typeof(FinanceAgentWorkbenchPage), FinanceRoutes.AgentWorkbench)]
     [InlineData(typeof(CashPositionPage), FinanceRoutes.CashPosition)]
     [InlineData(typeof(TransactionsPage), FinanceRoutes.Activity)]
     [InlineData(typeof(TransactionsPage), FinanceRoutes.Transactions)]
@@ -60,6 +61,7 @@ public sealed class FinanceRouteRegistrationTests
             new[]
             {
                 FinanceRoutes.Home,
+                FinanceRoutes.AgentWorkbench,
                 FinanceRoutes.CashPosition,
                 FinanceRoutes.Invoices,
                 FinanceRoutes.SupplierBills,

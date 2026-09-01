@@ -111,6 +111,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{BackgroundExecutionOptions.SectionName}:BaseRetryDelaySeconds"] = "0",
                 [$"{BackgroundExecutionOptions.SectionName}:MaxRetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
+                [$"{ObservabilityOptions.SectionName}:Database:ValidatePendingMigrations"] = "false",
                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",

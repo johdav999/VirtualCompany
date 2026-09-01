@@ -81,7 +81,8 @@ public sealed record FinanceAgentAuthorizationRequest(
     string? CorrelationId,
     Guid? ActorUserId = null,
     Guid? DelegationAuthorityId = null,
-    bool IsApprovedContinuation = false);
+    bool IsApprovedContinuation = false,
+    bool IsDurableRunContinuation = false);
 
 public interface IFinanceAgentAuthorizationService
 {

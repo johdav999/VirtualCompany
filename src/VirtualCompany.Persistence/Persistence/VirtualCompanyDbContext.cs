@@ -59,6 +59,10 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyOperatingLease> CompanyOperatingLeases => Set<CompanyOperatingLease>();
     public DbSet<OperatingSnapshot> OperatingSnapshots => Set<OperatingSnapshot>();
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+    public DbSet<FinanceConversationRun> FinanceConversationRuns => Set<FinanceConversationRun>();
+    public DbSet<FinanceConversationRunStep> FinanceConversationRunSteps => Set<FinanceConversationRunStep>();
+    public DbSet<FinanceConversationRunRevision> FinanceConversationRunRevisions => Set<FinanceConversationRunRevision>();
+    public DbSet<FinanceConversationRunAttempt> FinanceConversationRunAttempts => Set<FinanceConversationRunAttempt>();
     public DbSet<FinanceAgentDelegationAuthority> FinanceAgentDelegationAuthorities => Set<FinanceAgentDelegationAuthority>();
     public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
     public DbSet<TriggerExecutionAttempt> TriggerExecutionAttempts => Set<TriggerExecutionAttempt>();
@@ -2008,6 +2012,10 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<AccountingAllocationEvidenceLink>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<LedgerEntryLineDimension>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ManualJournalDraftLineDimension>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceConversationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceConversationRunStep>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceConversationRunRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceConversationRunAttempt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
     }
 
     private void ApplySqliteCompatibilityMappings(ModelBuilder modelBuilder)

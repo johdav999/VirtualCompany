@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace VirtualCompany.Application.Agents;
 
 public static class AgentAiRunStatuses
@@ -23,13 +25,15 @@ public sealed record AgentReasoningRequest(
     string SchemaVersion, string Instruction, IReadOnlyList<AgentAiSource> Sources,
     IReadOnlyList<string> AllowedActionTypes, IReadOnlyList<string> AllowedTools,
     Guid? ActorUserId = null, Guid? TaskId = null, Guid? ConversationId = null, string? CorrelationId = null,
-    bool IncludeClaims = true, string? EffectiveAuthorityVersion = null, string? EffectiveAuthorityHash = null);
+    bool IncludeClaims = true, string? EffectiveAuthorityVersion = null, string? EffectiveAuthorityHash = null,
+    JsonObject? StructuredResultSchema = null);
 
 public sealed record AgentReasoningResult(
     Guid RunId, string Status, string ResultVersion, string Summary, IReadOnlyList<AgentAiClaim> Claims,
     decimal Confidence, IReadOnlyList<string> Uncertainty, IReadOnlyList<string> MissingEvidence,
     IReadOnlyList<AgentAiNextAction> NextActions, IReadOnlyList<string> SourceIds,
-    string? FailureCode = null, string? FailureMessage = null);
+    string? FailureCode = null, string? FailureMessage = null,
+    JsonObject? StructuredResult = null);
 
 public interface IAgentReasoningGateway
 {

@@ -19,6 +19,9 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
     private readonly IFinanceToolProvider _financeToolProvider;
     private readonly IFinanceTransactionAnomalyDetectionService _financeAnomalyDetectionService;
+    private readonly IFinanceAgentAnalysisService _financeAgentAnalysisService;
+    private readonly IFinanceLedgerAgentReadService _financeLedgerAgentReadService;
+    private readonly IFinanceCloseComplianceAgentService _financeCloseComplianceAgentService;
     private readonly IAccountingProviderSwitchAgentService _accountingProviderSwitchAgentService;
     private readonly ILeadGenerationService _leadGenerationService;
 
@@ -30,6 +33,9 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         ICompanyKnowledgeSearchService knowledgeSearchService,
         IFinanceToolProvider financeToolProvider,
         IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService,
+        IFinanceAgentAnalysisService financeAgentAnalysisService,
+        IFinanceLedgerAgentReadService financeLedgerAgentReadService,
+        IFinanceCloseComplianceAgentService financeCloseComplianceAgentService,
         IAccountingProviderSwitchAgentService accountingProviderSwitchAgentService,
         ILeadGenerationService leadGenerationService)
     {
@@ -40,6 +46,9 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         _knowledgeSearchService = knowledgeSearchService;
         _financeToolProvider = financeToolProvider;
         _financeAnomalyDetectionService = financeAnomalyDetectionService;
+        _financeAgentAnalysisService = financeAgentAnalysisService;
+        _financeLedgerAgentReadService = financeLedgerAgentReadService;
+        _financeCloseComplianceAgentService = financeCloseComplianceAgentService;
         _accountingProviderSwitchAgentService = accountingProviderSwitchAgentService;
         _leadGenerationService = leadGenerationService;
     }
@@ -81,6 +90,28 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "recommend_transaction_category" => await ExecuteRecommendTransactionCategoryAsync(request, cancellationToken),
                 "recommend_invoice_approval_decision" => await ExecuteRecommendInvoiceApprovalDecisionAsync(request, cancellationToken),
                 "evaluate_transaction_anomaly" => await ExecuteEvaluateTransactionAnomalyAsync(request, cancellationToken),
+                FinanceAgentAnalysisToolIds.Analyze => await ExecuteFinanceAnalysisAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.LookupAccounts => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.SearchJournals => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadGeneralLedger => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadTrialBalance => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadStatement => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadReportDefinitions => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadReportSnapshot => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceLedgerAgentReadToolIds.ReadSourceDrilldown => await _financeLedgerAgentReadService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadTemplates => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadInstance => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadReadiness => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadPeriodLockHistory => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadComplianceObligations => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadAuditPackages => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadAccountantAccessActivity => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ReadYearEnd => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.PrioritizeCloseBlockers => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ExplainCompliancePreparation => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ExplainAuditPackageCompleteness => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                FinanceCloseComplianceAgentToolIds.ExplainYearEndPrerequisites => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
                 "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
                 "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
                 "post_paid_supplier_bill_expense" => await ExecutePostPaidSupplierBillExpenseAsync(request, cancellationToken),
@@ -766,6 +797,45 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 ["posted"] = JsonValue.Create(posting.Posted)
             },
             Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteFinanceAnalysisAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var analysisType = ReadString(request.Payload, "analysisType");
+        if (string.IsNullOrWhiteSpace(analysisType) || !FinanceAgentAnalysisTypes.All.Contains(analysisType))
+        {
+            return Failed("finance_analysis_type_unsupported", "A supported Finance analysis type is required.");
+        }
+
+        var result = await _financeAgentAnalysisService.AnalyzeAsync(
+            request.CompanyId,
+            request.AgentId,
+            request.ActorUserId,
+            new RoleAgentAnalysisRequest(
+                analysisType,
+                ReadGuid(request.Payload, "subjectId"),
+                ReadInt(request.Payload, "horizonDays") ?? 30,
+                ReadString(request.Payload, "objective"),
+                ReadDateTime(request.Payload, "asOfUtc"),
+                ReadString(request.Payload, "cadence") ?? "on_demand"),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            result.Summary,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["analysis"] = Serialize(result),
+                ["analysisType"] = JsonValue.Create(analysisType),
+                ["asOfUtc"] = JsonValue.Create(result.AsOfUtc)
+            },
+            Metadata(request, "finance_agent_analysis_service"));
     }
 
     private async Task<InternalToolExecutionResponse> ExecuteMigrationReadAsync(

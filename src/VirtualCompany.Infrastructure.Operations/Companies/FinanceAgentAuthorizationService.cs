@@ -45,7 +45,7 @@ public sealed class FinanceAgentAuthorizationService : IFinanceAgentAuthorizatio
         var evaluatedAtUtc = DateTime.UtcNow;
         var requirements = ResolveRequirements(request.ToolName, request.ActionType);
 
-        if (request.ActorUserId.HasValue && request.IsApprovedContinuation)
+        if (request.ActorUserId.HasValue && (request.IsApprovedContinuation || request.IsDurableRunContinuation))
         {
             return await AuthorizeHumanAsync(
                 request, request.ActorUserId.Value, requirements, evaluatedAtUtc, cancellationToken);

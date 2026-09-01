@@ -18,10 +18,12 @@ public sealed class ApplicationHealthCheck : IHealthCheck
 public sealed class DatabaseHealthCheck : IHealthCheck
 {
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IOptions<ObservabilityOptions> _options;
 
-    public DatabaseHealthCheck(VirtualCompanyDbContext dbContext)
+    public DatabaseHealthCheck(VirtualCompanyDbContext dbContext, IOptions<ObservabilityOptions> options)
     {
         _dbContext = dbContext;
+        _options = options;
     }
 
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
@@ -40,6 +42,12 @@ public sealed class DatabaseHealthCheck : IHealthCheck
                 {
                     ["readinessCode"] = "database_unreachable"
                 });
+            }
+
+            if (!_options.Value.Database.ValidatePendingMigrations)
+            {
+                return HealthCheckResult.Healthy("Database connection is ready; migration validation is disabled explicitly.",
+                    new Dictionary<string, object> { ["readinessCode"] = "ready", ["migrationValidation"] = "disabled" });
             }
 
             var pendingMigrations = (await _dbContext.Database.GetPendingMigrationsAsync(cancellationToken)).ToArray();

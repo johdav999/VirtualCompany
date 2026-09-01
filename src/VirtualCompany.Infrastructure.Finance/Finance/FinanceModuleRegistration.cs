@@ -699,6 +699,8 @@ public static class FinanceModuleRegistration
         services.AddScoped<IAccountingReportingService, AccountingReportingService>();
         services.AddScoped<IFinancialReportSuiteService, FinancialReportSuiteService>();
         services.AddScoped<IReportDefinitionService, ReportDefinitionService>();
+        services.AddScoped<IFinanceLedgerAgentReadService, FinanceLedgerAgentReadService>();
+        services.AddScoped<IFinanceCloseComplianceAgentService, FinanceCloseComplianceAgentService>();
         services.AddScoped<IVatReturnService, VatReturnService>();
         services.AddSingleton<ComplianceObligationTelemetry>();
         services.AddScoped<IComplianceObligationService, ComplianceObligationService>();
@@ -723,6 +725,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceSupplierPaymentProposalService, SupplierInvoicePaymentProposalService>();
         services.AddScoped<ISupplierInvoiceSourceDocumentAttachmentProvider, FortnoxSupplierInvoiceSourceDocumentAttachmentProvider>();
         services.AddScoped<IFinanceSupplierInvoiceSourceDocumentAttachmentService, SupplierInvoiceSourceDocumentAttachmentService>();
+        services.AddScoped<IFinancePlanningEntityResolver, FinancePlanningEntityResolver>();
         services.AddScoped<ISupplierInvoiceDraftActionProvider, FortnoxSupplierInvoiceDraftActionProvider>();
         services.AddScoped<IFinanceSupplierInvoiceDraftActionService, SupplierInvoiceDraftActionService>();
         services.AddScoped<IPaidSupplierBillExpensePostingService, PaidSupplierBillExpensePostingService>();

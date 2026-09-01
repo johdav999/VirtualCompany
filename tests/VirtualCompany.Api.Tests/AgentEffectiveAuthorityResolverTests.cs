@@ -38,20 +38,16 @@ public sealed class AgentEffectiveAuthorityResolverTests
     }
 
     [Fact]
-    public void Newly_registered_finance_tool_fails_closed_without_an_explicit_role_policy_grant()
+    public void Newly_registered_finance_tool_without_coverage_metadata_is_not_projected_to_Laura()
     {
         const string newTool = "finance.new_sensitive_write";
         var authority = AgentEffectiveAuthorityResolver.Resolve(
-            Laura(tools: Values(("allowed", new JsonArray("get_cash_balance")), ("actions", new JsonArray("read", "execute"))),
+            Laura(tools: Values(("allowed", new JsonArray("get_cash_balance", newTool)), ("actions", new JsonArray("read", "execute"))),
                 scopes: Values(("read", new JsonArray("finance")), ("execute", new JsonArray("finance")))),
             new RegistryWithAdditionalFinanceTool(newTool, ToolActionType.Execute, sensitive: true));
 
-        var tool = authority.Find(newTool, ToolActionType.Execute, "finance");
-
-        Assert.NotNull(tool);
-        Assert.Equal(AgentCapabilityStates.ConfigurationRequired, tool!.State);
-        Assert.Equal(AgentAuthorityReasonCodes.ConfigurationRequired, tool.ReasonCode);
-        Assert.Null(tool.GrantSource);
+        Assert.Null(authority.Find(newTool, ToolActionType.Execute, "finance"));
+        Assert.DoesNotContain(authority.Tools, tool => tool.ToolName == newTool);
     }
 
     [Fact]
@@ -77,8 +73,7 @@ public sealed class AgentEffectiveAuthorityResolverTests
         Assert.Equal("ready", governedExecution.IntegrationState);
         Assert.Equal(AgentCapabilityStates.PermissionDenied,
             authority.Find("list_transactions", ToolActionType.Read, "finance")!.State);
-        Assert.Equal(AgentCapabilityStates.NotImplemented,
-            authority.Tools.Single(item => item.ToolName == "finance.removed_tool").State);
+        Assert.DoesNotContain(authority.Tools, item => item.ToolName == "finance.removed_tool");
         Assert.Contains(authority.Tools, item => item.State == AgentCapabilityStates.Available);
     }
 

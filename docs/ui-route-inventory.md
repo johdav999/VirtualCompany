@@ -38,6 +38,7 @@ This inventory records the route topology after the UI consolidation. Canonical 
 | Area | Canonical routes | Compatibility routes |
 | --- | --- | --- |
 | Overview | `/finance` | None |
+| Ask Laura | `/finance/workbench` | Governed Finance conversation and supervision workspace; may receive an authorized visible record reference from a Finance detail page |
 | Cash | `/finance/cash-position`, `/finance/balances`, `/finance/monthly-summary` | None; balances and monthly reporting are contextual Cash views |
 | Customer invoices | `/finance/invoices`, `/finance/invoices/{InvoiceId}` | `/finance/reviews`, `/finance/reviews/{InvoiceId}` are contextual review views |
 | Supplier bills | `/finance/supplier-bills`, `/finance/supplier-bills/{BillId}` | `/finance/bills`, `/finance/bills/{BillId}`, `/finance/bill-inbox`, `/finance/bill-inbox/{BillId}` |

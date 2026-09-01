@@ -1,0 +1,303 @@
+@page "/finance/workbench"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+@implements IAsyncDisposable
+
+<PageTitle>@FinanceText["AgentWorkbenchTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["AgentWorkbenchTitle"]" Description="@FinanceText["AgentWorkbenchDescription"]"
+                   LoadingMessage="@FinanceText["AgentWorkbenchLoading"]" ShowShellHeader="false" ShowShellNavigation="false">
+    <main class="finance-agent-workbench" aria-labelledby="finance-workbench-title">
+        <div class="visually-hidden" role="status" aria-live="polite" aria-atomic="true">@Announcement</div>
+
+        <nav class="finance-workbench-breadcrumb" aria-label="@FinanceText["Breadcrumb"]">
+            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceModule"]</a>
+            <span aria-hidden="true">›</span>
+            <span aria-current="page">@FinanceText["AgentWorkbenchTitle"]</span>
+        </nav>
+
+        <header class="finance-workbench-agentbar">
+            <div class="finance-workbench-agentbar__identity">
+                <img src="/images/laura.png" alt="" />
+                <div>
+                    <strong>@(CurrentAgent?.DisplayName ?? "Laura"), @FinanceText["FinanceManager"]</strong>
+                    <span><i aria-hidden="true"></i>@FinanceText["AgentWorkbenchActive"] <b aria-hidden="true">·</b> @FinanceText["AgentWorkbenchFinanceOperations"]</span>
+                </div>
+            </div>
+            <div class="finance-workbench-agentbar__meta">
+                <span>@FinanceText["AgentWorkbenchAuthority"]</span>
+                <strong>@FinanceText["AgentWorkbenchGoverned"]</strong>
+            </div>
+            <a class="btn btn-outline-secondary" href="@(CurrentAgent is null ? FinanceRoutes.WithCompanyContext("/agents", AccessState.CompanyId) : $"/agents/{CurrentAgent.Id:D}?companyId={AccessState.CompanyId:D}")">
+                @FinanceText["AgentWorkbenchViewAgent"]
+            </a>
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(ConflictMessage))
+        {
+            <div class="finance-workbench-notice finance-workbench-notice--warning" role="alert">
+                <span class="bi bi-arrow-clockwise" aria-hidden="true"></span>
+                <div><strong>@FinanceText["AgentWorkbenchRunChanged"]</strong><p>@ConflictMessage</p></div>
+                <button type="button" class="btn btn-sm btn-outline-primary" @onclick="RefreshAsync">@FinanceText["RefreshCurrentState"]</button>
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(ActionError))
+        {
+            <div class="finance-workbench-notice finance-workbench-notice--danger" role="alert">
+                <span class="bi bi-exclamation-triangle" aria-hidden="true"></span><p>@ActionError</p>
+                <button type="button" class="btn btn-sm btn-outline-danger" @onclick="RefreshAsync">@FinanceText["Retry"]</button>
+            </div>
+        }
+
+        <div class="finance-workbench-grid">
+            <div class="finance-workbench-main">
+                <section class="finance-workbench-card finance-workbench-composer" aria-labelledby="finance-workbench-title">
+                    <header>
+                        <div>
+                            <h1 id="finance-workbench-title">@FinanceText["AgentWorkbenchTitle"]</h1>
+                            <p>@FinanceText["AgentWorkbenchAskDescription"]</p>
+                        </div>
+                        @if (CurrentRun is not null)
+                        {
+                            <button type="button" class="finance-workbench-link" @onclick="RefreshAsync" disabled="@IsBusy">
+                                <span class="bi bi-arrow-clockwise" aria-hidden="true"></span>@FinanceText["RefreshCurrentState"]
+                            </button>
+                        }
+                    </header>
+
+                    @if (HasVisibleReference)
+                    {
+                        <div class="finance-workbench-reference" role="status">
+                            <span class="bi bi-link-45deg" aria-hidden="true"></span>
+                            <span>@FinanceText["AgentWorkbenchReferenceSelected", Humanize(ReferenceType!), ReferenceValue!]</span>
+                            <button type="button" @onclick="ClearReference">@FinanceText["Remove"]</button>
+                        </div>
+                    }
+
+                    @if (CurrentRun?.Status == "awaiting_clarification")
+                    {
+                        <div class="finance-workbench-clarification" role="alert">
+                            <span class="bi bi-question-circle" aria-hidden="true"></span>
+                            <div><strong>@FinanceText["ClarificationNeeded"]</strong><p>@CurrentRun.SafeSummary</p></div>
+                        </div>
+                    }
+
+                    <label for="finance-workbench-request">@(CurrentRun?.Status == "awaiting_clarification" ? FinanceText["ClarificationResponse"] : FinanceText["AgentWorkbenchRequestLabel"])</label>
+                    <textarea id="finance-workbench-request" maxlength="8000" rows="3" @bind="RequestText"
+                              disabled="@IsBusy" aria-describedby="finance-workbench-request-help"></textarea>
+                    <div id="finance-workbench-request-help" class="finance-workbench-composer__footer">
+                        <div class="finance-workbench-intents" aria-label="@FinanceText["SupportedExamples"]">
+                            <span>@FinanceText["TryThese"]</span>
+                            @foreach (var intent in ExampleIntents)
+                            {
+                                <button type="button" @onclick="@(() => SelectIntent(intent))" disabled="@IsBusy">@intent</button>
+                            }
+                        </div>
+                        <button type="button" class="btn btn-primary" @onclick="SubmitRequestAsync" disabled="@(!CanSubmit)">
+                            @if (IsBusy) { <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> }
+                            else { <span class="bi bi-stars" aria-hidden="true"></span> }
+                            @(CurrentRun?.Status == "awaiting_clarification" ? FinanceText["UpdateRequest"] : FinanceText["AskLaura"])
+                        </button>
+                    </div>
+                </section>
+
+                <section class="finance-workbench-card finance-workbench-plan" aria-labelledby="governed-plan-title">
+                    <header>
+                        <div class="finance-workbench-plan__title">
+                            <h2 id="governed-plan-title">@FinanceText["GovernedPlan"]</h2>
+                            @if (CurrentRun is not null)
+                            {
+                                <span class="finance-workbench-status @StatusCss(CurrentRun.Status)">@StatusLabel(CurrentRun.Status)</span>
+                                <small>@FinanceText["StepCount", CurrentRun.Steps.Count] <b aria-hidden="true">·</b> @LocalDateTime.Relative(CurrentRun.UpdatedUtc)</small>
+                            }
+                        </div>
+                        @if (RecentRuns.Count > 1)
+                        {
+                            <label class="finance-workbench-run-picker">
+                                <span>@FinanceText["RecentRuns"]</span>
+                                <select value="@CurrentRun?.Id" @onchange="SelectRunAsync">
+                                    @foreach (var run in RecentRuns)
+                                    {
+                                        <option value="@run.Id">@StatusLabel(run.Status) · @LocalDateTime.DateTime(run.CreatedUtc)</option>
+                                    }
+                                </select>
+                            </label>
+                        }
+                    </header>
+
+                    @if (CurrentRun is null)
+                    {
+                        <div class="finance-workbench-empty">
+                            <span class="bi bi-chat-square-text" aria-hidden="true"></span>
+                            <h3>@FinanceText["NoGovernedRun"]</h3>
+                            <p>@FinanceText["NoGovernedRunDescription"]</p>
+                        </div>
+                    }
+                    else if (CurrentRun.Steps.Count == 0)
+                    {
+                        <div class="finance-workbench-empty finance-workbench-empty--clarification">
+                            <span class="bi bi-signpost-split" aria-hidden="true"></span>
+                            <h3>@StatusLabel(CurrentRun.Status)</h3>
+                            <p>@CurrentRun.SafeSummary</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <ol class="finance-workbench-steps">
+                            @foreach (var step in CurrentRun.Steps.OrderBy(x => x.Order))
+                            {
+                                <li class="finance-workbench-step @StepCss(step.Status)" @key="step.Id">
+                                    <span class="finance-workbench-step__number" aria-hidden="true">@step.Order</span>
+                                    <div class="finance-workbench-step__body">
+                                        <div class="finance-workbench-step__headline">
+                                            <div>
+                                                <span class="finance-workbench-mode @ModeCss(step.ActionType)">@ActionLabel(step.ActionType)</span>
+                                                <h3>@StepTitle(step)</h3>
+                                            </div>
+                                            <span class="finance-workbench-status @StatusCss(step.Status)">@StatusLabel(step.Status)</span>
+                                        </div>
+                                        <p>@step.ExpectedEffect</p>
+                                        <div class="finance-workbench-step__meta">
+                                            <span><span class="bi bi-shield-check" aria-hidden="true"></span>@FinanceText["ActionMode"]: @ActionLabel(step.ActionType)</span>
+                                            <span><span class="bi bi-bullseye" aria-hidden="true"></span>@FinanceText["Scope"]: @Humanize(step.Scope)</span>
+                                            <span><span class="bi bi-database-check" aria-hidden="true"></span>@FinanceText["EvidenceCount", EvidenceForStep(step).Count]</span>
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(step.SafeFailureSummary))
+                                        {
+                                            <div class="finance-workbench-step__failure" role="alert">@step.SafeFailureSummary</div>
+                                        }
+                                    </div>
+                                </li>
+                            }
+                        </ol>
+
+                        <div class="finance-workbench-evidence-legend" aria-label="@FinanceText["ReasoningInputs"]">
+                            <span><i class="legend-dot legend-dot--fact" aria-hidden="true"></i><strong>@FinanceText["Facts"]</strong> @FinanceText["FactsCount", FreshEvidence.Count]</span>
+                            <span><i class="legend-dot legend-dot--assumption" aria-hidden="true"></i><strong>@FinanceText["Assumptions"]</strong> @FinanceText["NoAssumptionsRetained"]</span>
+                            <span><i class="legend-dot legend-dot--unknown" aria-hidden="true"></i><strong>@FinanceText["Unknowns"]</strong> @FinanceText["UnknownCount", StaleEvidence.Count]</span>
+                        </div>
+                    }
+                </section>
+
+                <div class="finance-workbench-lower">
+                    <section class="finance-workbench-card finance-workbench-outcome" aria-labelledby="outcome-title">
+                        <h2 id="outcome-title">@FinanceText["FinalOutcome"]</h2>
+                        @if (CurrentRun is null)
+                        {
+                            <p>@FinanceText["OutcomeNotStarted"]</p>
+                        }
+                        else
+                        {
+                            <span class="finance-workbench-outcome__icon @StatusCss(CurrentRun.Status)" aria-hidden="true"><i class="@OutcomeIcon(CurrentRun.Status)"></i></span>
+                            <strong>@StatusLabel(CurrentRun.Status)</strong>
+                            <p>@CurrentRun.SafeSummary</p>
+                            <small>@FinanceText["UpdatedAt", LocalDateTime.DateTime(CurrentRun.UpdatedUtc)]</small>
+                        }
+                    </section>
+
+                    <section class="finance-workbench-card finance-workbench-evidence" aria-labelledby="evidence-title">
+                        <header><div><h2 id="evidence-title">@FinanceText["EvidenceHighlights"]</h2><p>@FinanceText["EvidenceHighlightsDescription"]</p></div></header>
+                        @if (Evidence.Count == 0)
+                        {
+                            <div class="finance-workbench-empty finance-workbench-empty--compact"><p>@FinanceText["NoEvidenceYet"]</p></div>
+                        }
+                        else
+                        {
+                            <div class="finance-workbench-table-wrap">
+                                <table>
+                                    <caption class="visually-hidden">@FinanceText["EvidenceTableCaption"]</caption>
+                                    <thead><tr><th scope="col">@FinanceText["Source"]</th><th scope="col">@FinanceText["Record"]</th><th scope="col">@FinanceText["Updated"]</th><th scope="col">@FinanceText["EvidenceStatus"]</th></tr></thead>
+                                    <tbody>
+                                        @foreach (var evidence in Evidence.Take(8))
+                                        {
+                                            <tr>
+                                                <td data-label="@FinanceText["Source"]">@Humanize(evidence.EntityType)</td>
+                                                <td data-label="@FinanceText["Record"]">
+                                                    @if (BuildEvidenceHref(evidence) is string href)
+                                                    { <a href="@href">@evidence.SafeLabel</a> }
+                                                    else { <span>@evidence.SafeLabel</span> }
+                                                </td>
+                                                <td data-label="@FinanceText["Updated"]">@LocalDateTime.DateTime(evidence.UpdatedUtc)</td>
+                                                <td data-label="@FinanceText["EvidenceStatus"]"><span class="finance-workbench-status @(evidence.IsFresh ? "is-success" : "is-danger")">@(evidence.IsFresh ? FinanceText["Current"] : FinanceText["Stale"])</span></td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </section>
+                </div>
+            </div>
+
+            <aside class="finance-workbench-side" aria-label="@FinanceText["ExecutionSupervision"]">
+                <section class="finance-workbench-card finance-workbench-supervision" aria-labelledby="supervision-title">
+                    <header>
+                        <div><span class="bi bi-shield-check" aria-hidden="true"></span><h2 id="supervision-title">@FinanceText["ExecutionSupervision"]</h2></div>
+                        @if (StaleEvidence.Count > 0)
+                        { <span class="finance-workbench-status is-danger">@FinanceText["StaleEvidenceDetected"]</span> }
+                    </header>
+
+                    @if (CheckpointStep is null)
+                    {
+                        <div class="finance-workbench-empty finance-workbench-empty--compact">
+                            <span class="bi bi-shield-lock" aria-hidden="true"></span>
+                            <h3>@FinanceText["NoHumanCheckpoint"]</h3>
+                            <p>@FinanceText["NoHumanCheckpointDescription"]</p>
+                        </div>
+                    }
+                    else
+                    {
+                        var checkpoint = CheckpointStep;
+                        <div class="finance-workbench-checkpoint">
+                            <div class="finance-workbench-checkpoint__eyebrow">@FinanceText["StepOf", checkpoint.Order, CurrentRun!.Steps.Count] <span class="finance-workbench-mode @ModeCss(checkpoint.ActionType)">@ActionLabel(checkpoint.ActionType)</span></div>
+                            <h3>@checkpoint.ExpectedEffect</h3>
+                            <p>@CheckpointDescription(checkpoint)</p>
+
+                            <dl>
+                                <div><dt>@FinanceText["RequestedEffect"]</dt><dd>@checkpoint.ExpectedEffect</dd></div>
+                                <div><dt>@FinanceText["ActualEffect"]</dt><dd>@ActualEffect(checkpoint)</dd></div>
+                                <div><dt>@FinanceText["ActionMode"]</dt><dd>@ActionLabel(checkpoint.ActionType)</dd></div>
+                                <div><dt>@FinanceText["CurrentState"]</dt><dd>@StatusLabel(checkpoint.Status) <small>@FinanceText["AsAt", LocalDateTime.DateTime(checkpoint.UpdatedUtc)]</small></dd></div>
+                                <div><dt>@FinanceText["HumanCheckpoint"]</dt><dd>@CheckpointRequirement(checkpoint)</dd></div>
+                            </dl>
+
+                            @if (StaleEvidence.Count > 0)
+                            {
+                                <div class="finance-workbench-checkpoint__warning" role="alert">
+                                    <span class="bi bi-exclamation-circle" aria-hidden="true"></span>
+                                    <div><strong>@FinanceText["ReviewStaleEvidence"]</strong><p>@FinanceText["StaleEvidenceCount", StaleEvidence.Count]</p></div>
+                                </div>
+                            }
+
+                            <div class="finance-workbench-checkpoint__actions">
+                                @if (FinanceConversationRunUiState.CanConfirm(checkpoint.Status))
+                                {
+                                    <button type="button" class="btn btn-primary" @onclick="@(() => ConfirmStepAsync(checkpoint))" disabled="@IsBusy">
+                                        <span class="bi bi-shield-check" aria-hidden="true"></span>@FinanceText["ConfirmExactEffect"]
+                                    </button>
+                                }
+                                else if (FinanceConversationRunUiState.CanOpenApproval(checkpoint.Status, checkpoint.ApprovalRequestId) && checkpoint.ApprovalRequestId is Guid approvalId)
+                                {
+                                    <a class="btn btn-primary" href="@BuildApprovalHref(approvalId)"><span class="bi bi-person-check" aria-hidden="true"></span>@FinanceText["OpenApproval"]</a>
+                                }
+                                @if (CanCancel)
+                                {
+                                    <button type="button" class="btn btn-outline-danger" @onclick="CancelRunAsync" disabled="@IsBusy"><span class="bi bi-x-lg" aria-hidden="true"></span>@FinanceText["CancelRun"]</button>
+                                }
+                            </div>
+                        </div>
+                    }
+                </section>
+
+                <section class="finance-workbench-card finance-workbench-links" aria-labelledby="sources-title">
+                    <h2 id="sources-title">@FinanceText["AuditAndSources"]</h2>
+                    <a href="@BuildAuditHref()"><span class="bi bi-clock-history" aria-hidden="true"></span>@FinanceText["ViewActionHistory"]</a>
+                    <a href="#evidence-title"><span class="bi bi-file-earmark-check" aria-hidden="true"></span>@FinanceText["ViewSupportingEvidence", Evidence.Count]</a>
+                    @if (CurrentRun is not null)
+                    { <a href="#governed-plan-title"><span class="bi bi-shield-check" aria-hidden="true"></span>@FinanceText["ViewExecutionRecord"]</a> }
+                </section>
+            </aside>
+        </div>
+    </main>
+</FinancePageLayout>

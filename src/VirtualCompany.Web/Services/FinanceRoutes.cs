@@ -18,6 +18,7 @@ public static class FinanceRoutes
     public const string FinanceProviderManagement = "/system/admin/finance-providers";
     public const string CompanyIdQueryKey = "companyId";
     public const string Home = "/finance";
+    public const string AgentWorkbench = "/finance/workbench";
     public const string CashPosition = "/finance/cash-position";
     public const string Activity = "/finance/activity";
     public const string Transactions = "/finance/transactions";
@@ -100,6 +101,7 @@ public static class FinanceRoutes
     public static IReadOnlyList<FinanceRouteDefinition> SectionPages { get; } =
         [
             new("Overview", Home, "Review key finance actions and open the operational finance workspace."),
+            new("Ask Laura", AgentWorkbench, "Supervise evidence-backed Finance requests from plan to outcome."),
             new("Cash", CashPosition, "Track cash, liquidity, balances, and monthly results.", ActivePathPrefixes: [CashPosition, Balances, MonthlySummary]),
             new("Customer invoices", Invoices, "Track invoice review and collection workflows.", ActivePathPrefixes: [Invoices, Reviews, Receivables, "/finance/customers"]),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
@@ -170,6 +172,43 @@ public static class FinanceRoutes
 
     public static string BuildAlertDetailPath(Guid alertId, Guid? companyId) =>
         WithCompanyContext($"/finance/alerts/{alertId:D}", companyId);
+
+    public static string BuildAgentWorkbenchPath(Guid companyId, Guid agentId, string? currentUri = null)
+    {
+        var parameters = new List<string>
+        {
+            $"companyId={companyId:D}",
+            $"agentId={agentId:D}"
+        };
+        if (TryResolveVisibleReference(currentUri, out var type, out var value))
+        {
+            parameters.Add($"referenceType={Uri.EscapeDataString(type)}");
+            parameters.Add($"referenceValue={Uri.EscapeDataString(value)}");
+        }
+        return $"{AgentWorkbench}?{string.Join("&", parameters)}";
+    }
+
+    internal static bool TryResolveVisibleReference(string? uri, out string type, out string value)
+    {
+        type = string.Empty;
+        value = string.Empty;
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed)) return false;
+        var segments = parsed.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 3 || !string.Equals(segments[0], "finance", StringComparison.OrdinalIgnoreCase)) return false;
+
+        var candidate = segments[^1];
+        if (!Guid.TryParse(candidate, out var id)) return false;
+        type = segments[1].ToLowerInvariant() switch
+        {
+            "invoices" or "reviews" => "invoice",
+            "supplier-bills" or "bills" or "bill-inbox" => "bill",
+            "customers" => "customer",
+            _ => string.Empty
+        };
+        if (string.IsNullOrEmpty(type)) return false;
+        value = id.ToString("D");
+        return true;
+    }
 
     public static string BuildManualJournalDraftPath(Guid draftId, Guid? companyId) =>
         WithCompanyContext($"/finance/accounting/journals/drafts/{draftId:D}", companyId);

@@ -15,23 +15,7 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
 {
     private const string LauraRolePolicyVersion = "laura-finance-role-policy-v1";
 
-    private static readonly IReadOnlySet<string> LauraRolePolicyTools = new HashSet<string>(
-        new[]
-        {
-            "get_cash_balance",
-            "resolve_finance_agent_query",
-            "list_transactions",
-            "list_uncategorized_transactions",
-            "list_invoices_awaiting_approval",
-            "get_profit_and_loss_summary",
-            "recommend_transaction_category",
-            "recommend_invoice_approval_decision",
-            "evaluate_transaction_anomaly",
-            "categorize_transaction",
-            "approve_invoice",
-            "post_paid_supplier_bill_expense"
-        }.Concat(AccountingProviderSwitchAgentToolIds.All),
-        StringComparer.OrdinalIgnoreCase);
+    private static readonly IReadOnlySet<string> LauraRolePolicyTools = FinanceAgentCoverageCatalogue.OwnedToolNames;
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyToolRegistry _toolRegistry;
@@ -69,9 +53,10 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
 
         var definitions = toolRegistry.ListToolDefinitions()
             .Where(definition =>
-                configuredTools.Contains(definition.ToolName) ||
-                (toolRegistry.TryGetTool(definition.ToolName, out var registration) &&
-                 registration.Scopes.Contains(relevantScope)))
+                (relevantScope != "finance" || FinanceAgentCoverageCatalogue.IsOwnedTool(definition.ToolName)) &&
+                (configuredTools.Contains(definition.ToolName) ||
+                 (toolRegistry.TryGetTool(definition.ToolName, out var registration) &&
+                  registration.Scopes.Contains(relevantScope))))
             .ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
 
         var candidateTools = definitions.Keys
@@ -275,8 +260,9 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
     };
 
     private static bool IsRelevantConfiguredTool(string toolName, bool isLaura, ICompanyToolRegistry registry) =>
-        registry.TryGetTool(toolName, out _) ||
-        (isLaura && (LauraRolePolicyTools.Contains(toolName) || toolName.StartsWith("finance.", StringComparison.OrdinalIgnoreCase)));
+        (registry.TryGetTool(toolName, out var registration) &&
+         (!registration.Scopes.Contains("finance") || FinanceAgentCoverageCatalogue.IsOwnedTool(toolName))) ||
+        (isLaura && LauraRolePolicyTools.Contains(toolName));
 
     private static ToolActionType ResolveAction(
         ToolDefinitionManifest? definition,

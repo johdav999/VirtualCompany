@@ -137,7 +137,21 @@ public sealed record ToolDefinitionManifest(
     ToolActionType ActionType,
     JsonObject InputSchema,
     JsonObject OutputSchema,
-    bool SensitiveAction = false);
+    bool SensitiveAction = false,
+    ToolSelectionMetadata? SelectionMetadata = null);
+
+public sealed record ToolSelectionMetadata(
+    string SafePurpose,
+    string ActionClass,
+    IReadOnlyList<string> TargetEntityTypes,
+    string SideEffectSummary,
+    IReadOnlyList<string> RequiredEvidenceTypes,
+    int MaximumEvidenceAgeSeconds,
+    string ConfirmationBehavior,
+    string ApprovalBehavior,
+    string ResultSemantics,
+    IReadOnlyList<string> NaturalLanguageExamples,
+    IReadOnlyList<string> RankingIntents);
 
 public interface ICompanyToolRegistry
 {

@@ -366,7 +366,11 @@
             {
                 AgentRole = IsFixedDisplayName(moduleKey) || string.IsNullOrWhiteSpace(agent.RoleName) ? fallback.AgentRole : agent.RoleName,
                 AvatarUrl = ResolveSidebarAvatarUrl(agent.AvatarUrl, fallback.AvatarUrl),
-                ButtonRoute = IsDirectChatEligible(agent.Status) ? BuildChatUri(companyId, agent.Id) : agentsHref
+                ButtonRoute = IsDirectChatEligible(agent.Status)
+                    ? string.Equals(moduleKey, "finance", StringComparison.OrdinalIgnoreCase)
+                        ? FinanceRoutes.BuildAgentWorkbenchPath(companyId, agent.Id, Navigation.Uri)
+                        : BuildChatUri(companyId, agent.Id)
+                    : agentsHref
             };
 
             if (!IsFixedDisplayName(moduleKey) && !string.IsNullOrWhiteSpace(agent.DisplayName))

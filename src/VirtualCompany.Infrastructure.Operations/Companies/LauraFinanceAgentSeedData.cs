@@ -95,6 +95,7 @@ internal static class LauraFinanceAgentSeedData
                 "get_profit_and_loss_summary",
                 "recommend_transaction_category",
                 "recommend_invoice_approval_decision",
+                FinanceAgentAnalysisToolIds.Analyze,
                 "categorize_transaction",
                 "approve_invoice",
                 "post_paid_supplier_bill_expense"
