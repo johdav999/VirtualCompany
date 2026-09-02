@@ -77,6 +77,45 @@ public sealed class ExecutiveCockpitCacheKeyBuilder
             NormalizeUtc(endUtc),
             "kpis");
 
+    public static ExecutiveCockpitCacheScope TodayScope(
+        Guid companyId,
+        Guid userId,
+        Guid membershipId,
+        string role,
+        string responsibilityRevision,
+        string lens,
+        IEnumerable<string> authorizedLenses) =>
+        new(
+            companyId,
+            role,
+            authorizedLenses.Select(value => $"lens:{value}")
+                .Append($"responsibility:{responsibilityRevision}")
+                .ToArray(),
+            null,
+            null,
+            $"today:{userId:N}:{membershipId:N}:{TodayWorkspaceLenses.Normalize(lens)}");
+
+    public static ExecutiveCockpitCacheScope MonthlyScope(
+        Guid companyId,
+        Guid userId,
+        Guid membershipId,
+        string role,
+        string responsibilityRevision,
+        string lens,
+        IEnumerable<string> authorizedLenses,
+        DateTime startUtc,
+        DateTime endUtc) =>
+        new(
+            companyId,
+            role,
+            authorizedLenses.Select(value => $"lens:{value}")
+                .Append($"responsibility:{responsibilityRevision}")
+                .Append("period:month")
+                .ToArray(),
+            NormalizeUtc(startUtc),
+            NormalizeUtc(endUtc),
+            $"monthly:{userId:N}:{membershipId:N}:{TodayWorkspaceLenses.Normalize(lens)}");
+
     private string Prefix() =>
         $"{_options.KeyPrefix.Trim().TrimEnd(':')}:{_options.KeyVersion.Trim().ToLowerInvariant()}";
 

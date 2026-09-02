@@ -15,6 +15,16 @@ public sealed class NavigationRaceRegressionTests
     }
 
     [Fact]
+    public void ResponsibilitySettingsAndTodayLinks_preserve_the_active_company()
+    {
+        var companyId = Guid.Parse("43e6a825-d1b7-429a-8608-7e668087d005");
+
+        Assert.Equal($"/settings/responsibilities?companyId={companyId:D}", DashboardRoutes.BuildResponsibilitySettingsPath(companyId));
+        Assert.Equal($"/dashboard?companyId={companyId:D}", DashboardRoutes.BuildTodayPath(companyId));
+        Assert.Equal($"/settings?companyId={companyId:D}", DashboardRoutes.EnsureCompanyContext("/settings", companyId, "/settings"));
+    }
+
+    [Fact]
     public void CultureSynchronization_ReloadsTheCurrentRouteWithoutFollowingAStaleRedirect()
     {
         var script = File.ReadAllText(Path.Combine(

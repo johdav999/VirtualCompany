@@ -174,6 +174,24 @@ else
                                 @RenderError(nameof(model.BusinessType))
                             </div>
 
+                            <fieldset class="onboarding-field onboarding-field--wide onboarding-size" data-testid="onboarding-company-size">
+                                <legend class="form-label">@CommonText["OnboardingCompanySize"]</legend>
+                                <div class="onboarding-size__options">
+                                    @foreach (var size in CompanySizes)
+                                    {
+                                        <label class="onboarding-size__option">
+                                            <input type="radio" name="company-size" value="@size.Value" checked="@string.Equals(model.CompanySize, size.Value, StringComparison.OrdinalIgnoreCase)" @onchange="() => SetCompanySize(size.Value)" />
+                                            <span>
+                                                <strong>@size.Label</strong>
+                                                <small>@size.Description</small>
+                                            </span>
+                                        </label>
+                                    }
+                                </div>
+                                <small class="onboarding-field__help">@CommonText["OnboardingCompanySizeHelp"]</small>
+                                @RenderError(nameof(model.CompanySize))
+                            </fieldset>
+
                             @if (recommendedTemplate is not null && SelectedTemplate is null)
                             {
                                 <div class="onboarding-inline-recommendation onboarding-field--wide">
@@ -241,6 +259,7 @@ else
                             <div><dt>@CommonText["OnboardingCompany"]</dt><dd>@model.Name</dd></div>
                             <div><dt>@CommonText["OnboardingIndustry"]</dt><dd>@DisplayOptionValue(model.Industry)</dd></div>
                             <div><dt>@CommonText["OnboardingBusinessType"]</dt><dd>@DisplayOptionValue(model.BusinessType)</dd></div>
+                            <div><dt>@CommonText["OnboardingCompanySize"]</dt><dd>@CompanySizeLabel(model.CompanySize)</dd></div>
                             <div><dt>@CommonText["OnboardingTimezone"]</dt><dd>@DisplayValue(model.Timezone)</dd></div>
                             <div><dt>@CommonText["OnboardingCurrency"]</dt><dd>@DisplayValue(model.Currency)</dd></div>
                             <div><dt>@CommonText["OnboardingLanguage"]</dt><dd>@DisplayValue(model.Language)</dd></div>
@@ -462,7 +481,7 @@ else
         try
         {
             var request=new SaveOnboardingRequest{CompanyId=model.CompanyId,Name=model.Name,Industry=model.Industry,BusinessType=model.BusinessType,
-                Timezone=model.Timezone,Currency=model.Currency,Language=model.Language,ComplianceRegion=model.ComplianceRegion,CurrentStep=Math.Max(1,currentStep),SelectedTemplateId=GetEffectiveTemplateId(),ExplicitNewCompany=explicitNewCompany};
+                CompanySize=model.CompanySize,Timezone=model.Timezone,Currency=model.Currency,Language=model.Language,ComplianceRegion=model.ComplianceRegion,CurrentStep=Math.Max(1,currentStep),SelectedTemplateId=GetEffectiveTemplateId(),ExplicitNewCompany=explicitNewCompany};
             var result=await ApiClient.StartWorkshopAsync(request);
             Navigation.NavigateTo(result.Route, forceLoad: true);
         }
@@ -578,6 +597,7 @@ else
                 Name = model.Name,
                 Industry = model.Industry,
                 BusinessType = model.BusinessType,
+                CompanySize = model.CompanySize,
                 Timezone = model.Timezone,
                 Currency = model.Currency,
                 Language = model.Language,
@@ -594,8 +614,13 @@ else
             }
             else
             {
-                Navigation.NavigateTo(result.DashboardPath, replace: true);
-                statusMessage = CommonText["OnboardingCompleteMessage"];
+                var destination = result.ResponsibilitySetupRequired && !string.IsNullOrWhiteSpace(result.ResponsibilitySettingsPath)
+                    ? result.ResponsibilitySettingsPath
+                    : result.DashboardPath;
+                Navigation.NavigateTo(destination!, replace: true);
+                statusMessage = result.ResponsibilitySetupRequired
+                    ? CommonText["OnboardingResponsibilitySetupMessage"]
+                    : CommonText["OnboardingCompleteMessage"];
             }
         }
         catch (OnboardingApiException ex)
@@ -801,6 +826,9 @@ else
         model.Name = progress.Name;
         model.Industry = progress.Industry;
         model.BusinessType = progress.BusinessType;
+        model.CompanySize = string.IsNullOrWhiteSpace(progress.CompanySize) || string.Equals(progress.CompanySize, "unspecified", StringComparison.OrdinalIgnoreCase)
+            ? "micro"
+            : progress.CompanySize;
         model.Timezone = progress.Timezone;
         model.Currency = progress.Currency;
         model.Language = progress.Language;
@@ -854,6 +882,7 @@ else
             Name = model.Name,
             Industry = model.Industry,
             BusinessType = model.BusinessType,
+            CompanySize = model.CompanySize,
             Timezone = model.Timezone,
             Currency = model.Currency,
             Language = model.Language,
@@ -914,6 +943,7 @@ else
             if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = Required("OnboardingCompanyName");
             if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = Required("OnboardingIndustry");
             if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = Required("OnboardingBusinessType");
+            if (!CompanySizes.Any(size => string.Equals(size.Value, model.CompanySize, StringComparison.OrdinalIgnoreCase))) validationErrors[nameof(model.CompanySize)] = Required("OnboardingCompanySize");
         }
 
         if (step >= 2 || currentStep >= 2)
@@ -1032,6 +1062,15 @@ else
     private string Required(string labelKey) =>
         CommonText["OnboardingRequired", CommonText[labelKey]];
 
+    private void SetCompanySize(string value)
+    {
+        model.CompanySize = value;
+        ClearMessages();
+    }
+
+    private string CompanySizeLabel(string value) =>
+        CompanySizes.FirstOrDefault(size => string.Equals(size.Value, value, StringComparison.OrdinalIgnoreCase))?.Label ?? value;
+
     private string? GetEffectiveTemplateId() =>
         !string.IsNullOrWhiteSpace(model.SelectedTemplateId)
             ? model.SelectedTemplateId
@@ -1084,6 +1123,15 @@ else
 
     private sealed record SelectOption(string Value, string Label);
 
+    private IReadOnlyList<CompanySizeOption> CompanySizes =>
+    [
+        new("micro", CommonText["CompanySizeMicro"], CommonText["CompanySizeMicroDescription"]),
+        new("small", CommonText["CompanySizeSmall"], CommonText["CompanySizeSmallDescription"]),
+        new("medium", CommonText["CompanySizeMedium"], CommonText["CompanySizeMediumDescription"])
+    ];
+
+    private sealed record CompanySizeOption(string Value, string Label, string Description);
+
     private RenderFragment RenderError(string field) => builder =>
     {
         if (validationErrors.TryGetValue(field, out var message))
@@ -1101,6 +1149,7 @@ else
         public string Name { get; set; } = string.Empty;
         public string Industry { get; set; } = string.Empty;
         public string BusinessType { get; set; } = string.Empty;
+        public string CompanySize { get; set; } = "micro";
         public string Timezone { get; set; } = string.Empty;
         public string Currency { get; set; } = string.Empty;
         public string Language { get; set; } = string.Empty;

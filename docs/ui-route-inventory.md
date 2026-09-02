@@ -6,7 +6,7 @@ This inventory records the route topology after the UI consolidation. Canonical 
 
 | Purpose | Canonical route | Compatibility or contextual routes |
 | --- | --- | --- |
-| Overview | `/dashboard` | `/` resolves through the existing home flow |
+| Overview | `/dashboard` | `/` resolves through the existing home flow; Today is the default. `companyId` selects company context, `period=month` selects Monthly, `lens=company|finance|sales|marketing|customers` selects an authorized responsibility lens, and optional `year` plus `month` select a reporting month together. |
 | Agent team | `/agents/staff` | `/agents`, `/agents/{AgentId}`, `/agents/{AgentId}/chat` remain canonical profile/chat context |
 | Finance | `/finance` | See Finance table |
 | Accountant portfolio | `/accountant/portfolio` | Available only when the signed-in user has an explicit accountant membership; company detail stays on the route with `companyId` context and engagement deep links carry the explicit company and fiscal period into the shared close workspace |
@@ -18,6 +18,7 @@ This inventory records the route topology after the UI consolidation. Canonical 
 
 ## Agent And Company Settings
 
+- `/settings/responsibilities` (company-scoped responsibility matrix and size-preset setup; all active members may read, while owner/admin mutation is enforced by the API)
 - `/settings/agents`
 - `/agents/manage`
 - `/agents/mailboxes/connect`
@@ -95,6 +96,8 @@ Public routes remain separate from the authenticated application information arc
 ## Context Preservation Rules
 
 - Company-scoped navigation carries `companyId`.
+- Today and Monthly persist the authorized responsibility view with `lens`; an unavailable lens falls back to the server-selected default without exposing the requested area.
+- Monthly stays on `/dashboard` with `period=month`. Explicit calendar navigation preserves `companyId`, `lens`, `year`, and `month`; returning to Today removes the monthly period parameters.
 - Detail routes preserve their typed record identifier.
 - Work selection uses `tab`, `taskId`, or `itemId`.
 - Sales Prospects uses `view=leads` for inbound lead state.

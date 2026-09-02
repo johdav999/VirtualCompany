@@ -255,6 +255,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanySelectionService, CompanySelectionService>();
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+        services.AddScoped<ICompanyResponsibilityService, CompanyResponsibilityService>();
         services.AddScoped<IAccountantCollaborationService, AccountantCollaborationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<AgentTemplateCatalogSeeder>();
@@ -300,6 +301,8 @@ public static class OperationsModuleRegistration
         services.AddScoped<ICompanyOperatingCycleAutomationService>(provider => provider.GetRequiredService<CompanyOperatingCycleService>());
         services.AddScoped<ICompanyOperatingReviewAutomationService>(provider => provider.GetRequiredService<CompanyOperatingCycleService>());
         services.AddScoped<ICompanyOperatingEventService, CompanyOperatingEventService>();
+        services.AddScoped<ICompanyManualReviewService, CompanyManualReviewService>();
+        services.AddScoped<ITodayAgentActivityQueryService, TodayAgentActivityQueryService>();
         services.AddScoped<IOperatingCycleRequestProcessor, OperatingCycleRequestProcessor>();
         services.AddScoped<OperatingWorkDispatcher>();
         services.AddScoped<IOperatingWorkDispatcher>(provider => provider.GetRequiredService<OperatingWorkDispatcher>());
@@ -414,6 +417,10 @@ public static class OperationsModuleRegistration
         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
+        services.AddScoped<ITodayWorkspaceLensResolver, CompanyTodayWorkspaceLensResolver>();
+        services.AddScoped<ITodayWorkspaceQueryService, CompanyTodayWorkspaceQueryService>();
+        services.AddScoped<IMonthlyWorkspaceContributor, CompanyOperationMonthlyWorkspaceContributor>();
+        services.AddScoped<IMonthlyWorkspaceQueryService, CompanyMonthlyWorkspaceQueryService>();
         services.AddScoped<IAgentStaffOverviewQueryService, CompanyAgentStaffOverviewQueryService>();
 
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();

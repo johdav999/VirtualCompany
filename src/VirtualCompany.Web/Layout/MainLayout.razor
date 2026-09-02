@@ -1,9 +1,23 @@
-﻿@inherits LayoutComponentBase
-<div class="page">
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager Navigation
+
+<div class="page @(IsMonthlyDashboard ? "page--monthly" : IsTodayDashboard ? "page--today" : null)">
     <div class="sidebar">
         @* Keep the mobile nav toggle interactive without making the page body interactive. *@
         <NavMenu @rendermode="InteractiveServer" />
     </div>
+
+    @if (IsMonthlyDashboard)
+    {
+        <div class="monthly-mobile-app-title">@CommonText["MonthlyWorkspaceTitle"]</div>
+    }
+    else if (IsTodayDashboard)
+    {
+        <span class="today-mobile-alert" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
+        </span>
+    }
 
     <main>
         <div class="top-row px-4"></div>
@@ -13,3 +27,28 @@
         </article>
     </main>
 </div>
+
+@code {
+    private bool IsMonthlyDashboard => IsMonthlyDashboardUri(Navigation.Uri);
+    private bool IsTodayDashboard => IsDashboardUri(Navigation.Uri) && !IsMonthlyDashboard;
+
+    protected override void OnInitialized() => Navigation.LocationChanged += HandleLocationChanged;
+
+    private void HandleLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args) =>
+        _ = InvokeAsync(StateHasChanged);
+
+    private static bool IsMonthlyDashboardUri(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+        return string.Equals(uri.AbsolutePath.TrimEnd('/'), "/dashboard", StringComparison.OrdinalIgnoreCase)
+            && uri.Query.Contains("period=month", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsDashboardUri(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+        return string.Equals(uri.AbsolutePath.TrimEnd('/'), "/dashboard", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public void Dispose() => Navigation.LocationChanged -= HandleLocationChanged;
+}

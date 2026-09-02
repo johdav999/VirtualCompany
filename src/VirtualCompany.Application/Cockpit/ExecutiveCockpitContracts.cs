@@ -418,6 +418,24 @@ public interface IExecutiveCockpitDashboardCache
         CachedExecutiveCockpitWidgetDto<TPayload> snapshot,
         CancellationToken cancellationToken);
 
+    Task<CachedTodayWorkspaceDto?> TryGetTodayAsync(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken) => Task.FromResult<CachedTodayWorkspaceDto?>(null);
+
+    Task SetTodayAsync(
+        ExecutiveCockpitCacheScope scope,
+        CachedTodayWorkspaceDto snapshot,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
+    Task<CachedMonthlyWorkspaceDto?> TryGetMonthlyAsync(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken) => Task.FromResult<CachedMonthlyWorkspaceDto?>(null);
+
+    Task SetMonthlyAsync(
+        ExecutiveCockpitCacheScope scope,
+        CachedMonthlyWorkspaceDto snapshot,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
     Task InvalidateAsync(
         Guid companyId,
         CancellationToken cancellationToken);
@@ -468,6 +486,20 @@ public sealed record CachedExecutiveCockpitWidgetDto<TPayload>(
     string WidgetKey,
     DateTime CachedAtUtc,
     TPayload Payload);
+
+public sealed record CachedTodayWorkspaceDto(
+    Guid CompanyId,
+    Guid UserId,
+    string ActiveLens,
+    DateTime CachedAtUtc,
+    TodayWorkspaceDto Workspace);
+
+public sealed record CachedMonthlyWorkspaceDto(
+    Guid CompanyId,
+    Guid UserId,
+    string ActiveLens,
+    DateTime CachedAtUtc,
+    MonthlyWorkspaceDto Workspace);
 
 public interface IExecutiveCockpitFinanceAdapter
 {

@@ -28,6 +28,18 @@ public static class WebApiClientRegistration
             sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new ActionInsightApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new TodayFocusApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
+        services.AddScoped<TodayWorkspaceApiClient>(sp => new(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp)));
+        services.AddScoped<ITodayWorkspaceApiClient>(sp => sp.GetRequiredService<TodayWorkspaceApiClient>());
+        services.AddScoped<MonthlyWorkspaceApiClient>(sp => new(
+            sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped<IMonthlyWorkspaceApiClient>(sp => sp.GetRequiredService<MonthlyWorkspaceApiClient>());
+        services.AddScoped<ResponsibilitySettingsApiClient>(sp => new ResponsibilitySettingsApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped<IResponsibilitySettingsApiClient>(sp => sp.GetRequiredService<ResponsibilitySettingsApiClient>());
         services.AddScoped(sp => new ActivityFeedApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped<CompanyOperationApiClient>();
         services.AddScoped(sp => new FinanceApiClient(

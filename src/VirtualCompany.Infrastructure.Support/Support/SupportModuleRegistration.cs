@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Orchestration;
@@ -41,6 +42,8 @@ public static class SupportModuleRegistration
         services.AddScoped<ISupportAgentAnalysisService, SupportAgentAnalysisService>();
         services.AddScoped<ISupportAgentDecisionService, SupportAgentDecisionService>();
         services.AddScoped<ICompanyOperatingSnapshotContributor, SupportOperatingSnapshotContributor>();
+        services.AddScoped<ITodayWorkspaceContributor, SupportTodayWorkspaceContributor>();
+        services.AddScoped<IMonthlyWorkspaceContributor, SupportMonthlyWorkspaceContributor>();
         return services;
     }
 }

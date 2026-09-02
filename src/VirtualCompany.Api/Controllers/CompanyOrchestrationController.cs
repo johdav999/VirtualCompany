@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -115,6 +116,12 @@ public sealed class CompanyOrchestrationController : ControllerBase
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public Task<IReadOnlyList<OperatingReviewDto>> ReviewCommittedWork(Guid companyId,
         [FromServices] ICompanyOperatingCycleService service, CancellationToken ct) => service.ReviewCommittedWorkAsync(companyId, ct);
+
+    [HttpPost("reviews/request")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public Task<TodayWorkspaceManualReviewDto> RequestManualReview(Guid companyId,
+        [FromServices] ICompanyManualReviewService service, CancellationToken ct) =>
+        service.RequestAsync(companyId, ct);
 
     [HttpGet("dispatches")]
     public Task<IReadOnlyList<OperatingDispatchDto>> ListDispatches(Guid companyId, [FromQuery] int take,

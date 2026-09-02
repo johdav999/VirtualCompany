@@ -185,6 +185,7 @@ public static class AuditTargetTypes
     public const string CompanyNotification = "company_notification";
     public const string ProactiveMessage = "proactive_message";
     public const string AgentResponsibilityPolicy = "agent_responsibility_policy";
+    public const string CompanyResponsibilityAssignment = "company_responsibility_assignment";
     public const string IntegrationConnection = "integration_connection";
     public const string FiscalPeriod = "fiscal_period";
     public const string FinanceAccount = "finance_account";
@@ -268,6 +269,9 @@ public static class AuditEventActions
     public const string CompanyInvitationRevoked = "company.invitation.revoked";
     public const string CompanyInvitationAccepted = "company.invitation.accepted";
     public const string CompanyMembershipRoleChanged = "company.membership.role_changed";
+    public const string CompanyResponsibilityPresetApplied = "company.responsibility.preset_applied";
+    public const string CompanyResponsibilityAssignmentChanged = "company.responsibility.assignment_changed";
+    public const string CompanyResponsibilityAssignmentRemoved = "company.responsibility.assignment_removed";
     public const string AgentHired = "agent.hired";
     public const string AgentOperatingProfileUpdated = "agent.operating_profile.updated";
     public const string AgentStatusUpdated = "agent.status.updated";

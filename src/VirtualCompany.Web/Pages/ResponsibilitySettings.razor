@@ -1,0 +1,418 @@
+@page "/settings/responsibilities"
+@rendermode InteractiveServer
+@inject IResponsibilitySettingsApiClient ApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>@CommonText["ResponsibilitySettingsTitle"]</PageTitle>
+
+<section class="responsibility-page" data-testid="responsibility-settings">
+    <nav class="responsibility-breadcrumb" aria-label="@CommonText["Breadcrumb"]">
+        <a href="@SettingsPath">@CommonText["Settings"]</a><span aria-hidden="true">/</span><span>@CommonText["ResponsibilitySettingsTitle"]</span>
+    </nav>
+
+    <header class="responsibility-header">
+        <div>
+            <span class="responsibility-kicker">@CommonText["ResponsibilitySettingsKicker"]</span>
+            <h1>@CommonText["ResponsibilitySettingsTitle"]</h1>
+            <p>@CommonText["ResponsibilitySettingsDescription"]</p>
+        </div>
+        @if (CompanyId is Guid companyId)
+        {
+            <a class="responsibility-today-link" href="@DashboardRoutes.BuildTodayPath(companyId)">@CommonText["ResponsibilityOpenToday"] <span aria-hidden="true">→</span></a>
+        }
+    </header>
+
+    <aside class="responsibility-boundary" role="note">
+        <span class="bi bi-info-circle" aria-hidden="true"></span>
+        <div><strong>@CommonText["ResponsibilityBoundaryTitle"]</strong><p>@CommonText["ResponsibilityBoundaryDescription"]</p></div>
+    </aside>
+
+    @if (isLoading)
+    {
+        <div class="responsibility-state" aria-live="polite">@CommonText["Loading"]</div>
+    }
+    else if (!string.IsNullOrWhiteSpace(loadErrorMessage))
+    {
+        <div class="alert alert-danger" role="alert">
+            <strong>@CommonText["ResponsibilityLoadFailed"]</strong>
+            <p>@loadErrorMessage</p>
+            <button type="button" class="btn btn-outline-danger" @onclick="LoadAsync">@CommonText["Retry"]</button>
+        </div>
+    }
+    else if (data is null)
+    {
+        <div class="responsibility-state responsibility-state--locked">
+            <span class="bi bi-lock" aria-hidden="true"></span>
+            <h2>@CommonText["ResponsibilityUnavailableTitle"]</h2>
+            <p>@CommonText["ResponsibilityUnavailableDescription"]</p>
+        </div>
+    }
+    else
+    {
+        @if (!string.IsNullOrWhiteSpace(statusMessage))
+        {
+            <div class="responsibility-success" role="status">
+                <span class="bi bi-check-circle-fill" aria-hidden="true"></span>
+                <span>@statusMessage</span>
+                <a href="@DashboardRoutes.BuildTodayPath(data.CompanyId)">@CommonText["ResponsibilityReviewToday"]</a>
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(actionErrorMessage))
+        {
+            <div class="alert alert-danger" role="alert">@actionErrorMessage</div>
+        }
+
+        <section class="responsibility-preset" aria-labelledby="preset-heading">
+            <div class="responsibility-preset__heading">
+                <div><span class="responsibility-section-number">01</span><div><h2 id="preset-heading">@CommonText["ResponsibilityPresetTitle"]</h2><p>@CommonText["ResponsibilityPresetDescription"]</p></div></div>
+                @if (!data.CanManage)
+                {
+                    <span class="responsibility-badge responsibility-badge--neutral">@CommonText["ReadOnly"]</span>
+                }
+            </div>
+            <div class="responsibility-preset__controls">
+                <label><span>@CommonText["OnboardingCompanySize"]</span>
+                    <select class="form-select" @bind="presetSize" disabled="@(!data.CanManage)">
+                        @foreach (var size in CompanySizes)
+                        {
+                            <option value="@size.Value">@size.Label</option>
+                        }
+                    </select>
+                </label>
+                <label><span>@CommonText["ResponsibilityPresetOwner"]</span>
+                    <select class="form-select" @bind="presetOwnerId" disabled="@(!data.CanManage)">
+                        @foreach (var member in OwnerMembers)
+                        {
+                            <option value="@member.MembershipId">@MemberLabel(member)</option>
+                        }
+                    </select>
+                </label>
+                <label><span>@CommonText["ResponsibilityPresetMode"]</span>
+                    <select class="form-select" @bind="presetMode" disabled="@(!data.CanManage)">
+                        <option value="fill_missing">@CommonText["ResponsibilityFillMissing"]</option>
+                        <option value="replace_existing">@CommonText["ResponsibilityReplaceExisting"]</option>
+                    </select>
+                </label>
+                <button type="button" class="btn btn-outline-primary" disabled="@(!CanPreview)" @onclick="PreviewPresetAsync">@CommonText["ResponsibilityPreview"]</button>
+            </div>
+
+            @if (data.CanManage && !string.Equals(presetSize, "micro", StringComparison.OrdinalIgnoreCase))
+            {
+                <details class="responsibility-manager-pickers">
+                    <summary>@CommonText["ResponsibilityManagerSelections"]</summary>
+                    <p>@CommonText["ResponsibilityManagerSelectionsHelp"]</p>
+                    @if (ManagerMembers.Count <= 1)
+                    {
+                        <p class="responsibility-empty-hint">@CommonText["ResponsibilityNoAdditionalMembers"]</p>
+                    }
+                    <div>
+                        @foreach (var area in Areas)
+                        {
+                            <label><span>@AreaName(area.Value)</span>
+                                <select class="form-select" value="@ManagerValue(area.Value)" @onchange="args => SetManager(area.Value, args.Value?.ToString())">
+                                    <option value="">@CommonText["ResponsibilityUseOwner"]</option>
+                                    @foreach (var member in ManagerMembers)
+                                    {
+                                        <option value="@member.MembershipId">@MemberLabel(member)</option>
+                                    }
+                                </select>
+                            </label>
+                        }
+                    </div>
+                </details>
+            }
+
+            @if (presetPreview is not null)
+            {
+                <div class="responsibility-preview" data-testid="preset-preview">
+                    <div class="responsibility-preview__header"><h3>@CommonText["ResponsibilityPreviewTitle"]</h3><span>@CommonText["ResponsibilityPreviewCount", presetPreview.Changes.Count]</span></div>
+                    <ul>
+                        @foreach (var change in presetPreview.Changes)
+                        {
+                            <li><span class="responsibility-change responsibility-change--@change.ChangeKind.Replace('_', '-')">@ChangeLabel(change.ChangeKind)</span><strong>@AreaName(change.ResponsibilityArea)</strong><span>@AssignmentKindLabel(change.AssignmentKind)</span><span>@PreviewAssignee(change)</span></li>
+                        }
+                    </ul>
+                    @if (RequiresReplaceConfirmation)
+                    {
+                        <label class="responsibility-confirm"><input type="checkbox" @bind="replaceConfirmed" /><span>@CommonText["ResponsibilityReplaceConfirmation"]</span></label>
+                    }
+                    <button type="button" class="btn btn-primary" disabled="@(!CanApplyPreset)" @onclick="ApplyPresetAsync">@(isSaving ? CommonText["Saving"] : CommonText["ResponsibilityApplyPreset"])</button>
+                </div>
+            }
+        </section>
+
+        <div class="responsibility-workspace">
+            <section class="responsibility-matrix" aria-labelledby="matrix-heading">
+                <div class="responsibility-section-heading"><span class="responsibility-section-number">02</span><div><h2 id="matrix-heading">@CommonText["ResponsibilityMatrixTitle"]</h2><p>@CommonText["ResponsibilityMatrixDescription"]</p></div></div>
+                <div class="responsibility-cards">
+                    @foreach (var area in Areas)
+                    {
+                        var primary = Assignment(area.Value, "primary");
+                        var oversight = Assignment(area.Value, "executive_oversight");
+                        <article class="responsibility-card @(selectedArea == area.Value ? "responsibility-card--selected" : string.Empty)" data-area="@area.Value">
+                            <header><div><span class="responsibility-area-icon bi @area.Icon" aria-hidden="true"></span><div><h3>@AreaName(area.Value)</h3><p>@AreaPurpose(area.Value)</p></div></div>@StatusBadge(area.Value, primary)</header>
+                            <dl>
+                                <div><dt>@CommonText["ResponsibilityPerson"]</dt><dd>@(primary is null ? CommonText["NotAssigned"] : MemberLabel(primary.AssignedMember))</dd></div>
+                                <div><dt>@CommonText["ResponsibilityAgent"]</dt><dd>@(primary?.PrimaryAgent is null ? CommonText["NoAgentAssigned"] : AgentLabel(primary.PrimaryAgent))</dd></div>
+                                <div><dt>@CommonText["ResponsibilityAuthority"]</dt><dd>@(primary is null ? "—" : AuthorityLabel(primary.AuthorityLevel))</dd></div>
+                                <div><dt>@CommonText["ResponsibilityPolicy"]</dt><dd>@PolicyLabel(primary)</dd></div>
+                                <div><dt>@CommonText["ResponsibilityEscalation"]</dt><dd>@(primary?.EscalationMember is null ? CommonText["NotConfigured"] : MemberLabel(primary.EscalationMember))</dd></div>
+                                <div><dt>@CommonText["ResponsibilityOversight"]</dt><dd>@(oversight is null ? CommonText["NotConfigured"] : MemberLabel(oversight.AssignedMember))</dd></div>
+                            </dl>
+                            <footer>
+                                @if (data.CanManage)
+                                {
+                                    <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => SelectArea(area.Value)">@CommonText["Edit"]</button>
+                                }
+                                else
+                                {
+                                    <span>@CommonText["ResponsibilityReadOnlyHint"]</span>
+                                }
+                            </footer>
+                        </article>
+                    }
+                </div>
+            </section>
+
+            <aside class="responsibility-editor" aria-labelledby="editor-heading">
+                <div class="responsibility-section-heading"><span class="responsibility-section-number">03</span><div><h2 id="editor-heading">@CommonText["ResponsibilityEditorTitle"]</h2><p>@AreaName(edit.ResponsibilityArea)</p></div></div>
+                @if (!data.CanManage)
+                {
+                    <div class="responsibility-readonly"><span class="bi bi-eye" aria-hidden="true"></span><p>@CommonText["ResponsibilityReadOnlyDescription"]</p></div>
+                }
+                else
+                {
+                    <div class="responsibility-editor__form">
+                        <label><span>@CommonText["ResponsibilityPerson"]</span><select class="form-select" @bind="edit.AssignedMembershipId">
+                            @foreach (var member in ActiveMembers)
+                            {
+                                <option value="@member.MembershipId">@MemberLabel(member)</option>
+                            }
+                        </select>@FieldError("assignedMembershipId")</label>
+                        <label><span>@CommonText["ResponsibilityAgent"]</span><select class="form-select" @bind="edit.PrimaryAgentId"><option value="">@CommonText["NoAgentAssigned"]</option>
+                            @foreach (var agent in CompatibleAgents(edit.ResponsibilityArea))
+                            {
+                                <option value="@agent.AgentId">@AgentLabel(agent)</option>
+                            }
+                        </select>@FieldError("primaryAgentId")</label>
+                        @if (CompatibleAgents(edit.ResponsibilityArea).Count == 0)
+                        {
+                            <p class="responsibility-empty-hint">@CommonText["ResponsibilityNoCompatibleAgents"]</p>
+                        }
+                        <label><span>@CommonText["ResponsibilityAuthority"]</span><select class="form-select" @bind="edit.AuthorityLevel">
+                            @foreach (var authority in AuthorityLevels)
+                            {
+                                <option value="@authority">@AuthorityLabel(authority)</option>
+                            }
+                        </select>@FieldError("authorityLevel")</label>
+                        <div class="responsibility-policy-summary"><span>@CommonText["ResponsibilityPolicy"]</span><strong>@PolicyLabel(edit.ApprovalPolicyId)</strong><small>@CommonText["ResponsibilityPolicyHelp"]</small></div>
+                        <label><span>@CommonText["ResponsibilityEscalation"]</span><select class="form-select" @bind="edit.EscalationMembershipId"><option value="">@CommonText["NotConfigured"]</option>
+                            @foreach (var member in ActiveMembers)
+                            {
+                                <option value="@member.MembershipId">@MemberLabel(member)</option>
+                            }
+                        </select>@FieldError("escalationMembershipId")</label>
+                        <label><span>@CommonText["ResponsibilityChangeReason"]</span><textarea class="form-control" rows="2" @bind="edit.Reason"></textarea></label>
+                    </div>
+                    <div class="responsibility-editor__actions">
+                        @if (edit.AssignmentId.HasValue)
+                        {
+                            <button type="button" class="btn btn-outline-danger" disabled="@isSaving" @onclick="RemoveAssignmentAsync">@CommonText["Remove"]</button>
+                        }
+                        <button type="button" class="btn btn-primary" disabled="@(isSaving || edit.AssignedMembershipId == Guid.Empty)" @onclick="SaveAssignmentAsync">@(isSaving ? CommonText["Saving"] : CommonText["SaveChanges"])</button>
+                    </div>
+                }
+            </aside>
+        </div>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+
+    private static readonly AreaDefinition[] Areas =
+    [
+        new("company_performance", "bi-speedometer2"), new("cash_and_accounting", "bi-cash-stack"),
+        new("sales", "bi-graph-up-arrow"), new("marketing", "bi-megaphone"),
+        new("customer_support", "bi-headset"), new("compliance", "bi-shield-check")
+    ];
+    private static readonly string[] AuthorityLevels = ["level_0", "level_1", "level_2", "level_3"];
+    private ResponsibilitySettingsViewModel? data;
+    private ResponsibilityPresetPreviewViewModel? presetPreview;
+    private readonly Dictionary<string, Guid> managerIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> fieldErrors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly AssignmentEditModel edit = new();
+    private string _presetSize = "micro";
+    private Guid _presetOwnerId;
+    private string _presetMode = "fill_missing";
+    private string selectedArea = "company_performance";
+    private string? loadErrorMessage;
+    private string? actionErrorMessage;
+    private string? statusMessage;
+    private bool replaceConfirmed;
+    private bool isLoading = true;
+    private bool isSaving;
+
+    private string presetSize { get => _presetSize; set { if (_presetSize == value) return; _presetSize = value; ClearPresetPreview(); } }
+    private Guid presetOwnerId { get => _presetOwnerId; set { if (_presetOwnerId == value) return; _presetOwnerId = value; ClearPresetPreview(); } }
+    private string presetMode { get => _presetMode; set { if (_presetMode == value) return; _presetMode = value; ClearPresetPreview(); } }
+
+    private string SettingsPath => CompanyId is Guid id ? $"/settings?companyId={id:D}" : "/settings";
+    private IReadOnlyList<ResponsibilityMemberViewModel> ActiveMembers => data?.Members.Where(m => string.Equals(m.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
+    private IReadOnlyList<ResponsibilityMemberViewModel> OwnerMembers => ActiveMembers.Where(m => string.Equals(m.Role, "owner", StringComparison.OrdinalIgnoreCase)).ToList();
+    private IReadOnlyList<ResponsibilityMemberViewModel> ManagerMembers => ActiveMembers.Where(m => m.Role is "owner" or "admin" or "manager").ToList();
+    private IReadOnlyList<CompanySizeOption> CompanySizes => [new("micro", CommonText["CompanySizeMicro"]), new("small", CommonText["CompanySizeSmall"]), new("medium", CommonText["CompanySizeMedium"])];
+    private bool CanPreview => data?.CanManage == true && presetOwnerId != Guid.Empty && !isSaving;
+    private bool RequiresReplaceConfirmation => string.Equals(presetMode, "replace_existing", StringComparison.OrdinalIgnoreCase) && presetPreview?.Changes.Any(c => string.Equals(c.ChangeKind, "replace", StringComparison.OrdinalIgnoreCase)) == true;
+    private bool CanApplyPreset => CanPreview && presetPreview is not null && (!RequiresReplaceConfirmation || replaceConfirmed);
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true; loadErrorMessage = null; actionErrorMessage = null;
+        try
+        {
+            if (CompanyId is null)
+            {
+                var context = await OnboardingApiClient.GetCurrentUserContextAsync();
+                if (context?.ActiveCompany is not { } active) { data = null; return; }
+                Navigation.NavigateTo(DashboardRoutes.BuildResponsibilitySettingsPath(active.CompanyId), replace: true);
+                return;
+            }
+            data = await ApiClient.GetAsync(CompanyId.Value);
+            if (data is null) return;
+            presetSize = NormalizeSize(data.CompanySize);
+            presetOwnerId = OwnerMembers.FirstOrDefault()?.MembershipId ?? Guid.Empty;
+            SelectArea(selectedArea);
+        }
+        catch (ResponsibilitySettingsApiException ex) { loadErrorMessage = ex.Message; }
+        finally { isLoading = false; }
+    }
+
+    private async Task PreviewPresetAsync()
+    {
+        if (data is null) return;
+        isSaving = true; statusMessage = null; actionErrorMessage = null; replaceConfirmed = false;
+        try { presetPreview = await ApiClient.PreviewAsync(data.CompanyId, BuildPresetRequest()); }
+        catch (ResponsibilitySettingsApiException ex) { actionErrorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+
+    private async Task ApplyPresetAsync()
+    {
+        if (data is null || !CanApplyPreset) return;
+        isSaving = true; actionErrorMessage = null;
+        try
+        {
+            var result = await ApiClient.ApplyAsync(data.CompanyId, BuildPresetRequest());
+            data.Assignments = result.Assignments;
+            data.CompanySize = presetSize;
+            presetPreview = null; replaceConfirmed = false;
+            SelectArea(selectedArea);
+            statusMessage = CommonText["ResponsibilityPresetApplied"];
+        }
+        catch (ResponsibilitySettingsApiException ex) { actionErrorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+
+    private async Task SaveAssignmentAsync()
+    {
+        if (data is null || !data.CanManage || edit.AssignedMembershipId == Guid.Empty) return;
+        isSaving = true; actionErrorMessage = null; fieldErrors.Clear();
+        try
+        {
+            var saved = await ApiClient.UpsertAsync(data.CompanyId, new UpsertResponsibilityAssignmentRequest
+            {
+                AssignmentId = edit.AssignmentId, ResponsibilityArea = edit.ResponsibilityArea, AssignmentKind = "primary",
+                AssignedMembershipId = edit.AssignedMembershipId, PrimaryAgentId = edit.PrimaryAgentId,
+                AuthorityLevel = edit.AuthorityLevel, ApprovalPolicyId = edit.ApprovalPolicyId,
+                EscalationMembershipId = edit.EscalationMembershipId, ExpectedVersion = edit.Version, Reason = edit.Reason
+            });
+            ReplaceAssignment(saved); SelectArea(edit.ResponsibilityArea); statusMessage = CommonText["ResponsibilityAssignmentSaved"];
+        }
+        catch (ResponsibilitySettingsApiException ex) { ApplyErrors(ex); }
+        finally { isSaving = false; }
+    }
+
+    private async Task RemoveAssignmentAsync()
+    {
+        if (data is null || !data.CanManage || edit.AssignmentId is not Guid assignmentId) return;
+        isSaving = true; actionErrorMessage = null;
+        try
+        {
+            await ApiClient.RemoveAsync(data.CompanyId, assignmentId, edit.Version, edit.Reason);
+            data.Assignments.RemoveAll(a => a.Id == assignmentId); SelectArea(edit.ResponsibilityArea); statusMessage = CommonText["ResponsibilityAssignmentRemoved"];
+        }
+        catch (ResponsibilitySettingsApiException ex) { ApplyErrors(ex); }
+        finally { isSaving = false; }
+    }
+
+    private ResponsibilityPresetRequestViewModel BuildPresetRequest() => new()
+    {
+        CompanySize = presetSize, OwnerMembershipId = presetOwnerId, Mode = presetMode,
+        ManagerMembershipIds = managerIds.Count == 0 ? null : new(managerIds), Reason = CommonText["ResponsibilityPresetReason"]
+    };
+
+    private void SelectArea(string area)
+    {
+        selectedArea = area; fieldErrors.Clear();
+        var assignment = Assignment(area, "primary");
+        edit.AssignmentId = assignment?.Id; edit.ResponsibilityArea = area;
+        edit.AssignedMembershipId = assignment?.AssignedMember.MembershipId ?? ActiveMembers.FirstOrDefault()?.MembershipId ?? Guid.Empty;
+        edit.PrimaryAgentId = assignment?.PrimaryAgent?.AgentId; edit.AuthorityLevel = assignment?.AuthorityLevel ?? "level_1";
+        edit.ApprovalPolicyId = assignment?.ApprovalPolicyId; edit.EscalationMembershipId = assignment?.EscalationMember?.MembershipId;
+        edit.Version = assignment?.Version; edit.Reason = string.Empty;
+    }
+
+    private void ReplaceAssignment(ResponsibilityAssignmentViewModel saved)
+    {
+        if (data is null) return;
+        data.Assignments.RemoveAll(a => a.Id == saved.Id || (a.ResponsibilityArea == saved.ResponsibilityArea && a.AssignmentKind == saved.AssignmentKind));
+        data.Assignments.Add(saved);
+    }
+
+    private ResponsibilityAssignmentViewModel? Assignment(string area, string kind) => data?.Assignments.FirstOrDefault(a => string.Equals(a.ResponsibilityArea, area, StringComparison.OrdinalIgnoreCase) && string.Equals(a.AssignmentKind, kind, StringComparison.OrdinalIgnoreCase));
+    private IReadOnlyList<ResponsibilityAgentViewModel> CompatibleAgents(string area) => data?.Agents.Where(a => string.Equals(a.Status, "active", StringComparison.OrdinalIgnoreCase) && a.CompatibleAreas.Any(x => string.Equals(x, area, StringComparison.OrdinalIgnoreCase))).OrderBy(a => a.DisplayName).ToList() ?? [];
+    private static string NormalizeSize(string value) => value is "small" or "medium" ? value : "micro";
+    private static string MemberLabel(ResponsibilityMemberViewModel member) => string.IsNullOrWhiteSpace(member.DisplayName) ? member.Email : member.DisplayName;
+    private static string AgentLabel(ResponsibilityAgentViewModel agent) => string.IsNullOrWhiteSpace(agent.RoleName) ? agent.DisplayName : $"{agent.DisplayName} · {agent.RoleName}";
+    private string AreaName(string area) => CommonText[$"ResponsibilityArea_{area}"];
+    private string AreaPurpose(string area) => CommonText[$"ResponsibilityPurpose_{area}"];
+    private string AuthorityLabel(string level) => CommonText[$"ResponsibilityAuthority_{level}"];
+    private string AssignmentKindLabel(string kind) => CommonText[$"ResponsibilityKind_{kind}"];
+    private string ChangeLabel(string kind) => CommonText[$"ResponsibilityChange_{kind}"];
+    private string PolicyLabel(ResponsibilityAssignmentViewModel? assignment) => assignment is null ? "—" : PolicyLabel(assignment.ApprovalPolicyId);
+    private string PolicyLabel(Guid? policyId) => policyId.HasValue ? CommonText["ResponsibilityCustomPolicy"] : CommonText["ResponsibilityDefaultPolicy"];
+    private string PreviewAssignee(ResponsibilityPresetChangeViewModel change) => MemberLabel(ActiveMembers.FirstOrDefault(m => m.MembershipId == change.AssignedMembershipId) ?? new ResponsibilityMemberViewModel { DisplayName = CommonText["Unknown"] });
+    private string ManagerValue(string area) => managerIds.TryGetValue(area, out var id) ? id.ToString() : string.Empty;
+    private void SetManager(string area, string? value) { if (Guid.TryParse(value, out var id)) managerIds[area] = id; else managerIds.Remove(area); presetPreview = null; }
+    private void ClearPresetPreview() { presetPreview = null; replaceConfirmed = false; }
+    private void ApplyErrors(ResponsibilitySettingsApiException ex) { actionErrorMessage = ex.Message; foreach (var pair in ex.Errors) fieldErrors[pair.Key] = pair.Value.FirstOrDefault() ?? ex.Message; }
+    private RenderFragment FieldError(string field) => builder => { if (!fieldErrors.TryGetValue(field, out var message)) return; builder.OpenElement(0, "span"); builder.AddAttribute(1, "class", "validation-message"); builder.AddContent(2, message); builder.CloseElement(); };
+    private RenderFragment StatusBadge(string area, ResponsibilityAssignmentViewModel? assignment) => builder =>
+    {
+        var (css, text) = assignment is null ? ("warning", CommonText["Unassigned"].Value)
+            : !string.Equals(assignment.AssignedMember.Status, "active", StringComparison.OrdinalIgnoreCase) ? ("danger", CommonText["InactiveMember"].Value)
+            : assignment.PrimaryAgent is { } agent && !string.Equals(agent.Status, "active", StringComparison.OrdinalIgnoreCase) ? ("danger", CommonText["InactiveAgent"].Value)
+            : assignment.EscalationMember is null ? ("warning", CommonText["MissingEscalation"].Value)
+            : ("success", CommonText["Assigned"].Value);
+        builder.OpenElement(0, "span"); builder.AddAttribute(1, "class", $"responsibility-badge responsibility-badge--{css}"); builder.AddContent(2, text); builder.CloseElement();
+    };
+
+    private sealed record AreaDefinition(string Value, string Icon);
+    private sealed record CompanySizeOption(string Value, string Label);
+    private sealed class AssignmentEditModel
+    {
+        public Guid? AssignmentId { get; set; }
+        public string ResponsibilityArea { get; set; } = "company_performance";
+        public Guid AssignedMembershipId { get; set; }
+        public Guid? PrimaryAgentId { get; set; }
+        public string AuthorityLevel { get; set; } = "level_1";
+        public Guid? ApprovalPolicyId { get; set; }
+        public Guid? EscalationMembershipId { get; set; }
+        public long? Version { get; set; }
+        public string? Reason { get; set; }
+    }
+}

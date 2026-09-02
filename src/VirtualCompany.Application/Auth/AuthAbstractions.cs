@@ -45,7 +45,8 @@ public sealed record ResolvedCompanyMembershipContext(
     CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status,
     string? Timezone = null,
-    string? Currency = null);
+    string? Currency = null,
+    CompanySizeBand CompanySize = CompanySizeBand.Unspecified);
 
 public interface ICurrentUserAccessor
 {

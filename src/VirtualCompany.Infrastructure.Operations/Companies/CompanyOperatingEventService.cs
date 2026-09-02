@@ -66,7 +66,18 @@ public sealed class CompanyOperatingEventService(
         var row = new OperatingCycleRequest(Guid.NewGuid(), companyId, triggerType, triggerReference,
             deduplicationKey, correlationId, notBeforeUtc, operatingEventId);
         db.OperatingCycleRequests.Add(row);
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            db.Entry(row).State = EntityState.Detached;
+            existing = await db.OperatingCycleRequests.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.DeduplicationKey == deduplicationKey, ct);
+            if (existing is null) throw;
+            return Map(existing);
+        }
         return Map(row);
     }
 

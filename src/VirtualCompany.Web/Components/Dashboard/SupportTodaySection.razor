@@ -1,0 +1,18 @@
+<TodayFeatureSection TestId="support-today-section" Title="@CommonText["TodayCustomerSupport"]" Icon="support"
+                     Summary="@Section.StatusMessage"
+                     StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
+                     IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items"
+                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+
+@code {
+    [Parameter, EditorRequired] public TodayWorkspaceSupportSectionViewModel Section { get; set; } = default!;
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
+    private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
+    [
+        new(CommonText["TodayOpenCases"], LocalNumber.Integer(Section.OpenCases)),
+        new(CommonText["TodaySlaRisk"], LocalNumber.Integer(Section.SlaAtRisk)),
+        new(CommonText["TodaySlaBreached"], LocalNumber.Integer(Section.SlaBreached)),
+        new(CommonText["TodayAwaitingApproval"], LocalNumber.Integer(Section.AwaitingApproval))
+    ];
+}

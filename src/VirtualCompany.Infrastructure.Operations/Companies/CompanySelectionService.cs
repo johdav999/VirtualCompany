@@ -49,7 +49,8 @@ public sealed class CompanySelectionService : ICompanySelectionService
                 item.Role,
                 item.Status,
                 item.Company.Timezone,
-                item.Company.Currency))
+                item.Company.Currency,
+                item.Company.SizeBand))
             .SingleOrDefaultAsync(cancellationToken);
         if (membership is null)
         {

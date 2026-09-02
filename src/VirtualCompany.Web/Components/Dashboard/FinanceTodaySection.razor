@@ -1,0 +1,37 @@
+<TodayFeatureSection TestId="finance-today-section"
+                     Title="@CommonText["TodayFinance"]"
+                     Icon="finance"
+                     Summary="@Section.StatusMessage"
+                     StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
+                     IsAvailable="Section.IsAvailable"
+                     Stats="Stats"
+                     Items="Section.Items"
+                     DeepLink="@Section.DeepLink"
+                     CompanyId="CompanyId"
+                     ActionSelected="ActionSelected" />
+
+@code {
+    [Parameter, EditorRequired] public TodayWorkspaceFinanceSectionViewModel Section { get; set; } = default!;
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
+
+    private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
+    [
+        new(CommonText["TodayAvailableCash"], Section.CashBalance.HasValue && !string.IsNullOrWhiteSpace(Section.Currency)
+            ? LocalMoney.Format(Section.CashBalance.Value, Section.Currency)
+            : CommonText["NotAvailable"]),
+        new(CommonText["TodayRunway"], Section.RunwayDays.HasValue
+            ? CommonText["TodayDays", Section.RunwayDays.Value]
+            : CommonText["NotAvailable"]),
+        new(CommonText["TodayOpenInsights"], LocalNumber.Integer(Section.OpenInsightCount)),
+        new(CommonText["TodayHealth"], PresentStatus(Section.FinancialHealth))
+    ];
+
+    private string PresentStatus(string? status) => status?.Trim().ToLowerInvariant() switch
+    {
+        "healthy" or "clear" or "good" => CommonText["TodayStatusHealthy"],
+        "critical" or "danger" => CommonText["TodayStatusCritical"],
+        "warning" or "attention" => CommonText["TodayStatusAttention"],
+        _ => CommonText["TodayStatusCurrent"]
+    };
+}

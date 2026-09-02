@@ -1,0 +1,18 @@
+<TodayFeatureSection TestId="marketing-today-section" Title="@CommonText["TodayMarketing"]" Icon="marketing"
+                     Summary="@Section.StatusMessage"
+                     StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
+                     IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items"
+                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+
+@code {
+    [Parameter, EditorRequired] public TodayWorkspaceMarketingSectionViewModel Section { get; set; } = default!;
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
+    private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
+    [
+        new(CommonText["TodayActiveObjectives"], LocalNumber.Integer(Section.ActiveObjectives)),
+        new(CommonText["TodayActivePlans"], LocalNumber.Integer(Section.ActivePlans)),
+        new(CommonText["TodayContentDue"], LocalNumber.Integer(Section.DueContentItems)),
+        new(CommonText["TodayExperiments"], LocalNumber.Integer(Section.ActiveExperiments))
+    ];
+}

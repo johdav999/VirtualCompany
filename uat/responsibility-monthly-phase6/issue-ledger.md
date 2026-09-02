@@ -1,0 +1,12 @@
+# UAT issue ledger
+
+| ID | Severity | State | Evidence | Resolution / next check |
+|---|---:|---|---|---|
+| MONTH-01 | P0 | Resolved | Overview previously exposed only the Today workspace and had no canonical monthly contract or route. | Added the separate typed Monthly API/read model and `/dashboard?companyId=...&period=month&lens=...` route while retaining Today as the default. |
+| MONTH-02 | P0 | Resolved | A shared aggregate could leak results from responsibility areas outside a manager's assignment. | Each feature now owns a monthly contributor; integration and rendered-component tests prove a Sales manager receives Sales only while an owner receives only authorized contributors. |
+| MONTH-03 | P1 | Resolved | Calendar-month comparisons can be wrong around daylight-saving changes and December-to-January transitions. | Boundaries are resolved in the company timezone and stored as explicit UTC current/comparison ranges; focused tests cover DST and year transition cases. |
+| MONTH-04 | P1 | Resolved | Marketing and Support sources do not always contain authoritative monthly outcome or SLA data. | Contributors return typed unavailable metrics and setup/source diagnostics instead of manufacturing values; partial/unavailable rendering is covered. |
+| MONTH-05 | P1 | Resolved | Today and Monthly cache entries could collide if period identity were implicit. | Monthly cache scope includes `period:month`, exact UTC boundaries, user, membership, role, responsibility revision, authorized lenses, and selected lens; a focused test proves separation. |
+| MONTH-06 | P1 | Resolved in code | A dense operating review can become unusable on mobile. | The implementation collapses grids at 1100/820/560 px, uses single-column narrow layouts and 44 px controls; rendered-component tests assert the route, structure, callbacks, and mobile CSS. |
+| MONTH-07 | P1 | Blocked by local runtime | No listener was present on `localhost:5062` or `localhost:1433`, so an authenticated live desktop/mobile browser pass could not start. | API and Web builds pass; 24 focused API and 41 focused Web/localization/transport tests pass. Repeat visual, keyboard, focus, and real-data follow-through checks when the repository Web and SQL runtime are available. |
+| MONTH-08 | P2 | Resolved | The full solution build includes Apple mobile targets unavailable on this Windows host. | All non-Apple projects, including API, Web, tests, Android, and Windows mobile, built; the only solution errors are missing `ios` and `maccatalyst` workloads (`NETSDK1147`). |

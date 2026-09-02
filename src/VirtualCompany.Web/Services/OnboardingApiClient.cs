@@ -595,6 +595,7 @@ public sealed class OnboardingApiClient
                         Currency = request.Currency ?? string.Empty,
                         Language = request.Language ?? string.Empty,
                         ComplianceRegion = request.ComplianceRegion ?? string.Empty,
+                        CompanySize = string.IsNullOrWhiteSpace(request.CompanySize) ? "micro" : request.CompanySize,
                         CurrentStep = 3,
                         SelectedTemplateId = request.SelectedTemplateId,
                         Status = "completed",
@@ -640,7 +641,8 @@ public sealed class OnboardingApiClient
                     request.Language,
                     request.ComplianceRegion,
                     request.CurrentStep,
-                    request.SelectedTemplateId);
+                    request.SelectedTemplateId,
+                    request.CompanySize);
 
                 return CloneProgress(_draft.Progress);
             }
@@ -661,7 +663,8 @@ public sealed class OnboardingApiClient
                     request.Language,
                     request.ComplianceRegion,
                     request.CurrentStep,
-                    request.SelectedTemplateId);
+                    request.SelectedTemplateId,
+                    request.CompanySize);
 
                 return CloneProgress(_draft.Progress);
             }
@@ -709,6 +712,7 @@ public sealed class OnboardingApiClient
                         Currency = request.Currency ?? string.Empty,
                         Language = request.Language ?? string.Empty,
                         ComplianceRegion = request.ComplianceRegion ?? string.Empty,
+                        CompanySize = string.IsNullOrWhiteSpace(request.CompanySize) ? "micro" : request.CompanySize,
                         CurrentStep = 3,
                         SelectedTemplateId = request.SelectedTemplateId,
                         Status = "completed",
@@ -779,7 +783,7 @@ public sealed class OnboardingApiClient
             }
         }
 
-        private OfflineDraftState BuildDraft(Guid companyId, string name, string industry, string businessType, string? timezone, string? currency, string? language, string? complianceRegion, int currentStep, string? selectedTemplateId) =>
+        private OfflineDraftState BuildDraft(Guid companyId, string name, string industry, string businessType, string? timezone, string? currency, string? language, string? complianceRegion, int currentStep, string? selectedTemplateId, string? companySize) =>
             new()
             {
                 Progress = new OnboardingProgressViewModel
@@ -794,6 +798,7 @@ public sealed class OnboardingApiClient
                     ComplianceRegion = complianceRegion ?? string.Empty,
                     CurrentStep = Math.Clamp(currentStep, 1, 3),
                     SelectedTemplateId = selectedTemplateId,
+                    CompanySize = string.IsNullOrWhiteSpace(companySize) ? "micro" : companySize,
                     Status = "in_progress",
                     IsCompleted = false,
                     CanResume = true,
@@ -834,6 +839,7 @@ public sealed class OnboardingApiClient
                 ComplianceRegion = progress.ComplianceRegion,
                 CurrentStep = progress.CurrentStep,
                 SelectedTemplateId = progress.SelectedTemplateId,
+                CompanySize = progress.CompanySize,
                 Status = progress.Status,
                 IsCompleted = progress.IsCompleted,
                 CanResume = progress.CanResume,
@@ -931,6 +937,7 @@ public sealed class OnboardingProgressViewModel
     public DateTime? AbandonedUtc { get; set; }
     public List<string> StarterGuidance { get; set; } = [];
     public string? DashboardPath { get; set; }
+    public string CompanySize { get; set; } = "micro";
 }
 
 public sealed class OnboardingWorkshopBootstrapViewModel
@@ -953,6 +960,7 @@ public sealed class CreateCompanyRequest
     public string? ComplianceRegion { get; set; }
     public string? SelectedTemplateId { get; set; }
     public bool ExplicitNewCompany { get; set; }
+    public string CompanySize { get; set; } = "micro";
 }
 
 public sealed class SaveOnboardingRequest
@@ -968,6 +976,7 @@ public sealed class SaveOnboardingRequest
     public int CurrentStep { get; set; }
     public string? SelectedTemplateId { get; set; }
     public bool ExplicitNewCompany { get; set; }
+    public string CompanySize { get; set; } = "micro";
 
     public CreateWorkspaceRequest ToCreateRequest() =>
         new()
@@ -982,7 +991,8 @@ public sealed class SaveOnboardingRequest
             ComplianceRegion = ComplianceRegion,
             CurrentStep = CurrentStep,
             SelectedTemplateId = SelectedTemplateId,
-            ExplicitNewCompany = ExplicitNewCompany
+            ExplicitNewCompany = ExplicitNewCompany,
+            CompanySize = CompanySize
         };
 }
 
@@ -999,6 +1009,7 @@ public sealed class CreateWorkspaceRequest
     public int CurrentStep { get; set; }
     public string? SelectedTemplateId { get; set; }
     public bool ExplicitNewCompany { get; set; }
+    public string CompanySize { get; set; } = "micro";
 }
 
 public sealed class CompleteOnboardingRequest
@@ -1012,6 +1023,7 @@ public sealed class CompleteOnboardingRequest
     public string? Language { get; set; }
     public string? ComplianceRegion { get; set; }
     public string? SelectedTemplateId { get; set; }
+    public string CompanySize { get; set; } = "micro";
 }
 
 public sealed class AbandonOnboardingRequest
@@ -1025,6 +1037,8 @@ public sealed class CreateCompanyResultViewModel
     public string CompanyName { get; set; } = string.Empty;
     public string DashboardPath { get; set; } = string.Empty;
     public List<string> StarterGuidance { get; set; } = [];
+    public bool ResponsibilitySetupRequired { get; set; }
+    public string? ResponsibilitySettingsPath { get; set; }
 }
 
 public sealed class CompleteOnboardingResultViewModel
@@ -1033,6 +1047,8 @@ public sealed class CompleteOnboardingResultViewModel
     public string CompanyName { get; set; } = string.Empty;
     public string DashboardPath { get; set; } = string.Empty;
     public List<string> StarterGuidance { get; set; } = [];
+    public bool ResponsibilitySetupRequired { get; set; }
+    public string? ResponsibilitySettingsPath { get; set; }
 }
 
 public sealed class CompanyAccessViewModel

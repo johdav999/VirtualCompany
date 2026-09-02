@@ -235,6 +235,22 @@ The current consolidation references are stored in `docs/design/references/`:
 - `native-receivables-collections-reference.png`
 - `native-receivables-operations-reference.png`
 - `finance-agent-coverage-reference.png`
+- `responsibility-driven-today-workspace-reference.png`
+- `responsibility-assignments-settings-reference.png`
+- `responsibility-driven-monthly-workspace-reference.png`
+
+The responsibility settings reference was generated from
+`responsibility-assignments-settings-reference-prompt.md`. It defines the stacked
+matrix cards, edit panel, preset preview, explicit replacement confirmation, and
+mobile card treatment used by `/settings/responsibilities`.
+
+The monthly workspace reference was generated from
+`responsibility-driven-monthly-workspace-reference-prompt.md`. It extends the
+canonical `/dashboard` shell with a Today/Monthly switch, explicit calendar and
+comparison context, four high-signal result cards, ranked next-month priorities,
+compact feature reviews, and a decision/agent outcome rail. Its mobile treatment
+stacks those same concepts without introducing a separate route or passive chart
+grid.
 
 ---
 

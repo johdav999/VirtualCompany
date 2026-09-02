@@ -1,0 +1,72 @@
+<article class="today-feature @(IsAvailable ? string.Empty : "today-feature--unavailable")" data-testid="@TestId">
+    <header class="today-feature__header">
+        <span class="today-feature__icon today-feature__icon--@Icon" aria-hidden="true"><MonthlyWorkspaceIcon Kind="@Icon" Size="20" /></span>
+        <div class="today-feature__heading">
+            <h3>@Title</h3>
+            <p>@Summary</p>
+        </div>
+        <span class="today-feature__status">@StatusLabel</span>
+    </header>
+
+    @if (IsAvailable)
+    {
+        <dl class="today-feature__stats">
+            @foreach (var stat in Stats)
+            {
+                <div>
+                    <dt>@stat.Label</dt>
+                    <dd>@stat.Value</dd>
+                </div>
+            }
+        </dl>
+
+        @if (Items.Count > 0)
+        {
+            <div class="today-feature__items">
+                @foreach (var item in Items.Take(2))
+                {
+                    <a href="@ResolveRoute(item.DeepLink)" @onclick="() => SelectAsync(item)">
+                        <span>
+                            <strong>@item.Title</strong>
+                            <small>@item.Summary</small>
+                        </span>
+                        <span aria-hidden="true">→</span>
+                    </a>
+                }
+            </div>
+        }
+    }
+    else
+    {
+        <p class="today-feature__notice" role="status">@CommonText["TodaySectionUnavailable"]</p>
+    }
+
+    <a class="today-feature__action" href="@ResolveRoute(DeepLink)" @onclick="OpenWorkspaceAsync">
+        <span>@CommonText["TodayOpenWorkspace"]</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="16" />
+    </a>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public string TestId { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string Icon { get; set; } = "company";
+    [Parameter, EditorRequired] public string Summary { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string StatusLabel { get; set; } = string.Empty;
+    [Parameter] public bool IsAvailable { get; set; } = true;
+    [Parameter] public IReadOnlyList<TodayWorkspaceStatViewModel> Stats { get; set; } = [];
+    [Parameter] public IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items { get; set; } = [];
+    [Parameter, EditorRequired] public string DeepLink { get; set; } = "/dashboard";
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
+
+    private string ResolveRoute(string? route) => DashboardRoutes.EnsureCompanyContext(
+        route,
+        CompanyId,
+        DashboardRoutes.BuildTodayPath(CompanyId));
+
+    private Task OpenWorkspaceAsync() => ActionSelected.InvokeAsync(new(
+        "responsibility-section", "open-workspace", ResolveRoute(DeepLink), SourceType: TestId, Label: Title));
+
+    private Task SelectAsync(TodayWorkspaceFeatureItemViewModel item) => ActionSelected.InvokeAsync(new(
+        "responsibility-section", "open-item", ResolveRoute(item.DeepLink), item.Key, TestId, item.Title));
+}

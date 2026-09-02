@@ -14,6 +14,7 @@ public static class DashboardRoutes
         "/queue",
         "/finance",
         "/marketing",
+        "/settings",
         "/activity-feed",
         "/briefing-preferences"
     ];
@@ -25,6 +26,26 @@ public static class DashboardRoutes
     public const string ActionQueryKey = "action";
     public const string RangeQueryKey = "range";
     public const string ViewQueryKey = "view";
+    public const string LensQueryKey = "lens";
+    public const string PeriodQueryKey = "period";
+
+    public static string BuildTodayPath(Guid companyId, string? lens = null) =>
+        WithQuery(
+            "/dashboard",
+            ("companyId", companyId == Guid.Empty ? null : companyId.ToString("D")),
+            (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)));
+
+    public static string BuildMonthlyPath(Guid companyId, string? lens = null, int? year = null, int? month = null) =>
+        WithQuery(
+            "/dashboard",
+            ("companyId", companyId == Guid.Empty ? null : companyId.ToString("D")),
+            (PeriodQueryKey, "month"),
+            (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)),
+            ("year", year?.ToString()),
+            ("month", month?.ToString()));
+
+    public static string BuildResponsibilitySettingsPath(Guid? companyId) =>
+        WithQuery("/settings/responsibilities", ("companyId", companyId?.ToString("D")));
 
     public static string BuildApprovalsPath(Guid? companyId, string? filter = "pending", Guid? approvalId = null, string? source = DashboardSource)
     {

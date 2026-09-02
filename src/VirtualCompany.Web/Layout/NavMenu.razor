@@ -353,6 +353,12 @@
             return;
         }
 
+        if (string.Equals(moduleKey, "dashboard", StringComparison.OrdinalIgnoreCase))
+        {
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
         try
         {
             var roster = await AgentApiClient.GetRosterAsync(companyId);
@@ -427,7 +433,14 @@
                 "I'm tracking customer conversations and highlighting issues that need a response.",
                 "Message support",
                 route),
-            _ => SidebarAgentContext.Default(route)
+            _ => new SidebarAgentContext(
+                "dashboard",
+                currentUser?.ActiveCompany?.CompanyName ?? "Company",
+                "Company",
+                null,
+                string.Empty,
+                string.Empty,
+                null)
         };
     }
 

@@ -21,7 +21,8 @@ public sealed record CompanyMembershipDto(
     [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status,
     DateTime? CompanyCreatedUtc = null,
-    CompanyOnboardingStatus? OnboardingStatus = null);
+    CompanyOnboardingStatus? OnboardingStatus = null,
+    CompanySizeBand CompanySize = CompanySizeBand.Unspecified);
 
 public sealed record ResolvedCompanyContextDto(
     Guid MembershipId,
@@ -30,7 +31,8 @@ public sealed record ResolvedCompanyContextDto(
     [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
     CompanyMembershipStatus Status,
     string? Timezone = null,
-    string? Currency = null);
+    string? Currency = null,
+    CompanySizeBand CompanySize = CompanySizeBand.Unspecified);
 
 public sealed record CurrentUserContextDto(
     CurrentUserDto User,
@@ -42,7 +44,8 @@ public sealed record CompanyAccessDto(
     Guid CompanyId,
     string CompanyName,
     [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
-    CompanyMembershipStatus Status);
+    CompanyMembershipStatus Status,
+    CompanySizeBand CompanySize = CompanySizeBand.Unspecified);
 
 public sealed record CompanyDashboardEntryDto(
     Guid CompanyId,
@@ -148,7 +151,8 @@ public sealed record CompanyOnboardingProgressDto(
     string? DashboardPath,
     IReadOnlyList<string> StarterGuidance,
     CompanyBrandingDto Branding,
-    CompanySettingsDto Settings);
+    CompanySettingsDto Settings,
+    CompanySizeBand CompanySize = CompanySizeBand.Unspecified);
 
 public sealed record CreateCompanyCommand(
     string Name,
@@ -161,9 +165,12 @@ public sealed record CreateCompanyCommand(
     string? Language,
     string? ComplianceRegion,
     string? SelectedTemplateId,
-    bool ExplicitNewCompany = false);
+    bool ExplicitNewCompany = false,
+    CompanySizeBand? CompanySize = null);
 
-public sealed record CreateCompanyResultDto(Guid CompanyId, string CompanyName, string DashboardPath, IReadOnlyList<string> StarterGuidance);
+public sealed record CreateCompanyResultDto(Guid CompanyId, string CompanyName, string DashboardPath,
+    IReadOnlyList<string> StarterGuidance, bool ResponsibilitySetupRequired = false,
+    string? ResponsibilitySettingsPath = null);
 
 public sealed record CreateCompanyWorkspaceRequest(
     string Name,
@@ -178,7 +185,8 @@ public sealed record CreateCompanyWorkspaceRequest(
     int CurrentStep,
     string? SelectedTemplateId,
     Guid? CompanyId = null,
-    bool ExplicitNewCompany = false);
+    bool ExplicitNewCompany = false,
+    CompanySizeBand? CompanySize = null);
 
 public sealed record SaveCompanyOnboardingProgressRequest(
     Guid? CompanyId,
@@ -192,7 +200,8 @@ public sealed record SaveCompanyOnboardingProgressRequest(
     string? Language,
     string? ComplianceRegion,
     int CurrentStep,
-    string? SelectedTemplateId);
+    string? SelectedTemplateId,
+    CompanySizeBand? CompanySize = null);
 
 public sealed record CompleteCompanyOnboardingRequest(
     Guid CompanyId,
@@ -205,7 +214,8 @@ public sealed record CompleteCompanyOnboardingRequest(
     string? Currency,
     string? Language,
     string? ComplianceRegion,
-    string? SelectedTemplateId);
+    string? SelectedTemplateId,
+    CompanySizeBand? CompanySize = null);
 
 public sealed record AbandonCompanyOnboardingRequest(Guid CompanyId);
 
@@ -213,7 +223,9 @@ public sealed record CompleteCompanyOnboardingResultDto(
     Guid CompanyId,
     string CompanyName,
     string DashboardPath,
-    IReadOnlyList<string> StarterGuidance);
+    IReadOnlyList<string> StarterGuidance,
+    bool ResponsibilitySetupRequired = false,
+    string? ResponsibilitySettingsPath = null);
 
 public sealed record CompanyOnboardingWorkshopBootstrapDto(
     Guid CompanyId,

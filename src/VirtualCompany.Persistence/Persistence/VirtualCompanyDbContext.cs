@@ -30,6 +30,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<UserPreferenceChange> UserPreferenceChanges => Set<UserPreferenceChange>();
     public DbSet<Company> Companies => Set<Company>();
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
+    public DbSet<CompanyResponsibilityAssignment> CompanyResponsibilityAssignments => Set<CompanyResponsibilityAssignment>();
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
     public DbSet<BackgroundExecution> BackgroundExecutions => Set<BackgroundExecution>();
@@ -775,6 +776,7 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is TenantBriefingDefault ||
                 entry.Entity is DashboardDepartmentConfig ||
                 entry.Entity is DashboardWidgetConfig ||
+                entry.Entity is CompanyResponsibilityAssignment ||
                 entry.Entity is Alert ||
                 entry.Entity is FinanceAccount ||
                 entry.Entity is AccountingConfiguration ||
@@ -1071,6 +1073,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId != null && agent.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyResponsibilityAssignment>()
+            .HasQueryFilter(assignment =>
+                CurrentCompanyId != null && assignment.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyGoal>()
             .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyOperatingConfiguration>()
@@ -2074,6 +2079,10 @@ public sealed class VirtualCompanyDbContext : DbContext
                 property.SetDefaultValueSql(defaultValueSql[1..]);
             }
         }
+
+        modelBuilder.Entity<CompanyResponsibilityAssignment>()
+            .HasIndex(x => new { x.CompanyId, x.ResponsibilityArea })
+            .HasFilter("\"assignment_kind\" = 'primary'");
 
         modelBuilder.Entity<VoucherSequence>().Property(sequence => sequence.RowVersion)
             .HasColumnType("BLOB")

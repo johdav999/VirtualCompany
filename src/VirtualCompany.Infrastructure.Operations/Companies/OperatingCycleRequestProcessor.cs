@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -11,7 +12,8 @@ public sealed class OperatingCycleRequestProcessor(
     VirtualCompanyDbContext db,
     ICompanyExecutionScopeFactory executionScopes,
     ICompanyOperatingCycleAutomationService cycles,
-    ICompanyOperatingReviewAutomationService reviews) : IOperatingCycleRequestProcessor
+    ICompanyOperatingReviewAutomationService reviews,
+    IExecutiveCockpitDashboardCacheInvalidator? cache = null) : IOperatingCycleRequestProcessor
 {
     private readonly string _owner = $"{Environment.MachineName}:{Guid.NewGuid():N}";
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(10);
@@ -53,6 +55,7 @@ public sealed class OperatingCycleRequestProcessor(
         var now = DateTime.UtcNow;
         row.Start(_owner, now);
         await db.SaveChangesAsync(ct);
+        if (cache is not null) await cache.InvalidateAsync(row.CompanyId, ct);
         CompanyOperatingLease? companyLease = null;
         try
         {
@@ -62,7 +65,9 @@ public sealed class OperatingCycleRequestProcessor(
             {
                 row.Suppress("operation_unavailable", "Company operation is paused or has no active coordinator.", now);
                 row.OperatingEvent?.Suppress("Company operation is unavailable.");
-                await db.SaveChangesAsync(ct); return row.Status;
+                await db.SaveChangesAsync(ct);
+                if (cache is not null) await cache.InvalidateAsync(row.CompanyId, ct);
+                return row.Status;
             }
 
             companyLease = await db.CompanyOperatingLeases.IgnoreQueryFilters()
@@ -76,9 +81,12 @@ public sealed class OperatingCycleRequestProcessor(
             {
                 row.Retry("company_lease_busy", "Another company operating cycle currently holds the lease.",
                     now.AddMinutes(1), now);
-                await db.SaveChangesAsync(ct); return row.Status;
+                await db.SaveChangesAsync(ct);
+                if (cache is not null) await cache.InvalidateAsync(row.CompanyId, ct);
+                return row.Status;
             }
             await db.SaveChangesAsync(ct);
+            if (cache is not null) await cache.InvalidateAsync(row.CompanyId, ct);
 
             using var tenantScope = executionScopes.BeginScope(row.CompanyId);
             if (row.OperatingEvent?.EventType == "task_outcome")
@@ -97,12 +105,14 @@ public sealed class OperatingCycleRequestProcessor(
             row.OperatingEvent?.Suppress("The event did not pass current cycle policy.");
             companyLease?.Release(_owner, DateTime.UtcNow);
             await db.SaveChangesAsync(CancellationToken.None);
+            if (cache is not null) await cache.InvalidateAsync(row.CompanyId, CancellationToken.None);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             row.Retry("cycle_request_failed", Safe(ex.Message), DateTime.UtcNow.AddMinutes(Math.Min(60, 1 << Math.Min(row.AttemptCount, 5))), DateTime.UtcNow);
             companyLease?.Release(_owner, DateTime.UtcNow);
             await db.SaveChangesAsync(CancellationToken.None);
+            if (cache is not null) await cache.InvalidateAsync(row.CompanyId, CancellationToken.None);
         }
         return row.Status;
     }

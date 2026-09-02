@@ -2,27 +2,18 @@
 @rendermode InteractiveServer
 @implements IAsyncDisposable
 @inject OnboardingApiClient ApiClient
-@inject FinanceApiClient FinanceApiClient
-@inject AgentStaffOverviewApiClient AgentStaffOverviewApiClient
-@inject DashboardSummaryApiClient DashboardSummaryApiClient
+@inject ITodayWorkspaceApiClient TodayWorkspaceApiClient
+@inject IMonthlyWorkspaceApiClient MonthlyWorkspaceApiClient
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject IDashboardInteractionService DashboardInteractionService
 @using Microsoft.AspNetCore.Components
 @using Microsoft.JSInterop
-@using VirtualCompany.Shared
 @using VirtualCompany.Web.Services
 
-<PageTitle>@CommonText["DashboardPageTitle"]</PageTitle>
+<PageTitle>@(IsMonthly ? CommonText["MonthlyPageTitle"] : CommonText["TodayPageTitle"])</PageTitle>
 
-@if (isLoading)
-{
-    <section class="py-4">
-        <h1>@CommonText["DashboardWorkspace"]</h1>
-        <p class="text-body-secondary mb-0">@CommonText["DashboardLoading"]</p>
-    </section>
-}
-else if (CompanyId is null)
+@if (!isLoading && CompanyId is null)
 {
     <section class="py-4 dashboard-hero">
         <div class="dashboard-shell">
@@ -39,7 +30,7 @@ else if (CompanyId is null)
                     <div class="template-grid mt-4">
                         @foreach (var membership in ActiveMemberships)
                         {
-                            <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
+                            <a class="template-card text-decoration-none text-reset" href="@DashboardRoutes.BuildTodayPath(membership.CompanyId)">
                                 <strong>@membership.CompanyName</strong>
                                 <div class="text-body-secondary mt-2">@CommonText["DashboardMembership", FormatMembershipRole(membership.MembershipRole), FormatMembershipStatus(membership.Status)]</div>
                                 <div class="text-body-secondary mt-1">@DescribeCompany(membership)</div>
@@ -54,7 +45,7 @@ else if (CompanyId is null)
 
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
                 {
-                    <div class="alert alert-danger mt-4 mb-0">@errorMessage</div>
+                    <div class="alert alert-danger mt-4 mb-0" role="alert">@errorMessage</div>
                 }
             </div>
 
@@ -70,98 +61,33 @@ else if (CompanyId is null)
 }
 else
 {
-    <section class="py-4 dashboard-hero">
-        <div class="company-dashboard-layout company-dashboard-layout--single">
-            <div class="company-dashboard-main dashboard-home">
-                <section class="wizard-card dashboard-finance-strip" data-testid="dashboard-finance-strip">
-                    <div class="dashboard-finance-strip__grid">
-                        <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">@CommonText["DashboardRevenue"]</span>
-                            <strong class="dashboard-finance-strip__value">@RevenueDisplay</strong>
-                        </article>
-                        <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">@CommonText["DashboardCosts"]</span>
-                            <strong class="dashboard-finance-strip__value">@CostsDisplay</strong>
-                        </article>
-                        <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">@CommonText["DashboardProfit"]</span>
-                            <strong class="dashboard-finance-strip__value">@ProfitDisplay</strong>
-                        </article>
-                        <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">@CommonText["DashboardAvailableCash"]</span>
-                            <strong class="dashboard-finance-strip__value">@AvailableCashDisplay</strong>
-                        </article>
-                        <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">@CommonText["DashboardPipelineValue"]</span>
-                            <strong class="dashboard-finance-strip__value">@PipelineValueDisplay</strong>
-                        </article>
-                        <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">@CommonText["DashboardSupportSlaRisk"]</span>
-                            <strong class="dashboard-finance-strip__value">@SupportSlaRiskDisplay</strong>
-                        </article>
-                    </div>
-                </section>
-
-                <div class="dashboard-home-grid">
-                    <section class="wizard-card dashboard-section-card dashboard-briefing-card" data-testid="latest-briefing-panel">
-                        <div class="dashboard-section-card__heading">
-                            <h2 class="h3 mb-0">@CommonText["DashboardLatestBriefing"]</h2>
-                        </div>
-
-                        <div class="dashboard-briefing-agent">
-                            <img class="agent-avatar dashboard-briefing-agent__avatar"
-                                 src="@LatestBriefingAvatarUrl"
-                                 alt="@($"{LatestBriefingAgentName} avatar")" />
-                            <div class="dashboard-briefing-agent__copy">
-                                <strong class="dashboard-briefing-agent__name">@LatestBriefingAgentName</strong>
-                                <span class="dashboard-briefing-agent__role">@LatestBriefingAgentRole</span>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section class="wizard-card dashboard-section-card dashboard-briefing-summary-card" data-testid="latest-briefing-summary-panel">
-                        <div class="dashboard-section-card__heading">
-                            <h2 class="h3 mb-0">@CommonText["DashboardSummary"]</h2>
-                        </div>
-
-                        @if (isSummaryLoading)
-                        {
-                            <p class="text-body-secondary mb-0">@CommonText["DashboardGeneratingSummary"]</p>
-                        }
-                        else if (!string.IsNullOrWhiteSpace(summaryErrorMessage))
-                        {
-                            <p class="text-body-secondary mb-0">@summaryErrorMessage</p>
-                        }
-                        else if (briefingSummary is null || string.IsNullOrWhiteSpace(briefingSummary.Summary))
-                        {
-                            <p class="text-body-secondary mb-0">@CommonText["DashboardNoSummary"]</p>
-                        }
-                        else
-                        {
-                            <p class="mb-0">@briefingSummary.Summary</p>
-                        }
-                    </section>
-
-                    @if (CompanyId is Guid actionCompanyId)
-                    {
-                        <div class="dashboard-home-grid__full">
-                            <TopActionsList CompanyId="actionCompanyId"
-                                            Count="5"
-                                            Kicker=""
-                                            Title="@CommonText["DashboardWhatNext"]"
-                                            Subtitle=""
-                                            QueueLinkLabel="@CommonText["DashboardOpenWork"]"
-                                            OnActionClick="HandleDashboardActionAsync" />
-                        </div>
-                    }
-                </div>
-
-                @if (!string.IsNullOrWhiteSpace(errorMessage))
-                {
-                    <div class="alert alert-danger mb-0">@errorMessage</div>
-                }
-            </div>
-        </div>
+    <section class="dashboard-hero today-dashboard-page @(IsMonthly ? "today-dashboard-page--monthly" : "today-dashboard-page--today")">
+        @if (IsMonthly)
+        {
+            <MonthlyWorkspace CompanyId="@(CompanyId ?? Guid.Empty)"
+                              Workspace="monthlyWorkspace"
+                              IsLoading="isLoading"
+                              IsUnauthorized="isUnauthorized"
+                              ErrorMessage="@errorMessage"
+                              RetryRequested="ReloadAsync"
+                              PeriodChanged="ChangePeriodAsync"
+                              LensChanged="ChangeLensAsync"
+                              MonthChanged="ChangeMonthAsync"
+                              ActionSelected="HandleWorkspaceActionAsync" />
+        }
+        else
+        {
+            <TodayWorkspace CompanyId="@(CompanyId ?? Guid.Empty)"
+                            Workspace="todayWorkspace"
+                            IsLoading="isLoading"
+                            IsUnauthorized="isUnauthorized"
+                            ErrorMessage="@errorMessage"
+                            RetryRequested="ReloadAsync"
+                            PeriodChanged="ChangePeriodAsync"
+                            LensChanged="ChangeLensAsync"
+                            ReviewRequested="RequestReviewAsync"
+                            ActionSelected="HandleWorkspaceActionAsync" />
+        }
     </section>
 }
 
@@ -171,92 +97,65 @@ else
     public Guid? CompanyId { get; set; }
 
     [Parameter]
+    [SupplyParameterFromQuery(Name = "lens")]
+    public string? Lens { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "period")]
+    public string? Period { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "year")]
+    public int? Year { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "month")]
+    public int? Month { get; set; }
+
+    [Parameter]
     [SupplyParameterFromQuery(Name = "welcome")]
     public string? Welcome { get; set; }
 
     private bool isLoading = true;
+    private bool isUnauthorized;
     private CurrentUserContextViewModel? currentUser;
     private OnboardingProgressViewModel? onboardingProgress;
     private CompanyAccessViewModel? companyAccess;
     private CompanyDashboardEntryViewModel? dashboardEntry;
-    private DashboardBriefingCardViewModel? briefings;
-    private MonthlySummaryViewModel? financeMonthlySummary;
-    private CashPositionSummaryViewModel? financeCashPosition;
-    private AgentStaffOverviewViewModel? agentStaffOverview;
-    private DashboardBriefingSummaryViewModel? briefingSummary;
-    private bool isSummaryLoading;
-    private string? summaryErrorMessage;
+    private TodayWorkspaceViewModel? todayWorkspace;
+    private MonthlyWorkspaceViewModel? monthlyWorkspace;
     private string? errorMessage;
     private IJSObjectReference? telemetryModule;
     private DotNetObjectReference<Dashboard>? dotNetReference;
     private string? scrollTrackerId;
     private Guid? trackedInteractionCompanyId;
-    private string RevenueDisplay => financeMonthlySummary?.Revenue ?? CommonText["NotAvailable"];
-    private string CostsDisplay => financeMonthlySummary?.Expenses ?? CommonText["NotAvailable"];
-    private string ProfitDisplay => financeMonthlySummary?.NetResult ?? CommonText["NotAvailable"];
-    private string AvailableCashDisplay => financeCashPosition?.AvailableBalance ?? CommonText["NotAvailable"];
-    private string PipelineValueDisplay => agentStaffOverview?.Sales.HasData == true
-        ? LocalMoney.Format(agentStaffOverview.Sales.PipelineValue, agentStaffOverview.Sales.Currency)
-        : CommonText["NotAvailable"];
-    private string SupportSlaRiskDisplay => agentStaffOverview is null
-        ? CommonText["NotAvailable"]
-        : CommonText["DashboardCasesAtRisk", agentStaffOverview.Support.CasesAtSlaRisk];
-    private static string LatestBriefingAgentName => "LAURA";
-    private string LatestBriefingAgentRole => CommonText["DashboardFinanceManager"];
-    private static string LatestBriefingAvatarUrl => "/images/laura.png";
-    private string FormatMembershipRole(string? role) =>
-        role?.Trim().ToLowerInvariant() switch
-        {
-            "owner" => CommonText["MembershipOwner"],
-            "admin" or "administrator" => CommonText["MembershipAdmin"],
-            "member" => CommonText["MembershipMember"],
-            _ => role ?? CommonText["MembershipMember"]
-        };
 
-    private string FormatMembershipStatus(string? status) =>
-        string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
-            ? CommonText["MembershipActive"]
-            : CommonText["MembershipInactive"];
     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
         currentUser?.Memberships
             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
             .ToList()
         ?? [];
 
-    private string DescribeCompany(CompanyMembershipViewModel membership)
-    {
-        var setup = string.Equals(membership.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
-            ? CommonText["CompanySetupComplete"]
-            : string.Equals(membership.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
-                ? CommonText["CompanySetupInProgress"]
-                : CommonText["CompanySetupNotStarted"];
-        return membership.CompanyCreatedUtc is DateTime createdUtc
-            ? CommonText["CompanyCreatedDescription", LocalDateTime.DateTime(createdUtc), setup, membership.CompanyId.ToString("N")[..8]]
-            : setup;
-    }
+    private bool IsMonthly => string.Equals(Period, "month", StringComparison.OrdinalIgnoreCase);
 
-    protected override async Task OnParametersSetAsync()
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
     {
         isLoading = true;
+        isUnauthorized = false;
         errorMessage = null;
+        todayWorkspace = null;
+        monthlyWorkspace = null;
 
         try
         {
             currentUser = await ApiClient.GetCurrentUserContextAsync(CompanyId);
-
             onboardingProgress = CompanyId is Guid scopedCompanyId
                 ? await ApiClient.GetProgressAsync(scopedCompanyId)
                 : currentUser?.ActiveCompany is { } activeCompany
                     ? await ApiClient.GetProgressAsync(activeCompany.CompanyId)
                     : null;
-            companyAccess = null;
-            dashboardEntry = null;
-            briefings = null;
-            financeMonthlySummary = null;
-            agentStaffOverview = null;
-            briefingSummary = null;
-            summaryErrorMessage = null;
-            isSummaryLoading = false;
 
             if (CompanyId is not Guid companyId)
             {
@@ -268,53 +167,71 @@ else
 
                 if (currentUser?.ActiveCompany is not null)
                 {
-                    Navigation.NavigateTo($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);
-                    return;
+                    Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(currentUser.ActiveCompany.CompanyId), replace: true);
                 }
-
                 return;
             }
 
             companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
-            dashboardEntry = companyAccess is null ? null : await ApiClient.GetDashboardEntryAsync(companyId);
-            briefings = companyAccess is null ? null : await ApiClient.GetLatestBriefingsAsync(companyId);
-            financeCashPosition = null;
-            if (companyAccess is not null)
+            if (companyAccess is null)
             {
-                var financeTask = LoadFinanceSnapshotAsync(companyId);
-                var staffTask = LoadAgentStaffSnapshotAsync(companyId);
-                await Task.WhenAll(financeTask, staffTask);
+                isUnauthorized = true;
+                return;
             }
 
-            if (companyAccess is not null)
-            {
-                isSummaryLoading = true;
-                try
-                {
-                    briefingSummary = await DashboardSummaryApiClient.GetBriefingSummaryAsync(companyId);
-                }
-                catch (OnboardingApiException ex)
-                {
-                    summaryErrorMessage = ex.Message;
-                }
-                finally
-                {
-                    isSummaryLoading = false;
-                }
-            }
-
+            dashboardEntry = await ApiClient.GetDashboardEntryAsync(companyId);
             if (dashboardEntry?.RequiresOnboarding == true)
             {
                 Navigation.NavigateTo("/onboarding", replace: true);
                 return;
             }
+
+            var requestedLens = TodayWorkspaceLensValues.All.Contains(TodayWorkspaceLensValues.Normalize(Lens))
+                ? Lens
+                : null;
+            if (IsMonthly)
+            {
+                monthlyWorkspace = await MonthlyWorkspaceApiClient.GetAsync(companyId, requestedLens, Year, Month);
+                if (monthlyWorkspace is null)
+                {
+                    errorMessage = CommonText["MonthlyEmptyDescription"];
+                    return;
+                }
+                var normalizedMonthlyLens = TodayWorkspaceLensValues.Normalize(Lens);
+                if (normalizedMonthlyLens.Length > 0 &&
+                    !string.Equals(normalizedMonthlyLens, monthlyWorkspace.ActiveLens, StringComparison.OrdinalIgnoreCase))
+                {
+                    Navigation.NavigateTo(DashboardRoutes.BuildMonthlyPath(companyId, monthlyWorkspace.ActiveLens,
+                        monthlyWorkspace.Period.Year, monthlyWorkspace.Period.Month), replace: true);
+                }
+            }
+            else
+            {
+                todayWorkspace = await TodayWorkspaceApiClient.GetAsync(companyId, requestedLens);
+                if (todayWorkspace is null)
+                {
+                    errorMessage = CommonText["TodayEmptyDescription"];
+                    return;
+                }
+                var normalizedRequested = TodayWorkspaceLensValues.Normalize(Lens);
+                if (normalizedRequested.Length > 0 &&
+                    !string.Equals(normalizedRequested, todayWorkspace.ActiveLens, StringComparison.OrdinalIgnoreCase))
+                {
+                    Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(companyId, todayWorkspace.ActiveLens), replace: true);
+                }
+            }
+        }
+        catch (TodayWorkspaceAccessException)
+        {
+            isUnauthorized = true;
         }
         catch (OnboardingApiException ex)
         {
             errorMessage = ex.Message;
-            companyAccess = null;
-            briefings = null;
-            dashboardEntry = null;
+        }
+        catch (HttpRequestException)
+        {
+            errorMessage = IsMonthly ? CommonText["MonthlyErrorDescription"] : CommonText["TodayErrorDescription"];
         }
         finally
         {
@@ -322,15 +239,78 @@ else
         }
     }
 
+    private Task ReloadAsync() => LoadAsync();
+
+    private Task ChangeLensAsync(string lens)
+    {
+        if (CompanyId is not Guid companyId) return Task.CompletedTask;
+        var path = IsMonthly
+            ? DashboardRoutes.BuildMonthlyPath(companyId, lens, monthlyWorkspace?.Period.Year ?? Year, monthlyWorkspace?.Period.Month ?? Month)
+            : DashboardRoutes.BuildTodayPath(companyId, lens);
+        DashboardInteractionService.RecordAction(new(
+            "lens", "change-lens", path, SourceType: "today-lens", Label: lens));
+        Navigation.NavigateTo(path);
+        return Task.CompletedTask;
+    }
+
+    private Task ChangePeriodAsync(string period)
+    {
+        if (CompanyId is not Guid companyId) return Task.CompletedTask;
+        var lens = monthlyWorkspace?.ActiveLens ?? todayWorkspace?.ActiveLens ?? Lens;
+        var path = string.Equals(period, "month", StringComparison.OrdinalIgnoreCase)
+            ? DashboardRoutes.BuildMonthlyPath(companyId, lens)
+            : DashboardRoutes.BuildTodayPath(companyId, lens);
+        DashboardInteractionService.RecordAction(new("period", "change-period", path, SourceType: "overview-period", Label: period));
+        Navigation.NavigateTo(path);
+        return Task.CompletedTask;
+    }
+
+    private Task ChangeMonthAsync((int Year, int Month) period)
+    {
+        if (CompanyId is not Guid companyId) return Task.CompletedTask;
+        var path = DashboardRoutes.BuildMonthlyPath(companyId, monthlyWorkspace?.ActiveLens ?? Lens, period.Year, period.Month);
+        DashboardInteractionService.RecordAction(new("period", "change-month", path, SourceType: "monthly-period", Label: $"{period.Year:D4}-{period.Month:D2}"));
+        Navigation.NavigateTo(path);
+        return Task.CompletedTask;
+    }
+
+    private async Task RequestReviewAsync()
+    {
+        if (CompanyId is not Guid companyId || todayWorkspace is null) return;
+        try
+        {
+            var review = await TodayWorkspaceApiClient.RequestReviewAsync(companyId);
+            todayWorkspace = todayWorkspace with { ManualReview = review };
+            DashboardInteractionService.RecordAction(new(
+                "review", "request-company-review", "/company-operation", review.RequestId?.ToString("D"),
+                "operating_cycle_request", review.State));
+        }
+        catch (TodayWorkspaceAccessException)
+        {
+            isUnauthorized = true;
+        }
+        catch (HttpRequestException)
+        {
+            todayWorkspace = todayWorkspace with
+            {
+                ManualReview = todayWorkspace.ManualReview is { } existing
+                    ? existing with { State = "failed", StatusMessage = CommonText["TodayManualReviewRequestFailed"] }
+                    : null
+            };
+        }
+    }
+
+    private Task HandleWorkspaceActionAsync(DashboardActionTelemetryContext context)
+    {
+        DashboardInteractionService.RecordAction(context);
+        return Task.CompletedTask;
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (CompanyId is not Guid selectedCompanyId)
         {
-            if (!string.IsNullOrWhiteSpace(scrollTrackerId))
-            {
-                await DisposeScrollTrackerAsync();
-            }
-
+            if (!string.IsNullOrWhiteSpace(scrollTrackerId)) await DisposeScrollTrackerAsync();
             trackedInteractionCompanyId = null;
             DashboardInteractionService.EndSession();
             return;
@@ -344,7 +324,6 @@ else
         }
 
         if (!string.IsNullOrWhiteSpace(scrollTrackerId)) return;
-
         try
         {
             telemetryModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/dashboardTelemetry.js");
@@ -353,7 +332,7 @@ else
         }
         catch
         {
-            // Ignore telemetry bootstrapping failures in prerender and tests.
+            // Telemetry must not block the workspace during prerendering or tests.
         }
     }
 
@@ -364,42 +343,6 @@ else
         return Task.CompletedTask;
     }
 
-    private Task HandleDashboardActionAsync(DashboardActionTelemetryContext context)
-    {
-        DashboardInteractionService.RecordAction(context);
-        return Task.CompletedTask;
-    }
-
-    private async Task LoadFinanceSnapshotAsync(Guid companyId)
-    {
-        try
-        {
-            var monthlySummary = await FinanceApiClient.GetMonthlySummaryAsync(companyId);
-            financeMonthlySummary = FinanceSummaryPresenter.ToMonthlySummaryViewModel(monthlySummary);
-
-            var referenceUtc = await FinanceApiClient.GetFinanceReferenceUtcAsync(companyId);
-            var cashPosition = await FinanceApiClient.GetCashPositionAsync(companyId, referenceUtc);
-            financeCashPosition = FinanceSummaryPresenter.ToCashPositionViewModel(cashPosition);
-        }
-        catch (FinanceApiException)
-        {
-            financeMonthlySummary = null;
-            financeCashPosition = null;
-        }
-    }
-
-    private async Task LoadAgentStaffSnapshotAsync(Guid companyId)
-    {
-        try
-        {
-            agentStaffOverview = await AgentStaffOverviewApiClient.GetAsync(companyId);
-        }
-        catch (OnboardingApiException)
-        {
-            agentStaffOverview = null;
-        }
-    }
-
     private async Task DisposeScrollTrackerAsync()
     {
         if (telemetryModule is null || string.IsNullOrWhiteSpace(scrollTrackerId))
@@ -408,35 +351,46 @@ else
             return;
         }
 
-        try
-        {
-            await telemetryModule.InvokeVoidAsync("disposeDashboardScrollTracker", scrollTrackerId);
-        }
-        catch
-        {
-        }
-        finally
-        {
-            scrollTrackerId = null;
-        }
+        try { await telemetryModule.InvokeVoidAsync("disposeDashboardScrollTracker", scrollTrackerId); }
+        catch { }
+        scrollTrackerId = null;
+    }
+
+    private string FormatMembershipRole(string? role) => role?.Trim().ToLowerInvariant() switch
+    {
+        "owner" => CommonText["MembershipOwner"],
+        "admin" or "administrator" => CommonText["MembershipAdmin"],
+        _ => role ?? CommonText["MembershipMember"]
+    };
+
+    private string FormatMembershipStatus(string? status) =>
+        string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["MembershipActive"]
+            : CommonText["MembershipInactive"];
+
+    private string DescribeCompany(CompanyMembershipViewModel membership)
+    {
+        var setup = string.Equals(membership.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["CompanySetupComplete"]
+            : string.Equals(membership.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                ? CommonText["CompanySetupInProgress"]
+                : CommonText["CompanySetupNotStarted"];
+        return membership.CompanyCreatedUtc is DateTime createdUtc
+            ? CommonText["CompanyCreatedDescription", LocalDateTime.DateTime(createdUtc), setup, membership.CompanyId.ToString("N")[..8]]
+            : setup;
     }
 
     public async ValueTask DisposeAsync()
     {
         await DisposeScrollTrackerAsync();
-        DashboardInteractionService.EndSession();
-
+        dotNetReference?.Dispose();
+        dotNetReference = null;
         if (telemetryModule is not null)
         {
-            try
-            {
-                await telemetryModule.DisposeAsync();
-            }
-            catch
-            {
-            }
+            try { await telemetryModule.DisposeAsync(); }
+            catch { }
+            telemetryModule = null;
         }
-
-        dotNetReference?.Dispose();
+        DashboardInteractionService.EndSession();
     }
 }

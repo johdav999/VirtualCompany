@@ -116,6 +116,65 @@ public sealed class ExecutiveCockpitDashboardCache : IExecutiveCockpitDashboardC
         await SetCoreAsync(scope, snapshot, "widget", _options.GetWidgetTtl(), cancellationToken);
     }
 
+    public Task<CachedTodayWorkspaceDto?> TryGetTodayAsync(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken) =>
+        TryGetCoreAsync<CachedTodayWorkspaceDto>(
+            scope,
+            "today",
+            snapshot => snapshot is not null &&
+                snapshot.CompanyId == scope.CompanyId &&
+                snapshot.Workspace.CompanyId == scope.CompanyId &&
+                scope.Identity.Contains(snapshot.UserId.ToString("N"), StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(snapshot.ActiveLens, snapshot.Workspace.ActiveLens, StringComparison.OrdinalIgnoreCase),
+            cancellationToken);
+
+    public Task SetTodayAsync(
+        ExecutiveCockpitCacheScope scope,
+        CachedTodayWorkspaceDto snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.CompanyId == Guid.Empty || snapshot.UserId == Guid.Empty ||
+            snapshot.CompanyId != scope.CompanyId || snapshot.Workspace.CompanyId != scope.CompanyId ||
+            !scope.Identity.Contains(snapshot.UserId.ToString("N"), StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.CompletedTask;
+        }
+
+        return SetCoreAsync(scope, snapshot, "today", _options.GetTtl(), cancellationToken);
+    }
+
+    public Task<CachedMonthlyWorkspaceDto?> TryGetMonthlyAsync(
+        ExecutiveCockpitCacheScope scope,
+        CancellationToken cancellationToken) =>
+        TryGetCoreAsync<CachedMonthlyWorkspaceDto>(
+            scope,
+            "monthly",
+            snapshot => snapshot is not null &&
+                snapshot.CompanyId == scope.CompanyId &&
+                snapshot.Workspace.CompanyId == scope.CompanyId &&
+                scope.Identity.Contains(snapshot.UserId.ToString("N"), StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(snapshot.ActiveLens, snapshot.Workspace.ActiveLens, StringComparison.OrdinalIgnoreCase) &&
+                snapshot.Workspace.Period.StartUtc == scope.StartUtc &&
+                snapshot.Workspace.Period.EndUtc == scope.EndUtc,
+            cancellationToken);
+
+    public Task SetMonthlyAsync(
+        ExecutiveCockpitCacheScope scope,
+        CachedMonthlyWorkspaceDto snapshot,
+        CancellationToken cancellationToken)
+    {
+        if (snapshot.CompanyId == Guid.Empty || snapshot.UserId == Guid.Empty ||
+            snapshot.CompanyId != scope.CompanyId || snapshot.Workspace.CompanyId != scope.CompanyId ||
+            !scope.Identity.Contains(snapshot.UserId.ToString("N"), StringComparison.OrdinalIgnoreCase) ||
+            snapshot.Workspace.Period.StartUtc != scope.StartUtc || snapshot.Workspace.Period.EndUtc != scope.EndUtc)
+        {
+            return Task.CompletedTask;
+        }
+
+        return SetCoreAsync(scope, snapshot, "monthly", _options.GetTtl(), cancellationToken);
+    }
+
     public Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken) =>
         InvalidateAsync(
             new ExecutiveCockpitCacheInvalidationEvent(

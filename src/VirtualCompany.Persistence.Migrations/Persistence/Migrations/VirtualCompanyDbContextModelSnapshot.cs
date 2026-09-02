@@ -13223,6 +13223,14 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnName("settings_json")
                         .HasDefaultValueSql("N'{}'");
 
+                    b.Property<string>("SizeBand")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasDefaultValue("unspecified")
+                        .HasColumnName("size_band");
+
                     b.Property<string>("Timezone")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
@@ -13237,6 +13245,8 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("OnboardingCompletedUtc");
 
                     b.HasIndex("OnboardingStatus");
+
+                    b.HasIndex("SizeBand");
 
                     b.ToTable("companies", null, t =>
                         {
@@ -14587,6 +14597,9 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasAlternateKey("CompanyId", "Id")
+                        .HasName("AK_company_memberships_company_id_id");
+
                     b.HasIndex("CompanyId", "InvitedEmail")
                         .IsUnique()
                         .HasFilter("\"InvitedEmail\" IS NOT NULL");
@@ -15014,6 +15027,82 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "Id");
 
                     b.ToTable("company_notes", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyResponsibilityAssignment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ApprovalPolicyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_policy_id");
+
+                    b.Property<Guid>("AssignedMembershipId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("assigned_membership_id");
+
+                    b.Property<string>("AssignmentKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("assignment_kind");
+
+                    b.Property<string>("AuthorityLevel")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("authority_level");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<Guid?>("EscalationMembershipId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("escalation_membership_id");
+
+                    b.Property<Guid?>("PrimaryAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("primary_agent_id");
+
+                    b.Property<string>("ResponsibilityArea")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("responsibility_area");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "AssignedMembershipId");
+
+                    b.HasIndex("CompanyId", "EscalationMembershipId");
+
+                    b.HasIndex("CompanyId", "PrimaryAgentId");
+
+                    b.HasIndex("CompanyId", "ResponsibilityArea")
+                        .IsUnique()
+                        .HasDatabaseName("UX_company_responsibility_primary")
+                        .HasFilter("[assignment_kind] = N'primary'");
+
+                    b.HasIndex("CompanyId", "ResponsibilityArea", "AssignmentKind");
+
+                    b.ToTable("company_responsibility_assignments", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanySetupTemplate", b =>
@@ -52913,6 +53002,42 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyResponsibilityAssignment", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany("ResponsibilityAssignments")
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyMembership", "AssignedMembership")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AssignedMembershipId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyMembership", "EscalationMembership")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "EscalationMembershipId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "PrimaryAgent")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PrimaryAgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("AssignedMembership");
+
+                    b.Navigation("Company");
+
+                    b.Navigation("EscalationMembership");
+
+                    b.Navigation("PrimaryAgent");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanySimulationRunDayLog", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.CompanySimulationRunHistory", "RunHistory")
@@ -59931,6 +60056,8 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Memberships");
 
                     b.Navigation("Notes");
+
+                    b.Navigation("ResponsibilityAssignments");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyBankAccount", b =>

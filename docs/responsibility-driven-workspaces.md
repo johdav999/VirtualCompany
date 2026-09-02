@@ -1,6 +1,6 @@
 # Responsibility-Driven Workspaces
 
-Status: Proposed
+Status: Phases 1-6 implemented
 
 Implementation prompts: `/docs/responsibility-driven-workspaces-prompts.md`
 
@@ -79,6 +79,27 @@ CompanyResponsibilityAssignment
 
 Responsibility state is important queryable business state and should be stored
 in relational columns rather than as opaque JSON dashboard configuration.
+
+### Phase 1 storage and API
+
+Company size is stored relationally as `unspecified`, `micro`, `small`, or
+`medium`. Responsibility areas are stored as `company_performance`,
+`cash_and_accounting`, `sales`, `marketing`, `customer_support`, and
+`compliance`; assignment kinds are `primary` and `executive_oversight`.
+Authority uses the existing agent autonomy values (`level_0` through `level_3`).
+Assignments reference company memberships through same-company composite keys,
+and the database enforces one primary assignment per company and area.
+
+Authenticated company members can read assignments and preset metadata at
+`GET /api/companies/{companyId}/responsibilities`. Owner/Admin mutations use:
+
+- `POST /api/companies/{companyId}/responsibilities/presets/preview`
+- `POST /api/companies/{companyId}/responsibilities/presets/apply`
+- `PUT /api/companies/{companyId}/responsibilities/assignments`
+- `DELETE /api/companies/{companyId}/responsibilities/assignments/{assignmentId}`
+
+Preset mode defaults to `fill_missing`; `replace_existing` must be requested
+explicitly and its preview/result reports retained, added, and replaced values.
 
 ### Company setup presets
 
@@ -200,22 +221,19 @@ flowchart LR
 
 ### Feature-owned queries
 
-Each feature owns its daily summary query and typed contract, for example:
+Each feature owns its daily contribution through existing typed dashboard and
+analytics services:
 
 ```csharp
-IFinanceTodayQuery
-ISalesTodayQuery
-ISupportTodayQuery
-IMarketingTodayQuery
-IAgentActivityTodayQuery
+ITodayWorkspaceContributor
 ```
 
 Application-level composition is handled through focused interfaces such as:
 
 ```csharp
-ITodayWorkspaceQuery
-IWorkspaceLensResolver
-ITodayPriorityRanker
+ITodayWorkspaceQueryService
+ITodayWorkspaceLensResolver
+TodayWorkspacePriorityOrdering
 ```
 
 The composer resolves the current company and user, determines eligible lenses,
@@ -256,6 +274,12 @@ example:
 GET /api/companies/{companyId}/workspace/today?lens=company
 ```
 
+This endpoint is implemented for the stable `company`, `finance`, `sales`,
+`marketing`, and `customers` lenses. Its cache scope includes company, user,
+membership, responsibility revision, effective role, available lenses, and the
+active lens. Feature failures are reported as safe partial-data diagnostics;
+authentication and tenant failures still fail the request.
+
 The endpoint must:
 
 - resolve the tenant and current user
@@ -289,6 +313,32 @@ TodayWorkspace.razor
 
 Components receive typed view models. They do not independently infer
 responsibilities, evaluate permissions, or assemble complex transactional data.
+
+Phase 3 makes `/dashboard` the responsive Today workspace. `Dashboard.razor`
+retains company selection, onboarding redirects, and interaction telemetry, but
+loads operational content only through `ITodayWorkspaceApiClient`. The optional
+`lens` query parameter is preserved with `companyId`; a valid lens that is no
+longer available falls back to the server-selected default. Typed Finance,
+Sales, Marketing, and Support sections retain canonical drill-down routes, while
+the decisions and assigned-agent rails stack below the main content on narrow
+screens. The visual reference and its source prompt are stored under
+`/docs/design/references/responsibility-driven-today-workspace-reference.*`.
+
+Phase 4 normalizes persisted agent runs, assigned work tasks, authoritative
+approvals, and audit evidence into `monitoring`, `working`, `recommended`,
+`needs_user`, `blocked`, and `completed` presentation states. Updates retain
+agent identity, responsibility, safe rationale, related workflow identifiers,
+canonical evidence links, and a plain-language visibility reason. Duplicate
+records for the same task, workflow, approval, or correlation are collapsed.
+
+Authorized company managers can request a review through
+`POST /api/companies/{companyId}/operating/reviews/request`. The command creates
+an idempotent durable `OperatingCycleRequest`; the existing background processor
+runs the Company Operating Cycle. Today reports queued, running, completed,
+blocked, or failed state without holding the request open. Paused operation,
+emergency stop, missing coordinator, and exhausted cycle budget return stable
+backend policy reasons. Requests and denials are audited and invalidate the
+personalized Today cache.
 
 ## Priority Selection
 
@@ -375,9 +425,35 @@ responsibilities.
 
 ## Monthly Workspace Extension
 
-After the Today workspace is established, implement a Monthly workspace using
-the same responsibility assignments, lens resolver, design language, and
-feature-owned contribution model.
+The canonical Overview now supports a Monthly period at
+`/dashboard?companyId={companyId}&period=month&lens={lens}`. Optional `year` and
+`month` values select an explicit reporting month together. Today remains the
+default, and switching periods preserves the company and authorized lens.
+
+Monthly uses the same responsibility assignments and lens resolver as Today,
+but returns a separate `MonthlyWorkspaceDto`. It includes company-timezone
+period and comparison boundaries, generated time, source coverage, a
+deterministic management summary, monthly results, next-month priorities,
+feature review sections, decisions, and agent outcomes. Its cache scope includes
+user, membership, role, responsibility revision, lens, authorized lenses, the
+`month` period identity, and UTC boundaries, so daily and monthly entries cannot
+collide.
+
+Feature-owned contributors use these authoritative semantics:
+
+- Finance uses monthly profit and loss for revenue, expenses, and net result,
+  plus period-end cash, runway, receivables, and payables.
+- Sales uses persisted period activity for stage movement and conversions,
+  current pipeline state, and persisted forecast snapshots for forecast and risk.
+- Marketing uses date-filtered governed channel observations and period calendar
+  activity. When outcome observations are absent, outcomes are explicitly
+  unavailable and link to the Marketing setup/workspace rather than being
+  inferred from campaign records.
+- Customer Support uses cases created and resolved in the period, stored SLA
+  targets and response timestamps, unresolved customer risks, and knowledge gaps.
+- Company Operation uses canonical initiatives and Work tasks for completed
+  delivery, unresolved blockers, budget/autonomy constraints, and next-period
+  commitments.
 
 The Monthly workspace should emphasize:
 
@@ -388,8 +464,10 @@ The Monthly workspace should emphasize:
 - agent achievements, unresolved blockers, and recommendations
 - priorities and decisions for the next month
 
-This is a different period read model, not a collection of daily cards with new
-labels.
+Unsupported profitability-by-customer, payroll, pricing, and synthetic forecast
+measures are intentionally absent. SLA performance is marked unavailable when no
+governed target-and-response sample exists. This is a different period read
+model, not a collection of daily cards with new labels.
 
 ## Delivery Sequence
 
@@ -412,8 +490,17 @@ labels.
 5. **Responsibility Settings**
    - Allow authorized users to assign people, agents, approval policy, authority,
      and escalation for each responsibility.
+   - Implemented at `/settings/responsibilities` with backend-derived read/manage
+     capability, active tenant-scoped pickers, company-size preset preview/apply,
+     stale-state visibility, Today cache invalidation, and responsive cards.
+   - Onboarding persists company size and applies the fill-missing preset
+     idempotently. Ambiguous manager or agent choices route to the settings page
+     without overwriting explicit assignments.
 6. **Monthly workspace**
-   - Compose a monthly management review through the same responsibility model.
+   - Implemented on canonical Overview with a separate typed period model,
+     feature-owned contributors, deterministic summary, source coverage,
+     period-aware caching, localized responsive UI, and canonical Work/Approval
+     follow-up.
 
 ## Success Criteria
 

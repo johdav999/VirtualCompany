@@ -1,0 +1,549 @@
+@using System.Globalization
+
+@if (IsLoading)
+{
+    <section class="today-state" data-testid="today-loading" role="status" aria-live="polite" aria-busy="true">
+        <span class="today-state__spinner" aria-hidden="true"></span>
+        <h1>@CommonText["TodayWorkspaceTitle"]</h1>
+        <p>@CommonText["TodayLoadingDescription"]</p>
+    </section>
+}
+else if (IsUnauthorized)
+{
+    <section class="today-state" data-testid="today-unauthorized" role="alert">
+        <span class="today-state__icon" aria-hidden="true">!</span>
+        <h1>@CommonText["TodayAccessRestricted"]</h1>
+        <p>@CommonText["TodayAccessRestrictedDescription"]</p>
+    </section>
+}
+else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <section class="today-state" data-testid="today-error" role="alert">
+        <span class="today-state__icon today-state__icon--danger" aria-hidden="true">!</span>
+        <h1>@CommonText["TodayErrorTitle"]</h1>
+        <p>@ErrorMessage</p>
+        <button type="button" class="today-state__button" @onclick="RetryRequested">@CommonText["Retry"]</button>
+    </section>
+}
+else if (Workspace is null)
+{
+    <section class="today-state" data-testid="today-empty" role="status">
+        <span class="today-state__icon" aria-hidden="true">○</span>
+        <h1>@CommonText["TodayEmptyTitle"]</h1>
+        <p>@CommonText["TodayEmptyDescription"]</p>
+    </section>
+}
+else
+{
+    <div class="today-workspace" data-testid="today-workspace" aria-label="@CommonText["TodayWorkspaceAriaLabel"]">
+        <header class="today-header">
+            <div class="today-header__identity">
+                <h1>@CommonText["TodayWorkspaceTitle"]</h1>
+                <div class="today-header__meta">
+                    <span><MonthlyWorkspaceIcon Kind="calendar" Size="17" /> @Workspace.GeneratedAtUtc.ToLocalTime().ToString("MMMM d, yyyy", CultureInfo.CurrentCulture)</span>
+                    <i aria-hidden="true"></i>
+                    <span><MonthlyWorkspaceIcon Kind="company" Size="17" /> @Workspace.Header.CompanyName</span>
+                </div>
+            </div>
+            <span class="today-freshness @FreshnessClass(Workspace.SituationSummary.Freshness)" data-testid="today-freshness">
+                <span aria-hidden="true">●</span>
+                <strong>@CommonText["TodayStatusLive"]</strong>
+                <small>@LocalDateTime.Relative(Workspace.SituationSummary.AsOfUtc)</small>
+                <MonthlyWorkspaceIcon Kind="refresh" Size="16" />
+            </span>
+        </header>
+
+        @if (Workspace.AvailableLenses.Count > 1)
+        {
+            <div class="today-lenses" role="group" aria-label="@CommonText["TodayLensPickerLabel"]" data-testid="today-lens-picker">
+                @foreach (var lens in Workspace.AvailableLenses)
+                {
+                    var isActive = string.Equals(lens.Value, Workspace.ActiveLens, StringComparison.OrdinalIgnoreCase);
+                    <button type="button"
+                            class="today-lenses__button @(isActive ? "today-lenses__button--active" : string.Empty)"
+                            aria-pressed="@isActive.ToString().ToLowerInvariant()"
+                            title="@lens.AvailabilityReason"
+                            @onclick="() => LensChanged.InvokeAsync(lens.Value)">
+                        @LensLabel(lens.Value)
+                        @if (isActive)
+                        {
+                            <span aria-hidden="true">✓</span>
+                        }
+                    </button>
+                }
+            </div>
+        }
+
+        @if (Workspace.ResponsibilitySetup is { IsConfigured: false } setup)
+        {
+            <section class="today-notice today-notice--setup" data-testid="today-responsibility-setup" role="status">
+                <div>
+                    <strong>@CommonText["TodaySetupTitle"]</strong>
+                    <p>@setup.Message</p>
+                </div>
+                @if (setup.CanManage)
+                {
+                    <a href="@ResolveRoute(setup.SettingsDeepLink)" @onclick='() => RecordAsync("setup", "open-settings", setup.SettingsDeepLink, null, "responsibilities", CommonText["TodaySetupAction"])'>
+                        @CommonText["TodaySetupAction"]
+                    </a>
+                }
+            </section>
+        }
+
+        @if (Workspace.IsPartial)
+        {
+            <section class="today-notice" data-testid="today-partial" role="status" aria-live="polite">
+                <div>
+                    <strong>@CommonText["TodayPartialTitle"]</strong>
+                    <p>@CommonText["TodayPartialDescription"]</p>
+                </div>
+            </section>
+        }
+
+        @if (IsStale)
+        {
+            <section class="today-notice today-notice--stale" data-testid="today-stale" role="status">
+                <div>
+                    <strong>@CommonText["TodayStaleTitle"]</strong>
+                    <p>@CommonText["TodayStaleDescription"]</p>
+                </div>
+                <button type="button" @onclick="RetryRequested">@CommonText["TodayRefresh"]</button>
+            </section>
+        }
+
+        <section class="today-situation" aria-labelledby="today-situation-title">
+            <h2 id="today-situation-title" class="visually-hidden">@CommonText["TodaySituationLabel"]</h2>
+            <p>@SituationCopy</p>
+        </section>
+
+        @if (Workspace.Metrics.Count > 0)
+        {
+            <section class="today-metrics" aria-label="@CommonText["TodayMetricsLabel"]">
+                @foreach (var metric in Workspace.Metrics.Take(4))
+                {
+                    <a class="today-metric" href="@ResolveRoute(metric.DeepLink)"
+                       @onclick='() => RecordAsync("metric", "open-metric", metric.DeepLink, metric.Key, metric.EvidenceSourceType, metric.Label)'>
+                        <span class="today-metric__label"><span class="today-metric__icon today-metric__icon--@MetricTone(metric)"><MonthlyWorkspaceIcon Kind="@MetricIcon(metric)" Size="20" /></span>@metric.Label</span>
+                        <strong>@metric.DisplayValue</strong>
+                        <span class="today-metric__status @StatusClass(metric.Status)"><MonthlyWorkspaceIcon Kind="arrow-up" Size="13" /> @PresentStatus(metric.Status)</span>
+                    </a>
+                }
+            </section>
+        }
+
+        <div class="today-layout">
+            <main class="today-main">
+                <section class="today-priorities" aria-labelledby="today-priorities-title">
+                    <div class="today-section-heading">
+                        <div>
+                            <p>@LensLabel(Workspace.ActiveLens)</p>
+                            <h2 id="today-priorities-title">@CommonText["TodayPrioritiesTitle"]</h2>
+                        </div>
+                        <span>@CommonText["TodayPriorityCount", Workspace.Priorities.Count]</span>
+                    </div>
+
+                    @if (Workspace.Priorities.Count == 0)
+                    {
+                        <div class="today-inline-empty" data-testid="today-priorities-empty">
+                            <strong>@CommonText["TodayPrioritiesEmptyTitle"]</strong>
+                            <p>@CommonText["TodayPrioritiesEmptyDescription"]</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="today-priority-list">
+                            @foreach (var priority in Workspace.Priorities.Take(5))
+                            {
+                                <article class="today-priority @PriorityClass(priority)" data-testid="today-priority">
+                                    <div class="today-priority__body">
+                                        <div class="today-priority__topline">
+                                            <span><MonthlyWorkspaceIcon Kind="@PriorityIcon(priority)" Size="12" /> @PrioritySeverity(priority)</span>
+                                        </div>
+                                        <h3>@priority.WhatHappened</h3>
+                                        <p>@PrioritySummary(priority)</p>
+                                        <p class="today-priority__action-copy"><strong>@PriorityActionLabel(priority)</strong> @priority.RequiredHumanAction</p>
+                                        @if (!string.IsNullOrWhiteSpace(priority.VisibilityReason))
+                                        {
+                                            <p class="today-visibility-reason">@priority.VisibilityReason</p>
+                                        }
+                                        <div class="today-priority__context">
+                                            @if (!string.IsNullOrWhiteSpace(priority.WorkingAgent))
+                                            {
+                                                <img src="@AgentPortrait(priority.WorkingAgent, priority.Lens)" alt="" />
+                                                <span><strong>@priority.WorkingAgent</strong><small>@AgentRole(priority.Lens)</small></span>
+                                            }
+                                            <time datetime="@priority.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@LocalDateTime.Relative(priority.ObservedAtUtc)</time>
+                                        </div>
+                                    </div>
+                                    <a class="today-priority__button" href="@ResolveRoute(priority.DeepLink)"
+                                       aria-label="@CommonText["TodayOpenPriorityAria", priority.WhatHappened]"
+                                       @onclick='() => RecordAsync("priority", "open-priority", priority.DeepLink, priority.EvidenceSourceId ?? priority.Key, priority.EvidenceSourceType, priority.WhatHappened, priority.Rank)'>
+                                        <MonthlyWorkspaceIcon Kind="review" Size="16" /> @CommonText["TodayReviewAction"] <span class="today-priority__chevron" aria-hidden="true"><MonthlyWorkspaceIcon Kind="chevron-right" Size="17" /></span>
+                                    </a>
+                                </article>
+                            }
+                        </div>
+                    }
+                </section>
+
+                <section class="today-responsibilities" aria-labelledby="today-responsibilities-title">
+                    <div class="today-section-heading">
+                        <div>
+                            <p>@CommonText["TodayResponsibilitiesKicker"]</p>
+                            <h2 id="today-responsibilities-title">@CommonText["TodayResponsibilitiesTitle"]</h2>
+                        </div>
+                    </div>
+                    <div class="today-responsibility-grid">
+                        @if (Workspace.Finance is not null)
+                        {
+                            <FinanceTodaySection Section="Workspace.Finance" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                        }
+                        @if (Workspace.Sales is not null)
+                        {
+                            <SalesTodaySection Section="Workspace.Sales" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                        }
+                        @if (Workspace.Marketing is not null)
+                        {
+                            <MarketingTodaySection Section="Workspace.Marketing" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                        }
+                        @if (Workspace.Support is not null)
+                        {
+                            <SupportTodaySection Section="Workspace.Support" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                        }
+                    </div>
+                </section>
+            </main>
+
+            <aside class="today-rail" aria-label="@CommonText["TodayContextRailLabel"]">
+                @if (Workspace.ManualReview is { } review && (!string.Equals(review.State, "idle", StringComparison.OrdinalIgnoreCase) || !review.CanRequest))
+                {
+                    <section class="today-review-card today-review-card--@ReviewTone(review.State)" data-testid="today-manual-review" aria-labelledby="today-review-title">
+                        <header>
+                            <div>
+                                <span class="today-review-card__kicker">@CommonText["TodayManualReviewKicker"]</span>
+                                <h2 id="today-review-title">@CommonText["TodayManualReviewTitle"]</h2>
+                            </div>
+                            <span class="today-agent-state today-agent-state--@ReviewTone(review.State)">@ReviewStateLabel(review.State)</span>
+                        </header>
+                        <p role="status" aria-live="polite">@review.StatusMessage</p>
+                        @if (review.UpdatedUtc.HasValue)
+                        {
+                            <time datetime="@review.UpdatedUtc.Value.ToString("O", CultureInfo.InvariantCulture)">@LocalDateTime.Relative(review.UpdatedUtc.Value)</time>
+                        }
+                        <div class="today-review-card__actions">
+                            @if (review.CanRequest)
+                            {
+                                <button type="button" disabled="@(reviewSubmitting || ReviewActive(review.State))" @onclick="RequestReviewAsync">
+                                    @(reviewSubmitting ? CommonText["TodayManualReviewSubmitting"] : CommonText["TodayManualReviewAction"])
+                                </button>
+                            }
+                            @if (!review.CanRequest || review.State is "blocked" or "failed")
+                            {
+                                <a href="@($"/company-operation?companyId={CompanyId:D}&source=dashboard")">@CommonText["TodayManualReviewRecovery"]</a>
+                            }
+                        </div>
+                    </section>
+                }
+
+                <section class="today-rail-card @(showMobileDecisions ? "today-rail-card--expanded" : string.Empty)" aria-labelledby="today-decisions-title" data-testid="today-decisions">
+                    <header>
+                        <span class="today-rail-card__icon" aria-hidden="true"><MonthlyWorkspaceIcon Kind="decisions" Size="20" /></span>
+                        <h2 id="today-decisions-title">@CommonText["TodayDecisionsTitle"]</h2>
+                        <button type="button" class="today-rail-card__toggle" aria-label="@CommonText["TodayDecisionsTitle"]" aria-expanded="@(showMobileDecisions ? "true" : "false")" @onclick="ToggleMobileDecisions">
+                            <span class="today-rail-card__count">@Workspace.Decisions.Count</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="16" />
+                        </button>
+                    </header>
+                    @if (Workspace.Decisions.Count == 0)
+                    {
+                        <p class="today-rail-card__empty">@CommonText["TodayDecisionsEmpty"]</p>
+                    }
+                    else
+                    {
+                        @foreach (var decision in Workspace.Decisions.Take(5))
+                        {
+                            <article class="today-decision">
+                                <span class="today-decision__icon"><MonthlyWorkspaceIcon Kind="document" Size="19" /></span>
+                                <div class="today-decision__body">
+                                    <h3>@decision.Title</h3>
+                                    <p>@decision.Summary</p>
+                                    @if (!string.IsNullOrWhiteSpace(decision.VisibilityReason))
+                                    {
+                                        <small class="today-visibility-reason">@decision.VisibilityReason</small>
+                                    }
+                                    <time datetime="@decision.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@LocalDateTime.Relative(decision.ObservedAtUtc)</time>
+                                    <a href="@ResolveRoute(decision.DeepLink)"
+                                       @onclick='() => RecordAsync("decision", "review-decision", decision.DeepLink, decision.Key, "decision", decision.Title)'>@CommonText["TodayReviewAction"]</a>
+                                </div>
+                            </article>
+                        }
+                    }
+                    <a class="today-rail-card__footer" href="@DashboardRoutes.BuildApprovalsPath(CompanyId)"
+                       @onclick='() => RecordAsync("decision", "open-all", DashboardRoutes.BuildApprovalsPath(CompanyId), null, "approval", CommonText["TodayViewAllDecisions"])'>
+                        @CommonText["TodayViewAllDecisions"] <span aria-hidden="true">→</span>
+                    </a>
+                </section>
+
+                <section class="today-rail-card @(showMobileAgents ? "today-rail-card--expanded" : string.Empty)" aria-labelledby="today-agents-title" data-testid="today-agent-briefings">
+                    <header>
+                        <span class="today-rail-card__icon today-rail-card__icon--agent" aria-hidden="true"><MonthlyWorkspaceIcon Kind="agents" Size="20" /></span>
+                        <h2 id="today-agents-title">@CommonText["TodayAgentBriefingsTitle"]</h2>
+                        <button type="button" class="today-rail-card__toggle" aria-label="@CommonText["TodayAgentBriefingsTitle"]" aria-expanded="@(showMobileAgents ? "true" : "false")" @onclick="ToggleMobileAgents">
+                            <span class="today-rail-card__count">@AssignedAgentUpdates.Count</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="16" />
+                        </button>
+                    </header>
+                    @if (AssignedAgentUpdates.Count == 0)
+                    {
+                        <p class="today-rail-card__empty">@CommonText["TodayAgentBriefingsEmpty"]</p>
+                    }
+                    else
+                    {
+                        @foreach (var update in AssignedAgentUpdates.Take(2))
+                        {
+                            <article class="today-agent-update today-agent-update--@AgentStateTone(update.AgentState)" data-state="@update.AgentState">
+                                <img src="@AgentPortrait(update.WorkingAgent, update.AgentRole, update.AvatarUrl)" alt="" />
+                                <div>
+                                    <div class="today-agent-update__identity">
+                                        <strong>@update.WorkingAgent</strong>
+                                        @if (!string.IsNullOrWhiteSpace(update.AgentState))
+                                        {
+                                            <span class="today-agent-state today-agent-state--@AgentStateTone(update.AgentState)">@AgentStateLabel(update.AgentState)</span>
+                                        }
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(update.AgentRole))
+                                    {
+                                        <small>@update.AgentRole</small>
+                                    }
+                                    <h3>@update.Title</h3>
+                                    <p>@update.Summary</p>
+                                    @if (!string.IsNullOrWhiteSpace(update.RationaleSummary))
+                                    {
+                                        <p class="today-agent-update__rationale"><strong>@CommonText["TodayAgentRationale"]</strong> @update.RationaleSummary</p>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(update.VisibilityReason))
+                                    {
+                                        <small class="today-visibility-reason">@update.VisibilityReason</small>
+                                    }
+                                    <div class="today-agent-update__footer">
+                                        <time datetime="@update.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@LocalDateTime.Relative(update.ObservedAtUtc)</time>
+                                        @if (!string.IsNullOrWhiteSpace(update.DeepLink))
+                                        {
+                                            <a href="@ResolveRoute(update.DeepLink)"
+                                               @onclick='() => RecordAsync("agent", "open-update", update.DeepLink!, update.Key, update.EvidenceSourceType, update.Title)'>@CommonText["TodayOpenWorkspace"]</a>
+                                        }
+                                    </div>
+                                </div>
+                            </article>
+                        }
+                    }
+                    <a class="today-rail-card__footer" href="@ResolveRoute("/agents")">
+                        @CommonText["TodayViewAllAgents"] <span aria-hidden="true">→</span>
+                    </a>
+                </section>
+            </aside>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public TodayWorkspaceViewModel? Workspace { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsUnauthorized { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public EventCallback RetryRequested { get; set; }
+    [Parameter] public EventCallback<string> LensChanged { get; set; }
+    [Parameter] public EventCallback<string> PeriodChanged { get; set; }
+    [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
+    [Parameter] public EventCallback ReviewRequested { get; set; }
+
+    private bool reviewSubmitting;
+    private bool showMobileDecisions;
+    private bool showMobileAgents;
+
+    private bool IsStale => string.Equals(Workspace?.SituationSummary.Freshness, "stale", StringComparison.OrdinalIgnoreCase);
+    private string SituationCopy => Workspace is null
+        ? string.Empty
+        : string.Equals(Workspace.SituationSummary.Headline.Trim(), Workspace.SituationSummary.Summary.Trim(), StringComparison.OrdinalIgnoreCase)
+            ? Workspace.SituationSummary.Summary
+            : $"{Workspace.SituationSummary.Headline.Trim().TrimEnd('.')}.  {Workspace.SituationSummary.Summary}";
+    private IReadOnlyList<TodayWorkspaceAgentUpdateViewModel> AssignedAgentUpdates => Workspace?.AgentUpdates
+        .Where(update => !string.IsNullOrWhiteSpace(update.WorkingAgent))
+        .ToList() ?? [];
+
+    private string ResolveRoute(string? route) => DashboardRoutes.EnsureCompanyContext(
+        route,
+        CompanyId,
+        DashboardRoutes.BuildTodayPath(CompanyId, Workspace?.ActiveLens));
+
+    private Task RecordAsync(string area, string action, string target, string? itemId, string? sourceType, string? label, int? position = null) =>
+        ActionSelected.InvokeAsync(new DashboardActionTelemetryContext(
+            area, action, ResolveRoute(target), itemId, sourceType, label, position));
+
+    private async Task RequestReviewAsync()
+    {
+        if (reviewSubmitting) return;
+        reviewSubmitting = true;
+        try { await ReviewRequested.InvokeAsync(); }
+        finally { reviewSubmitting = false; }
+    }
+
+    private void ToggleMobileDecisions() => showMobileDecisions = !showMobileDecisions;
+    private void ToggleMobileAgents() => showMobileAgents = !showMobileAgents;
+
+    private static bool ReviewActive(string? state) => state is "queued" or "running";
+    private static string ReviewTone(string? state) => state switch
+    {
+        "queued" or "running" => "working",
+        "completed" => "completed",
+        "blocked" or "failed" => "blocked",
+        _ => "idle"
+    };
+
+    private string ReviewStateLabel(string? state) => state switch
+    {
+        "queued" => CommonText["TodayManualReviewQueued"],
+        "running" => CommonText["TodayManualReviewRunning"],
+        "completed" => CommonText["TodayManualReviewCompleted"],
+        "blocked" => CommonText["TodayAgentStateBlocked"],
+        "failed" => CommonText["TodayManualReviewFailed"],
+        _ => CommonText["TodayManualReviewReady"]
+    };
+
+    private static string AgentStateTone(string? state) => state switch
+    {
+        "needs_user" or "blocked" => "attention",
+        "recommended" => "recommended",
+        "working" => "working",
+        "completed" => "completed",
+        _ => "monitoring"
+    };
+
+    private string AgentStateLabel(string? state) => state switch
+    {
+        "working" => CommonText["TodayAgentStateWorking"],
+        "recommended" => CommonText["TodayAgentStateRecommended"],
+        "needs_user" => CommonText["TodayAgentStateNeedsUser"],
+        "blocked" => CommonText["TodayAgentStateBlocked"],
+        "completed" => CommonText["TodayAgentStateCompleted"],
+        _ => CommonText["TodayAgentStateMonitoring"]
+    };
+
+    private string LensLabel(string? lens) => TodayWorkspaceLensValues.Normalize(lens) switch
+    {
+        "finance" => CommonText["TodayFinance"],
+        "sales" => CommonText["TodaySales"],
+        "marketing" => CommonText["TodayMarketing"],
+        "customers" => CommonText["TodayCustomers"],
+        _ => CommonText["TodayCompany"]
+    };
+
+    private string FreshnessLabel(string? freshness) => freshness?.Trim().ToLowerInvariant() switch
+    {
+        "stale" => CommonText["TodayStatusStale"],
+        "current" => CommonText["TodayStatusCurrent"],
+        _ => CommonText["TodayStatusFresh"]
+    };
+
+    private static string FreshnessClass(string? freshness) =>
+        string.Equals(freshness, "stale", StringComparison.OrdinalIgnoreCase) ? "today-freshness--stale" : string.Empty;
+
+    private string PresentStatus(string? status) => status?.Trim().ToLowerInvariant() switch
+    {
+        "critical" or "error" or "breached" => CommonText["TodayStatusCritical"],
+        "attention" or "warning" or "decision" => CommonText["TodayStatusAttention"],
+        "opportunity" => CommonText["TodayStatusOpportunity"],
+        _ => CommonText["TodayStatusCurrent"]
+    };
+
+    private string PrioritySummary(TodayWorkspacePriorityViewModel priority) => IsCashRunwayPriority(priority)
+        ? CommonText["TodayLowCashRunwaySummary"]
+        : priority.WhyItMatters;
+
+    private string PriorityActionLabel(TodayWorkspacePriorityViewModel priority) => IsCashRunwayPriority(priority)
+        ? CommonText["TodayNextStep"]
+        : CommonText["TodayWhyItMatters"];
+
+    private static bool IsCashRunwayPriority(TodayWorkspacePriorityViewModel priority) =>
+        string.Equals(priority.Lens, "finance", StringComparison.OrdinalIgnoreCase) &&
+        priority.WhatHappened.Contains("cash runway", StringComparison.OrdinalIgnoreCase);
+
+    private static string StatusClass(string? status) => status?.Trim().ToLowerInvariant() switch
+    {
+        "critical" or "error" or "breached" => "today-metric__status--critical",
+        "attention" or "warning" or "decision" => "today-metric__status--attention",
+        "opportunity" => "today-metric__status--opportunity",
+        _ => string.Empty
+    };
+
+    private static string MetricIcon(TodayWorkspaceMetricViewModel metric)
+    {
+        var value = $"{metric.Key} {metric.Label}".ToLowerInvariant();
+        if (value.Contains("cash") || value.Contains("revenue") || value.Contains("finance")) return "finance";
+        if (value.Contains("pipeline") || value.Contains("deal") || value.Contains("forecast")) return "sales";
+        if (value.Contains("customer") || value.Contains("lead")) return "customers";
+        if (value.Contains("sla") || value.Contains("support") || value.Contains("case")) return "support";
+        return "company";
+    }
+
+    private static string MetricTone(TodayWorkspaceMetricViewModel metric) => MetricIcon(metric) switch
+    {
+        "sales" => "blue",
+        "customers" => "purple",
+        "support" => "green",
+        _ => "green"
+    };
+
+    private string PrioritySeverity(TodayWorkspacePriorityViewModel priority) => priority.DecisionRequired ||
+        priority.DueUtc.HasValue && priority.DueUtc.Value <= DateTime.UtcNow
+            ? CommonText["TodayPriorityHigh"]
+            : priority.Rank == 2
+                ? CommonText["TodayPriorityMedium"]
+                : CommonText["TodayPriorityLow"];
+
+    private static string PriorityIcon(TodayWorkspacePriorityViewModel priority) => priority.DecisionRequired ||
+        priority.DueUtc.HasValue && priority.DueUtc.Value <= DateTime.UtcNow ? "warning" : "info";
+
+    private string AgentRole(string? lens) => TodayWorkspaceLensValues.Normalize(lens) switch
+    {
+        "finance" => CommonText["TodayFinanceAgent"],
+        "sales" => CommonText["TodaySalesAgent"],
+        "marketing" => CommonText["TodayMarketingAgent"],
+        "customers" => CommonText["TodaySupportAgent"],
+        _ => CommonText["TodayCompanyAgent"]
+    };
+
+    private static string AgentPortrait(string? agentName, string? agentRole = null, string? avatarUrl = null)
+    {
+        if (!string.IsNullOrWhiteSpace(avatarUrl) && !avatarUrl.StartsWith("/avatars/agents/", StringComparison.OrdinalIgnoreCase))
+        {
+            return avatarUrl;
+        }
+
+        var value = $"{agentName} {agentRole} {avatarUrl}".ToLowerInvariant();
+        if (value.Contains("laura") || value.Contains("finance")) return "/images/agents/finance-agent.png";
+        if (value.Contains("maya") || value.Contains("marketing")) return "/images/agents/maya-marketing.png";
+        if (value.Contains("riley") || value.Contains("ben") || value.Contains("support") || value.Contains("customer")) return "/images/agents/riley-support.png";
+        return "/images/agents/alex-sales.png";
+    }
+
+    private string PriorityLabel(TodayWorkspacePriorityViewModel priority) => priority.DecisionRequired
+        ? CommonText["TodayDecisionRequired"]
+        : priority.DueUtc.HasValue && priority.DueUtc.Value <= DateTime.UtcNow
+            ? CommonText["TodayOverdue"]
+            : LensLabel(priority.Lens);
+
+    private static string PriorityClass(TodayWorkspacePriorityViewModel priority) => priority.DecisionRequired
+        ? "today-priority--decision"
+        : priority.DueUtc.HasValue && priority.DueUtc.Value <= DateTime.UtcNow
+            ? "today-priority--urgent"
+            : string.Empty;
+
+    private static string Initials(string name)
+    {
+        var letters = name.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Take(2)
+            .Select(part => char.ToUpperInvariant(part[0]))
+            .ToArray();
+        return letters.Length == 0 ? "AI" : new string(letters);
+    }
+}

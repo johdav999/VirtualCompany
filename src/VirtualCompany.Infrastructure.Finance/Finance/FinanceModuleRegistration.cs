@@ -679,6 +679,8 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
         services.AddScoped<IFinancialStatementMappingService, CompanyFinancialStatementMappingService>();
         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
+        services.AddScoped<ITodayWorkspaceContributor, FinanceTodayWorkspaceContributor>();
+        services.AddScoped<IMonthlyWorkspaceContributor, FinanceMonthlyWorkspaceContributor>();
         services.AddScoped<FortnoxFinanceIntegrationProvider>();
         services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();

@@ -15,6 +15,7 @@ internal sealed class CompanyMembershipConfiguration : IEntityTypeConfiguration<
         builder.ToTable("company_memberships");
 
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id }).HasName("AK_company_memberships_company_id_id");
 
         builder.Property(x => x.Role)
             .HasConversion(role => role.ToStorageValue(), value => CompanyMembershipRoleValues.Parse(value))

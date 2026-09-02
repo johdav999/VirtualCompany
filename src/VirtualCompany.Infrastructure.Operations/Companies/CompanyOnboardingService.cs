@@ -44,6 +44,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
     private readonly IHostEnvironment _hostEnvironment;
     private readonly ICoreCompanyAgentSeeder _coreCompanyAgentSeeder;
     private readonly IAuditEventWriter _audit;
+    private readonly ICompanyResponsibilityService _responsibilities;
 
     public CompanyOnboardingService(
         VirtualCompanyDbContext dbContext,
@@ -52,7 +53,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         IExternalUserIdentityResolver externalUserIdentityResolver,
         IHostEnvironment hostEnvironment,
         ICoreCompanyAgentSeeder coreCompanyAgentSeeder,
-        IAuditEventWriter audit)
+        IAuditEventWriter audit,
+        ICompanyResponsibilityService responsibilities)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
@@ -61,6 +63,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         _hostEnvironment = hostEnvironment;
         _coreCompanyAgentSeeder = coreCompanyAgentSeeder;
         _audit = audit;
+        _responsibilities = responsibilities;
     }
 
     public async Task<CreateCompanyResultDto> CreateCompanyAsync(
@@ -88,6 +91,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         ValidateCompanyCreation(merged, selectedTemplateId);
 
         var company = new Company(Guid.NewGuid(), merged.Name);
+        var companySize = ResolveCompanySize(command.CompanySize, company.SizeBand);
         company.UpdateWorkspaceProfile(
             merged.Name,
             merged.Industry,
@@ -95,7 +99,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             merged.Timezone,
             merged.Currency,
             merged.Language,
-            merged.ComplianceRegion);
+            merged.ComplianceRegion,
+            companySize);
         company.UpdateBrandingAndSettings(
             MergeBranding(null, command.Branding),
             BuildSettings(null, command.Settings, selectedTemplateId, resolvedTemplate, merged, CompletedWizardStep, true, guidance));
@@ -128,7 +133,9 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance);
+        var responsibilitySetupRequired = await ApplyOnboardingResponsibilitiesAsync(company.Id, companySize, cancellationToken);
+        return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance,
+            responsibilitySetupRequired, BuildResponsibilitySettingsPath(company.Id));
     }
 
     public async Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken)
@@ -240,7 +247,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             merged.Timezone,
             merged.Currency,
             merged.Language,
-            merged.ComplianceRegion);
+            merged.ComplianceRegion,
+            request.CompanySize);
 
         company.SaveOnboardingProgress(NormalizeDraftStep(request.CurrentStep), selectedTemplateId, SerializeState(
                 merged,
@@ -284,7 +292,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
                     request.ComplianceRegion,
                     request.CurrentStep,
                     request.SelectedTemplateId,
-                    ExplicitNewCompany: false),
+                    ExplicitNewCompany: false,
+                    CompanySize: request.CompanySize),
                 cancellationToken);
         }
 
@@ -333,6 +342,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             BuildSettings(company.Settings, request.Settings, selectedTemplateId, resolvedTemplate, merged, savedStep, isCompleted, guidance));
 
 
+        var companySize = ResolveCompanySize(request.CompanySize, company.SizeBand);
         company.UpdateWorkspaceProfile(
             merged.Name,
             merged.Industry,
@@ -340,7 +350,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             merged.Timezone,
             merged.Currency,
             merged.Language,
-            merged.ComplianceRegion);
+            merged.ComplianceRegion,
+            companySize);
 
         var onboardingState = SerializeState(merged, selectedTemplateId, savedStep, isCompleted, guidance);
         if (isCompleted)
@@ -437,6 +448,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
 
         ValidateCompletion(merged);
 
+        var companySize = ResolveCompanySize(request.CompanySize, company.SizeBand);
         company.UpdateWorkspaceProfile(
             merged.Name,
             merged.Industry,
@@ -444,7 +456,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             merged.Timezone,
             merged.Currency,
             merged.Language,
-            merged.ComplianceRegion);
+            merged.ComplianceRegion,
+            companySize);
 
         company.UpdateBrandingAndSettings(
             MergeBranding(company.Branding, request.Branding),
@@ -469,13 +482,82 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        var responsibilitySetupRequired = await ApplyOnboardingResponsibilitiesAsync(company.Id, companySize, cancellationToken);
 
         return new CompleteCompanyOnboardingResultDto(
             company.Id,
             company.Name,
             BuildDashboardPath(company.Id, includeStarterGuidance: true),
-            guidance);
+            guidance,
+            responsibilitySetupRequired,
+            BuildResponsibilitySettingsPath(company.Id));
     }
+
+    private async Task<bool> ApplyOnboardingResponsibilitiesAsync(
+        Guid companyId,
+        CompanySizeBand companySize,
+        CancellationToken cancellationToken)
+    {
+        var ownerMembershipId = await _dbContext.CompanyMemberships.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Role == CompanyMembershipRole.Owner &&
+                        x.Status == CompanyMembershipStatus.Active)
+            .OrderBy(x => x.CreatedUtc)
+            .Select(x => (Guid?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (!ownerMembershipId.HasValue) return true;
+
+        var candidateManagerCount = companySize == CompanySizeBand.Micro ? 0 : await _dbContext.CompanyMemberships.AsNoTracking()
+            .CountAsync(x => x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active &&
+                             x.Id != ownerMembershipId &&
+                             (x.Role == CompanyMembershipRole.Admin || x.Role == CompanyMembershipRole.Manager),
+                cancellationToken);
+        var agents = await _dbContext.Agents.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status == AgentStatus.Active)
+            .ToListAsync(cancellationToken);
+        var hasAmbiguousAgent = ResponsibilityAreaValues.All.Any(area =>
+            agents.Count(agent => IsResponsibilityCompatible(agent, area)) > 1);
+
+        try
+        {
+            await _responsibilities.ApplyPresetAsync(companyId,
+                new ResponsibilityPresetRequest(companySize, ownerMembershipId.Value,
+                    Mode: ResponsibilityPresetMode.FillMissing,
+                    Reason: "Applied the safe fill-missing responsibility setup during onboarding completion."),
+                cancellationToken);
+        }
+        catch (CompanyResponsibilityValidationException)
+        {
+            return true;
+        }
+        catch (CompanyResponsibilityConflictException)
+        {
+            return true;
+        }
+
+        return candidateManagerCount > 0 || hasAmbiguousAgent;
+    }
+
+    private static CompanySizeBand ResolveCompanySize(CompanySizeBand? requested, CompanySizeBand existing) =>
+        requested is { } value && value != CompanySizeBand.Unspecified ? value :
+        existing != CompanySizeBand.Unspecified ? existing : CompanySizeBand.Micro;
+
+    private static bool IsResponsibilityCompatible(Agent agent, ResponsibilityArea area)
+    {
+        var department = agent.Department.Trim().ToLowerInvariant();
+        return area switch
+        {
+            ResponsibilityArea.CashAndAccounting => department is "finance" or "accounting",
+            ResponsibilityArea.Compliance => department is "finance" or "accounting" or "compliance" or "legal",
+            ResponsibilityArea.Sales => department == "sales",
+            ResponsibilityArea.Marketing => department == "marketing",
+            ResponsibilityArea.CustomerSupport => department is "support" or "customer support" or "customer success",
+            ResponsibilityArea.CompanyPerformance => department is "operations" or "executive" or "leadership",
+            _ => false
+        };
+    }
+
+    private static string BuildResponsibilitySettingsPath(Guid companyId) =>
+        $"/settings/responsibilities?companyId={companyId:D}";
 
     private async Task<Company?> GetSelectedOwnedOnboardingAsync(Guid userId, CancellationToken cancellationToken)
     {
@@ -860,7 +942,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
                 : null,
             guidance,
             ToBrandingDto(company.Branding),
-            ToSettingsDto(company.Settings, onboarding));
+            ToSettingsDto(company.Settings, onboarding),
+            company.SizeBand);
     }
 
     private static CompanyBrandingDto ToBrandingDto(CompanyBranding branding) =>

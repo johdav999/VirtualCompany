@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.CustomerMemory;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Marketing;
@@ -146,6 +147,10 @@ public static class SalesModuleRegistration
         services.AddScoped<IMarketingCompanyOrchestrationService, MarketingCompanyOrchestrationService>();
         services.AddScoped<ICompanyOperatingSnapshotContributor, SalesOperatingSnapshotContributor>();
         services.AddScoped<ICompanyOperatingSnapshotContributor, MarketingOperatingSnapshotContributor>();
+        services.AddScoped<ITodayWorkspaceContributor, SalesTodayWorkspaceContributor>();
+        services.AddScoped<ITodayWorkspaceContributor, MarketingTodayWorkspaceContributor>();
+        services.AddScoped<IMonthlyWorkspaceContributor, SalesMonthlyWorkspaceContributor>();
+        services.AddScoped<IMonthlyWorkspaceContributor, MarketingMonthlyWorkspaceContributor>();
         return services;
     }
 }

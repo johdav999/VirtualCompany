@@ -282,7 +282,7 @@ public sealed class FinanceAgentAuthorizationService : IFinanceAgentAuthorizatio
         await _dbContext.CompanyMemberships.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.UserId == actorUserId && x.Status == CompanyMembershipStatus.Active)
             .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId!.Value,
-                x.Company.Name, x.Role, x.Status, x.Company.Timezone, x.Company.Currency))
+                x.Company.Name, x.Role, x.Status, x.Company.Timezone, x.Company.Currency, x.Company.SizeBand))
             .SingleOrDefaultAsync(cancellationToken);
 
     public static FinancePermissionRequirements ResolveRequirements(string toolName, ToolActionType actionType)

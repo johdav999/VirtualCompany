@@ -150,6 +150,26 @@ public sealed class ExecutiveCockpitDashboardCacheTests
     }
 
     [Fact]
+    public void Today_cache_key_isolated_by_company_user_membership_revision_lens_and_access()
+    {
+        var company = Guid.NewGuid();
+        var user = Guid.NewGuid();
+        var membership = Guid.NewGuid();
+        string Key(Guid companyId, Guid userId, Guid membershipId, string revision, string lens, string[] access) =>
+            ExecutiveCockpitDashboardCache.BuildCacheKey(ExecutiveCockpitCacheKeyBuilder.TodayScope(
+                companyId, userId, membershipId, "manager", revision, lens, access));
+
+        var baseline = Key(company, user, membership, "revision-1", "sales", ["sales"]);
+
+        Assert.NotEqual(baseline, Key(Guid.NewGuid(), user, membership, "revision-1", "sales", ["sales"]));
+        Assert.NotEqual(baseline, Key(company, Guid.NewGuid(), membership, "revision-1", "sales", ["sales"]));
+        Assert.NotEqual(baseline, Key(company, user, Guid.NewGuid(), "revision-1", "sales", ["sales"]));
+        Assert.NotEqual(baseline, Key(company, user, membership, "revision-2", "sales", ["sales"]));
+        Assert.NotEqual(baseline, Key(company, user, membership, "revision-1", "marketing", ["sales", "marketing"]));
+        Assert.NotEqual(baseline, Key(company, user, membership, "revision-1", "sales", ["sales", "customers"]));
+    }
+
+    [Fact]
     public async Task Versioned_invalidation_forces_miss_without_wildcard_key_deletes()
     {
         var distributedCache = new RecordingDistributedCache();

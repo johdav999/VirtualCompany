@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Persistence;
 
@@ -33,10 +34,12 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
     private readonly SharedAgentAiOptions _options;
     private readonly ILogger<SharedAgentReasoningGateway> _logger;
     private readonly IAuditEventWriter _audit;
+    private readonly IExecutiveCockpitDashboardCacheInvalidator? _dashboardCache;
 
     public SharedAgentReasoningGateway(VirtualCompanyDbContext db, IHttpClientFactory clients,
-        IOptions<SharedAgentAiOptions> options, ILogger<SharedAgentReasoningGateway> logger, IAuditEventWriter audit)
-    { _db = db; _clients = clients; _options = options.Value; _logger = logger; _audit = audit; }
+        IOptions<SharedAgentAiOptions> options, ILogger<SharedAgentReasoningGateway> logger, IAuditEventWriter audit,
+        IExecutiveCockpitDashboardCacheInvalidator? dashboardCache = null)
+    { _db = db; _clients = clients; _options = options.Value; _logger = logger; _audit = audit; _dashboardCache = dashboardCache; }
 
     public async Task<AgentReasoningResult> ReasonAsync(AgentReasoningRequest request, CancellationToken cancellationToken)
     {
@@ -48,6 +51,7 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
             request.CapabilityVersion, request.PromptVersion, request.SchemaVersion, correlationId, request.TaskId,
             request.ConversationId, request.EffectiveAuthorityVersion, request.EffectiveAuthorityHash);
         _db.AgentOrchestrationRuns.Add(run); await _db.SaveChangesAsync(cancellationToken);
+        await InvalidateTodayAsync(run.CompanyId, cancellationToken);
         var timer = Stopwatch.StartNew();
 
         if (!_options.Enabled || string.IsNullOrWhiteSpace(_options.ApiKey))
@@ -112,6 +116,7 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
                 _db.AgentAiQualityEvents.Add(new AgentAiQualityEvent(request.CompanyId, request.AgentId, request.CapabilityId,
                     run.Id, AgentAiQualityEventTypes.RecommendationProduced, $"run:{run.Id:N}:produced", null, null, 1m, correlationId));
                 await _db.SaveChangesAsync(cancellationToken);
+                await InvalidateTodayAsync(run.CompanyId, cancellationToken);
                 await TryAuditAsync(run, runStatus, retainedSummary, [], cancellationToken);
                 return structuredResult;
             }
@@ -156,6 +161,7 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
             _db.AgentAiQualityEvents.Add(new AgentAiQualityEvent(request.CompanyId, request.AgentId, request.CapabilityId,
                 run.Id, AgentAiQualityEventTypes.RecommendationProduced, $"run:{run.Id:N}:produced", null, null, parsed.Confidence, correlationId));
             await _db.SaveChangesAsync(cancellationToken);
+            await InvalidateTodayAsync(run.CompanyId, cancellationToken);
             await TryAuditAsync(run, status, parsed.Summary, sourceIds, cancellationToken);
             return result;
         }
@@ -188,9 +194,13 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
         _db.AgentAiQualityEvents.Add(new AgentAiQualityEvent(run.CompanyId, run.AgentId, run.CapabilityId, run.Id,
             AgentAiQualityEventTypes.ValidationFailed, $"run:{run.Id:N}:failure", code, null, null, run.CorrelationId));
         await _db.SaveChangesAsync(cancellationToken);
+        await InvalidateTodayAsync(run.CompanyId, cancellationToken);
         await TryAuditAsync(run, status, message, [], cancellationToken);
         return new AgentReasoningResult(run.Id, status, run.SchemaVersion, message, [], 0, [], [message], [], [], code, message);
     }
+
+    private Task InvalidateTodayAsync(Guid companyId, CancellationToken cancellationToken) =>
+        _dashboardCache?.InvalidateAsync(companyId, cancellationToken) ?? Task.CompletedTask;
 
     private async Task TryAuditAsync(AgentOrchestrationRun run, string outcome, string summary, IReadOnlyCollection<string> sources, CancellationToken ct)
     {

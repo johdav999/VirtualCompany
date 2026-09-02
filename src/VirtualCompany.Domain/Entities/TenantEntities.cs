@@ -93,6 +93,7 @@ public sealed class Company
     public string? Currency { get; private set; }
     public string? Language { get; private set; }
     public string? ComplianceRegion { get; private set; }
+    public CompanySizeBand SizeBand { get; private set; } = CompanySizeBand.Unspecified;
     public CompanyBranding Branding { get; private set; } = new();
     public CompanySettings Settings { get; private set; } = new();
     public string? OnboardingStateJson { get; private set; }
@@ -108,6 +109,7 @@ public sealed class Company
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
+    public ICollection<CompanyResponsibilityAssignment> ResponsibilityAssignments { get; } = new List<CompanyResponsibilityAssignment>();
     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
     public ICollection<CompanyKnowledgeDocument> Documents { get; } = new List<CompanyKnowledgeDocument>();
     public ICollection<CompanyKnowledgeChunk> KnowledgeChunks { get; } = new List<CompanyKnowledgeChunk>();
@@ -125,7 +127,8 @@ public sealed class Company
         string? timezone,
         string? currency,
         string? language,
-        string? complianceRegion)
+        string? complianceRegion,
+        CompanySizeBand? sizeBand = null)
     {
         Name = NormalizeRequired(name, nameof(name), 200);
         Industry = NormalizeOptional(industry, nameof(industry), 100);
@@ -134,6 +137,11 @@ public sealed class Company
         Currency = NormalizeOptional(currency, nameof(currency), 16);
         Language = NormalizeOptional(language, nameof(language), 16);
         ComplianceRegion = NormalizeOptional(complianceRegion, nameof(complianceRegion), 50);
+        if (sizeBand.HasValue)
+        {
+            _ = sizeBand.Value.ToStorageValue();
+            SizeBand = sizeBand.Value;
+        }
         UpdatedUtc = DateTime.UtcNow;
     }
 

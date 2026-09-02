@@ -128,6 +128,24 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
         Assert.Single(memberships);
         Assert.Equal(CompanyMembershipRole.Owner, membership.Role);
         Assert.Equal(CompanyMembershipStatus.Active, membership.Status);
+        Assert.Equal(CompanySizeBand.Micro, company.SizeBand);
+    }
+
+    [Fact]
+    public async Task CreateCompany_persists_optional_company_size_without_breaking_older_requests()
+    {
+        using var client = CreateAuthenticatedClient("sized-company", "sized@example.com", "Sized Owner");
+        var response = await client.PostAsJsonAsync("/api/onboarding/company", new
+        {
+            Name = "Sized Company", Industry = "Technology", BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm", Currency = "SEK", Language = "sv-SE",
+            ComplianceRegion = "EU", CompanySize = "small"
+        });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<ProgressResponse>();
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        Assert.Equal(CompanySizeBand.Small, (await db.Companies.FindAsync(payload!.CompanyId!.Value))!.SizeBand);
     }
 
     [Fact]
@@ -553,6 +571,7 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
             Currency = "USD",
             Language = "en-US",
             ComplianceRegion = "HIPAA",
+            CompanySize = "medium",
             SelectedTemplateId = "healthcare-clinic"
         });
 
@@ -567,6 +586,12 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
             var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
             var company = await dbContext.Companies.SingleAsync(x => x.Id == created.CompanyId);
             Assert.NotNull(company.OnboardingCompletedUtc);
+            Assert.Equal(CompanySizeBand.Medium, company.SizeBand);
+            var responsibilities = await dbContext.CompanyResponsibilityAssignments.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == created.CompanyId)
+                .ToListAsync();
+            Assert.Equal(6, responsibilities.Count(x => x.AssignmentKind == ResponsibilityAssignmentKind.Primary));
+            Assert.Equal(6, responsibilities.Count(x => x.AssignmentKind == ResponsibilityAssignmentKind.ExecutiveOversight));
             var auditActions = await dbContext.AuditEvents.IgnoreQueryFilters()
                 .Where(x => x.CompanyId == created.CompanyId)
                 .Select(x => x.Action)
@@ -579,6 +604,63 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
         Assert.NotNull(progressAfterComplete);
         Assert.Equal("completed", progressAfterComplete!.Status);
         Assert.False(progressAfterComplete.CanResume);
+
+        var repeatResponse = await client.PostAsJsonAsync("/api/onboarding/complete", new
+        {
+            CompanyId = created.CompanyId, Name = "Complete Co", Industry = "Healthcare", BusinessType = "Clinic",
+            Timezone = "America/Chicago", Currency = "USD", Language = "en-US", ComplianceRegion = "HIPAA",
+            CompanySize = "medium", SelectedTemplateId = "healthcare-clinic"
+        });
+        Assert.True(repeatResponse.IsSuccessStatusCode, await repeatResponse.Content.ReadAsStringAsync());
+        using var repeatScope = _factory.Services.CreateScope();
+        var repeatDb = repeatScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        Assert.Equal(12, await repeatDb.CompanyResponsibilityAssignments.IgnoreQueryFilters().CountAsync(x => x.CompanyId == created.CompanyId));
+    }
+
+    [Fact]
+    public async Task Completion_routes_ambiguous_small_company_to_settings_without_overwriting_explicit_assignments()
+    {
+        using var client = CreateAuthenticatedClient("responsibility-onboarding", "responsibility-onboarding@example.com", "Workspace Owner");
+        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
+        {
+            Name = "Responsibility Co", Industry = "Technology", BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm", Currency = "SEK", Language = "sv-SE", ComplianceRegion = "EU",
+            CompanySize = "small", CurrentStep = 3
+        });
+        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
+        Assert.NotNull(created?.CompanyId);
+        var managerMembershipId = Guid.NewGuid();
+        await _factory.SeedAsync(async db =>
+        {
+            var managerUserId = Guid.NewGuid();
+            db.Users.Add(new User(managerUserId, "manager-onboarding@example.com", "Sales Manager", "dev-header", "manager-onboarding"));
+            db.CompanyMemberships.Add(new CompanyMembership(managerMembershipId, created!.CompanyId!.Value, managerUserId,
+                CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+            var ownerMembershipId = await db.CompanyMemberships.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == created.CompanyId && x.Role == CompanyMembershipRole.Owner)
+                .Select(x => x.Id).SingleAsync();
+            db.CompanyResponsibilityAssignments.Add(new CompanyResponsibilityAssignment(Guid.NewGuid(), created.CompanyId.Value,
+                ResponsibilityArea.Sales, ResponsibilityAssignmentKind.Primary, managerMembershipId, null,
+                AgentAutonomyLevel.Level2, null, ownerMembershipId));
+        });
+
+        var response = await client.PostAsJsonAsync("/api/onboarding/complete", new
+        {
+            CompanyId = created!.CompanyId, Name = "Responsibility Co", Industry = "Technology", BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm", Currency = "SEK", Language = "sv-SE", ComplianceRegion = "EU", CompanySize = "small"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<CompleteResponse>();
+        Assert.True(result!.ResponsibilitySetupRequired);
+        Assert.Equal($"/settings/responsibilities?companyId={created.CompanyId:D}", result.ResponsibilitySettingsPath);
+        using var scope = _factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var primary = await db.CompanyResponsibilityAssignments.IgnoreQueryFilters()
+            .Where(x => x.CompanyId == created.CompanyId && x.AssignmentKind == ResponsibilityAssignmentKind.Primary)
+            .ToListAsync();
+        Assert.Equal(6, primary.Count);
+        Assert.Equal(managerMembershipId, primary.Single(x => x.ResponsibilityArea == ResponsibilityArea.Sales).AssignedMembershipId);
     }
 
     [Fact]
@@ -911,6 +993,7 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
         public string Name { get; set; } = string.Empty;
         public string Industry { get; set; } = string.Empty;
         public string BusinessType { get; set; } = string.Empty;
+        public string CompanySize { get; set; } = string.Empty;
         public string Timezone { get; set; } = string.Empty;
         public string Currency { get; set; } = string.Empty;
         public string Language { get; set; } = string.Empty;
@@ -951,6 +1034,8 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
         public string CompanyName { get; set; } = string.Empty;
         public string DashboardPath { get; set; } = string.Empty;
         public List<string> StarterGuidance { get; set; } = [];
+        public bool ResponsibilitySetupRequired { get; set; }
+        public string? ResponsibilitySettingsPath { get; set; }
     }
 
     private sealed class DashboardEntryResponse

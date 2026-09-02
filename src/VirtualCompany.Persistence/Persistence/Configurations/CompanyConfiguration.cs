@@ -22,6 +22,9 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
         builder.Property(x => x.Currency).HasMaxLength(16);
         builder.Property(x => x.Language).HasMaxLength(16);
         builder.Property(x => x.ComplianceRegion).HasMaxLength(50);
+        builder.Property(x => x.SizeBand).HasColumnName("size_band")
+            .HasConversion(x => x.ToStorageValue(), x => CompanySizeBandValues.Parse(x))
+            .HasMaxLength(32).HasDefaultValue(CompanySizeBand.Unspecified).IsRequired();
         builder.Property(x => x.Branding)
             .HasColumnName("branding_json")
             .HasJsonConversion()
@@ -62,6 +65,7 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
         builder.HasIndex(x => x.FinanceSeedStatus);
         builder.HasIndex(x => x.OnboardingCompletedUtc);
         builder.HasIndex(x => x.OnboardingStatus);
+        builder.HasIndex(x => x.SizeBand);
 
         builder.HasMany(x => x.Memberships)
             .WithOne(x => x.Company)

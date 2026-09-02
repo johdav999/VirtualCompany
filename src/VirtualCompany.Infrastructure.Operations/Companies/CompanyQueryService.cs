@@ -138,7 +138,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.Role,
                 x.Status,
                 x.Company.Timezone,
-                x.Company.Currency))
+                x.Company.Currency,
+                x.Company.SizeBand))
             .SingleOrDefaultAsync(cancellationToken);
     }
 
@@ -163,7 +164,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.CompanyId,
                 x.Company.Name,
                 x.Role,
-                x.Status))
+                x.Status,
+                x.Company.SizeBand))
             .SingleOrDefaultAsync(cancellationToken);
     }
 
@@ -256,7 +258,8 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.Role,
                 x.Status,
                 x.Company.CreatedUtc,
-                x.Company.OnboardingStatus))
+                x.Company.OnboardingStatus,
+                x.Company.SizeBand))
             .ToListAsync(cancellationToken);
     }
 
@@ -323,7 +326,7 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         return state?.StarterGuidance is { Count: > 0 } guidance ? guidance : DefaultStarterGuidance;
     }
     private static CompanyAccessDto ToCompanyAccess(ResolvedCompanyMembershipContext membership) =>
-        new(membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
+        new(membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status, membership.CompanySize);
 
     private sealed record DashboardEntryProjection(
         Guid CompanyId,
@@ -340,8 +343,10 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
     }
 
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(CompanyMembershipDto membership) =>
-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status,
+            CompanySize: membership.CompanySize);
 
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status, membership.Timezone, membership.Currency);
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status,
+            membership.Timezone, membership.Currency, membership.CompanySize);
 }
