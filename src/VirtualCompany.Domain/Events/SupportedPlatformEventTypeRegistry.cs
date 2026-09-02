@@ -44,6 +44,14 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
     public const string FinancePaymentCreated = "finance.payment.created";
     public const string FinanceSimulationDayAdvanced = "finance.simulation.day_advanced";
     public const string FinanceThresholdBreached = "finance.threshold.breached";
+    public const string FinanceUncategorizedTransactionDetected = "finance.transaction.uncategorized";
+    public const string FinanceOverdueReceivableDetected = "finance.receivable.overdue";
+    public const string FinanceCashEvidenceStale = "finance.cash_evidence.stale";
+    public const string FinanceCloseBlockerChanged = "finance.close_blocker.changed";
+    public const string FinanceReconciliationFailed = "finance.reconciliation.failed";
+    public const string FinanceImportFailed = "finance.import.failed";
+    public const string FinanceComplianceObligationExpiring = "finance.compliance_obligation.expiring";
+    public const string FinanceBackgroundWorkCompleted = "finance.background_work.completed";
     public const string SalesEmailReceived = "sales.email.received";
     public const string SalesLeadDetected = "sales.lead.detected";
     public const string SalesLeadQualified = "sales.lead.qualified";
@@ -86,6 +94,14 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
         FinancePaymentCreated,
         FinanceSimulationDayAdvanced,
         FinanceThresholdBreached,
+        FinanceUncategorizedTransactionDetected,
+        FinanceOverdueReceivableDetected,
+        FinanceCashEvidenceStale,
+        FinanceCloseBlockerChanged,
+        FinanceReconciliationFailed,
+        FinanceImportFailed,
+        FinanceComplianceObligationExpiring,
+        FinanceBackgroundWorkCompleted,
         SalesEmailReceived,
         SalesLeadDetected,
         SalesLeadQualified,

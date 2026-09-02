@@ -18,15 +18,18 @@ public sealed class FinanceAgentAuthorizationService : IFinanceAgentAuthorizatio
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly ICompanyMembershipContextResolver _membershipResolver;
+    private readonly IFinanceAutonomyPolicyEvaluator? _autonomyPolicy;
 
     public FinanceAgentAuthorizationService(
         VirtualCompanyDbContext dbContext,
         ICurrentUserAccessor currentUserAccessor,
-        ICompanyMembershipContextResolver membershipResolver)
+        ICompanyMembershipContextResolver membershipResolver,
+        IFinanceAutonomyPolicyEvaluator? autonomyPolicy = null)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
         _membershipResolver = membershipResolver;
+        _autonomyPolicy = autonomyPolicy;
     }
 
     public async Task<FinanceAgentAuthorizationDecisionDto> AuthorizeAsync(
@@ -34,6 +37,50 @@ public sealed class FinanceAgentAuthorizationService : IFinanceAgentAuthorizatio
         CancellationToken cancellationToken)
     {
         var decision = await AuthorizeCoreAsync(request, cancellationToken);
+        if (decision.IsAllowed && request.AutonomyEvaluation is not null)
+        {
+            var context = request.AutonomyEvaluation;
+            if (context.CompanyId != request.CompanyId || context.AgentId != request.AgentId ||
+                !string.Equals(context.ToolName, request.ToolName, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(context.ActionClass, request.ActionType.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+            {
+                decision = decision with
+                {
+                    Outcome = FinanceAgentAuthorizationOutcomes.Denied,
+                    ReasonCode = FinanceAgentAuthorizationReasonCodes.AutonomyContextMismatch,
+                    Explanation = "The proactive Finance policy context does not match the requested action."
+                };
+            }
+            else if (_autonomyPolicy is null)
+            {
+                decision = decision with
+                {
+                    Outcome = FinanceAgentAuthorizationOutcomes.Denied,
+                    ReasonCode = FinanceAutonomyDecisionReasonCodes.GrantMissing,
+                    Explanation = "No Finance autonomy policy evaluator is configured."
+                };
+            }
+            else
+            {
+                var autonomy = await _autonomyPolicy.EvaluateAsync(context, cancellationToken);
+                if (!autonomy.IsAllowed)
+                {
+                    decision = decision with
+                    {
+                        Outcome = FinanceAgentAuthorizationOutcomes.Denied,
+                        ReasonCode = autonomy.ReasonCode,
+                        Explanation = autonomy.Explanation,
+                        Evidence = decision.Evidence.Concat(
+                        [
+                            new FinanceAgentAuthorizationEvidenceDto(
+                                "finance_autonomy_grant",
+                                autonomy.GrantVersionId?.ToString("N") ?? "none",
+                                autonomy.ReasonCode)
+                        ]).ToArray()
+                    };
+                }
+            }
+        }
         FinanceAgentAuthorityTelemetry.RecordAuthorization(decision);
         return decision;
     }

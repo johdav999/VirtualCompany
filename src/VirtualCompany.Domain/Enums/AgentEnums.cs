@@ -377,7 +377,8 @@ public enum ApprovalRequestStatus
     Cancelled = 5,
     Stale = 6,
     Superseded = 7,
-    Revoked = 8
+    Revoked = 8,
+    ChangesRequested = 9
 }
 
 public static class ApprovalRequestStatusValues
@@ -391,7 +392,8 @@ public static class ApprovalRequestStatusValues
         [ApprovalRequestStatus.Cancelled] = "cancelled",
         [ApprovalRequestStatus.Stale] = "stale",
         [ApprovalRequestStatus.Superseded] = "superseded",
-        [ApprovalRequestStatus.Revoked] = "revoked"
+        [ApprovalRequestStatus.Revoked] = "revoked",
+        [ApprovalRequestStatus.ChangesRequested] = "changes_requested"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalRequestStatus> ReverseValues =

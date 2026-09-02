@@ -397,7 +397,8 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
             or ApprovalRequestStatus.Cancelled
             or ApprovalRequestStatus.Stale
             or ApprovalRequestStatus.Superseded
-            or ApprovalRequestStatus.Revoked;
+            or ApprovalRequestStatus.Revoked
+            or ApprovalRequestStatus.ChangesRequested;
 
     public bool CanExecuteGuardedAction => Status == ApprovalRequestStatus.Approved;
 
@@ -410,6 +411,7 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
         ApprovalRequestStatus.Stale => "approval_stale",
         ApprovalRequestStatus.Superseded => "approval_superseded",
         ApprovalRequestStatus.Revoked => "approval_revoked",
+        ApprovalRequestStatus.ChangesRequested => "approval_changes_requested",
         _ => null
     };
 
@@ -516,6 +518,14 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
         MarkInvalidated(
             ApprovalRequestStatus.Revoked,
             "Approval request was revoked.",
+            decisionSummary);
+    }
+
+    public void MarkChangesRequested(string? decisionSummary = null)
+    {
+        MarkInvalidated(
+            ApprovalRequestStatus.ChangesRequested,
+            "Changes were requested. Narrow the plan and submit a new exact-action request.",
             decisionSummary);
     }
 

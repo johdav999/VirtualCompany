@@ -23683,6 +23683,1729 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetAlert", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CircuitId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("circuit_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<DateTime?>("ResolvedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("resolved_utc");
+
+                    b.Property<string>("SafeSummary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CircuitId", "Status");
+
+                    b.HasIndex("CompanyId", "Status", "CreatedUtc");
+
+                    b.ToTable("finance_autonomy_budget_alerts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetPolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<int>("AuditOutboxFailureThreshold")
+                        .HasColumnType("int")
+                        .HasColumnName("audit_outbox_failure_threshold");
+
+                    b.Property<string>("CapabilityId")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("capability_id");
+
+                    b.Property<int>("CircuitCooldownMinutes")
+                        .HasColumnType("int")
+                        .HasColumnName("circuit_cooldown_minutes");
+
+                    b.Property<int>("CircuitWindowMinutes")
+                        .HasColumnType("int")
+                        .HasColumnName("circuit_window_minutes");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<int>("ErrorBurstThreshold")
+                        .HasColumnType("int")
+                        .HasColumnName("error_burst_threshold");
+
+                    b.Property<int>("InvalidPlanThreshold")
+                        .HasColumnType("int")
+                        .HasColumnName("invalid_plan_threshold");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_active");
+
+                    b.Property<int>("PolicyDenialThreshold")
+                        .HasColumnType("int")
+                        .HasColumnName("policy_denial_threshold");
+
+                    b.Property<int>("ProviderAmbiguityThreshold")
+                        .HasColumnType("int")
+                        .HasColumnName("provider_ambiguity_threshold");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("scope_key");
+
+                    b.Property<int>("StaleEvidenceThreshold")
+                        .HasColumnType("int")
+                        .HasColumnName("stale_evidence_threshold");
+
+                    b.Property<string>("Timezone")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("timezone");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<int>("WindowMinutes")
+                        .HasColumnType("int")
+                        .HasColumnName("window_minutes");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScopeKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "IsActive", "AgentId", "CapabilityId");
+
+                    b.ToTable("finance_autonomy_budget_policies", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetReservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_number");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<Guid>("PolicyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("policy_id");
+
+                    b.Property<DateTime?>("ReconciledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reconciled_utc");
+
+                    b.Property<string>("ReservationKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("reservation_key");
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("StepId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("step_id");
+
+                    b.Property<Guid>("WindowId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("window_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PolicyId");
+
+                    b.HasIndex("CompanyId", "RunId");
+
+                    b.HasIndex("CompanyId", "StepId");
+
+                    b.HasIndex("CompanyId", "WindowId");
+
+                    b.HasIndex("CompanyId", "ReservationKey", "PolicyId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "CreatedUtc");
+
+                    b.ToTable("finance_autonomy_budget_reservations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetWindow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("PolicyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("policy_id");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<DateTime>("WindowEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_end_utc");
+
+                    b.Property<DateTime>("WindowStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_start_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "WindowEndUtc", "UpdatedUtc");
+
+                    b.HasIndex("CompanyId", "PolicyId", "WindowStartUtc", "WindowEndUtc")
+                        .IsUnique();
+
+                    b.ToTable("finance_autonomy_budget_windows", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyCircuitBreaker", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<int>("AuditOutboxFailures")
+                        .HasColumnType("int")
+                        .HasColumnName("audit_outbox_failures");
+
+                    b.Property<string>("CapabilityId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("capability_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CooldownUntilUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cooldown_until_utc");
+
+                    b.Property<int>("Errors")
+                        .HasColumnType("int")
+                        .HasColumnName("errors");
+
+                    b.Property<int>("InvalidPlans")
+                        .HasColumnType("int")
+                        .HasColumnName("invalid_plans");
+
+                    b.Property<string>("OpenReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("open_reason_code");
+
+                    b.Property<DateTime?>("OpenedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("opened_utc");
+
+                    b.Property<int>("PolicyDenials")
+                        .HasColumnType("int")
+                        .HasColumnName("policy_denials");
+
+                    b.Property<int>("ProviderAmbiguities")
+                        .HasColumnType("int")
+                        .HasColumnName("provider_ambiguities");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("scope_key");
+
+                    b.Property<int>("StaleEvidence")
+                        .HasColumnType("int")
+                        .HasColumnName("stale_evidence");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<DateTime>("WindowEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_end_utc");
+
+                    b.Property<DateTime>("WindowStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_start_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScopeKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("finance_autonomy_circuit_breakers", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyControl", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<string>("CapabilityId")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("capability_id");
+
+                    b.Property<Guid?>("ChangedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("changed_by_user_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("Scope")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("scope");
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("scope_key");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("state");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScopeKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "State");
+
+                    b.ToTable("finance_autonomy_controls", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyGrant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ActiveVersionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("active_version_id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<string>("CapabilityId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("capability_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<int>("LatestVersionNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("latest_version_number");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AgentId");
+
+                    b.HasIndex("CompanyId", "AgentId", "CapabilityId")
+                        .IsUnique();
+
+                    b.ToTable("finance_autonomy_grants", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyGrantVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ActivatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("activated_utc");
+
+                    b.Property<string>("AllowedActionClasses")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("allowed_action_classes_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("AllowedEventTypes")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("allowed_event_types_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("AllowedTools")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("allowed_tools_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("AllowedTriggers")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("allowed_triggers_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("AuthorityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("authority_hash");
+
+                    b.Property<string>("AuthorityVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("authority_version");
+
+                    b.Property<string>("CapabilityPolicyHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("capability_policy_hash");
+
+                    b.Property<string>("CatalogueVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("catalogue_version");
+
+                    b.Property<string>("CatchUpBehavior")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasDefaultValue("latest")
+                        .HasColumnName("catch_up_behavior");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ConfirmationBehavior")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("confirmation_behavior");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<int>("DebounceMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(5)
+                        .HasColumnName("debounce_minutes");
+
+                    b.Property<DateTime>("EffectiveFromUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("effective_from_utc");
+
+                    b.Property<string>("EscalationRoute")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("escalation_route");
+
+                    b.Property<int>("EvidenceFreshnessMinutes")
+                        .HasColumnType("int")
+                        .HasColumnName("evidence_freshness_minutes");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_utc");
+
+                    b.Property<Guid>("GrantId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("grant_id");
+
+                    b.Property<int>("LateEventToleranceMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(1440)
+                        .HasColumnName("late_event_tolerance_minutes");
+
+                    b.Property<string>("Level")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("level");
+
+                    b.Property<int>("MaximumActionsPerRun")
+                        .HasColumnType("int")
+                        .HasColumnName("maximum_actions_per_run");
+
+                    b.Property<decimal?>("MaximumAmountPerRun")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("maximum_amount_per_run");
+
+                    b.Property<int>("MaximumCatchUpWindows")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(1)
+                        .HasColumnName("maximum_catch_up_windows");
+
+                    b.Property<int>("MaximumRecordsPerRun")
+                        .HasColumnType("int")
+                        .HasColumnName("maximum_records_per_run");
+
+                    b.Property<int>("MaximumRunsPerWindow")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(1)
+                        .HasColumnName("maximum_runs_per_window");
+
+                    b.Property<int>("MinimumIntervalMinutes")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(60)
+                        .HasColumnName("minimum_interval_minutes");
+
+                    b.Property<string>("ReviewReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("review_reason");
+
+                    b.Property<Guid?>("ReviewedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("reviewed_by_user_id");
+
+                    b.Property<DateTime?>("ReviewedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reviewed_utc");
+
+                    b.Property<string>("RevocationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("revocation_reason");
+
+                    b.Property<Guid?>("RevokedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("revoked_by_user_id");
+
+                    b.Property<DateTime?>("RevokedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("revoked_utc");
+
+                    b.Property<string>("ScheduleExpression")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("schedule_expression");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Timezone")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("timezone");
+
+                    b.Property<int>("VersionNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("version_number");
+
+                    b.Property<string>("WindowEndLocal")
+                        .IsRequired()
+                        .HasMaxLength(5)
+                        .HasColumnType("nvarchar(5)")
+                        .HasColumnName("window_end_local");
+
+                    b.Property<string>("WindowStartLocal")
+                        .IsRequired()
+                        .HasMaxLength(5)
+                        .HasColumnType("nvarchar(5)")
+                        .HasColumnName("window_start_local");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GrantId");
+
+                    b.HasIndex("CompanyId", "GrantId", "VersionNumber")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "ExpiresUtc");
+
+                    b.ToTable("finance_autonomy_grant_versions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<string>("AuthoritativeEventId")
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("authoritative_event_id");
+
+                    b.Property<string>("AuthoritativeEventVersion")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("authoritative_event_version");
+
+                    b.Property<string>("AuthorityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("authority_hash");
+
+                    b.Property<string>("AuthorityVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("authority_version");
+
+                    b.Property<string>("BudgetHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("budget_hash");
+
+                    b.Property<string>("BudgetSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("budget_snapshot_json");
+
+                    b.Property<string>("CapabilityId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("capability_id");
+
+                    b.Property<string>("CatalogueVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("catalogue_version");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("EvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("evidence_hash");
+
+                    b.Property<DateTime>("EvidenceObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("evidence_observed_utc");
+
+                    b.Property<string>("EvidenceSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_snapshot_json");
+
+                    b.Property<Guid>("GrantId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("grant_id");
+
+                    b.Property<Guid>("GrantVersionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("grant_version_id");
+
+                    b.Property<int>("GrantVersionNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("grant_version_number");
+
+                    b.Property<bool>("HasCompletedEffects")
+                        .HasColumnType("bit")
+                        .HasColumnName("has_completed_effects");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("LogicalKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("logical_key");
+
+                    b.Property<Guid?>("OrchestrationRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("orchestration_run_id");
+
+                    b.Property<Guid?>("OriginatingGoalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("originating_goal_id");
+
+                    b.Property<Guid?>("OriginatingTaskId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("originating_task_id");
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("plan_hash");
+
+                    b.Property<string>("PlanJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("plan_json");
+
+                    b.Property<string>("PlanVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("plan_version");
+
+                    b.Property<string>("PolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("policy_version");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid?>("ReplayCheckpointStepId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("replay_checkpoint_step_id");
+
+                    b.Property<Guid?>("ReplayOfRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("replay_of_run_id");
+
+                    b.Property<int>("RevisionNumber")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasDefaultValue(1)
+                        .HasColumnName("revision_number");
+
+                    b.Property<Guid?>("RevisionOfRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("revision_of_run_id");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<Guid?>("SensitiveContentRedactedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sensitive_content_redacted_by_user_id");
+
+                    b.Property<DateTime?>("SensitiveContentRedactedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("sensitive_content_redacted_utc");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("TerminalUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("terminal_utc");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("trigger");
+
+                    b.Property<string>("TriggerKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("trigger_key");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<DateTime>("WindowEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_end_utc");
+
+                    b.Property<DateTime>("WindowStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_start_utc");
+
+                    b.Property<Guid?>("WorkflowInstanceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("workflow_instance_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OrchestrationRunId");
+
+                    b.HasIndex("OriginatingGoalId");
+
+                    b.HasIndex("OriginatingTaskId");
+
+                    b.HasIndex("ReplayOfRunId");
+
+                    b.HasIndex("RevisionOfRunId");
+
+                    b.HasIndex("WorkflowInstanceId");
+
+                    b.HasIndex("CompanyId", "GrantVersionId");
+
+                    b.HasIndex("CompanyId", "LogicalKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "GrantId", "GrantVersionId");
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.HasIndex("CompanyId", "WindowStartUtc", "WindowEndUtc");
+
+                    b.HasIndex("CompanyId", "AgentId", "Status", "CreatedUtc");
+
+                    b.ToTable("finance_autonomy_runs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunHistory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ActorId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("actor_id");
+
+                    b.Property<string>("ActorType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("actor_type");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("FromStatus")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("from_status");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("occurred_utc");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<string>("ToStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("to_status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "RunId", "OccurredUtc");
+
+                    b.ToTable("finance_autonomy_run_history", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunSourceReference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("EntityId")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("entity_id");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("entity_type");
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("SafeLabel")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("safe_label");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_type");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("source_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "RunId", "SourceType", "EntityType", "EntityId", "SourceVersion")
+                        .IsUnique();
+
+                    b.ToTable("finance_autonomy_run_sources", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunStep", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActionClass")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("action_class");
+
+                    b.Property<string>("ActualEffectHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("actual_effect_hash");
+
+                    b.Property<string>("ActualEffectStatus")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("actual_effect_status");
+
+                    b.Property<string>("ActualEffectSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("actual_effect_summary");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<string>("AuthorityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("authority_hash");
+
+                    b.Property<string>("AuthorityVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("authority_version");
+
+                    b.Property<string>("BusinessIdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("business_idempotency_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_utc");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("DependencyStepKeys")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("dependency_step_keys_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("EvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("evidence_hash");
+
+                    b.Property<DateTime?>("LastHeartbeatUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_heartbeat_utc");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_utc");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<string>("LeaseToken")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("lease_token");
+
+                    b.Property<int>("MaximumAttempts")
+                        .HasColumnType("int")
+                        .HasColumnName("maximum_attempts");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("ReconciliationReference")
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("reconciliation_reference");
+
+                    b.Property<Guid?>("ReplayOfStepId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("replay_of_step_id");
+
+                    b.Property<bool>("ReplayPermitted")
+                        .HasColumnType("bit")
+                        .HasColumnName("replay_permitted");
+
+                    b.Property<string>("RequestedEffectHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("requested_effect_hash");
+
+                    b.Property<string>("RequestedEffectSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("requested_effect_summary");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int")
+                        .HasColumnName("sequence");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_utc");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("StepKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("step_key");
+
+                    b.Property<Guid?>("ToolExecutionAttemptId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("tool_execution_attempt_id");
+
+                    b.Property<string>("ToolName")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("tool_name");
+
+                    b.Property<string>("ToolPolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("tool_policy_version");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<Guid?>("WorkTaskId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("work_task_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("ReplayOfStepId");
+
+                    b.HasIndex("ToolExecutionAttemptId");
+
+                    b.HasIndex("WorkTaskId");
+
+                    b.HasIndex("CompanyId", "RunId", "Sequence")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "RunId", "StepKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "LeaseExpiresUtc", "Sequence");
+
+                    b.ToTable("finance_autonomy_run_steps", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyStepAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_number");
+
+                    b.Property<string>("AuthorityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("authority_hash");
+
+                    b.Property<string>("AuthorityVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("authority_version");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_utc");
+
+                    b.Property<string>("EvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("evidence_hash");
+
+                    b.Property<string>("LeaseOwner")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<string>("LeaseTokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("lease_token_hash");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("PolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("policy_version");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_utc");
+
+                    b.Property<Guid>("StepId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("step_id");
+
+                    b.Property<Guid?>("ToolExecutionAttemptId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("tool_execution_attempt_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ToolExecutionAttemptId");
+
+                    b.HasIndex("CompanyId", "StepId", "AttemptNumber")
+                        .IsUnique();
+
+                    b.ToTable("finance_autonomy_step_attempts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyTriggerCursor", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<string>("CapabilityId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("capability_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<DateTime?>("CurrentWindowEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("current_window_end_utc");
+
+                    b.Property<DateTime?>("CurrentWindowStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("current_window_start_utc");
+
+                    b.Property<DateTime?>("CursorUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cursor_utc");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<Guid>("GrantId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("grant_id");
+
+                    b.Property<Guid>("GrantVersionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("grant_version_id");
+
+                    b.Property<string>("LastEventVersion")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("last_event_version");
+
+                    b.Property<Guid?>("LastRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("last_run_id");
+
+                    b.Property<DateTime?>("LastRunUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_run_utc");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_utc");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<string>("LeaseToken")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("lease_token");
+
+                    b.Property<DateTime?>("NextEligibleUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_eligible_utc");
+
+                    b.Property<DateTime?>("QuotaWindowEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("quota_window_end_utc");
+
+                    b.Property<DateTime?>("QuotaWindowStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("quota_window_start_utc");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<int>("RunsInWindow")
+                        .HasColumnType("int")
+                        .HasColumnName("runs_in_window");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TriggerKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("trigger_key");
+
+                    b.Property<string>("TriggerKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("trigger_kind");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LastRunId");
+
+                    b.HasIndex("CompanyId", "GrantId");
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.HasIndex("CompanyId", "GrantVersionId", "TriggerKind", "TriggerKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "NextEligibleUtc", "LeaseExpiresUtc", "UpdatedUtc");
+
+                    b.ToTable("finance_autonomy_trigger_cursors", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyTriggerEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CoalescingKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("coalescing_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<Guid>("CursorId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("cursor_id");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("event_type");
+
+                    b.Property<DateTime>("EvidenceObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("evidence_observed_utc");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("occurred_utc");
+
+                    b.Property<DateTime?>("ProcessedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("processed_utc");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("run_id");
+
+                    b.Property<string>("SafeLabel")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("safe_label");
+
+                    b.Property<string>("SourceEntityId")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("source_entity_id");
+
+                    b.Property<string>("SourceEntityType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("source_entity_type");
+
+                    b.Property<string>("SourceEventId")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("source_event_id");
+
+                    b.Property<string>("SourceEventVersion")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("source_event_version");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RunId");
+
+                    b.HasIndex("CompanyId", "CursorId", "CreatedUtc");
+
+                    b.HasIndex("CompanyId", "Status", "OccurredUtc");
+
+                    b.HasIndex("CompanyId", "CursorId", "SourceEventId", "SourceEventVersion")
+                        .IsUnique();
+
+                    b.ToTable("finance_autonomy_trigger_events", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceBalance", b =>
                 {
                     b.Property<Guid>("Id")
@@ -52751,6 +54474,692 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("SourceSimulationEventRecord");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetAlert", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyCircuitBreaker", "Circuit")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CircuitId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Circuit");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetPolicy", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.FinanceAutonomyUsageLimits", "PerRunLimits", b1 =>
+                        {
+                            b1.Property<Guid>("FinanceAutonomyBudgetPolicyId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal?>("AmountExposure")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("per_run_amount_exposure");
+
+                            b1.Property<int?>("DraftsOrTasksCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_drafts_tasks_created");
+
+                            b1.Property<decimal?>("EstimatedCost")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("per_run_estimated_cost");
+
+                            b1.Property<int?>("ExecuteAttempts")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_execute_attempts");
+
+                            b1.Property<int?>("ExportsCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_exports_created");
+
+                            b1.Property<int?>("ModelCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_model_calls");
+
+                            b1.Property<long?>("ObjectBytes")
+                                .HasColumnType("bigint")
+                                .HasColumnName("per_run_object_bytes");
+
+                            b1.Property<int?>("RecordsEvaluated")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_records_evaluated");
+
+                            b1.Property<int?>("Retries")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_retries");
+
+                            b1.Property<int?>("RuntimeSeconds")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_runtime_seconds");
+
+                            b1.Property<int?>("ToolCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("per_run_tool_calls");
+
+                            b1.HasKey("FinanceAutonomyBudgetPolicyId");
+
+                            b1.ToTable("finance_autonomy_budget_policies");
+
+                            b1.WithOwner()
+                                .HasForeignKey("FinanceAutonomyBudgetPolicyId");
+                        });
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.FinanceAutonomyUsageLimits", "WindowLimits", b1 =>
+                        {
+                            b1.Property<Guid>("FinanceAutonomyBudgetPolicyId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal?>("AmountExposure")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("window_limit_amount_exposure");
+
+                            b1.Property<int?>("DraftsOrTasksCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_drafts_tasks_created");
+
+                            b1.Property<decimal?>("EstimatedCost")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("window_limit_estimated_cost");
+
+                            b1.Property<int?>("ExecuteAttempts")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_execute_attempts");
+
+                            b1.Property<int?>("ExportsCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_exports_created");
+
+                            b1.Property<int?>("ModelCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_model_calls");
+
+                            b1.Property<long?>("ObjectBytes")
+                                .HasColumnType("bigint")
+                                .HasColumnName("window_limit_object_bytes");
+
+                            b1.Property<int?>("RecordsEvaluated")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_records_evaluated");
+
+                            b1.Property<int?>("Retries")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_retries");
+
+                            b1.Property<int?>("RuntimeSeconds")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_runtime_seconds");
+
+                            b1.Property<int?>("ToolCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("window_limit_tool_calls");
+
+                            b1.HasKey("FinanceAutonomyBudgetPolicyId");
+
+                            b1.ToTable("finance_autonomy_budget_policies");
+
+                            b1.WithOwner()
+                                .HasForeignKey("FinanceAutonomyBudgetPolicyId");
+                        });
+
+                    b.Navigation("Company");
+
+                    b.Navigation("PerRunLimits")
+                        .IsRequired();
+
+                    b.Navigation("WindowLimits")
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetReservation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetPolicy", "Policy")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PolicyId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", "Run")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RunId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRunStep", "Step")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "StepId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetWindow", "Window")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "WindowId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.FinanceAutonomyUsageValues", "Actual", b1 =>
+                        {
+                            b1.Property<Guid>("FinanceAutonomyBudgetReservationId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal>("AmountExposure")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("actual_amount_exposure");
+
+                            b1.Property<int>("DraftsOrTasksCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_drafts_tasks_created");
+
+                            b1.Property<decimal>("EstimatedCost")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("actual_estimated_cost");
+
+                            b1.Property<int>("ExecuteAttempts")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_execute_attempts");
+
+                            b1.Property<int>("ExportsCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_exports_created");
+
+                            b1.Property<int>("ModelCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_model_calls");
+
+                            b1.Property<long>("ObjectBytes")
+                                .HasColumnType("bigint")
+                                .HasColumnName("actual_object_bytes");
+
+                            b1.Property<int>("RecordsEvaluated")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_records_evaluated");
+
+                            b1.Property<int>("Retries")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_retries");
+
+                            b1.Property<int>("RuntimeSeconds")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_runtime_seconds");
+
+                            b1.Property<int>("ToolCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("actual_tool_calls");
+
+                            b1.HasKey("FinanceAutonomyBudgetReservationId");
+
+                            b1.ToTable("finance_autonomy_budget_reservations");
+
+                            b1.WithOwner()
+                                .HasForeignKey("FinanceAutonomyBudgetReservationId");
+                        });
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.FinanceAutonomyUsageValues", "Planned", b1 =>
+                        {
+                            b1.Property<Guid>("FinanceAutonomyBudgetReservationId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal>("AmountExposure")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("planned_amount_exposure");
+
+                            b1.Property<int>("DraftsOrTasksCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_drafts_tasks_created");
+
+                            b1.Property<decimal>("EstimatedCost")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("planned_estimated_cost");
+
+                            b1.Property<int>("ExecuteAttempts")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_execute_attempts");
+
+                            b1.Property<int>("ExportsCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_exports_created");
+
+                            b1.Property<int>("ModelCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_model_calls");
+
+                            b1.Property<long>("ObjectBytes")
+                                .HasColumnType("bigint")
+                                .HasColumnName("planned_object_bytes");
+
+                            b1.Property<int>("RecordsEvaluated")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_records_evaluated");
+
+                            b1.Property<int>("Retries")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_retries");
+
+                            b1.Property<int>("RuntimeSeconds")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_runtime_seconds");
+
+                            b1.Property<int>("ToolCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("planned_tool_calls");
+
+                            b1.HasKey("FinanceAutonomyBudgetReservationId");
+
+                            b1.ToTable("finance_autonomy_budget_reservations");
+
+                            b1.WithOwner()
+                                .HasForeignKey("FinanceAutonomyBudgetReservationId");
+                        });
+
+                    b.Navigation("Actual")
+                        .IsRequired();
+
+                    b.Navigation("Planned")
+                        .IsRequired();
+
+                    b.Navigation("Policy");
+
+                    b.Navigation("Run");
+
+                    b.Navigation("Step");
+
+                    b.Navigation("Window");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetWindow", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyBudgetPolicy", "Policy")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PolicyId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.FinanceAutonomyUsageValues", "Consumed", b1 =>
+                        {
+                            b1.Property<Guid>("FinanceAutonomyBudgetWindowId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal>("AmountExposure")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("consumed_amount_exposure");
+
+                            b1.Property<int>("DraftsOrTasksCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_drafts_tasks_created");
+
+                            b1.Property<decimal>("EstimatedCost")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("consumed_estimated_cost");
+
+                            b1.Property<int>("ExecuteAttempts")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_execute_attempts");
+
+                            b1.Property<int>("ExportsCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_exports_created");
+
+                            b1.Property<int>("ModelCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_model_calls");
+
+                            b1.Property<long>("ObjectBytes")
+                                .HasColumnType("bigint")
+                                .HasColumnName("consumed_object_bytes");
+
+                            b1.Property<int>("RecordsEvaluated")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_records_evaluated");
+
+                            b1.Property<int>("Retries")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_retries");
+
+                            b1.Property<int>("RuntimeSeconds")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_runtime_seconds");
+
+                            b1.Property<int>("ToolCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("consumed_tool_calls");
+
+                            b1.HasKey("FinanceAutonomyBudgetWindowId");
+
+                            b1.ToTable("finance_autonomy_budget_windows");
+
+                            b1.WithOwner()
+                                .HasForeignKey("FinanceAutonomyBudgetWindowId");
+                        });
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.FinanceAutonomyUsageValues", "Reserved", b1 =>
+                        {
+                            b1.Property<Guid>("FinanceAutonomyBudgetWindowId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal>("AmountExposure")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("reserved_amount_exposure");
+
+                            b1.Property<int>("DraftsOrTasksCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_drafts_tasks_created");
+
+                            b1.Property<decimal>("EstimatedCost")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)")
+                                .HasColumnName("reserved_estimated_cost");
+
+                            b1.Property<int>("ExecuteAttempts")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_execute_attempts");
+
+                            b1.Property<int>("ExportsCreated")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_exports_created");
+
+                            b1.Property<int>("ModelCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_model_calls");
+
+                            b1.Property<long>("ObjectBytes")
+                                .HasColumnType("bigint")
+                                .HasColumnName("reserved_object_bytes");
+
+                            b1.Property<int>("RecordsEvaluated")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_records_evaluated");
+
+                            b1.Property<int>("Retries")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_retries");
+
+                            b1.Property<int>("RuntimeSeconds")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_runtime_seconds");
+
+                            b1.Property<int>("ToolCalls")
+                                .HasColumnType("int")
+                                .HasColumnName("reserved_tool_calls");
+
+                            b1.HasKey("FinanceAutonomyBudgetWindowId");
+
+                            b1.ToTable("finance_autonomy_budget_windows");
+
+                            b1.WithOwner()
+                                .HasForeignKey("FinanceAutonomyBudgetWindowId");
+                        });
+
+                    b.Navigation("Consumed")
+                        .IsRequired();
+
+                    b.Navigation("Policy");
+
+                    b.Navigation("Reserved")
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyCircuitBreaker", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyControl", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyGrant", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "Agent")
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyGrantVersion", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyGrant", "Grant")
+                        .WithMany("Versions")
+                        .HasForeignKey("GrantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Grant");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRun", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AgentOrchestrationRun", null)
+                        .WithMany()
+                        .HasForeignKey("OrchestrationRunId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyGoal", null)
+                        .WithMany()
+                        .HasForeignKey("OriginatingGoalId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkTask", null)
+                        .WithMany()
+                        .HasForeignKey("OriginatingTaskId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", null)
+                        .WithMany()
+                        .HasForeignKey("ReplayOfRunId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", null)
+                        .WithMany()
+                        .HasForeignKey("RevisionOfRunId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkflowInstance", null)
+                        .WithMany()
+                        .HasForeignKey("WorkflowInstanceId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "Agent")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyGrant", "Grant")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GrantId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyGrantVersion", "GrantVersion")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GrantVersionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Grant");
+
+                    b.Navigation("GrantVersion");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunHistory", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", "Run")
+                        .WithMany("History")
+                        .HasForeignKey("CompanyId", "RunId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Run");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunSourceReference", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", "Run")
+                        .WithMany("Sources")
+                        .HasForeignKey("CompanyId", "RunId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Run");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunStep", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRunStep", null)
+                        .WithMany()
+                        .HasForeignKey("ReplayOfStepId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.ToolExecutionAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("ToolExecutionAttemptId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkTask", null)
+                        .WithMany()
+                        .HasForeignKey("WorkTaskId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", "Run")
+                        .WithMany("Steps")
+                        .HasForeignKey("CompanyId", "RunId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Run");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyStepAttempt", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ToolExecutionAttempt", null)
+                        .WithMany()
+                        .HasForeignKey("ToolExecutionAttemptId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRunStep", "Step")
+                        .WithMany("Attempts")
+                        .HasForeignKey("CompanyId", "StepId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Step");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyTriggerCursor", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", "LastRun")
+                        .WithMany()
+                        .HasForeignKey("LastRunId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyGrant", "Grant")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GrantId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyGrantVersion", "GrantVersion")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GrantVersionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Grant");
+
+                    b.Navigation("GrantVersion");
+
+                    b.Navigation("LastRun");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyTriggerEvent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyRun", "Run")
+                        .WithMany()
+                        .HasForeignKey("RunId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAutonomyTriggerCursor", "Cursor")
+                        .WithMany("Events")
+                        .HasForeignKey("CompanyId", "CursorId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Cursor");
+
+                    b.Navigation("Run");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceBalance", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -57701,6 +60110,30 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("LifecycleHistory");
 
                     b.Navigation("Transactions");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyGrant", b =>
+                {
+                    b.Navigation("Versions");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRun", b =>
+                {
+                    b.Navigation("History");
+
+                    b.Navigation("Sources");
+
+                    b.Navigation("Steps");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyRunStep", b =>
+                {
+                    b.Navigation("Attempts");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAutonomyTriggerCursor", b =>
+                {
+                    b.Navigation("Events");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceBill", b =>

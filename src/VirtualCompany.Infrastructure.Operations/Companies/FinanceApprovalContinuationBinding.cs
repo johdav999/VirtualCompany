@@ -27,7 +27,8 @@ internal static class FinanceApprovalContinuationBinding
         ToolExecutionDecisionDto decision,
         AgentEffectiveAuthorityDto authority,
         DateTime issuedUtc,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FinanceAutonomyApprovalContextDto? autonomyContext = null)
     {
         if (!toolRegistry.TryGetTool(attempt.ToolName, out var registration) ||
             registration.FinanceRiskClassification is null)
@@ -47,7 +48,7 @@ internal static class FinanceApprovalContinuationBinding
         var businessIdempotencyKey = ComputeBusinessIdempotencyKey(attempt);
         var expiryUtc = issuedUtc.Add(DefaultLifetime);
 
-        return new JsonObject
+        var binding = new JsonObject
         {
             ["schemaVersion"] = SchemaVersion,
             ["companyId"] = attempt.CompanyId,
@@ -80,6 +81,9 @@ internal static class FinanceApprovalContinuationBinding
             ["issuedUtc"] = issuedUtc,
             ["expiresUtc"] = expiryUtc
         };
+        if (autonomyContext is not null)
+            binding["financeAutonomy"] = JsonSerializer.SerializeToNode(autonomyContext);
+        return binding;
     }
 
     public static async Task<JsonArray> BuildTargetSnapshotAsync(

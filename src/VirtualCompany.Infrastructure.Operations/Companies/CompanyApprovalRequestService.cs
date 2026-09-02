@@ -202,6 +202,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             throw new KeyNotFoundException("Approval request not found.");
         }
 
+        var normalizedDecision = command.Decision.Trim().ToLowerInvariant();
         if (approval.Status != ApprovalRequestStatus.Pending)
         {
             if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty &&
@@ -236,39 +237,76 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             }
             EnqueueApprovalUpdatedEvent(approval, "expired");
             await _dbContext.SaveChangesAsync(cancellationToken);
+            await SynchronizeFinanceAutonomyApprovalAsync(approval, cancellationToken);
             throw new ApprovalValidationException(new Dictionary<string, string[]>
             {
                 [nameof(command.Decision)] = ["The Finance approval expired. A new reviewed request is required."]
             });
         }
 
-        var currentStep = approval.CurrentActionableStep ?? throw new ApprovalValidationException(new Dictionary<string, string[]>
-        {
-            [nameof(command.StepId)] = ["Approval request has no current actionable step."]
-        });
+        var currentStep = approval.CurrentActionableStep ??
+            throw new ApprovalValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(command.StepId)] = ["Approval request has no current actionable step."]
+            });
 
         if (command.StepId.HasValue && command.StepId.Value != currentStep.Id)
         {
             throw new InvalidOperationException("Only the current approval step can be decided.");
         }
 
-        if (!CanDecide(currentStep, membership))
+        var isApprovalStepDecision = normalizedDecision is "approve" or "approved" or "reject" or "rejected" or
+            "request_changes" or "changes_requested";
+        var isManager = membership.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin or CompanyMembershipRole.Manager;
+        var canCancel = IsInitiatingUser(approval, membership.UserId) || isManager;
+        if (isApprovalStepDecision && !CanDecide(currentStep, membership) ||
+            normalizedDecision is "cancel" or "cancelled" && !canCancel ||
+            normalizedDecision is "expire" or "expired" or "revoke" or "revoked" or "supersede" or "superseded" && !isManager)
         {
-            throw new ApprovalDecisionForbiddenException("The current user is not an approver for the current step.");
+            throw new ApprovalDecisionForbiddenException("The current user is not authorized for this approval transition.");
         }
 
-        var requestedApproval = string.Equals(command.Decision, "approve", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(command.Decision, "approved", StringComparison.OrdinalIgnoreCase);
+        var requestedApproval = normalizedDecision is "approve" or "approved";
         var selfApprovalRejected = requestedApproval && RequiresIndependentFinanceReview(approval) &&
                                    IsInitiatingUser(approval, membership.UserId);
-        var rejected = selfApprovalRejected || string.Equals(command.Decision, "reject", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(command.Decision, "rejected", StringComparison.OrdinalIgnoreCase);
+        var rejected = selfApprovalRejected || normalizedDecision is "reject" or "rejected";
         var decisionComment = selfApprovalRejected
             ? "Rejected because Finance segregation of duties prohibits requester self-approval."
             : command.Comment;
-        var decidedStep = rejected
-            ? approval.RejectCurrentStep(currentStep.Id, membership.UserId, decisionComment)
-            : approval.ApproveCurrentStep(currentStep.Id, membership.UserId, decisionComment);
+        ApprovalStep decidedStep;
+        if (rejected)
+            decidedStep = approval.RejectCurrentStep(currentStep.Id, membership.UserId, decisionComment);
+        else if (requestedApproval)
+            decidedStep = approval.ApproveCurrentStep(currentStep.Id, membership.UserId, decisionComment);
+        else
+        {
+            decidedStep = currentStep;
+            switch (normalizedDecision)
+            {
+                case "request_changes":
+                case "changes_requested":
+                    approval.MarkChangesRequested(decisionComment);
+                    break;
+                case "cancel":
+                case "cancelled":
+                    approval.MarkCancelled(decisionComment);
+                    break;
+                case "expire":
+                case "expired":
+                    approval.MarkExpired(decisionComment);
+                    break;
+                case "revoke":
+                case "revoked":
+                    approval.MarkRevoked(decisionComment);
+                    break;
+                case "supersede":
+                case "superseded":
+                    approval.MarkSuperseded(decisionComment);
+                    break;
+                default:
+                    throw new InvalidOperationException("Unsupported approval transition.");
+            }
+        }
         if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty)
         {
             var decisionChain = CloneNodes(approval.DecisionChain);
@@ -276,9 +314,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             approval.SetDecisionChain(decisionChain);
         }
 
-        EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
+        EnqueueApprovalUpdatedEvent(approval, approval.Status.ToStorageValue());
         var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
-        await WriteDecisionAuditAsync(approval, decidedStep, membership.UserId, rejected, cancellationToken);
+        if (requestedApproval || rejected)
+        {
+            await WriteDecisionAuditAsync(approval, decidedStep, membership.UserId, rejected, cancellationToken);
+        }
 
         var finalized = approval.Status != ApprovalRequestStatus.Pending;
         if (finalized)
@@ -297,6 +338,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        await SynchronizeFinanceAutonomyApprovalAsync(approval, cancellationToken);
         if (finalized &&
             approval.Status == ApprovalRequestStatus.Approved &&
             ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) == ApprovalTargetEntityType.FinanceIntegrationWrite)
@@ -339,6 +381,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             {
                 [nameof(approvalId)] = ["Approval request has no current actionable step."]
             });
+        if (RequiresIndependentFinanceReview(approval))
+            throw new ApprovalDecisionForbiddenException(
+                "Standing automation cannot approve a Finance action that requires independent human review.");
         var comment = $"Automatically approved by {grant.AgentDisplayName} under supplier trust rule {grant.GrantId:N} for {grant.SupplierName} ({grant.Stage}).";
         var decidedStep = approval.ApproveCurrentStep(currentStep.Id, grant.GrantorUserId, comment);
         EnqueueApprovalUpdatedEvent(approval, "automatically_approved");
@@ -1017,12 +1062,17 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.ApprovalId)] = ["Approval id is required."] });
         }
 
-        if (!string.Equals(command.Decision, "approve", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(command.Decision, "approved", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(command.Decision, "reject", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(command.Decision, "rejected", StringComparison.OrdinalIgnoreCase))
+        var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.Decision)] = ["Decision must be approve or reject."] });
+            "approve", "approved", "reject", "rejected", "request_changes", "changes_requested",
+            "cancel", "cancelled", "expire", "expired", "revoke", "revoked", "supersede", "superseded"
+        };
+        if (!supported.Contains(command.Decision))
+        {
+            throw new ApprovalValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(command.Decision)] = ["Decision must be approve, reject, request_changes, cancel, expire, revoke, or supersede."]
+            });
         }
 
         if (command.Comment?.Trim().Length > 2000)
@@ -1942,6 +1992,15 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             new("operating_plan", id.ToString("N"), previousState, currentState, "operating_plans");
     }
 
+    private async Task SynchronizeFinanceAutonomyApprovalAsync(
+        ApprovalRequest approval, CancellationToken cancellationToken)
+    {
+        if (!approval.ThresholdContext.ContainsKey("financeAutonomy")) return;
+        var coordinator = _serviceProvider.GetService<IFinanceAutonomyApprovalCoordinator>();
+        if (coordinator is not null)
+            await coordinator.ProcessApprovalAsync(approval.CompanyId, approval.Id, cancellationToken);
+    }
+
     private bool IsFinanceToolAttempt(ToolExecutionAttempt attempt) =>
         _serviceProvider.GetRequiredService<ICompanyToolRegistry>()
             .TryGetTool(attempt.ToolName, out var registration) &&
@@ -2018,6 +2077,115 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 FinanceApprovalContinuationReasonCodes.BindingMissing,
                 "binding_missing_or_invalid",
                 "The Finance approval is not bound to a current immutable action. Create and review a new request.");
+        }
+
+        FinanceAutonomyApprovalContextDto? autonomyContext = null;
+        if (binding["financeAutonomy"] is JsonObject autonomyNode)
+        {
+            try
+            {
+                autonomyContext = JsonSerializer.Deserialize<FinanceAutonomyApprovalContextDto>(
+                    autonomyNode.ToJsonString(), new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch (JsonException)
+            {
+                return Invalid(
+                    FinanceApprovalContinuationReasonCodes.BindingMismatch,
+                    "finance_autonomy_context_invalid",
+                    "The autonomous Finance approval context is invalid. Create and review a new request.");
+            }
+            if (autonomyContext is null)
+                return Invalid(
+                    FinanceApprovalContinuationReasonCodes.BindingMismatch,
+                    "finance_autonomy_context_missing",
+                    "The autonomous Finance approval context is missing. Create and review a new request.");
+
+            var autonomyState = await _dbContext.FinanceAutonomyRunSteps.IgnoreQueryFilters().AsNoTracking()
+                .Where(step => step.CompanyId == approval.CompanyId && step.Id == autonomyContext.StepId &&
+                               step.RunId == autonomyContext.RunId)
+                .Select(step => new
+                {
+                    Step = step,
+                    step.Run.AgentId,
+                    step.Run.GrantId,
+                    step.Run.GrantVersionId,
+                    step.Run.GrantVersionNumber,
+                    step.Run.CapabilityId,
+                    step.Run.Trigger,
+                    step.Run.PlanHash,
+                    step.Run.PlanVersion,
+                    step.Run.EvidenceHash,
+                    step.Run.EvidenceObservedUtc,
+                    step.Run.BudgetHash,
+                    step.Run.PolicyVersion,
+                    step.Run.CatalogueVersion,
+                    ActionCount = step.Run.Steps.Count,
+                    RunStatus = step.Run.Status
+                })
+                .SingleOrDefaultAsync(cancellationToken);
+            var exactAutonomyState = autonomyState is not null &&
+                autonomyState.AgentId == attempt.AgentId &&
+                autonomyState.GrantId == autonomyContext.GrantId &&
+                autonomyState.GrantVersionId == autonomyContext.GrantVersionId &&
+                autonomyState.GrantVersionNumber == autonomyContext.GrantVersionNumber &&
+                string.Equals(autonomyState.CapabilityId, autonomyContext.CapabilityId, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.Trigger, autonomyContext.Trigger, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.PlanHash, autonomyContext.PlanHash, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.PlanVersion, autonomyContext.PlanVersion, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.EvidenceHash, autonomyContext.EvidenceHash, StringComparison.Ordinal) &&
+                autonomyState.EvidenceObservedUtc == autonomyContext.EvidenceObservedUtc &&
+                string.Equals(autonomyState.BudgetHash, autonomyContext.BudgetHash, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.PolicyVersion, autonomyContext.AutonomyPolicyVersion, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.CatalogueVersion, autonomyContext.CatalogueVersion, StringComparison.Ordinal) &&
+                autonomyState.RunStatus == FinanceAutonomyRunStatus.AwaitingApproval &&
+                autonomyState.Step.Status == FinanceAutonomyStepStatus.AwaitingApproval &&
+                autonomyState.Step.ApprovalRequestId == approval.Id &&
+                autonomyState.Step.ToolExecutionAttemptId == attempt.Id &&
+                string.Equals(autonomyState.Step.StepKey, autonomyContext.StepKey, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.Step.RequestedEffectHash, autonomyContext.RequestedEffectHash, StringComparison.Ordinal) &&
+                string.Equals(autonomyState.Step.BusinessIdempotencyKey, autonomyContext.BusinessIdempotencyKey, StringComparison.Ordinal) &&
+                autonomyState.Step.AttemptCount == autonomyContext.AttemptNumber &&
+                autonomyState.ActionCount == autonomyContext.ActionCount;
+            if (!exactAutonomyState)
+                return Invalid(
+                    FinanceApprovalContinuationReasonCodes.BindingMismatch,
+                    "finance_autonomy_run_or_step_changed",
+                    "The approved autonomous plan or step changed after review. Create and review a new request.");
+
+            var currentAutonomyDecision = await _serviceProvider.GetRequiredService<IFinanceAutonomyPolicyEvaluator>()
+                .EvaluateAsync(new FinanceAutonomyEvaluationRequest(
+                    approval.CompanyId, attempt.AgentId, autonomyContext.CapabilityId,
+                    autonomyContext.Trigger, autonomyState!.Step.ActionClass, attempt.ToolName,
+                    EvidenceObservedUtc: autonomyContext.EvidenceObservedUtc,
+                    ActionCount: autonomyContext.ActionCount), cancellationToken);
+            if (!currentAutonomyDecision.IsAllowed || currentAutonomyDecision.GrantId != autonomyContext.GrantId ||
+                currentAutonomyDecision.GrantVersionId != autonomyContext.GrantVersionId ||
+                currentAutonomyDecision.GrantVersionNumber != autonomyContext.GrantVersionNumber ||
+                !string.Equals(currentAutonomyDecision.PolicyVersion, autonomyContext.AutonomyPolicyVersion, StringComparison.Ordinal) ||
+                !string.Equals(currentAutonomyDecision.CatalogueVersion, autonomyContext.CatalogueVersion, StringComparison.Ordinal) ||
+                !string.Equals(currentAutonomyDecision.AuthorityVersion, currentAuthority.AuthorityVersion, StringComparison.Ordinal) ||
+                !string.Equals(currentAutonomyDecision.AuthorityHash, currentAuthority.AuthorityHash, StringComparison.Ordinal))
+                return Invalid(
+                    FinanceApprovalContinuationReasonCodes.EligibilityFailed,
+                    currentAutonomyDecision.ReasonCode,
+                    "The autonomous Finance grant, eligibility, evidence, or human-only boundary changed. Create and review a new request.");
+
+            var operatingBlocked = await _dbContext.CompanyOperatingConfigurations.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(item => item.CompanyId == approval.CompanyId && (item.EmergencyStopped || item.IsPaused), cancellationToken);
+            var circuitOpen = await _dbContext.FinanceAutonomyCircuitBreakers.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(item => item.CompanyId == approval.CompanyId && item.AgentId == attempt.AgentId &&
+                                  item.CapabilityId == autonomyContext.CapabilityId &&
+                                  item.Status == FinanceAutonomyCircuitStatus.Open, cancellationToken);
+            var budgetReservationValid = await _dbContext.FinanceAutonomyBudgetReservations.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(item => item.CompanyId == approval.CompanyId && item.RunId == autonomyContext.RunId &&
+                                  item.StepId == autonomyContext.StepId && item.AttemptNumber == autonomyContext.AttemptNumber &&
+                                  item.Status == FinanceAutonomyBudgetReservationStatus.Reconciled, cancellationToken);
+            if (operatingBlocked || circuitOpen || !budgetReservationValid)
+                return Invalid(
+                    FinanceApprovalContinuationReasonCodes.EligibilityFailed,
+                    operatingBlocked ? "finance_autonomy_operating_boundary_blocked" :
+                    circuitOpen ? FinanceAutonomyBudgetReasonCodes.CircuitOpen : "finance_autonomy_budget_reservation_invalid",
+                    "The autonomous Finance operating or budget boundary no longer permits continuation.");
         }
 
         var expiresUtc = FinanceApprovalContinuationBinding.ReadBindingUtc(binding, "expiresUtc");

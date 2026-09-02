@@ -9,7 +9,7 @@ namespace VirtualCompany.Api.Tests;
 public sealed class RoleAgentCadenceBackgroundServiceTests
 {
     [Fact]
-    public async Task Startup_daily_run_enters_agent_company_scope_and_does_not_run_weekly_or_monthly()
+    public async Task Finance_cadence_routes_through_durable_trigger_service_instead_of_direct_analysis()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -18,6 +18,7 @@ public sealed class RoleAgentCadenceBackgroundServiceTests
         var agentId = Guid.NewGuid();
         var companyContext = new RequestCompanyContextAccessor();
         var analysis = new CapturingFinanceAgentAnalysisService(companyContext);
+        var triggers = new CapturingFinanceAutonomyTriggerService();
         var services = new ServiceCollection();
         services.AddSingleton(connection);
         services.AddSingleton<ICompanyContextAccessor>(companyContext);
@@ -26,6 +27,7 @@ public sealed class RoleAgentCadenceBackgroundServiceTests
         services.AddSingleton(analysis);
         services.AddScoped<IFinanceAgentAnalysisService>(provider =>
             provider.GetRequiredService<CapturingFinanceAgentAnalysisService>());
+        services.AddSingleton<IFinanceAutonomyTriggerService>(triggers);
 
         await using var provider = services.BuildServiceProvider();
         await using (var seedScope = provider.CreateAsyncScope())
@@ -60,12 +62,26 @@ public sealed class RoleAgentCadenceBackgroundServiceTests
 
         await worker.RunDueCadencesAsync(CancellationToken.None, ignoreDailyHour: true, dailyOnly: true);
 
-        Assert.Equal(1, analysis.InvocationCount);
-        Assert.Equal(companyId, analysis.ObservedCompanyId);
-        Assert.Equal(companyId, analysis.ObservedContextCompanyId);
-        Assert.Equal(agentId, analysis.ObservedAgentId);
-        Assert.Equal("daily", analysis.ObservedCadence);
+        Assert.Equal(0, analysis.InvocationCount);
+        Assert.Equal(1, triggers.InvocationCount);
         Assert.Null(companyContext.CompanyId);
+    }
+
+    private sealed class CapturingFinanceAutonomyTriggerService : IFinanceAutonomyTriggerService
+    {
+        public int InvocationCount { get; private set; }
+        public Task<FinanceAutonomyTriggerBatchResult> ProcessDueSchedulesAsync(DateTime utcNow, string workerId,
+            int batchSize, CancellationToken cancellationToken)
+        {
+            InvocationCount++;
+            return Task.FromResult(new FinanceAutonomyTriggerBatchResult(0, 0, 0, 0, 0, 0));
+        }
+        public Task<FinanceAutonomyTriggerProcessResult> ProcessEventAsync(FinanceAutonomyEventSignal signal,
+            string workerId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<FinanceAutonomyTriggerQueryResult> GetOperationalStateAsync(Guid companyId, int take,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<FinanceAutonomyTriggerCursorDto> RetryDeadLetterAsync(Guid companyId, Guid cursorId,
+            long expectedVersion, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class CapturingFinanceAgentAnalysisService(ICompanyContextAccessor companyContext)

@@ -19,7 +19,29 @@ public sealed record ExecuteAgentToolCommand(
     string? CorrelationId = null,
     Guid? DelegationAuthorityId = null,
     string? ExpectedAuthorityVersion = null,
-    string? ExpectedAuthorityHash = null);
+    string? ExpectedAuthorityHash = null,
+    FinanceAutonomyApprovalContextDto? FinanceAutonomyContext = null);
+
+public sealed record FinanceAutonomyApprovalContextDto(
+    Guid RunId,
+    Guid StepId,
+    string StepKey,
+    Guid GrantId,
+    Guid GrantVersionId,
+    int GrantVersionNumber,
+    string CapabilityId,
+    string Trigger,
+    string PlanHash,
+    string PlanVersion,
+    string RequestedEffectHash,
+    string EvidenceHash,
+    DateTime EvidenceObservedUtc,
+    string BudgetHash,
+    string AutonomyPolicyVersion,
+    string CatalogueVersion,
+    string BusinessIdempotencyKey,
+    int AttemptNumber,
+    int ActionCount = 1);
 
 public sealed record ExecuteAgentToolResultDto(
     Guid ExecutionId,

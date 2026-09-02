@@ -65,11 +65,15 @@ public sealed class RoleAgentCadenceBackgroundService(
         bool dailyOnly = false)
     {
         var now = DateTime.UtcNow;
-        if (!ignoreDailyHour && now.Hour < Math.Clamp(_options.DailyHourUtc, 0, 23)) return;
         await using var scope = scopes.CreateAsyncScope();
+        var financeTriggers = scope.ServiceProvider.GetService<IFinanceAutonomyTriggerService>();
+        var financeTriggerOptions = scope.ServiceProvider.GetService<IOptions<FinanceAutonomyTriggerOptions>>()?.Value;
+        if (financeTriggers is not null && financeTriggerOptions?.Enabled != false)
+            await financeTriggers.ProcessDueSchedulesAsync(now, $"role-cadence:{Environment.MachineName}:{Environment.ProcessId}", 50, cancellationToken);
+        if (!ignoreDailyHour && now.Hour < Math.Clamp(_options.DailyHourUtc, 0, 23)) return;
         var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var agents = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(x => x.Status == AgentStatus.Active &&
-                (x.Department == "Finance" || x.Department == "Sales" || x.Department == "Marketing" ||
+                (x.Department == "Sales" || x.Department == "Marketing" ||
                  x.Department == "Support" || x.Department == "Customer Support"))
             .Select(x => new CadenceAgent(x.CompanyId, x.Id, x.Department)).ToListAsync(cancellationToken);
         foreach (var agent in agents)
@@ -100,9 +104,7 @@ public sealed class RoleAgentCadenceBackgroundService(
             $"Prepare the {cadence} manager brief and ranked review queue.", DateTime.UtcNow, cadence);
         try
         {
-            if (agent.Department.Equals("Finance", StringComparison.OrdinalIgnoreCase))
-                await services.GetRequiredService<IFinanceAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
-            else if (agent.Department.Equals("Sales", StringComparison.OrdinalIgnoreCase))
+            if (agent.Department.Equals("Sales", StringComparison.OrdinalIgnoreCase))
                 await services.GetRequiredService<ISalesAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
             else if (agent.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase))
             {

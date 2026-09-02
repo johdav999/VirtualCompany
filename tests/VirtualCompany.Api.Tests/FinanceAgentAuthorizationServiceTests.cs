@@ -62,6 +62,28 @@ public sealed class FinanceAgentAuthorizationServiceTests
         Assert.Null(decision.ActorId);
     }
 
+    [Fact]
+    public async Task Proactive_context_requires_the_explicit_finance_autonomy_policy_in_addition_to_actor_permission()
+    {
+        await using var fixture = await Fixture.CreateAsync(
+            CompanyMembershipRole.Owner, new DenyAutonomyPolicy());
+        var autonomy = new FinanceAutonomyEvaluationRequest(
+            fixture.CompanyId, fixture.AgentId, FinanceAgentCoverageCapabilityIds.DailyCash,
+            FinanceAutonomyTriggers.Schedule, "read", "get_cash_balance",
+            1, null, DateTime.UtcNow);
+
+        var decision = await fixture.Service.AuthorizeAsync(
+            fixture.Request("get_cash_balance", ToolActionType.Read) with
+            {
+                ActorUserId = fixture.ActorUserId,
+                IsDurableRunContinuation = true,
+                AutonomyEvaluation = autonomy
+            }, default);
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(FinanceAutonomyDecisionReasonCodes.GrantMissing, decision.ReasonCode);
+    }
+
     [Theory]
     [InlineData("valid", true, FinanceAgentAuthorizationReasonCodes.Authorized)]
     [InlineData("expired", false, FinanceAgentAuthorizationReasonCodes.DelegationExpired)]
@@ -131,7 +153,9 @@ public sealed class FinanceAgentAuthorizationServiceTests
         public Guid ActorUserId { get; }
         public Guid WorkflowId { get; }
 
-        public static async Task<Fixture> CreateAsync(CompanyMembershipRole role)
+        public static async Task<Fixture> CreateAsync(
+            CompanyMembershipRole role,
+            IFinanceAutonomyPolicyEvaluator? autonomyPolicy = null)
         {
             var companyId = Guid.NewGuid();
             var agentId = Guid.NewGuid();
@@ -145,7 +169,8 @@ public sealed class FinanceAgentAuthorizationServiceTests
             db.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, role, CompanyMembershipStatus.Active));
             await db.SaveChangesAsync();
 
-            var service = new FinanceAgentAuthorizationService(db, new AnonymousCurrentUserAccessor(), new NullMembershipResolver());
+            var service = new FinanceAgentAuthorizationService(
+                db, new AnonymousCurrentUserAccessor(), new NullMembershipResolver(), autonomyPolicy);
             return new Fixture(db, service, companyId, agentId, actorUserId, workflowId);
         }
 
@@ -167,5 +192,17 @@ public sealed class FinanceAgentAuthorizationServiceTests
     {
         public Task<ResolvedCompanyMembershipContext?> ResolveAsync(CancellationToken cancellationToken) => Task.FromResult<ResolvedCompanyMembershipContext?>(null);
         public Task<ResolvedCompanyMembershipContext?> ResolveAsync(Guid companyId, CancellationToken cancellationToken) => Task.FromResult<ResolvedCompanyMembershipContext?>(null);
+    }
+
+    private sealed class DenyAutonomyPolicy : IFinanceAutonomyPolicyEvaluator
+    {
+        public Task<FinanceAutonomyDecisionDto> EvaluateAsync(
+            FinanceAutonomyEvaluationRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceAutonomyDecisionDto(
+                false, FinanceAutonomyDecisionReasonCodes.GrantMissing,
+                "No active Finance autonomy grant exists.",
+                null, null, null, null, false, false, 0, 0, null,
+                FinanceAutonomyPolicyVersions.V1, null, null, null, DateTime.UtcNow));
     }
 }

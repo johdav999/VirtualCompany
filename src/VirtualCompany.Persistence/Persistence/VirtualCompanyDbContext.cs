@@ -64,6 +64,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceConversationRunRevision> FinanceConversationRunRevisions => Set<FinanceConversationRunRevision>();
     public DbSet<FinanceConversationRunAttempt> FinanceConversationRunAttempts => Set<FinanceConversationRunAttempt>();
     public DbSet<FinanceAgentDelegationAuthority> FinanceAgentDelegationAuthorities => Set<FinanceAgentDelegationAuthority>();
+    public DbSet<FinanceAutonomyGrant> FinanceAutonomyGrants => Set<FinanceAutonomyGrant>();
+    public DbSet<FinanceAutonomyGrantVersion> FinanceAutonomyGrantVersions => Set<FinanceAutonomyGrantVersion>();
+    public DbSet<FinanceAutonomyControl> FinanceAutonomyControls => Set<FinanceAutonomyControl>();
     public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
     public DbSet<TriggerExecutionAttempt> TriggerExecutionAttempts => Set<TriggerExecutionAttempt>();
     public DbSet<AgentScheduledTriggerEnqueueWindow> AgentScheduledTriggerEnqueueWindows => Set<AgentScheduledTriggerEnqueueWindow>();
@@ -565,6 +568,18 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AgentHandoff> AgentHandoffs => Set<AgentHandoff>();
     public DbSet<AgentMemoryCandidate> AgentMemoryCandidates => Set<AgentMemoryCandidate>();
     public DbSet<AgentAiQualityEvent> AgentAiQualityEvents => Set<AgentAiQualityEvent>();
+    public DbSet<FinanceAutonomyRun> FinanceAutonomyRuns => Set<FinanceAutonomyRun>();
+    public DbSet<FinanceAutonomyRunStep> FinanceAutonomyRunSteps => Set<FinanceAutonomyRunStep>();
+    public DbSet<FinanceAutonomyStepAttempt> FinanceAutonomyStepAttempts => Set<FinanceAutonomyStepAttempt>();
+    public DbSet<FinanceAutonomyRunHistory> FinanceAutonomyRunHistory => Set<FinanceAutonomyRunHistory>();
+    public DbSet<FinanceAutonomyRunSourceReference> FinanceAutonomyRunSources => Set<FinanceAutonomyRunSourceReference>();
+    public DbSet<FinanceAutonomyTriggerCursor> FinanceAutonomyTriggerCursors => Set<FinanceAutonomyTriggerCursor>();
+    public DbSet<FinanceAutonomyTriggerEvent> FinanceAutonomyTriggerEvents => Set<FinanceAutonomyTriggerEvent>();
+    public DbSet<FinanceAutonomyBudgetPolicy> FinanceAutonomyBudgetPolicies => Set<FinanceAutonomyBudgetPolicy>();
+    public DbSet<FinanceAutonomyBudgetWindow> FinanceAutonomyBudgetWindows => Set<FinanceAutonomyBudgetWindow>();
+    public DbSet<FinanceAutonomyBudgetReservation> FinanceAutonomyBudgetReservations => Set<FinanceAutonomyBudgetReservation>();
+    public DbSet<FinanceAutonomyCircuitBreaker> FinanceAutonomyCircuitBreakers => Set<FinanceAutonomyCircuitBreaker>();
+    public DbSet<FinanceAutonomyBudgetAlert> FinanceAutonomyBudgetAlerts => Set<FinanceAutonomyBudgetAlert>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -1121,6 +1136,18 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<AgentHandoff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentMemoryCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentAiQualityEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyRunStep>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyStepAttempt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyRunHistory>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyRunSourceReference>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyTriggerCursor>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyTriggerEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyBudgetPolicy>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyBudgetWindow>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyBudgetReservation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyCircuitBreaker>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyBudgetAlert>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesAcquisitionCampaign>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesSourceTouch>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesSourceAttribution>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -2016,6 +2043,10 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceConversationRunStep>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceConversationRunRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceConversationRunAttempt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyGrantVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceAutonomyControl>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+
     }
 
     private void ApplySqliteCompatibilityMappings(ModelBuilder modelBuilder)
@@ -2069,6 +2100,7 @@ public sealed class VirtualCompanyDbContext : DbContext
             table.HasCheckConstraint(
                 "CK_deal_intelligence_signals_explanation_required",
                 "LENGTH(TRIM(explanation)) > 0"));
+
     }
 }
 

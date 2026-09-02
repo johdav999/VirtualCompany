@@ -41,6 +41,14 @@ public static class CompanyOutboxTopics
     public const string FinancePaymentCreated = SupportedPlatformEventTypeRegistry.FinancePaymentCreated;
     public const string FinanceSimulationDayAdvanced = SupportedPlatformEventTypeRegistry.FinanceSimulationDayAdvanced;
     public const string FinanceThresholdBreached = SupportedPlatformEventTypeRegistry.FinanceThresholdBreached;
+    public const string FinanceUncategorizedTransactionDetected = SupportedPlatformEventTypeRegistry.FinanceUncategorizedTransactionDetected;
+    public const string FinanceOverdueReceivableDetected = SupportedPlatformEventTypeRegistry.FinanceOverdueReceivableDetected;
+    public const string FinanceCashEvidenceStale = SupportedPlatformEventTypeRegistry.FinanceCashEvidenceStale;
+    public const string FinanceCloseBlockerChanged = SupportedPlatformEventTypeRegistry.FinanceCloseBlockerChanged;
+    public const string FinanceReconciliationFailed = SupportedPlatformEventTypeRegistry.FinanceReconciliationFailed;
+    public const string FinanceImportFailed = SupportedPlatformEventTypeRegistry.FinanceImportFailed;
+    public const string FinanceComplianceObligationExpiring = SupportedPlatformEventTypeRegistry.FinanceComplianceObligationExpiring;
+    public const string FinanceBackgroundWorkCompleted = SupportedPlatformEventTypeRegistry.FinanceBackgroundWorkCompleted;
     public const string SalesEmailReceived = SupportedPlatformEventTypeRegistry.SalesEmailReceived;
     public const string SalesLeadDetected = SupportedPlatformEventTypeRegistry.SalesLeadDetected;
     public const string SalesLeadQualified = SupportedPlatformEventTypeRegistry.SalesLeadQualified;

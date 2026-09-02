@@ -1,4 +1,5 @@
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Application.Finance;
 
 namespace VirtualCompany.Application.Agents;
 
@@ -39,6 +40,7 @@ public static class FinanceAgentAuthorizationReasonCodes
     public const string DelegationCapabilityMismatch = "finance_delegation_capability_mismatch";
     public const string DelegationActionMismatch = "finance_delegation_action_mismatch";
     public const string DelegationScopeMismatch = "finance_delegation_scope_mismatch";
+    public const string AutonomyContextMismatch = "finance_autonomy_context_mismatch";
 }
 
 public sealed record FinanceAgentAuthorizationEvidenceDto(
@@ -82,7 +84,8 @@ public sealed record FinanceAgentAuthorizationRequest(
     Guid? ActorUserId = null,
     Guid? DelegationAuthorityId = null,
     bool IsApprovedContinuation = false,
-    bool IsDurableRunContinuation = false);
+    bool IsDurableRunContinuation = false,
+    FinanceAutonomyEvaluationRequest? AutonomyEvaluation = null);
 
 public interface IFinanceAgentAuthorizationService
 {

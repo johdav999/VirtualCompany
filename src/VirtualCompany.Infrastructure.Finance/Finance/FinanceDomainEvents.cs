@@ -46,6 +46,45 @@ internal static class FinanceDomainEvents
             effectiveCorrelationId,
             idempotencyKey: $"platform-event:{transaction.CompanyId:N}:{eventId}",
             causationId: transaction.Id.ToString("N"));
+
+        if (string.Equals(transaction.TransactionType, "uncategorized", StringComparison.OrdinalIgnoreCase))
+            EnqueueAutonomySignal(outboxEnqueuer, transaction.CompanyId,
+                SupportedPlatformEventTypeRegistry.FinanceUncategorizedTransactionDetected,
+                "finance_transaction", transaction.Id.ToString("N"),
+                BuildSourceEntityVersion(transaction.CreatedUtc), occurredAtUtc,
+                effectiveCorrelationId, "New uncategorized Finance transaction");
+    }
+
+    public static void EnqueueAutonomySignal(ICompanyOutboxEnqueuer? outboxEnqueuer, Guid companyId,
+        string eventType, string sourceEntityType, string sourceEntityId, string sourceEntityVersion,
+        DateTime occurredAtUtc, string? correlationId, string safeLabel)
+    {
+        if (outboxEnqueuer is null || companyId == Guid.Empty) return;
+        var allowed = new HashSet<string>(StringComparer.Ordinal)
+        {
+            SupportedPlatformEventTypeRegistry.FinanceUncategorizedTransactionDetected,
+            SupportedPlatformEventTypeRegistry.FinanceOverdueReceivableDetected,
+            SupportedPlatformEventTypeRegistry.FinanceCashEvidenceStale,
+            SupportedPlatformEventTypeRegistry.FinanceCloseBlockerChanged,
+            SupportedPlatformEventTypeRegistry.FinanceReconciliationFailed,
+            SupportedPlatformEventTypeRegistry.FinanceImportFailed,
+            SupportedPlatformEventTypeRegistry.FinanceComplianceObligationExpiring,
+            SupportedPlatformEventTypeRegistry.FinanceBackgroundWorkCompleted
+        };
+        if (!allowed.Contains(eventType)) throw new ArgumentOutOfRangeException(nameof(eventType));
+        var version = string.IsNullOrWhiteSpace(sourceEntityVersion) ? "v1" : sourceEntityVersion.Trim();
+        var eventId = $"{eventType}:{sourceEntityType}:{sourceEntityId}:{version}";
+        var effectiveCorrelationId = ResolveCorrelationId(correlationId, eventId);
+        outboxEnqueuer.Enqueue(companyId, eventType,
+            new PlatformEventEnvelope(eventId, eventType, NormalizeUtc(occurredAtUtc), companyId,
+                effectiveCorrelationId, sourceEntityType, sourceEntityId,
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["sourceEntityVersion"] = JsonValue.Create(version),
+                    ["safeLabel"] = JsonValue.Create(safeLabel)
+                }),
+            effectiveCorrelationId, idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
+            causationId: sourceEntityId);
     }
 
     public static void EnqueueBillCreated(

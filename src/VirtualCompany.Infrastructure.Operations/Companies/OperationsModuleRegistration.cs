@@ -63,6 +63,7 @@ public static class OperationsModuleRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<ICommunicationLanguageService, CommunicationLanguageService>();
 
         services.AddOptions<CompanyDocumentOptions>()
@@ -222,6 +223,20 @@ public static class OperationsModuleRegistration
         services.AddHostedService<BriefingSchedulerBackgroundService>();
         services.AddOptions<RoleAgentCadenceOptions>().Bind(configuration.GetSection(RoleAgentCadenceOptions.SectionName));
         services.AddHostedService<RoleAgentCadenceBackgroundService>();
+        services.AddOptions<FinanceAutonomyTriggerOptions>().Bind(configuration.GetSection(FinanceAutonomyTriggerOptions.SectionName));
+        services.AddHostedService<FinanceAutonomyTriggerBackgroundService>();
+        services.AddOptions<FinanceAutonomyExecutorOptions>()
+            .Bind(configuration.GetSection(FinanceAutonomyExecutorOptions.SectionName))
+            .Validate(options => options.PollIntervalSeconds is >= 2 and <= 3600 && options.BatchSize is >= 1 and <= 100,
+                "Finance autonomy executor options are outside supported safety boundaries.")
+            .ValidateOnStart();
+        services.AddHostedService<FinanceAutonomyExecutorBackgroundService>();
+        services.AddOptions<FinanceAutonomyApprovalOptions>()
+            .Bind(configuration.GetSection(FinanceAutonomyApprovalOptions.SectionName))
+            .Validate(options => options.PollIntervalSeconds is >= 2 and <= 3600 && options.BatchSize is >= 1 and <= 100,
+                "Finance autonomy approval options are outside supported safety boundaries.")
+            .ValidateOnStart();
+        services.AddHostedService<FinanceAutonomyApprovalBackgroundService>();
         services.AddHostedService<BriefingUpdateJobBackgroundService>();
         services.AddHostedService<WorkflowProgressionBackgroundService>();
         services.AddHostedService<TriggerEvaluationBackgroundService>();
@@ -294,6 +309,19 @@ public static class OperationsModuleRegistration
         services.AddScoped<IAgentEffectiveAuthorityResolver, AgentEffectiveAuthorityResolver>();
         services.AddScoped<IAgentCapabilityCatalog, AgentCapabilityCatalog>();
         services.AddScoped<IFinanceAgentCoverageCatalogue, EffectiveFinanceAgentCoverageCatalogue>();
+        services.AddScoped<FinanceAutonomyGrantService>();
+        services.AddScoped<IFinanceAutonomyGrantService>(provider => provider.GetRequiredService<FinanceAutonomyGrantService>());
+        services.AddScoped<IFinanceAutonomyPolicyEvaluator>(provider => provider.GetRequiredService<FinanceAutonomyGrantService>());
+        services.AddScoped<FinanceAutonomyRunService>();
+        services.AddScoped<IFinanceAutonomyRunService>(provider => provider.GetRequiredService<FinanceAutonomyRunService>());
+        services.AddScoped<IFinanceAutonomyExecutor, FinanceAutonomyExecutor>();
+        services.AddScoped<IFinanceAutonomyWorkflowTemplateService, FinanceAutonomyWorkflowTemplateService>();
+        services.AddScoped<IFinanceAutonomyWorkflowOutcomeService, FinanceAutonomyWorkflowOutcomeService>();
+        services.AddScoped<IFinanceAutonomyApprovalCoordinator, FinanceAutonomyApprovalCoordinator>();
+        services.AddScoped<FinanceAutonomyBudgetService>();
+        services.AddScoped<IFinanceAutonomyBudgetService>(provider => provider.GetRequiredService<FinanceAutonomyBudgetService>());
+        services.AddScoped<FinanceAutonomyTriggerService>();
+        services.AddScoped<IFinanceAutonomyTriggerService>(provider => provider.GetRequiredService<FinanceAutonomyTriggerService>());
         services.AddScoped<IAgentReasoningGateway, SharedAgentReasoningGateway>();
         services.AddScoped<IFinancePlanningContextProjector, FinancePlanningContextProjector>();
         services.AddScoped<IFinanceToolPlanner, FinanceToolPlanner>();

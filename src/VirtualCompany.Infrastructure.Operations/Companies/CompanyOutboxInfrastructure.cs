@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -204,6 +206,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IGuidedResearchContinuationService? _guidedResearch;
     private readonly ICompanyOnboardingDocumentGenerationService? _onboardingDocuments;
     private readonly IPaymentBatchExecutionDispatcher? _paymentExecutionDispatcher;
+    private readonly IFinanceAutonomyTriggerService? _financeAutonomyTriggers;
+    private readonly IFinanceAutonomyBudgetService? _financeAutonomyBudgets;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -231,7 +235,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null,
         IGuidedResearchContinuationService? guidedResearch = null,
         ICompanyOnboardingDocumentGenerationService? onboardingDocuments = null,
-        IPaymentBatchExecutionDispatcher? paymentExecutionDispatcher = null)
+        IPaymentBatchExecutionDispatcher? paymentExecutionDispatcher = null,
+        IFinanceAutonomyTriggerService? financeAutonomyTriggers = null,
+        IFinanceAutonomyBudgetService? financeAutonomyBudgets = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -259,6 +265,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _guidedResearch = guidedResearch;
         _onboardingDocuments = onboardingDocuments;
         _paymentExecutionDispatcher = paymentExecutionDispatcher;
+        _financeAutonomyTriggers = financeAutonomyTriggers;
+        _financeAutonomyBudgets = financeAutonomyBudgets;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -347,6 +355,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                         nextAttemptAtUtc);
                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, nextAttemptAtUtc, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
+                    await RecordFinanceAutonomyOutboxFailureAsync(message, cancellationToken);
                     retryCount++;
                     break;
                 }
@@ -366,6 +375,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                         failureMessage);
                     await _backgroundExecutionRecorder.ApplyOutcomeAsync(executionRecord, execution, null, cancellationToken);
                     await _dbContext.SaveChangesAsync(cancellationToken);
+                    await RecordFinanceAutonomyOutboxFailureAsync(message, cancellationToken);
                     handledCount++;
                     permanentFailureCount++;
                     break;
@@ -391,6 +401,39 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
     private static string ResolveFailureMessage(BackgroundJobExecutionResult execution) => string.IsNullOrWhiteSpace(execution.ErrorMessage) ? "Unhandled company outbox processing failure." : execution.ErrorMessage;
     private TimeSpan ClaimTimeout => TimeSpan.FromSeconds(Math.Max(5, _options.Value.ClaimTimeoutSeconds));
+
+    private async Task RecordFinanceAutonomyOutboxFailureAsync(CompanyOutboxMessage message,
+        CancellationToken cancellationToken)
+    {
+        if (_financeAutonomyBudgets is null || !IsFinanceAutonomyEventTopic(message.Topic)) return;
+        var scopes = (await _dbContext.FinanceAutonomyTriggerCursors.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == message.CompanyId && x.TriggerKind == "event" &&
+                    x.Status != FinanceAutonomyTriggerCursorStatus.DeadLettered)
+                .Select(x => new { x.AgentId, x.CapabilityId }).ToListAsync(cancellationToken))
+            .DistinctBy(x => (x.AgentId, x.CapabilityId)).ToArray();
+        foreach (var scope in scopes)
+        {
+            try
+            {
+                await _financeAutonomyBudgets.RecordCircuitSignalAsync(message.CompanyId,
+                    new(scope.AgentId, scope.CapabilityId, FinanceAutonomyCircuitSignals.AuditOutboxFailure,
+                        message.CorrelationId ?? $"finance-outbox:{message.Id:N}",
+                        "Repeated Finance autonomy event delivery failures require operator review."), cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception,
+                    "Unable to record Finance autonomy outbox failure signal for message {OutboxMessageId}.", message.Id);
+            }
+        }
+    }
+
+    private static bool IsFinanceAutonomyEventTopic(string topic) => topic is
+        CompanyOutboxTopics.FinanceUncategorizedTransactionDetected or
+        CompanyOutboxTopics.FinanceOverdueReceivableDetected or CompanyOutboxTopics.FinanceCashEvidenceStale or
+        CompanyOutboxTopics.FinanceCloseBlockerChanged or CompanyOutboxTopics.FinanceReconciliationFailed or
+        CompanyOutboxTopics.FinanceImportFailed or CompanyOutboxTopics.FinanceComplianceObligationExpiring or
+        CompanyOutboxTopics.FinanceBackgroundWorkCompleted or CompanyOutboxTopics.FinanceThresholdBreached;
 
     private async Task<IReadOnlyList<CompanyOutboxMessage>> ClaimBatchAsync(CancellationToken cancellationToken)
     {
@@ -493,6 +536,50 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             message.Id.ToString("N"),
             sourceMetadata);
     }
+
+    private static FinanceAutonomyEventSignal? BuildFinanceAutonomySignal(
+        CompanyOutboxMessage message, PlatformEventEnvelope payload)
+    {
+        var eventType = message.Topic switch
+        {
+            CompanyOutboxTopics.FinanceUncategorizedTransactionDetected => FinanceAutonomyEventTypes.NewUncategorizedTransaction,
+            CompanyOutboxTopics.FinanceOverdueReceivableDetected => FinanceAutonomyEventTypes.OverdueReceivable,
+            CompanyOutboxTopics.FinanceCashEvidenceStale => FinanceAutonomyEventTypes.StaleCashEvidence,
+            CompanyOutboxTopics.FinanceCloseBlockerChanged => FinanceAutonomyEventTypes.CloseTaskBlockerChanged,
+            CompanyOutboxTopics.FinanceReconciliationFailed => FinanceAutonomyEventTypes.ReconciliationFailed,
+            CompanyOutboxTopics.FinanceImportFailed => FinanceAutonomyEventTypes.ImportFailed,
+            CompanyOutboxTopics.FinanceComplianceObligationExpiring => FinanceAutonomyEventTypes.ComplianceObligationExpiring,
+            CompanyOutboxTopics.FinanceBackgroundWorkCompleted => FinanceAutonomyEventTypes.BackgroundWorkCompleted,
+            CompanyOutboxTopics.FinanceTransactionCreated when string.Equals(
+                TryReadMetadataString(payload.Metadata, "category"), "uncategorized", StringComparison.OrdinalIgnoreCase)
+                => FinanceAutonomyEventTypes.NewUncategorizedTransaction,
+            CompanyOutboxTopics.FinanceThresholdBreached => NormalizeFinanceThresholdType(
+                TryReadMetadataString(payload.Metadata, "breachType")),
+            _ => null
+        };
+        if (eventType is null ||
+            (eventType == FinanceAutonomyEventTypes.BackgroundWorkCompleted &&
+             payload.SourceEntityType.StartsWith("finance_autonomy", StringComparison.OrdinalIgnoreCase)))
+            return null;
+        var sourceVersion = TryReadMetadataString(payload.Metadata, "sourceEntityVersion") ?? payload.EventId;
+        var content = $"{payload.EventId}|{sourceVersion}|{payload.SourceEntityType}|{payload.SourceEntityId}|{payload.OccurredAtUtc:O}";
+        var contentHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
+        return new FinanceAutonomyEventSignal(payload.CompanyId, eventType, payload.EventId, sourceVersion,
+            payload.SourceEntityType, payload.SourceEntityId, payload.OccurredAtUtc, payload.OccurredAtUtc,
+            eventType, contentHash, $"{eventType.Replace('_', ' ')} signal",
+            string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId);
+    }
+
+    private static string? NormalizeFinanceThresholdType(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "overdue_receivable" => FinanceAutonomyEventTypes.OverdueReceivable,
+        "stale_cash_evidence" => FinanceAutonomyEventTypes.StaleCashEvidence,
+        "close_task_blocker_changed" => FinanceAutonomyEventTypes.CloseTaskBlockerChanged,
+        "reconciliation_failed" => FinanceAutonomyEventTypes.ReconciliationFailed,
+        "import_failed" => FinanceAutonomyEventTypes.ImportFailed,
+        "compliance_obligation_expiring" => FinanceAutonomyEventTypes.ComplianceObligationExpiring,
+        _ => null
+    };
 
     private async Task DispatchAsync(CompanyOutboxMessage message, CancellationToken cancellationToken)
     {
@@ -683,6 +770,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             case CompanyOutboxTopics.FinancePaymentCreated:
             case CompanyOutboxTopics.FinanceSimulationDayAdvanced:
             case CompanyOutboxTopics.FinanceThresholdBreached:
+            case CompanyOutboxTopics.FinanceUncategorizedTransactionDetected:
+            case CompanyOutboxTopics.FinanceOverdueReceivableDetected:
+            case CompanyOutboxTopics.FinanceCashEvidenceStale:
+            case CompanyOutboxTopics.FinanceCloseBlockerChanged:
+            case CompanyOutboxTopics.FinanceReconciliationFailed:
+            case CompanyOutboxTopics.FinanceImportFailed:
+            case CompanyOutboxTopics.FinanceComplianceObligationExpiring:
+            case CompanyOutboxTopics.FinanceBackgroundWorkCompleted:
             case CompanyOutboxTopics.SalesEmailReceived:
             case CompanyOutboxTopics.SalesLeadDetected:
             case CompanyOutboxTopics.SalesLeadQualified:
@@ -709,6 +804,15 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                             CorrelationId = string.IsNullOrWhiteSpace(financeTriggerCommand.CorrelationId) ? message.CorrelationId ?? payload.EventId : financeTriggerCommand.CorrelationId
                         },
                         cancellationToken);
+                }
+                var autonomySignal = BuildFinanceAutonomySignal(message, payload);
+                if (autonomySignal is not null && _financeAutonomyTriggers is not null)
+                {
+                    var result = await _financeAutonomyTriggers.ProcessEventAsync(autonomySignal,
+                        $"company-outbox:{message.Id:N}", cancellationToken);
+                    if (result.ReasonCode is FinanceAutonomyTriggerReasonCodes.LeaseUnavailable or
+                        FinanceAutonomyTriggerReasonCodes.ProcessingFailed)
+                        throw new InvalidOperationException(result.SafeSummary);
                 }
                 await HandleSalesSequenceStopEventAsync(payload, cancellationToken);
                 await _workflowEventTriggerService.HandleAsync(

@@ -304,7 +304,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                     decision,
                     effectiveAuthority,
                     decision.Audit?.EvaluatedAtUtc ?? DateTime.UtcNow,
-                    cancellationToken);
+                    cancellationToken,
+                    command.FinanceAutonomyContext);
                 thresholdContext["approvalBinding"] = approvalBinding;
                 thresholdContext["normalizedPayloadHash"] = approvalBinding["normalizedPayloadHash"]?.DeepClone();
                 thresholdContext["targetSnapshotHash"] = approvalBinding["targetSnapshotHash"]?.DeepClone();
@@ -880,6 +881,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         thresholdContext["sensitiveAction"] = JsonValue.Create(command.SensitiveAction);
         thresholdContext["effectiveAuthorityVersion"] = JsonValue.Create(effectiveAuthority.AuthorityVersion);
         thresholdContext["effectiveAuthorityHash"] = JsonValue.Create(effectiveAuthority.AuthorityHash);
+        if (command.FinanceAutonomyContext is not null)
+            thresholdContext["financeAutonomy"] = JsonSerializer.SerializeToNode(command.FinanceAutonomyContext);
 
         CopyDecisionMetadata(decision, thresholdContext, "riskPolicyVersion");
         CopyDecisionMetadata(decision, thresholdContext, "financeApprovalPolicyVersion");
@@ -950,7 +953,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 ["effectiveAuthorityHash"] = effectiveAuthority.AuthorityHash,
                 ["riskPolicyVersion"] = TryGetNonEmptyString(decision.Metadata, "riskPolicyVersion"),
                 ["financeApprovalPolicyVersion"] = TryGetNonEmptyString(decision.Metadata, "financeApprovalPolicyVersion"),
-                ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
+                ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget"),
+                ["financeAutonomy"] = command.FinanceAutonomyContext is null
+                    ? null
+                    : JsonSerializer.SerializeToNode(command.FinanceAutonomyContext)
             }
         };
 
@@ -968,6 +974,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ["effectiveAuthorityHash"] = JsonValue.Create(effectiveAuthority.AuthorityHash),
             ["riskPolicyVersion"] = decision.Metadata.TryGetValue("riskPolicyVersion", out var riskPolicyVersion) ? riskPolicyVersion?.DeepClone() : null,
             ["financeApprovalPolicyVersion"] = decision.Metadata.TryGetValue("financeApprovalPolicyVersion", out var financeApprovalPolicyVersion) ? financeApprovalPolicyVersion?.DeepClone() : null,
+            ["financeAutonomy"] = command.FinanceAutonomyContext is null
+                ? null
+                : JsonSerializer.SerializeToNode(command.FinanceAutonomyContext),
             ["steps"] = steps
         };
 
