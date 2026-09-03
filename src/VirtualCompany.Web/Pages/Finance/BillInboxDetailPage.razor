@@ -10,7 +10,7 @@
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
     Title="@FinanceText["BillReviewTitle"]"
-    Description="@FinanceText["BillReviewDescription"]"
+    Description="@BuildReviewDescription()"
     LoadingMessage="@FinanceText["LoadingBillReview"]">
     <FinanceDataState
         IsLoading="@IsDetailLoading"
@@ -394,7 +394,7 @@
 
                         @if (Detail.FortnoxRegistration is not null)
                         {
-                            <article class="bill-review-card bill-review-fortnox-card">
+                            <article class="bill-review-card bill-review-accounting-card">
                                 <div class="bill-review-card__split-header">
                                     <div>
                                         <h2>Fortnox</h2>
@@ -409,6 +409,25 @@
                                 }
                             </article>
                         }
+                        else if (Detail.UsesInternalAccounting)
+                        {
+                            <article class="bill-review-card bill-review-accounting-card">
+                                <div class="bill-review-card__split-header">
+                                    <div>
+                                        <h2>Virtual Company accounting</h2>
+                                        <p>@Detail.AccountingGuidance Approve the bill here, then continue under Supplier bills for account coding and posting.</p>
+                                    </div>
+                                    <span class="bill-status-badge bill-status-badge--info">Internal ledger</span>
+                                </div>
+                            </article>
+                        }
+                        else if (!Detail.CanUseFortnoxAccounting)
+                        {
+                            <article class="bill-review-card">
+                                <h2>Accounting action unavailable</h2>
+                                <p class="bill-review-muted mb-0">@Detail.AccountingGuidance</p>
+                            </article>
+                        }
 
                         <article class="bill-review-card">
                             <h2>@FinanceText["Warnings"]</h2>
@@ -418,7 +437,7 @@
 
                         <article class="bill-review-card bill-review-action-card">
                             <h2>@FinanceText["ReviewDecision"]</h2>
-                            <p class="bill-review-muted">@(IsBillProposalApproved ? FinanceText["ApprovedSendHelp"] : FinanceText["ChooseReviewDecisionHelp"])</p>
+                            <p class="bill-review-muted">@BuildReviewDecisionHelp()</p>
 
                             @if (!string.IsNullOrWhiteSpace(ActionStatusMessage))
                             {
@@ -434,6 +453,11 @@
                             }
 
                             <div class="bill-review-action-stack">
+                                @if (Detail.UsesInternalAccounting && IsBillProposalApproved)
+                                {
+                                    <a class="btn btn-primary" href="@BuildSupplierBillsHref()">Open supplier bills</a>
+                                }
+
                                 @if (!IsBillProposalApproved && Detail.FortnoxRegistration?.CanSendDirect == true && !IsSupplierCreationStep)
                                 {
                                     <button class="btn btn-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAndSendToFortnoxAsync">@FinanceText["ApproveRegisterFortnox"]</button>

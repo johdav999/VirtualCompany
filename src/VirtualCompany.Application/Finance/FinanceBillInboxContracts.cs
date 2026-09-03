@@ -96,6 +96,10 @@ public sealed record FinanceBillInboxDetailDto(
     IReadOnlyList<FinanceBillReviewActionDto> ActionHistory,
     bool CanApprove,
     string? ApprovalBlockedReason,
+    bool UsesInternalAccounting,
+    bool CanUseFortnoxAccounting,
+    string AccountingGuidance,
+    Guid? OperationalBillId,
     FinanceBillFortnoxRegistrationDto? FortnoxRegistration);
 
 public sealed record FinanceBillSourcePreviewDto(
@@ -166,7 +170,8 @@ public sealed record FinanceBillReviewActionResultDto(
     Guid BillId,
     string PriorStatus,
     string NewStatus,
-    DateTime OccurredUtc);
+    DateTime OccurredUtc,
+    Guid? OperationalBillId = null);
 
 public interface IFinanceBillInboxService
 {

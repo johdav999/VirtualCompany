@@ -1112,6 +1112,10 @@ public sealed class FinanceBillInboxDetailResponse
     public List<FinanceBillReviewActionResponse> ActionHistory { get; set; } = [];
     public bool CanApprove { get; set; }
     public string? ApprovalBlockedReason { get; set; }
+    public bool UsesInternalAccounting { get; set; }
+    public bool CanUseFortnoxAccounting { get; set; }
+    public string AccountingGuidance { get; set; } = string.Empty;
+    public Guid? OperationalBillId { get; set; }
     public FinanceBillFortnoxRegistrationResponse? FortnoxRegistration { get; set; }
 }
 
@@ -1199,6 +1203,7 @@ public sealed class FinanceBillReviewActionResultResponse
     public string PriorStatus { get; set; } = string.Empty;
     public string NewStatus { get; set; } = string.Empty;
     public DateTime OccurredUtc { get; set; }
+    public Guid? OperationalBillId { get; set; }
 }
 
 public sealed record FinanceBillReviewActionRequest(string Rationale);

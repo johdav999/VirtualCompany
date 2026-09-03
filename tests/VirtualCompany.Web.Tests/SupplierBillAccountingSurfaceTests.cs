@@ -31,6 +31,23 @@ public sealed class SupplierBillAccountingSurfaceTests
         Assert.Contains("Den interna bokföringen är inte klar", swedish, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Bill_review_uses_company_accounting_authority_instead_of_assuming_fortnox()
+    {
+        var root = FindRepositoryRoot();
+        var markup = File.ReadAllText(Path.Combine(root, "src", "VirtualCompany.Web", "Pages", "Finance", "BillInboxDetailPage.razor"));
+        var logic = File.ReadAllText(Path.Combine(root, "src", "VirtualCompany.Web", "Pages", "Finance", "BillInboxDetailPage.razor.cs"));
+
+        Assert.Contains("Detail.UsesInternalAccounting", markup, StringComparison.Ordinal);
+        Assert.Contains("Virtual Company accounting", markup, StringComparison.Ordinal);
+        Assert.Contains("Internal ledger", markup, StringComparison.Ordinal);
+        Assert.Contains("Open supplier bills", markup, StringComparison.Ordinal);
+        Assert.Contains("if (Detail.UsesInternalAccounting)", logic, StringComparison.Ordinal);
+        Assert.Contains("Nothing will be sent to Fortnox", logic, StringComparison.Ordinal);
+        Assert.Contains("Detail?.OperationalBillId is Guid operationalBillId", logic, StringComparison.Ordinal);
+        Assert.Contains("FinanceRoutes.BuildBillDetailPath(operationalBillId", logic, StringComparison.Ordinal);
+    }
+
     private static string FindRepositoryRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

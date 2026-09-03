@@ -83,7 +83,10 @@ public partial class BillInboxDetailPage : FinancePageBase
                 return;
             }
 
-            await LoadApprovalAutomationAsync(companyId);
+            if (Detail?.CanUseFortnoxAccounting == true)
+            {
+                await LoadApprovalAutomationAsync(companyId);
+            }
             await LoadEmbeddedApprovalAsync(companyId);
         }
         catch (FinanceApiException ex)
@@ -243,7 +246,9 @@ public partial class BillInboxDetailPage : FinancePageBase
 
     private Task ApproveAsync() => SubmitActionAsync(
         (companyId, rationale) => FinanceApiClient.ApproveBillInboxItemAsync(companyId, BillId, rationale),
-        "Invoice approved. Nothing was sent to Fortnox.",
+        Detail?.UsesInternalAccounting == true
+            ? "Invoice approved for accounting in Virtual Company."
+            : "Invoice approved. Nothing was sent to Fortnox.",
         "Approved from supplier bill review.");
 
     private Task RejectAsync() => SubmitActionAsync((companyId, rationale) => FinanceApiClient.RejectBillInboxItemAsync(companyId, BillId, rationale), "Rejection recorded.");
@@ -655,6 +660,18 @@ public partial class BillInboxDetailPage : FinancePageBase
             return string.Empty;
         }
 
+        if (Detail.UsesInternalAccounting)
+        {
+            return IsBillProposalApproved
+                ? "Next step: continue under Supplier bills to prepare the native accounting entry."
+                : "Next step: approve the invoice, then prepare it in Virtual Company accounting.";
+        }
+
+        if (!Detail.CanUseFortnoxAccounting)
+        {
+            return $"Next step: {Detail.AccountingGuidance}";
+        }
+
         if (IsBillProposalApproved)
         {
             return IsSupplierCreationStep
@@ -671,6 +688,37 @@ public partial class BillInboxDetailPage : FinancePageBase
             ? "Next step: approve only, or approve and register it in Fortnox now."
             : "Next step: approve the invoice, or request approval to send it to Fortnox.";
     }
+
+    private string BuildReviewDescription() =>
+        Detail?.UsesInternalAccounting == true
+            ? "Review Laura's extraction and approve the supplier invoice for accounting in Virtual Company."
+            : Detail?.CanUseFortnoxAccounting == true
+                ? FinanceText["BillReviewDescription"]
+                : "Review Laura's extraction and decide the next accounting step.";
+
+    private string BuildReviewDecisionHelp()
+    {
+        if (Detail?.UsesInternalAccounting == true)
+        {
+            return IsBillProposalApproved
+                ? "This supplier invoice is approved. Continue under Supplier bills to prepare and post it in Virtual Company."
+                : "Approve this supplier invoice for accounting in Virtual Company. Nothing will be sent to Fortnox.";
+        }
+
+        if (Detail?.CanUseFortnoxAccounting == false)
+        {
+            return Detail.AccountingGuidance;
+        }
+
+        return IsBillProposalApproved
+            ? FinanceText["ApprovedSendHelp"]
+            : FinanceText["ChooseReviewDecisionHelp"];
+    }
+
+    private string BuildSupplierBillsHref() =>
+        Detail?.OperationalBillId is Guid operationalBillId
+            ? FinanceRoutes.BuildBillDetailPath(operationalBillId, AccessState.CompanyId)
+            : FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId);
 
     private static bool HasUnresolvedWarnings(FinanceBillInboxDetailResponse detail) =>
         detail.ValidationWarnings.Concat(detail.DuplicateWarnings).Any(x => !x.IsResolved);

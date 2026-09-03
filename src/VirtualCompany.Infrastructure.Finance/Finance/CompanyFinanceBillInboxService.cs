@@ -31,6 +31,7 @@ public sealed partial class CompanyFinanceBillInboxService : IFinanceBillInboxSe
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyFinanceBillInboxService> _logger;
     private readonly IApprovalAutomationService _approvalAutomationService;
+    private readonly IAccountingAuthorityPolicy _accountingAuthorityPolicy;
     private readonly SupplierApprovalAutomationOptions _supplierApprovalAutomationOptions;
 
     public CompanyFinanceBillInboxService(
@@ -43,6 +44,7 @@ public sealed partial class CompanyFinanceBillInboxService : IFinanceBillInboxSe
         TimeProvider timeProvider,
         ILogger<CompanyFinanceBillInboxService> logger,
         IApprovalAutomationService approvalAutomationService,
+        IAccountingAuthorityPolicy accountingAuthorityPolicy,
         IOptions<SupplierApprovalAutomationOptions> supplierApprovalAutomationOptions,
         ICompanyContextAccessor? companyContextAccessor = null,
         IMailboxProviderRegistry? mailboxProviderRegistry = null,
@@ -61,6 +63,7 @@ public sealed partial class CompanyFinanceBillInboxService : IFinanceBillInboxSe
         _timeProvider = timeProvider;
         _logger = logger;
         _approvalAutomationService = approvalAutomationService;
+        _accountingAuthorityPolicy = accountingAuthorityPolicy;
         _supplierApprovalAutomationOptions = supplierApprovalAutomationOptions.Value;
         _companyContextAccessor = companyContextAccessor;
     }

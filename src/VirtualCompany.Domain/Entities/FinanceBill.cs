@@ -28,7 +28,8 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         string? documentKind = null,
         string? providerStatus = null,
         string? processingStatus = null,
-        decimal paidAmount = 0m)
+        decimal paidAmount = 0m,
+        Guid? sourceDetectedBillId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -70,6 +71,12 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         }
 
         SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+        if (sourceDetectedBillId == Guid.Empty)
+        {
+            throw new ArgumentException("SourceDetectedBillId cannot be empty.", nameof(sourceDetectedBillId));
+        }
+
+        SourceDetectedBillId = sourceDetectedBillId;
     }
 
     public Guid Id { get; private set; }
@@ -93,11 +100,45 @@ public sealed class FinanceBill : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public Guid? SourceSimulationEventRecordId { get; private set; }
     public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
+    public Guid? SourceDetectedBillId { get; private set; }
+    public DetectedBill? SourceDetectedBill { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceCounterparty Counterparty { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public CompanyKnowledgeDocument? Document { get; private set; }
+
+    public void LinkDetectedBill(Guid detectedBillId)
+    {
+        if (detectedBillId == Guid.Empty)
+        {
+            throw new ArgumentException("DetectedBillId is required.", nameof(detectedBillId));
+        }
+
+        if (SourceDetectedBillId.HasValue && SourceDetectedBillId.Value != detectedBillId)
+        {
+            throw new InvalidOperationException("This finance bill is already linked to another detected bill.");
+        }
+
+        SourceDetectedBillId = detectedBillId;
+    }
+
+    public void ApplyBusinessApproval(DateTime approvedUtc)
+    {
+        var normalizedStatus = Status.Trim().ToLowerInvariant();
+        if (normalizedStatus is "paid" or "cancelled" or "canceled" or "credited")
+        {
+            return;
+        }
+
+        if (normalizedStatus == "approved")
+        {
+            return;
+        }
+
+        Status = "approved";
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(approvedUtc, nameof(approvedUtc));
+    }
 
     public void ApplySyncedSnapshot(
         Guid counterpartyId,

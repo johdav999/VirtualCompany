@@ -37,6 +37,7 @@ public sealed partial class CompanyFinanceBillInboxService
         }
 
         var bill = await LoadBillForWriteAsync(command.CompanyId, command.BillId, cancellationToken);
+        var accountingAuthority = await EnsureFortnoxAuthorityAsync(bill, cancellationToken);
         var state = await LoadOrCreateStateAsync(bill, cancellationToken);
         _logger.LogInformation(
             "Bill inbox Fortnox registration loaded bill. CompanyId: {CompanyId}. BillId: {BillId}. InvoiceNumber: {InvoiceNumber}. SupplierName: {SupplierName}. TotalAmount: {TotalAmount}. Currency: {Currency}. ReviewStatus: {ReviewStatus}.",
@@ -73,7 +74,7 @@ public sealed partial class CompanyFinanceBillInboxService
         var supplierMatch = await TryResolveFortnoxSupplierNumberAsync(command.CompanyId, connection.Id, bill, cancellationToken);
         if (!supplierMatch.Found)
         {
-            return await RequestFortnoxSupplierCreationAsync(command, bill, connection, cancellationToken);
+            return await RequestFortnoxSupplierCreationAsync(command, bill, connection, accountingAuthority, cancellationToken);
         }
 
         var supplierNumber = supplierMatch.SupplierNumber!;
@@ -107,7 +108,9 @@ public sealed partial class CompanyFinanceBillInboxService
                 FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
                 new FinanceIntegrationWritePayload(FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload), "SupplierInvoiceRegistration"),
                 writeRequestId,
-                $"finance-bill-inbox:{bill.Id:N}:fortnox-registration"),
+                $"finance-bill-inbox:{bill.Id:N}:fortnox-registration",
+                AccountingDate: ResolveEnforcedAccountingDate(accountingAuthority),
+                AuthorityOperation: ResolveEnforcedAuthorityOperation(accountingAuthority)),
             cancellationToken);
         writeResult = await ApplyTrustedSupplierApprovalAsync(
             bill,
@@ -170,6 +173,7 @@ public sealed partial class CompanyFinanceBillInboxService
     {
         EnsureTenant(command.CompanyId);
         var bill = await LoadBillForWriteAsync(command.CompanyId, command.BillId, cancellationToken);
+        var accountingAuthority = await EnsureFortnoxAuthorityAsync(bill, cancellationToken);
         var validationWarnings = ParseValidationWarnings(bill);
         if (HasUnresolvedValidationFailures(bill, validationWarnings))
         {
@@ -180,7 +184,7 @@ public sealed partial class CompanyFinanceBillInboxService
         var supplierMatch = await TryResolveFortnoxSupplierNumberAsync(command.CompanyId, connection.Id, bill, cancellationToken);
         if (!supplierMatch.Found)
         {
-            return await SendOrExecuteFortnoxSupplierCreationAsync(command, bill, connection, supplierMatch, cancellationToken);
+            return await SendOrExecuteFortnoxSupplierCreationAsync(command, bill, connection, supplierMatch, accountingAuthority, cancellationToken);
         }
 
         var supplierNumber = supplierMatch.SupplierNumber!;
@@ -244,7 +248,10 @@ public sealed partial class CompanyFinanceBillInboxService
                 payloadHash,
                 sanitizedPayload,
                 $"finance-bill-inbox:{bill.Id:N}:fortnox-registration",
-                now);
+                now,
+                ResolveEnforcedAccountingDate(accountingAuthority),
+                ResolveEnforcedAuthorityOperation(accountingAuthority),
+                accountingAuthority.AuthorityPeriodId);
             _dbContext.FinanceIntegrationWriteCommands.Add(writeCommand);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
@@ -263,6 +270,10 @@ public sealed partial class CompanyFinanceBillInboxService
                 sanitizedPayload,
                 $"finance-bill-inbox:{bill.Id:N}:fortnox-registration",
                 now);
+            writeCommand.SetAuthorityContext(
+                ResolveEnforcedAccountingDate(accountingAuthority),
+                ResolveEnforcedAuthorityOperation(accountingAuthority),
+                accountingAuthority.AuthorityPeriodId);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
         else if (writeCommand.Status is FinanceIntegrationWriteCommandRecordStatuses.Executing)
@@ -295,7 +306,8 @@ public sealed partial class CompanyFinanceBillInboxService
             command.ActorUserId,
             bill,
             payload,
-            writeRequestId);
+            writeRequestId,
+            accountingAuthority);
         await WriteFortnoxDirectAuditAsync(writeCommand, "write_execution_started", FinanceIntegrationAuditOutcomes.Succeeded, "User sent this supplier invoice to Fortnox.", cancellationToken);
 
         try
@@ -352,6 +364,7 @@ public sealed partial class CompanyFinanceBillInboxService
         RequestFinanceBillFortnoxRegistrationCommand command,
         DetectedBill bill,
         FinanceIntegrationConnection connection,
+        AccountingAuthorityPolicyDecision accountingAuthority,
         CancellationToken cancellationToken)
     {
         var payload = BuildSupplierPayload(bill);
@@ -378,7 +391,9 @@ public sealed partial class CompanyFinanceBillInboxService
                 FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
                 new FinanceIntegrationWritePayload(FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload), "SupplierCreation"),
                 writeRequestId,
-                $"finance-bill-inbox:{bill.Id:N}:fortnox-supplier-creation"),
+                $"finance-bill-inbox:{bill.Id:N}:fortnox-supplier-creation",
+                AccountingDate: ResolveEnforcedAccountingDate(accountingAuthority),
+                AuthorityOperation: ResolveEnforcedAuthorityOperation(accountingAuthority)),
             cancellationToken);
         result = await ApplyTrustedSupplierApprovalAsync(
             bill,
@@ -415,6 +430,7 @@ public sealed partial class CompanyFinanceBillInboxService
         DetectedBill bill,
         FinanceIntegrationConnection connection,
         SupplierResolutionResult supplierMatch,
+        AccountingAuthorityPolicyDecision accountingAuthority,
         CancellationToken cancellationToken)
     {
         var writeRequestId = CreateFortnoxSupplierCreationWriteRequestId(bill.Id);
@@ -463,6 +479,7 @@ public sealed partial class CompanyFinanceBillInboxService
                     "Retrying supplier creation after an interrupted Fortnox request."),
                 bill,
                 connection,
+                accountingAuthority,
                 cancellationToken);
         }
 
@@ -532,8 +549,15 @@ public sealed partial class CompanyFinanceBillInboxService
                     "Supplier details changed before sending to Fortnox."),
                 bill,
                 connection,
+                accountingAuthority,
                 cancellationToken);
         }
+
+        writeCommand.SetAuthorityContext(
+            ResolveEnforcedAccountingDate(accountingAuthority),
+            ResolveEnforcedAuthorityOperation(accountingAuthority),
+            accountingAuthority.AuthorityPeriodId);
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         var result = await _fortnoxOutboundActionExecutor.ExecuteApprovedAsync(command.CompanyId, writeRequestId, cancellationToken);
         var refreshed = await _dbContext.FinanceIntegrationWriteCommands
@@ -849,7 +873,8 @@ public sealed partial class CompanyFinanceBillInboxService
         Guid? actorUserId,
         DetectedBill bill,
         JsonObject payload,
-        Guid writeRequestId) =>
+        Guid writeRequestId,
+        AccountingAuthorityPolicyDecision accountingAuthority) =>
         new(
             FinanceIntegrationProviderKeys.Fortnox,
             companyId,
@@ -863,7 +888,46 @@ public sealed partial class CompanyFinanceBillInboxService
             FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
             new FinanceIntegrationWritePayload(FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload), "SupplierInvoiceRegistration"),
             writeRequestId,
-            $"finance-bill-inbox:{bill.Id:N}:fortnox-registration");
+            $"finance-bill-inbox:{bill.Id:N}:fortnox-registration",
+            AccountingDate: ResolveEnforcedAccountingDate(accountingAuthority),
+            AuthorityOperation: ResolveEnforcedAuthorityOperation(accountingAuthority));
+
+    private Task<AccountingAuthorityPolicyDecision> EvaluateFortnoxAuthorityAsync(
+        DetectedBill bill,
+        CancellationToken cancellationToken) =>
+        _accountingAuthorityPolicy.EvaluateAsync(
+            new EvaluateAccountingAuthorityQuery(
+                bill.CompanyId,
+                ResolveAccountingDate(bill),
+                AccountingAuthorityOperationValues.ProviderAuthoritativeWrite,
+                FinanceIntegrationProviderKeys.Fortnox),
+            cancellationToken);
+
+    private async Task<AccountingAuthorityPolicyDecision> EnsureFortnoxAuthorityAsync(
+        DetectedBill bill,
+        CancellationToken cancellationToken)
+    {
+        var decision = await EvaluateFortnoxAuthorityAsync(bill, cancellationToken);
+        if (!decision.IsAllowed && decision.ReasonCode != AccountingAuthorityReasonCodes.AuthorityNotConfigured)
+        {
+            throw new InvalidOperationException(decision.Explanation);
+        }
+
+        return decision;
+    }
+
+    private DateOnly ResolveAccountingDate(DetectedBill bill) =>
+        DateOnly.FromDateTime(bill.InvoiceDateUtc ?? _timeProvider.GetUtcNow().UtcDateTime);
+
+    private static DateOnly? ResolveEnforcedAccountingDate(AccountingAuthorityPolicyDecision decision) =>
+        decision.ReasonCode == AccountingAuthorityReasonCodes.AuthorityNotConfigured
+            ? null
+            : decision.AccountingDate;
+
+    private static string? ResolveEnforcedAuthorityOperation(AccountingAuthorityPolicyDecision decision) =>
+        decision.ReasonCode == AccountingAuthorityReasonCodes.AuthorityNotConfigured
+            ? null
+            : AccountingAuthorityOperationValues.ProviderAuthoritativeWrite;
 
     private async Task WriteFortnoxDirectAuditAsync(
         FinanceIntegrationWriteCommandRecord command,

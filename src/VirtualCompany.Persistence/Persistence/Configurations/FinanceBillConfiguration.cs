@@ -34,6 +34,7 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
         builder.Property(x => x.ProcessingStatus).HasColumnName("processing_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentProcessingStatuses.None).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.SourceDetectedBillId).HasColumnName("source_detected_bill_id");
 
         builder.ToTable(t =>
         {
@@ -45,6 +46,9 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
             t.HasCheckConstraint("CK_finance_bills_paid_amount_non_negative", "paid_amount >= 0");
         });
         builder.HasIndex(x => new { x.CompanyId, x.BillNumber }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.SourceDetectedBillId })
+            .IsUnique()
+            .HasFilter("source_detected_bill_id IS NOT NULL");
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.PostingStatus, x.SettlementStatus, x.DueUtc });
@@ -52,6 +56,7 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
         builder.HasIndex(x => new { x.CompanyId, x.ProcessingStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Bills).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.SourceDetectedBill).WithMany().HasForeignKey(x => new { x.CompanyId, x.SourceDetectedBillId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.NoAction);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Bill).HasForeignKey(x => new { x.CompanyId, x.BillId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }
 }

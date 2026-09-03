@@ -156,7 +156,11 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                     x.WriteRequestId == writeRequestId &&
                     x.OperationMode == AccountingProviderSwitchTargetOperationModes.FinalAuthoritative,
                     cancellationToken);
-            if (!isTrackedCommittedExport && !isTrackedFinalSwitchOperation && IsProviderAuthoritativeAccountingAction(command.CommandType))
+            var hasExplicitAuthorityContext = command.AccountingDate.HasValue &&
+                                              !string.IsNullOrWhiteSpace(command.AuthorityOperation);
+            if (!isTrackedCommittedExport &&
+                !isTrackedFinalSwitchOperation &&
+                (hasExplicitAuthorityContext || IsProviderAuthoritativeAccountingAction(command.CommandType)))
             {
                 var authority = await _authorityPolicy.EvaluateAsync(new(
                     companyId,

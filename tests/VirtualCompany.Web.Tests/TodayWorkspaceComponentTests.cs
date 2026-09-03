@@ -87,6 +87,25 @@ public sealed class TodayWorkspaceComponentTests
     }
 
     [Fact]
+    public void Period_picker_marks_today_selected_and_emits_monthly_period()
+    {
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
+        string? selected = null;
+        var cut = context.RenderComponent<TodayWorkspace>(parameters => parameters
+            .Add(x => x.CompanyId, CompanyId)
+            .Add(x => x.Workspace, CreateOwnerWorkspace())
+            .Add(x => x.PeriodChanged, EventCallback.Factory.Create<string>(this, value => selected = value)));
+
+        var buttons = cut.FindAll("[data-testid='workspace-period-picker'] button");
+        Assert.Equal(2, buttons.Count);
+        Assert.Equal("true", buttons[0].GetAttribute("aria-pressed"));
+
+        buttons[1].Click();
+
+        Assert.Equal("month", selected);
+    }
+
+    [Fact]
     public void Canonical_deep_links_preserve_company_and_work_context()
     {
         using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
@@ -191,6 +210,7 @@ public sealed class TodayWorkspaceComponentTests
 
         Assert.Contains("@media (max-width: 1100px)", css, StringComparison.Ordinal);
         Assert.Contains(".today-rail { grid-template-columns: repeat(2", css, StringComparison.Ordinal);
+        Assert.Contains(".today-controls { grid-template-columns: 1fr; }", css, StringComparison.Ordinal);
         Assert.Contains("@media (max-width: 560px)", css, StringComparison.Ordinal);
         Assert.Contains(".today-rail { grid-template-columns: 1fr", css, StringComparison.Ordinal);
         Assert.Contains("min-height: 44px", css, StringComparison.Ordinal);

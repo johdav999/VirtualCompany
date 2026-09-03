@@ -1018,7 +1018,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
         {
             await using var stream = new MemoryStream(content);
             var document = await extractor.ExtractAsync(stream, sourceDocumentName, inputType, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(document.FullText))
+            if (DocumentTextQuality.IsUsableForBillExtraction(document))
             {
                 return document.FullText.Trim();
             }

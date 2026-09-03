@@ -8,6 +8,9 @@ using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using UglyToad.PdfPig;
+using UglyToad.PdfPig.Core;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.TextExtractor;
 using VirtualCompany.Application.Finance;
 
 namespace VirtualCompany.Infrastructure.Finance;
@@ -26,62 +29,38 @@ public sealed class PdfDocumentTextExtractor : IDocumentTextExtractor
         await content.CopyToAsync(memory, cancellationToken);
         var bytes = memory.ToArray();
 
-        // This intentionally supports only text-based PDFs. If no readable text is present,
-        // downstream extraction receives an empty result instead of silently attempting OCR.
-        var raw = Encoding.Latin1.GetString(bytes);
-        var text = ExtractPdfTextOperators(raw);
-        if (string.IsNullOrWhiteSpace(text))
+        try
         {
-            text = ExtractReadableText(raw);
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+            using var pdf = PdfDocument.Open(bytes);
+            var sections = new List<ExtractedDocumentSection>();
+            var offset = 0;
 
-        return new ExtractedDocumentText(
-            "pdf",
-            string.IsNullOrWhiteSpace(text)
-                ? []
-                : [new ExtractedDocumentSection("page:1", Normalize(text), 0)]);
-    }
-
-    private static string ExtractPdfTextOperators(string raw)
-    {
-        var builder = new StringBuilder();
-        foreach (Match match in Regex.Matches(raw, @"\((?<text>(?:\\.|[^\\)])*)\)\s*Tj", RegexOptions.CultureInvariant))
-        {
-            builder.AppendLine(UnescapePdfText(match.Groups["text"].Value));
-        }
-
-        foreach (Match arrayMatch in Regex.Matches(raw, @"\[(?<items>.*?)\]\s*TJ", RegexOptions.Singleline | RegexOptions.CultureInvariant))
-        {
-            foreach (Match item in Regex.Matches(arrayMatch.Groups["items"].Value, @"\((?<text>(?:\\.|[^\\)])*)\)", RegexOptions.CultureInvariant))
+            foreach (var page in pdf.GetPages())
             {
-                builder.Append(UnescapePdfText(item.Groups["text"].Value));
+                cancellationToken.ThrowIfCancellationRequested();
+                var text = Normalize(ContentOrderTextExtractor.GetText(page));
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    continue;
+                }
+
+                sections.Add(new ExtractedDocumentSection($"page:{page.Number}", text, offset));
+                offset += text.Length + 1;
             }
 
-            builder.AppendLine();
+            var document = new ExtractedDocumentText("pdf", sections);
+            return DocumentTextQuality.IsUsableForBillExtraction(document)
+                ? document
+                : Empty();
         }
-
-        return builder.ToString();
+        catch (Exception ex) when (ex is PdfDocumentFormatException or IOException or InvalidOperationException or ArgumentException or NotSupportedException)
+        {
+            return Empty();
+        }
     }
 
-    private static string ExtractReadableText(string raw)
-    {
-        var text = Regex.Replace(raw, @"[^\u0020-\u007E\r\n\t]", " ");
-        var lines = text
-            .Split('\n')
-            .Select(x => Regex.Replace(x, @"\s+", " ").Trim())
-            .Where(x => x.Length >= 3 && !x.StartsWith('%') && !x.Contains(" obj", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-        return string.Join('\n', lines);
-    }
-
-    private static string UnescapePdfText(string value) =>
-        value
-            .Replace("\\(", "(", StringComparison.Ordinal)
-            .Replace("\\)", ")", StringComparison.Ordinal)
-            .Replace("\\\\", "\\", StringComparison.Ordinal)
-            .Replace("\\n", "\n", StringComparison.Ordinal)
-            .Replace("\\r", "\r", StringComparison.Ordinal)
-            .Replace("\\t", "\t", StringComparison.Ordinal);
+    private static ExtractedDocumentText Empty() => new("pdf", []);
 
     private static string Normalize(string value) =>
         Regex.Replace(value.Replace("\r\n", "\n", StringComparison.Ordinal), @"[ \t]+", " ").Trim();

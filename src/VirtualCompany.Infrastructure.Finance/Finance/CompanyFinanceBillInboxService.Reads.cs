@@ -88,12 +88,25 @@ public sealed partial class CompanyFinanceBillInboxService
         var sourcePreview = await LoadSourcePreviewAsync(query.CompanyId, bill, cancellationToken);
         var canRequestFortnoxRegistration = !hasUnresolvedValidationFailures &&
             !string.Equals(status, FinanceBillInboxStatuses.Rejected, StringComparison.OrdinalIgnoreCase);
-        var fortnoxRegistration = await BuildFortnoxRegistrationStateAsync(
-            query.CompanyId,
-            bill,
-            canRequestFortnoxRegistration,
-            BuildFortnoxRegistrationBlockedMessage(validationWarnings),
-            cancellationToken);
+        var accountingAuthority = await EvaluateFortnoxAuthorityAsync(bill, cancellationToken);
+        var authorityIsConfigured = accountingAuthority.ReasonCode != AccountingAuthorityReasonCodes.AuthorityNotConfigured;
+        var usesInternalAccounting = authorityIsConfigured &&
+            accountingAuthority.Authority == AccountingAuthorityValues.InternalLedger;
+        var canUseFortnoxAccounting = accountingAuthority.IsAllowed || !authorityIsConfigured;
+        var operationalBillId = await _dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && x.SourceDetectedBillId == bill.Id)
+            .Select(x => (Guid?)x.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        var fortnoxRegistration = canUseFortnoxAccounting
+            ? await BuildFortnoxRegistrationStateAsync(
+                query.CompanyId,
+                bill,
+                canRequestFortnoxRegistration,
+                BuildFortnoxRegistrationBlockedMessage(validationWarnings),
+                cancellationToken)
+            : null;
 
         return new FinanceBillInboxDetailDto(
             bill.Id,
@@ -116,6 +129,10 @@ public sealed partial class CompanyFinanceBillInboxService
             state?.Actions.OrderByDescending(x => x.OccurredUtc).Select(MapAction).ToList() ?? [],
             !hasUnresolvedValidationFailures && !string.Equals(status, FinanceBillInboxStatuses.Approved, StringComparison.OrdinalIgnoreCase),
             hasUnresolvedValidationFailures ? "Resolve validation failures before approving this bill." : null,
+            usesInternalAccounting,
+            canUseFortnoxAccounting,
+            accountingAuthority.Explanation,
+            operationalBillId,
             fortnoxRegistration);
     }
 

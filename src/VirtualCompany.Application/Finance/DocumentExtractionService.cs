@@ -84,13 +84,15 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
                 command.SourceDocumentName,
                 command.InputType,
                 cancellationToken);
-            if (!string.IsNullOrWhiteSpace(document.FullText))
+            if (DocumentTextQuality.IsUsableForBillExtraction(document))
             {
                 break;
             }
+
+            document = null;
         }
 
-        if (document is null || string.IsNullOrWhiteSpace(document.FullText))
+        if (document is null)
         {
             return new DocumentExtractionResult(command.CompanyId, []);
         }

@@ -2,7 +2,7 @@
 @implements IDisposable
 @inject NavigationManager Navigation
 
-<div class="page @(IsMonthlyDashboard ? "page--monthly" : IsTodayDashboard ? "page--today" : null)">
+<div class="page @(IsMonthlyDashboard ? "page--monthly" : IsTodayDashboard ? "page--today" : IsSalesDeal ? "page--sales-deal" : null)">
     <div class="sidebar">
         @* Keep the mobile nav toggle interactive without making the page body interactive. *@
         <NavMenu @rendermode="InteractiveServer" />
@@ -31,6 +31,7 @@
 @code {
     private bool IsMonthlyDashboard => IsMonthlyDashboardUri(Navigation.Uri);
     private bool IsTodayDashboard => IsDashboardUri(Navigation.Uri) && !IsMonthlyDashboard;
+    private bool IsSalesDeal => IsSalesDealUri(Navigation.Uri);
 
     protected override void OnInitialized() => Navigation.LocationChanged += HandleLocationChanged;
 
@@ -48,6 +49,12 @@
     {
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
         return string.Equals(uri.AbsolutePath.TrimEnd('/'), "/dashboard", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsSalesDealUri(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
+        return uri.AbsolutePath.StartsWith("/app/sales/deals/", StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose() => Navigation.LocationChanged -= HandleLocationChanged;

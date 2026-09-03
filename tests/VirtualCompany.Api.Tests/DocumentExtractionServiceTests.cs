@@ -60,18 +60,25 @@ public sealed class DocumentExtractionServiceTests
     }
 
     [Fact]
-    public async Task Extracts_from_text_based_pdf()
+    public async Task Extracts_fields_from_compressed_text_pdf_without_pdf_metadata()
     {
         var service = CreateService(new FakeDuplicateRepository(false));
-        await using var pdf = TextStream($"%PDF-1.4\n({SampleInvoiceText().Replace("\n", ") Tj\n(", StringComparison.Ordinal)}) Tj\n%%EOF");
+        var fixturePath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Documents", "example-customer-invoice.pdf");
+        await using var pdf = File.OpenRead(fixturePath);
 
         var result = await service.ExtractAsync(
-            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.Pdf, pdf, "invoice.pdf"),
+            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.Pdf, pdf, "example-customer-invoice.pdf"),
             CancellationToken.None);
 
         var candidate = Assert.Single(result.Candidates);
-        Assert.Equal("INV-1001", candidate.InvoiceNumber);
+        Assert.Equal("Example Company AB", candidate.SupplierName, ignoreCase: true);
+        Assert.Equal("VC-EX-2026-001", candidate.InvoiceNumber);
+        Assert.Equal(15000m, candidate.TotalAmount);
+        Assert.Equal("SEK", candidate.Currency);
         Assert.Contains(candidate.Evidence, x => x.SourceDocumentType == "pdf");
+        Assert.DoesNotContain("/F1", CandidateText(candidate), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("endobj", CandidateText(candidate), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("/BaseFont", CandidateText(candidate), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -89,6 +96,28 @@ public sealed class DocumentExtractionServiceTests
         var candidate = Assert.Single(result.Candidates);
         Assert.Equal("INV-1001", candidate.InvoiceNumber);
         Assert.Contains(candidate.Evidence, x => x.SourceDocumentType == "pdf_ocr_openai");
+    }
+
+    [Fact]
+    public async Task Pdf_container_syntax_is_rejected_and_ocr_extractor_is_used()
+    {
+        var service = CreateService(
+            new FakeDuplicateRepository(false),
+            [
+                new StaticPdfTextExtractor("pdf", "/F1 2 0 R /F2 3 0 R\nendobj\n/BaseFont /Helvetica"),
+                new StaticPdfTextExtractor("pdf_ocr_openai", SampleInvoiceText())
+            ]);
+        await using var pdf = TextStream("%PDF-1.4\n%%EOF");
+
+        var result = await service.ExtractAsync(
+            new ExtractBillDocumentCommand(Guid.NewGuid(), BillDocumentInputType.Pdf, pdf, "metadata-only.pdf"),
+            CancellationToken.None);
+
+        var candidate = Assert.Single(result.Candidates);
+        Assert.Equal("Acme Supplies AB", candidate.SupplierName);
+        Assert.Equal("INV-1001", candidate.InvoiceNumber);
+        Assert.Contains(candidate.Evidence, x => x.SourceDocumentType == "pdf_ocr_openai");
+        Assert.DoesNotContain("/F1", CandidateText(candidate), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -430,6 +459,22 @@ public sealed class DocumentExtractionServiceTests
         IBillDuplicateCheckRepository duplicateRepository,
         IReadOnlyList<IDocumentTextExtractor> textExtractors) =>
         new(textExtractors, duplicateRepository, TimeProvider.System);
+
+    private static string CandidateText(NormalizedBillCandidateDto candidate) =>
+        string.Join(
+            '\n',
+            new[]
+            {
+                candidate.SupplierName,
+                candidate.SupplierOrgNumber,
+                candidate.InvoiceNumber,
+                candidate.Currency,
+                candidate.PaymentReference,
+                candidate.Bankgiro,
+                candidate.Plusgiro,
+                candidate.Iban,
+                candidate.Bic
+            }.Where(value => !string.IsNullOrWhiteSpace(value)));
 
     private static JsonObject BuildSupplierInvoicePayloadForTest(DetectedBill bill, string supplierNumber)
     {

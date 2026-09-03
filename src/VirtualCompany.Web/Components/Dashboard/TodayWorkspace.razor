@@ -53,26 +53,33 @@ else
             </span>
         </header>
 
-        @if (Workspace.AvailableLenses.Count > 1)
-        {
-            <div class="today-lenses" role="group" aria-label="@CommonText["TodayLensPickerLabel"]" data-testid="today-lens-picker">
-                @foreach (var lens in Workspace.AvailableLenses)
-                {
-                    var isActive = string.Equals(lens.Value, Workspace.ActiveLens, StringComparison.OrdinalIgnoreCase);
-                    <button type="button"
-                            class="today-lenses__button @(isActive ? "today-lenses__button--active" : string.Empty)"
-                            aria-pressed="@isActive.ToString().ToLowerInvariant()"
-                            title="@lens.AvailabilityReason"
-                            @onclick="() => LensChanged.InvokeAsync(lens.Value)">
-                        @LensLabel(lens.Value)
-                        @if (isActive)
-                        {
-                            <span aria-hidden="true">✓</span>
-                        }
-                    </button>
-                }
+        <div class="today-controls">
+            <div class="workspace-periods" role="group" aria-label="@CommonText["WorkspacePeriodLabel"]" data-testid="workspace-period-picker">
+                <button type="button" class="workspace-periods__active" aria-pressed="true">@CommonText["WorkspacePeriodToday"]</button>
+                <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("month")'>@CommonText["WorkspacePeriodMonthly"]</button>
             </div>
-        }
+
+            @if (Workspace.AvailableLenses.Count > 1)
+            {
+                <div class="today-lenses" role="group" aria-label="@CommonText["TodayLensPickerLabel"]" data-testid="today-lens-picker">
+                    @foreach (var lens in Workspace.AvailableLenses)
+                    {
+                        var isActive = string.Equals(lens.Value, Workspace.ActiveLens, StringComparison.OrdinalIgnoreCase);
+                        <button type="button"
+                                class="today-lenses__button @(isActive ? "today-lenses__button--active" : string.Empty)"
+                                aria-pressed="@isActive.ToString().ToLowerInvariant()"
+                                title="@lens.AvailabilityReason"
+                                @onclick="() => LensChanged.InvokeAsync(lens.Value)">
+                            @LensLabel(lens.Value)
+                            @if (isActive)
+                            {
+                                <span aria-hidden="true">✓</span>
+                            }
+                        </button>
+                    }
+                </div>
+            }
+        </div>
 
         @if (Workspace.ResponsibilitySetup is { IsConfigured: false } setup)
         {

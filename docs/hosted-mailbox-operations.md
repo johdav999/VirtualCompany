@@ -42,6 +42,12 @@ The endpoint policy resolves every host before connection and rejects loopback, 
 - **Provider revocation:** Microsoft session revocation is deliberately not called because it can invalidate unrelated application sessions and requires broader privileges. Application passwords cannot be revoked through generic IMAP/SMTP. Revoke those credentials in the provider console as well as disconnecting Virtual Company.
 - **Lost data-protection key:** the connection moves to a reconnect-required state. Restore the persisted ASP.NET Core Data Protection key ring if it is available; otherwise reconnect each affected mailbox. Never attempt to recover plaintext credentials from database values.
 
+### Data Protection key-ring deployment
+
+Set `DataProtection__KeyRingPath` to an absolute directory on durable, access-controlled storage. The directory must live outside the replaceable application deployment directory and every API instance for the environment must mount the same storage path. Relative paths and missing production configuration stop startup. Development defaults to the current user's local application-data directory so repository rebuilds do not replace its keys.
+
+Back up the key ring with the database and retain every key file for as long as encrypted mailbox, calendar, integration, or secret values may still reference it. Do not clear the directory during deployment, image replacement, rollback, database restore, or routine cleanup. The API validates that the directory is writable during startup and logs the resolved path without logging key material.
+
 ## Synchronization and recovery
 
 Active hosted Support and Sales mailboxes are polled after startup and every two minutes. Each message enters the existing purpose-owned idempotent ingestion service; IMAP folder cursors advance only after business ingestion completes. Finance uses the existing supplier-bill scan workflow and is queued immediately when a hosted Finance mailbox is saved. A distributed five-minute connection lease prevents overlapping workers from scanning and advancing the same mailbox.

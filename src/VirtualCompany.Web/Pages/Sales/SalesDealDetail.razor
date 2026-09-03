@@ -2,407 +2,357 @@
 @rendermode InteractiveServer
 @inherits SalesPageBase
 @using System.Globalization
-@using VirtualCompany.Web.Components.Sales
 
 <PageTitle>@SalesText["DealDetails"]</PageTitle>
 
-<div class="sales-workspace">
-    <main class="sales-main">
-        <header class="sales-page-header">
-            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-            <h1>@(deal?.Title ?? SalesText["DealDetails"])</h1>
-            <p>@SalesText["DealDetailsDescription"]</p>
-            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
-                <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
-                <a href="@BuildPath("/app/sales/prospects")">@SalesText["Prospects"]</a>
-                <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
-            </nav>
-        </header>
+<div class="deal-detail-page">
+    <header class="deal-topbar">
+        <nav class="deal-breadcrumbs" aria-label="@SalesText["Breadcrumb"]">
+            <a href="@BuildPath("/app/sales")">@SalesText["Sales"]</a>
+            <span aria-hidden="true">/</span>
+            <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+            <span aria-hidden="true">/</span>
+            <strong>@SalesText["Deal"]</strong>
+        </nav>
 
-        @if (isLoading)
-        {
-            <section class="sales-card sales-empty">@SalesText["LoadingDeal"]</section>
-        }
-        else if (!string.IsNullOrWhiteSpace(errorMessage))
-        {
-            <section class="sales-card sales-error">
-                <h2>@SalesText["DealUnavailable"]</h2>
-                <p>@errorMessage</p>
-                <button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
-            </section>
-        }
-        else if (deal is not null)
-        {
-            <section class="sales-detail-hero">
-                <div>
-                    <span class="@BadgeClass(deal.Status)">@SalesStatusPresenter.Present(deal.Status, SalesText)</span>
-                    <h2>@deal.Title</h2>
-                    <p>@deal.Summary</p>
-                </div>
-                <div class="sales-detail-hero__value">
-                    <span>@deal.StageName</span>
-                    <strong>@Money(deal.Amount, deal.Currency)</strong>
-                    @if (deal.SourceLeadId is Guid sourceLeadId)
-                    {
-                        <a class="sales-button" href="@BuildMeetingPath(sourceLeadId)"><span class="bi bi-calendar-event" aria-hidden="true"></span>Schedule demo</a>
-                    }
-                </div>
-            </section>
+        <form class="deal-search" @onsubmit="SearchSales" @onsubmit:preventDefault="true">
+            <span class="bi bi-search" aria-hidden="true"></span>
+            <input type="search" aria-label="@SalesText["SearchSales"]" placeholder="@SalesText["SearchSalesPlaceholder"]" @bind="searchQuery" @bind:event="oninput" />
+        </form>
 
-            <div class="sales-two-column sales-two-column--detail">
-                <div class="sales-detail-stack">
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["Contact"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["WhoThisInvolves"]</h2>
-                            </div>
+        <div class="deal-topbar__actions">
+            <a href="@BuildNotificationsPath()" aria-label="@SalesText["Notifications"]"><span class="bi bi-bell" aria-hidden="true"></span></a>
+            <a class="deal-profile-link" href="/settings/preferences" aria-label="@SalesText["Profile"]">AM</a>
+        </div>
+    </header>
+
+    <nav class="deal-module-tabs" aria-label="@SalesText["SalesSections"]">
+        <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+        <a href="@BuildPath("/app/sales/prospects")">@SalesText["Prospects"]</a>
+        <a class="active" href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+        <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
+    </nav>
+
+    @if (isLoading)
+    {
+        <section class="deal-state" aria-live="polite">
+            <span class="deal-state__spinner" aria-hidden="true"></span>
+            <p>@SalesText["LoadingDeal"]</p>
+        </section>
+    }
+    else if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <section class="deal-state deal-state--error" role="alert">
+            <span class="bi bi-exclamation-triangle" aria-hidden="true"></span>
+            <h1>@SalesText["DealUnavailable"]</h1>
+            <p>@errorMessage</p>
+            <button class="deal-button deal-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
+        </section>
+    }
+    else if (deal is not null)
+    {
+        <div class="deal-workspace">
+            <div class="deal-content">
+                <section class="deal-hero">
+                    <div class="deal-hero__title">
+                        <h1>@deal.Title</h1>
+                        <p>@(deal.ContactEmail ?? SalesText["NoEmailLinked"]) <span aria-hidden="true">·</span> @SourceLabel</p>
+                    </div>
+
+                    <div class="deal-summary-grid" aria-label="@SalesText["DealSummary"]">
+                        <div>
+                            <span>@SalesText["Status"]</span>
+                            <strong class="deal-status"><i aria-hidden="true"></i>@SalesStatusPresenter.Present(deal.Status, SalesText)</strong>
                         </div>
-                        <dl class="sales-definition-list">
+                        <div>
+                            <span>@SalesText["DealValue"]</span>
+                            <strong>@Money(deal.Amount, deal.Currency)</strong>
+                        </div>
+                        <div>
+                            <span>@SalesText["Owner"]</span>
+                            <strong class="deal-owner"><i aria-hidden="true">A</i>Alex</strong>
+                        </div>
+                        <div>
+                            <span>@SalesText["Engagement"]</span>
+                            <strong class="deal-score">@EngagementScore <small>/ 100</small></strong>
+                        </div>
+                        <div>
+                            <span>@SalesText["Stage"]</span>
+                            <strong>@deal.StageName</strong>
+                        </div>
+                    </div>
+
+                    <div class="deal-hero__actions">
+                        @if (deal.SourceLeadId is Guid sourceLeadId)
+                        {
+                            <a class="deal-button deal-button--primary" href="@BuildMeetingPath(sourceLeadId)"><span class="bi bi-calendar-event" aria-hidden="true"></span>@SalesText["ScheduleDemo"]</a>
+                        }
+                        else
+                        {
+                            <button class="deal-button deal-button--primary" disabled title="@SalesText["NoLeadForMeeting"]"><span class="bi bi-calendar-event" aria-hidden="true"></span>@SalesText["ScheduleDemo"]</button>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(deal.ContactEmail))
+                        {
+                            <a class="deal-button" href="@MailToHref"><span class="bi bi-envelope" aria-hidden="true"></span>@SalesText["SendEmail"]</a>
+                        }
+                        <details class="deal-more-menu">
+                            <summary class="deal-button"><span class="bi bi-three-dots" aria-hidden="true"></span>@SalesText["More"]<span class="bi bi-chevron-down" aria-hidden="true"></span></summary>
                             <div>
-                                <dt>@SalesText["Contact"]</dt>
-                                <dd>
+                                <button disabled="@isSubmitting" @onclick="MarkWonAsync"><span class="bi bi-check-circle" aria-hidden="true"></span>@SalesText["MarkWon"]</button>
+                                <button disabled="@isSubmitting" @onclick="MarkLostAsync"><span class="bi bi-x-circle" aria-hidden="true"></span>@SalesText["MarkLost"]</button>
+                            </div>
+                        </details>
+                    </div>
+                </section>
+
+                <nav class="deal-content-tabs" aria-label="@SalesText["DealSections"]">
+                    <button class="@(activeTab == "overview" ? "active" : null)" aria-selected="@(activeTab == "overview")" @onclick='() => SetTab("overview")'>@SalesText["Overview"]</button>
+                    <button class="@(activeTab == "activity" ? "active" : null)" aria-selected="@(activeTab == "activity")" @onclick='() => SetTab("activity")'>@SalesText["Activity"]</button>
+                    <button class="@(activeTab == "emails" ? "active" : null)" aria-selected="@(activeTab == "emails")" @onclick='() => SetTab("emails")'>@SalesText["Emails"]</button>
+                    <button class="@(activeTab == "files" ? "active" : null)" aria-selected="@(activeTab == "files")" @onclick='() => SetTab("files")'>@SalesText["Files"]</button>
+                </nav>
+
+                @if (activeTab == "overview")
+                {
+                    <section class="deal-ai-brief">
+                        <span class="deal-ai-icon bi bi-stars" aria-hidden="true"></span>
+                        <div>
+                            <h2>@SalesText["AlexRecommendsFollowUp"]</h2>
+                            <p>@RecommendationRationale</p>
+                        </div>
+                        <div class="deal-ai-brief__actions">
+                            <a class="deal-button" href="#suggested-reply">@SalesText["ReviewDraft"]</a>
+                            @if (deal.SourceLeadId is Guid briefLeadId)
+                            {
+                                <a class="deal-button deal-button--primary" href="@BuildMeetingPath(briefLeadId)">@SalesText["ScheduleDemo"]</a>
+                            }
+                        </div>
+                        <small>@SalesText["BasedOnDealEvidence"]</small>
+                    </section>
+
+                    <div class="deal-overview-grid">
+                        <section class="deal-panel deal-contact-panel">
+                            <header><span class="bi bi-person" aria-hidden="true"></span><h2>@SalesText["ContactAndAccount"]</h2></header>
+                            <div class="deal-contact">
+                                <span class="deal-contact__avatar" aria-hidden="true">@ContactInitials</span>
+                                <div>
                                     @if (deal.CustomerMemory is not null)
                                     {
-                                        <a class="sales-inline-link" href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">@deal.CustomerMemory.ContactName</a>
+                                        <a href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">@deal.CustomerMemory.ContactName</a>
                                     }
                                     else
                                     {
-                                        @(deal.ContactName ?? SalesText["NoContactLinked"])
+                                        <strong>@(deal.ContactName ?? SalesText["NoContactLinked"])</strong>
                                     }
-                                </dd>
+                                    <span>@(deal.ContactEmail ?? SalesText["NoEmailLinked"])</span>
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(deal.ContactEmail))
+                                {
+                                    <a class="deal-icon-link" href="@MailToHref" aria-label="@SalesText["SendEmail"]"><span class="bi bi-envelope" aria-hidden="true"></span></a>
+                                }
                             </div>
-                            <div>
-                                <dt>@SalesText["Email"]</dt>
-                                <dd>@(deal.ContactEmail ?? SalesText["NoEmailLinked"])</dd>
-                            </div>
-                            <div>
-                                <dt>@SalesText["Company"]</dt>
-                                <dd>@(deal.CustomerCompanyName ?? SalesText["NoCompanyLinked"])</dd>
-                            </div>
-                        </dl>
-                    </section>
+                            <dl class="deal-facts">
+                                <div><dt>@SalesText["Company"]</dt><dd>@(deal.CustomerCompanyName ?? SalesText["NoCompanyLinked"])</dd></div>
+                                <div><dt>@SalesText["Source"]</dt><dd>@SourceLabel</dd></div>
+                            </dl>
+                        </section>
 
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["CustomerMemory"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["RelationshipProfile"]</h2>
-                            </div>
-                            @if (deal.CustomerMemory is not null)
+                        <section class="deal-panel deal-signals-panel">
+                            <header><span class="bi bi-activity" aria-hidden="true"></span><h2>@SalesText["BuyingSignals"]</h2></header>
+                            @if (BuyingSignals.Count == 0)
                             {
-                                <a class="sales-button sales-button--small" href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">@SalesText["OpenProfile"]</a>
+                                <p class="deal-empty-copy">@SalesText["NoBuyingSignals"]</p>
                             }
-                        </div>
-                        @if (deal.CustomerMemory is null)
-                        {
-                            <div class="sales-empty">@SalesText["NoCustomerMemory"]</div>
-                        }
-                        else
-                        {
-                            <div class="sales-memory-layout">
-                                <div class="sales-score-card">
-                                    <span>@SalesText["EngagementScore"]</span>
-                                    <strong>@Score(deal.CustomerMemory.EngagementScore)</strong>
-                                    <small>@EngagementBand(deal.CustomerMemory.EngagementScore) · updated @LocalDateTime.DateTime(deal.CustomerMemory.RefreshedUtc)</small>
-                                </div>
-                                <div class="sales-memory-copy">
-                                    <h3>@SalesText["AiSummary"]</h3>
-                                    <p>@EmptyText(deal.CustomerMemory.AiSummary, SalesText["NoAiSummary"])</p>
-                                    <h3>@SalesText["RelationshipMemory"]</h3>
-                                    <p>@EmptyText(deal.CustomerMemory.RelationshipMemory, SalesText["NoRelationshipMemory"])</p>
-                                    @if (!string.IsNullOrWhiteSpace(deal.CustomerMemory.LastOutreachSummary))
+                            else
+                            {
+                                <div class="deal-signal-list">
+                                    @foreach (var signal in BuyingSignals)
                                     {
-                                        <h3>@SalesText["LastOutreach"]</h3>
-                                        <p>@deal.CustomerMemory.LastOutreachSummary</p>
+                                        <div>
+                                            <span class="deal-signal-list__icon bi @signal.Icon" aria-hidden="true"></span>
+                                            <div><strong>@signal.Label</strong><small>@signal.Value</small></div>
+                                            <em>@signal.ConfidenceLabel</em>
+                                        </div>
                                     }
                                 </div>
-                            </div>
+                            }
+                        </section>
 
-                            <div class="sales-memory-signal-grid">
-                                <section>
-                                    <h3>@SalesText["Preferences"]</h3>
-                                    @if (deal.CustomerMemory.Preferences.Count == 0)
+                        <section class="deal-panel deal-activity-panel">
+                            <header><span class="bi bi-clock" aria-hidden="true"></span><h2>@SalesText["RecentActivity"]</h2></header>
+                            @if (deal.Activities.Count == 0)
+                            {
+                                <p class="deal-empty-copy">@SalesText["NoActivity"]</p>
+                            }
+                            else
+                            {
+                                <div class="deal-activity-list">
+                                    @foreach (var item in deal.Activities.OrderByDescending(x => x.OccurredUtc).Take(3))
                                     {
-                                        <div class="sales-empty sales-empty--compact">@SalesText["NoPreferences"]</div>
-                                    }
-                                    else
-                                    {
-                                        <div class="sales-signal-list">
-                                            @foreach (var signal in deal.CustomerMemory.Preferences.Take(4))
-                                            {
-                                                <div>
-                                                    <strong>@PlainLabel(signal.Key)</strong>
-                                                    <span>@signal.Value</span>
-                                                </div>
-                                            }
+                                        <div>
+                                            <span class="@ActivityIconClass(item.ActivityType)" aria-hidden="true"></span>
+                                            <div><strong>@item.Summary</strong><small>@SalesStatusPresenter.Present(item.ActivityType, SalesText)</small></div>
+                                            <time datetime='@item.OccurredUtc.ToString("O", CultureInfo.InvariantCulture)'>@LocalDateTime.DateTime(item.OccurredUtc)</time>
                                         </div>
                                     }
-                                </section>
-                                <section>
-                                    <h3>@SalesText["PriceSensitivity"]</h3>
-                                    @if (deal.CustomerMemory.PriceSensitivityIndicators.Count == 0)
-                                    {
-                                        <div class="sales-empty sales-empty--compact">@SalesText["NoPriceSensitivity"]</div>
-                                    }
-                                    else
-                                    {
-                                        <div class="sales-signal-list">
-                                            @foreach (var signal in deal.CustomerMemory.PriceSensitivityIndicators.Take(4))
-                                            {
-                                                <div>
-                                                    <strong>@PlainLabel(signal.Key)</strong>
-                                                    <span>@signal.Value</span>
-                                                </div>
-                                            }
-                                        </div>
-                                    }
-                                </section>
-                                <section>
-                                    <h3>@SalesText["IndustrySignals"]</h3>
-                                    @if (deal.CustomerMemory.IndustrySignals.Count == 0)
-                                    {
-                                        <div class="sales-empty sales-empty--compact">@SalesText["NoIndustrySignals"]</div>
-                                    }
-                                    else
-                                    {
-                                        <div class="sales-signal-list">
-                                            @foreach (var signal in deal.CustomerMemory.IndustrySignals.Take(4))
-                                            {
-                                                <div>
-                                                    <strong>@PlainLabel(signal.Key)</strong>
-                                                    <span>@signal.Value</span>
-                                                </div>
-                                            }
-                                        </div>
-                                    }
-                                </section>
+                                </div>
+                                <button class="deal-text-button" @onclick='() => SetTab("activity")'>@SalesText["ViewAllActivity"]</button>
+                            }
+                        </section>
+
+                        <section class="deal-panel deal-health-panel">
+                            <header><span class="bi bi-shield-check" aria-hidden="true"></span><h2>@SalesText["DealHealth"]</h2></header>
+                            <div class="deal-health-score">
+                                <span>@SalesText["Engagement"]</span>
+                                <strong>@EngagementScore <small>/ 100</small></strong>
+                                <em>@EngagementBand(EngagementScore)</em>
                             </div>
+                            <span class="deal-health-label">@SalesText["Risks"]</span>
+                            <div class="deal-risk-list">
+                                @foreach (var risk in DealRisks)
+                                {
+                                    <div><span class="bi bi-exclamation-triangle" aria-hidden="true"></span><strong>@risk.Label</strong><em class="@risk.SeverityClass">@risk.Severity</em></div>
+                                }
+                            </div>
+                            <button class="deal-text-button" disabled="@(isSubmitting || salesAgentId is null)" @onclick="RefreshDecisionAdviceAsync">@(dealStrategy is null ? SalesText["AnalyzeDeal"] : SalesText["RefreshAnalysis"])</button>
+                        </section>
+                    </div>
+
+                    <section class="deal-next-step">
+                        <span class="bi bi-calendar-event" aria-hidden="true"></span>
+                        <div><small>@SalesText["NextStep"]</small><strong>@NextActionTitle</strong></div>
+                        <div><small>@SalesText["Due"]</small><strong>@NextActionDue</strong></div>
+                        @if (deal.SourceLeadId is Guid nextLeadId)
+                        {
+                            <a class="deal-button deal-button--primary" href="@BuildMeetingPath(nextLeadId)"><span class="bi bi-calendar-event" aria-hidden="true"></span>@SalesText["ScheduleDemo"]</a>
                         }
                     </section>
-
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["EmailTimeline"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["ConversationHistory"]</h2>
-                            </div>
-                        </div>
-                        @if (dealEmails.Count == 0)
-                        {
-                            <div class="sales-empty">@SalesText["NoLinkedEmails"]</div>
-                        }
-                        else
-                        {
-                            <EmailTimeline Items="@dealEmails" />
-                        }
-                    </section>
-
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["Activity"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["DealTimeline"]</h2>
-                            </div>
-                        </div>
+                }
+                else if (activeTab == "activity")
+                {
+                    <section class="deal-panel deal-tab-panel">
+                        <header><span class="bi bi-clock-history" aria-hidden="true"></span><div><h2>@SalesText["DealTimeline"]</h2><p>@SalesText["DealTimelineDescription"]</p></div></header>
                         @if (deal.Activities.Count == 0)
                         {
-                            <div class="sales-empty">@SalesText["NoActivity"]</div>
+                            <p class="deal-empty-copy">@SalesText["NoActivity"]</p>
                         }
                         else
                         {
-                            <Timeline Items="@deal.Activities" />
-                        }
-                    </section>
-                </div>
-
-                <aside class="sales-detail-stack">
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["AlexAnalysis"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["WhatThisMeans"]</h2>
-                            </div>
-                        </div>
-                        <p>@deal.AgentAnalysis</p>
-                        @if (intelligenceBrief is not null)
-                        {
-                            <dl class="sales-definition-list mt-3">
-                                @foreach (var fact in intelligenceBrief.ConfirmedFacts.Take(8))
+                            <div class="deal-full-timeline">
+                                @foreach (var item in deal.Activities.OrderByDescending(x => x.OccurredUtc))
                                 {
-                                    <div><dt>@fact.Label</dt><dd>@fact.Value</dd></div>
-                                }
-                            </dl>
-                            @if (intelligenceBrief.QualificationGaps.Count > 0)
-                            {
-                                <h3 class="h6 mt-3">@SalesText["QualificationGaps"]</h3>
-                                <ul class="mb-0">
-                                    @foreach (var gap in intelligenceBrief.QualificationGaps)
-                                    {
-                                        <li>@gap</li>
-                                    }
-                                </ul>
-                            }
-                        }
-                    </section>
-
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["DealStrategy"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["RiskRecoveryPlan"]</h2>
-                            </div>
-                            <button class="sales-button sales-button--small" disabled="@(isSubmitting || salesAgentId is null)" @onclick="RefreshDecisionAdviceAsync">@(dealStrategy is null ? SalesText["Analyze"] : SalesText["Refresh"])</button>
-                        </div>
-                        @if (salesAgentId is null)
-                        {
-                            <div class="sales-empty sales-empty--compact">@SalesText["NoSalesAgent"]</div>
-                        }
-                        else if (dealStrategy is null)
-                        {
-                            <div class="sales-empty sales-empty--compact">@SalesText["RunDealAnalysis"]</div>
-                        }
-                        else if (dealStrategy is not null)
-                        {
-                            <div class="sales-list">
-                                <div class="sales-list-row">
-                                    <div><strong>@PlainLabel(dealStrategy.RiskBand) risk</strong><span>@(dealStrategy.RiskScore.HasValue ? $"Score {dealStrategy.RiskScore:0.#}" : "Risk score unavailable")</span></div>
-                                    @if (dealStrategy.RequiresReview)
-                                    {
-                                        <span class="sales-badge sales-badge--warning">@SalesText["Review"]</span>
-                                    }
-                                </div>
-                                @foreach (var step in dealStrategy.RecoveryPlan.OrderBy(x => x.Order))
-                                {
-                                    <div class="sales-list-row">
-                                        <div><strong>@step.Milestone</strong><span>@step.Owner@(step.DueUtc.HasValue ? $" | {LocalDateTime.DateTime(step.DueUtc.Value)}" : string.Empty)</span></div>
-                                        <span class="@BadgeClass(step.Status)">@SalesStatusPresenter.Present(step.Status, SalesText)</span>
-                                    </div>
+                                    <article>
+                                        <span class="@ActivityIconClass(item.ActivityType)" aria-hidden="true"></span>
+                                        <div><strong>@item.Summary</strong><p>@SalesStatusPresenter.Present(item.ActivityType, SalesText)</p></div>
+                                        <time datetime='@item.OccurredUtc.ToString("O", CultureInfo.InvariantCulture)'>@LocalDateTime.DateTime(item.OccurredUtc)</time>
+                                    </article>
                                 }
                             </div>
                         }
                     </section>
-
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["ProposalCheck"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["ClaimsPricingTerms"]</h2>
+                }
+                else if (activeTab == "emails")
+                {
+                    <section class="deal-panel deal-tab-panel">
+                        <header><span class="bi bi-envelope" aria-hidden="true"></span><div><h2>@SalesText["ConversationHistory"]</h2><p>@SalesText["ConversationHistoryDescription"]</p></div></header>
+                        @if (dealEmails.Count == 0)
+                        {
+                            <p class="deal-empty-copy">@SalesText["NoLinkedEmails"]</p>
+                        }
+                        else
+                        {
+                            <div class="deal-full-timeline">
+                                @foreach (var item in dealEmails.OrderByDescending(x => x.OccurredUtc))
+                                {
+                                    <article>
+                                        <span class="deal-activity-list__icon bi bi-envelope" aria-hidden="true"></span>
+                                        <div>
+                                            <strong>@(item.DetectedIntent ?? SalesText["SalesEmail"])</strong>
+                                            <p>@(string.IsNullOrWhiteSpace(item.Rationale) ? SalesStatusPresenter.Present(item.Status, SalesText) : item.Rationale)</p>
+                                        </div>
+                                        <time datetime='@item.OccurredUtc.ToString("O", CultureInfo.InvariantCulture)'>@LocalDateTime.DateTime(item.OccurredUtc)</time>
+                                    </article>
+                                }
                             </div>
-                        </div>
+                        }
+                    </section>
+                }
+                else
+                {
+                    <section class="deal-panel deal-tab-panel">
+                        <header><span class="bi bi-file-earmark-text" aria-hidden="true"></span><div><h2>@SalesText["ProposalAndFinance"]</h2><p>@SalesText["ProposalAndFinanceDescription"]</p></div></header>
                         @if (proposalAdvice is not null)
                         {
-                            @foreach (var validation in proposalAdvice.Validations)
-                            {
-                                <div class="sales-list-row">
-                                    <div><strong>@PlainLabel(validation.Code)</strong><span>@validation.Message</span></div>
-                                    <span class="@BadgeClass(validation.Status)">@SalesStatusPresenter.Present(validation.Status, SalesText)</span>
-                                </div>
-                            }
-                            @if (proposalAdvice.PricingApprovalRequired || proposalAdvice.TermsApprovalRequired)
-                            {
-                                <div class="sales-empty sales-empty--compact">@SalesText["ApprovalRequiredPricing"]</div>
-                            }
-                        }
-                    </section>
-
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["SuggestedReply"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["DraftResponse"]</h2>
+                            <div class="deal-validation-list">
+                                @foreach (var validation in proposalAdvice.Validations)
+                                {
+                                    <div><strong>@PlainLabel(validation.Code)</strong><span>@validation.Message</span><em>@SalesStatusPresenter.Present(validation.Status, SalesText)</em></div>
+                                }
                             </div>
-                        </div>
-                        @if (string.IsNullOrWhiteSpace(deal.SuggestedReply))
-                        {
-                            <div class="sales-empty">@SalesText["NoClosedReply"]</div>
                         }
-                        else
-                        {
-                            <p class="sales-suggested-reply">@deal.SuggestedReply</p>
-                        }
-                    </section>
-
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["NextActions"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["FollowUpActions"]</h2>
-                            </div>
-                        </div>
-                        <div class="sales-actions sales-actions--stacked">
-                            <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="MarkWonAsync">@SalesText["MarkWon"]</button>
-                            <button class="sales-button" disabled="@isSubmitting" @onclick="MarkLostAsync">@SalesText["MarkLost"]</button>
-                        </div>
                         @if (financeHandoff is not null)
                         {
-                            <div class="sales-finance-handoff">
+                            <div class="deal-finance-handoff">
                                 <span class="@BadgeClass(financeHandoff.Status)">@SalesStatusPresenter.Present(financeHandoff.Status, SalesText)</span>
-                                <strong>@financeHandoff.DocumentType draft in @financeHandoff.ExternalSystem</strong>
-                                <p>@financeHandoff.Summary</p>
-                                @if (!string.IsNullOrWhiteSpace(financeHandoff.ExternalDocumentNumber) || !string.IsNullOrWhiteSpace(financeHandoff.ExternalDocumentId))
+                                <div><strong>@financeHandoff.DocumentType · @financeHandoff.ExternalSystem</strong><p>@financeHandoff.Summary</p></div>
+                                @if (financeHandoff.ApprovalStatus == "Waiting for approval")
                                 {
-                                    <small>@SalesText["DraftReference", financeHandoff.ExternalDocumentNumber ?? financeHandoff.ExternalDocumentId ?? string.Empty]</small>
+                                    <button class="deal-button deal-button--primary" disabled="@isSubmitting" @onclick="ApproveFinanceHandoffAsync">@SalesText["ApproveFinanceDraft"]</button>
                                 }
-                                else if (financeHandoff.ApprovalStatus == "Waiting for approval")
+                                @if (financeHandoff.CanRetry)
                                 {
-                                    <small>@SalesText["LauraWaitingApproval"]</small>
+                                    <button class="deal-button" disabled="@isSubmitting" @onclick="RetryFinanceHandoffAsync">@SalesText["Retry"]</button>
                                 }
-                                @if (!string.IsNullOrWhiteSpace(financeHandoff.FailureSummary))
-                                {
-                                    <p class="sales-error-text">@financeHandoff.FailureSummary</p>
-                                }
-                                <div class="sales-actions">
-                                    @if (financeHandoff.ApprovalStatus == "Waiting for approval")
-                                    {
-                                        <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="ApproveFinanceHandoffAsync">@SalesText["ApproveFinanceDraft"]</button>
-                                    }
-                                    @if (financeHandoff.CanRetry)
-                                    {
-                                        <button class="sales-button" disabled="@isSubmitting" @onclick="RetryFinanceHandoffAsync">@SalesText["Retry"]</button>
-                                    }
-                                </div>
                             </div>
                         }
-                        @if (!string.IsNullOrWhiteSpace(actionMessage))
+                        @if (proposalAdvice is null && financeHandoff is null)
                         {
-                            <div class="sales-toast sales-toast--inline">@actionMessage</div>
+                            <p class="deal-empty-copy">@SalesText["NoProposalFiles"]</p>
                         }
                     </section>
+                }
 
-                    <section class="sales-card">
-                        <div class="sales-section-heading">
-                            <div>
-                                <span>@SalesText["Recommendations"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                                <h2>@SalesText["AlexRecommendsHeading"]</h2>
-                            </div>
-                        </div>
-                        @if (deal.Recommendations.Count == 0)
-                        {
-                            <div class="sales-empty">@SalesText["NoDealRecommendations"]</div>
-                        }
-                        else
-                        {
-                            <div class="sales-list">
-                                @foreach (var recommendation in deal.Recommendations)
-                                {
-                                    <div class="sales-list-row">
-                                        <div>
-                                            <strong>@recommendation.Recommendation</strong>
-                                            <span>@recommendation.Rationale</span>
-                                        </div>
-                                        <span class="@BadgeClass(recommendation.Status)">@SalesStatusPresenter.Present(recommendation.Status, SalesText)</span>
-                                    </div>
-                                }
-                            </div>
-                        }
-                    </section>
-                </aside>
+                @if (!string.IsNullOrWhiteSpace(actionMessage))
+                {
+                    <div class="deal-inline-message" role="status">@actionMessage</div>
+                }
             </div>
-        }
-    </main>
 
-    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+            <aside class="deal-agent-rail" aria-label="@SalesText["AlexSalesManager"]">
+                <header class="deal-agent-identity">
+                    <span class="deal-agent-avatar" aria-hidden="true">A</span>
+                    <div><strong>Alex</strong><span>@SalesText["SalesManager"]</span><small><i aria-hidden="true"></i>@SalesText["Online"]</small></div>
+                </header>
+
+                <section class="deal-agent-card deal-agent-card--priority">
+                    <header><span class="bi bi-stars" aria-hidden="true"></span><h2>@SalesText["BestNextAction"]</h2></header>
+                    <h3>@NextActionTitle</h3>
+                    <p>@RecommendationRationale</p>
+                    @if (deal.SourceLeadId is Guid railLeadId)
+                    {
+                        <a class="deal-button deal-button--primary" href="@BuildMeetingPath(railLeadId)">@SalesText["ScheduleDemo"]</a>
+                    }
+                </section>
+
+                <section id="suggested-reply" class="deal-agent-card">
+                    <header><span class="bi bi-envelope" aria-hidden="true"></span><h2>@SalesText["SuggestedReply"]</h2></header>
+                    <p class="deal-reply-preview">@EmptyText(deal.SuggestedReply, SalesText["NoClosedReply"])</p>
+                    @if (!string.IsNullOrWhiteSpace(deal.ContactEmail) && !string.IsNullOrWhiteSpace(deal.SuggestedReply))
+                    {
+                        <a class="deal-button" href="@MailToHref">@SalesText["ReviewDraft"]</a>
+                    }
+                </section>
+
+                <section class="deal-agent-card deal-checklist">
+                    <header><span class="bi bi-file-earmark-check" aria-hidden="true"></span><h2>@SalesText["DealChecklist"]</h2></header>
+                    @foreach (var item in DealChecklist)
+                    {
+                        <div class="@item.StateClass"><span class="bi @item.Icon" aria-hidden="true"></span><strong>@item.Label</strong></div>
+                    }
+                </section>
+            </aside>
+        </div>
+    }
 </div>
 
 @code {
@@ -412,6 +362,8 @@
     private bool isSubmitting;
     private string? errorMessage;
     private string? actionMessage;
+    private string activeTab = "overview";
+    private string searchQuery = string.Empty;
     private SalesDealDetailResponse? deal;
     private IReadOnlyList<SalesEmailTimelineResponse> dealEmails = [];
     private SalesFinanceHandoffResponse? financeHandoff;
@@ -539,80 +491,145 @@
         }
     }
 
+    private void SetTab(string tab) => activeTab = tab;
+
+    private void SearchSales()
+    {
+        var path = BuildPath("/app/sales/prospects");
+        if (!string.IsNullOrWhiteSpace(searchQuery))
+        {
+            path = $"{path}{(path.Contains('?') ? '&' : '?')}search={Uri.EscapeDataString(searchQuery.Trim())}";
+        }
+
+        Navigation.NavigateTo(path);
+    }
+
+    private SalesRecommendationResponse? PrimaryRecommendation => deal?.Recommendations.FirstOrDefault();
+    private decimal EngagementScore => deal?.CustomerMemory?.EngagementScore ?? 0m;
+    private string SourceLabel => deal?.SourceLeadId is not null ? SalesText["InboundEmail"] : SalesText["SalesPipeline"];
+    private string RecommendationRationale =>
+        !string.IsNullOrWhiteSpace(PrimaryRecommendation?.Rationale)
+            ? PrimaryRecommendation.Rationale
+            : !string.IsNullOrWhiteSpace(deal?.AgentAnalysis)
+                ? deal.AgentAnalysis
+                : SalesText["NoUrgentRecommendation"];
+    private string NextActionTitle =>
+        !string.IsNullOrWhiteSpace(PrimaryRecommendation?.Recommendation)
+            ? PrimaryRecommendation.Recommendation
+            : deal?.SourceLeadId is not null
+                ? SalesText["ScheduleProductDemo"]
+                : SalesText["ReviewDealWithAlex"];
+    private string NextActionDue => PrimaryRecommendation is not null || DaysSinceLastActivity >= 7 ? SalesText["Today"] : SalesText["NotScheduled"];
+    private int DaysSinceLastActivity => deal?.Activities.Count > 0
+        ? Math.Max(0, (int)Math.Floor((DateTime.UtcNow - deal.Activities.Max(x => x.OccurredUtc.ToUniversalTime())).TotalDays))
+        : 0;
+    private string ContactInitials
+    {
+        get
+        {
+            var name = deal?.CustomerMemory?.ContactName ?? deal?.ContactName;
+            if (string.IsNullOrWhiteSpace(name)) return "?";
+            return string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(part => char.ToUpperInvariant(part[0])));
+        }
+    }
+    private string MailToHref
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(deal?.ContactEmail)) return "#";
+            var subject = Uri.EscapeDataString(deal.Title);
+            var body = Uri.EscapeDataString(deal.SuggestedReply ?? string.Empty);
+            return $"mailto:{deal.ContactEmail}?subject={subject}&body={body}";
+        }
+    }
+
+    private IReadOnlyList<DealSignal> BuyingSignals
+    {
+        get
+        {
+            if (deal?.CustomerMemory is null) return [];
+
+            return deal.CustomerMemory.PriceSensitivityIndicators.Select(x => ToSignal(x, "bi-currency-dollar"))
+                .Concat(deal.CustomerMemory.Preferences.Select(x => ToSignal(x, "bi-star")))
+                .Concat(deal.CustomerMemory.IndustrySignals.Select(x => ToSignal(x, "bi-person")))
+                .GroupBy(x => new { x.Label, x.Value })
+                .Select(group => group.OrderByDescending(x => x.Confidence).First())
+                .OrderByDescending(x => x.Confidence)
+                .Take(3)
+                .ToList();
+        }
+    }
+
+    private IReadOnlyList<DealRisk> DealRisks
+    {
+        get
+        {
+            var risks = new List<DealRisk>();
+            if (string.IsNullOrWhiteSpace(deal?.CustomerCompanyName))
+            {
+                risks.Add(new(SalesText["NoCompanyLinked"], SalesText["High"], "deal-severity--high"));
+            }
+            if (deal?.Activities.Count == 0)
+            {
+                risks.Add(new(SalesText["NoActivity"], SalesText["Medium"], "deal-severity--medium"));
+            }
+            else if (DaysSinceLastActivity >= 7)
+            {
+                risks.Add(new(SalesText["NoActivityForDays", DaysSinceLastActivity], SalesText["Medium"], "deal-severity--medium"));
+            }
+            if (dealStrategy?.RiskFactors.Count > 0)
+            {
+                risks.AddRange(dealStrategy.RiskFactors.Take(Math.Max(0, 2 - risks.Count)).Select(x => new DealRisk(x, SalesText["Review"], "deal-severity--medium")));
+            }
+            if (risks.Count == 0)
+            {
+                risks.Add(new(SalesText["NoSignificantRisks"], SalesText["Low"], "deal-severity--low"));
+            }
+            return risks.Take(2).ToList();
+        }
+    }
+
+    private IReadOnlyList<ChecklistItem> DealChecklist =>
+    [
+        new(SalesText["QualificationComplete"], "bi-check-circle-fill", "is-complete"),
+        string.IsNullOrWhiteSpace(deal?.ContactName)
+            ? new(SalesText["ContactMissing"], "bi-exclamation-triangle-fill", "needs-attention")
+            : new(SalesText["ContactIdentified"], "bi-check-circle-fill", "is-complete"),
+        string.IsNullOrWhiteSpace(deal?.CustomerCompanyName)
+            ? new(SalesText["CompanyMissing"], "bi-exclamation-triangle-fill", "needs-attention")
+            : new(SalesText["CompanyIdentified"], "bi-check-circle-fill", "is-complete"),
+        new(NextActionDue == SalesText["Today"] ? SalesText["FollowUpDueToday"] : SalesText["FollowUpNotDue"], "bi-clock-fill", NextActionDue == SalesText["Today"] ? "is-due" : "is-complete")
+    ];
+
+    private DealSignal ToSignal(CustomerMemorySignal signal, string icon) =>
+        new(PlainLabel(signal.Key), signal.Value, signal.Confidence, icon, signal.Confidence >= .75m ? SalesText["High"] : signal.Confidence >= .45m ? SalesText["Medium"] : SalesText["Low"]);
+
+    private static string ActivityIconClass(string activityType)
+    {
+        var icon = activityType.Contains("email", StringComparison.OrdinalIgnoreCase)
+            ? "bi-envelope"
+            : activityType.Contains("qualif", StringComparison.OrdinalIgnoreCase)
+                ? "bi-check-circle-fill"
+                : "bi-file-earmark-text";
+        return $"deal-activity-list__icon bi {icon}";
+    }
+
     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildNotificationsPath()
+    {
+        var path = BuildPath("/work");
+        return $"{path}{(path.Contains('?') ? '&' : '?')}section=notifications";
+    }
     private string BuildFinanceDocumentPath() => ResolvedCompanyId is Guid companyId ? $"/finance/invoices?companyId={companyId:D}&source=sales&dealId={DealId:D}" : "/finance/invoices";
     private string BuildMeetingPath(Guid leadId) => ResolvedCompanyId is Guid companyId ? $"/app/sales/leads/{leadId:D}?companyId={companyId:D}&schedule=true" : $"/app/sales/leads/{leadId:D}?schedule=true";
     private string BuildContactProfilePath(Guid contactId) => BuildPath($"/app/sales/contacts/{contactId:D}");
-    private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
-    private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";
+    private string EngagementBand(decimal score) => score >= 75m ? SalesText["StrongEngagement"] : score >= 45m ? SalesText["ModerateEngagement"] : SalesText["LightEngagement"];
     private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;
     private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
 
-    private sealed partial class Timeline : ComponentBase
-    {
-        [Parameter] public IReadOnlyList<SalesActivityResponse> Items { get; set; } = [];
-        [Inject] public ILocalDateTimeFormatter LocalDateTime { get; set; } = default!;
-
-        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
-        {
-            var sequence = 0;
-            builder.OpenElement(sequence++, "div");
-            builder.AddAttribute(sequence++, "class", "sales-timeline");
-            foreach (var item in Items)
-            {
-                builder.OpenElement(sequence++, "div");
-                builder.AddAttribute(sequence++, "class", "sales-timeline-row");
-                builder.OpenElement(sequence++, "span");
-                builder.CloseElement();
-                builder.OpenElement(sequence++, "div");
-                builder.OpenElement(sequence++, "strong");
-                builder.AddContent(sequence++, item.Summary);
-                builder.CloseElement();
-                builder.OpenElement(sequence++, "small");
-                builder.AddContent(sequence++, $"{item.ActivityType} | {LocalDateTime.DateTime(item.OccurredUtc)}");
-                builder.CloseElement();
-                builder.CloseElement();
-                builder.CloseElement();
-            }
-            builder.CloseElement();
-        }
-    }
-
-    private sealed partial class EmailTimeline : ComponentBase
-    {
-        [Parameter] public IReadOnlyList<SalesEmailTimelineResponse> Items { get; set; } = [];
-        [Inject] public ILocalDateTimeFormatter LocalDateTime { get; set; } = default!;
-
-        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
-        {
-            var sequence = 0;
-            builder.OpenElement(sequence++, "div");
-            builder.AddAttribute(sequence++, "class", "sales-timeline");
-            foreach (var item in Items)
-            {
-                builder.OpenElement(sequence++, "div");
-                builder.AddAttribute(sequence++, "class", "sales-timeline-row");
-                builder.OpenElement(sequence++, "span");
-                builder.CloseElement();
-                builder.OpenElement(sequence++, "div");
-                builder.OpenElement(sequence++, "strong");
-                builder.AddContent(sequence++, item.DetectedIntent ?? "Sales email");
-                builder.CloseElement();
-                builder.OpenElement(sequence++, "small");
-                builder.AddContent(sequence++, $"{item.Status} - {LocalDateTime.DateTime(item.OccurredUtc)}");
-                builder.CloseElement();
-                if (!string.IsNullOrWhiteSpace(item.Rationale))
-                {
-                    builder.OpenElement(sequence++, "p");
-                    builder.AddContent(sequence++, item.Rationale);
-                    builder.CloseElement();
-                }
-                builder.CloseElement();
-                builder.CloseElement();
-            }
-            builder.CloseElement();
-        }
-    }
+    private sealed record DealSignal(string Label, string Value, decimal Confidence, string Icon, string ConfidenceLabel);
+    private sealed record DealRisk(string Label, string Severity, string SeverityClass);
+    private sealed record ChecklistItem(string Label, string Icon, string StateClass);
 }
