@@ -19,7 +19,7 @@ public static class SalesMeetingChangeApprovalTypes
 }
 
 public sealed record SalesMeetingNextMeetingValue(Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc,
-    string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true);
+    string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true, string? Conferencing=null);
 
 public sealed record SalesMeetingProposedValue(string Kind, string? StringValue = null, decimal? DecimalValue = null,
     Guid? GuidValue = null, DateTime? DateTimeValue = null, SalesMeetingNextMeetingValue? NextMeetingValue = null);

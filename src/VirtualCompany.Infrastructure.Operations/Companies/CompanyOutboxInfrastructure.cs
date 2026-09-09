@@ -207,6 +207,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ISalesMeetingTranscriptIngestionDispatcher? _salesMeetingTranscriptIngestion;
     private readonly ISalesMeetingCustomerMinutesDeliveryDispatcher? _salesMeetingCustomerMinutesDelivery;
     private readonly ITeamsCallControlDispatcher? _teamsCallControl;
+    private readonly ISalesRoomWorkDispatcher? _salesRoomWork;
     private readonly IGuidedResearchContinuationService? _guidedResearch;
     private readonly ICompanyOnboardingDocumentGenerationService? _onboardingDocuments;
     private readonly IPaymentBatchExecutionDispatcher? _paymentExecutionDispatcher;
@@ -248,8 +249,10 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         IFinanceAutonomyTriggerService? financeAutonomyTriggers = null,
         IFinanceAutonomyBudgetService? financeAutonomyBudgets = null,
         IDemoTenantExternalSideEffectPolicy? demoTenantSideEffects = null,
-        IAuditEventWriter? auditEventWriter = null)
+        IAuditEventWriter? auditEventWriter = null,
+        ISalesRoomWorkDispatcher? salesRoomWork = null)
     {
+        _salesRoomWork = salesRoomWork;
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
         _notificationDispatcher = notificationDispatcher;
@@ -828,6 +831,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Sales meeting minutes payload tenant does not match the outbox message tenant.");
                 if (_salesMeetingCustomerMinutesDelivery is null) throw new InvalidOperationException("Sales meeting minutes delivery is not configured.");
                 await _salesMeetingCustomerMinutesDelivery.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SalesBrowserRoomWorkRequested:
+            {
+                var payload = Deserialize<SalesRoomWorkItem>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Browser room work");
+                if (_salesRoomWork is null) throw new InvalidOperationException("Browser room dispatch is not configured.");
+                await _salesRoomWork.DispatchAsync(payload, cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.TeamsCallControlRequested:

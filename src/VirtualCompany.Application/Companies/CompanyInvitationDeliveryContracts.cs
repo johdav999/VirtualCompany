@@ -28,6 +28,7 @@ public static class CompanyOutboxTopics
     public const string SalesMeetingConfirmationDeliveryRequested = "sales.meeting_confirmation.delivery_requested";
     public const string SalesMeetingTranscriptIngestionRequested = "sales.meeting_transcript.ingestion_requested";
     public const string SalesMeetingCustomerMinutesDeliveryRequested = "sales.meeting_customer_minutes.delivery_requested";
+    public const string SalesBrowserRoomWorkRequested = "sales.browser_room.work";
     public const string TeamsCallControlRequested = "sales.teams_call.control_requested";
     public const string TeamsCallCallbackProcessingRequested = "sales.teams_call.callback_processing_requested";
     public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";

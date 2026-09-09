@@ -60,11 +60,11 @@
     private bool IsReady => preparation?.CanOpenPresenter == true &&
         preparation.MeetingSessionId is not null;
 
-    private string ActionPath => IsReady
+    private string ActionPath => IsReady && preparation?.Invitation.Conferencing!="browser"
         ? $"/teams/meetings/{preparation!.MeetingSessionId:D}/side-panel?companyId={CompanyId:D}"
         : $"/app/sales/meeting-invitations/{InvitationId:D}/prepare?companyId={CompanyId:D}";
 
-    private string ActionLabel => IsReady
+    private string ActionLabel => IsReady && preparation?.Invitation.Conferencing!="browser"
         ? SalesText["OpenPresenterControls"]
         : preparation?.MeetingSessionId is null
             ? SalesText["PreparePresentation"]

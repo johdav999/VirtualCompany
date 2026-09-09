@@ -17,6 +17,7 @@ public static class SalesModuleRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.AddSalesRoomMedia(configuration);
         services.AddOptions<SequenceExecutionWorkerOptions>()
             .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
         services.AddOptions<CampaignSchedulingWorkerOptions>()

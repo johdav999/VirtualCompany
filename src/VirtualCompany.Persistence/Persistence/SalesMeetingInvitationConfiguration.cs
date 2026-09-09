@@ -29,6 +29,10 @@ internal sealed class SalesMeetingInvitationConfiguration : IEntityTypeConfigura
         builder.Property(x => x.EndsUtc).HasColumnName("ends_at").IsRequired();
         builder.Property(x => x.TimeZoneId).HasColumnName("time_zone_id").HasMaxLength(100).IsRequired();
         builder.Property(x => x.Location).HasColumnName("location").HasMaxLength(500);
+        builder.Property(x=>x.Status).IsConcurrencyToken();
+        builder.Property(x=>x.Conferencing).HasColumnName("conferencing").HasMaxLength(32).IsRequired();
+        builder.Property(x=>x.BrowserRoomId).HasColumnName("browser_room_id");
+        builder.Property(x=>x.ProtectedBrowserInvitationLink).HasColumnName("protected_browser_invitation_link").HasMaxLength(2000);
         builder.Property(x => x.CreateOnlineMeeting).HasColumnName("create_online_meeting").IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasConversion(x => x.ToStorageValue(), x => SalesMeetingInvitationStatusValues.Parse(x)).HasMaxLength(40).IsRequired();
         builder.Property(x => x.ApprovalRequestId).HasColumnName("approval_request_id");

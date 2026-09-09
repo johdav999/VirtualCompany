@@ -26,7 +26,7 @@ public sealed class SalesMeetingChangeProposalApiClient(ICompanyApiTransport tra
 }
 
 public sealed class SalesMeetingChangeProposalApiException(string message, HttpStatusCode? status = null, IReadOnlyDictionary<string, string[]>? errors = null) : Exception(message) { public HttpStatusCode? StatusCode { get; } = status; public IReadOnlyDictionary<string, string[]>? Errors { get; } = errors; }
-public sealed record SalesMeetingNextMeetingValueViewModel(Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true);
+public sealed record SalesMeetingNextMeetingValueViewModel(Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true, string? Conferencing=null);
 public sealed record SalesMeetingProposedValueViewModel(string Kind, string? StringValue = null, decimal? DecimalValue = null, Guid? GuidValue = null, DateTime? DateTimeValue = null, SalesMeetingNextMeetingValueViewModel? NextMeetingValue = null);
 public sealed record GenerateSalesMeetingChangeProposalItemViewModel(string TargetType, Guid TargetId, string Action, string Field, SalesMeetingProposedValueViewModel ProposedValue, Guid EvidenceArtifactId, IReadOnlyList<string> SourceIds, decimal Confidence, string Rationale);
 public sealed record GenerateSalesMeetingChangeProposalsViewModel(IReadOnlyList<GenerateSalesMeetingChangeProposalItemViewModel> Proposals);

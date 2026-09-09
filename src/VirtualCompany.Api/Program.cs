@@ -84,6 +84,7 @@ builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<ISalesPresentationEventPublisher, SignalRSalesPresentationEventPublisher>();
 builder.Services.AddCompanyAuthorization(builder.Environment);
 builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
+builder.Services.AddSalesRoomApi();
 builder.Services.Configure<DatabaseInitializationOptions>(builder.Configuration.GetSection(DatabaseInitializationOptions.SectionName));
 builder.Services.AddScoped<DatabaseInitializationService>();
 

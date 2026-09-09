@@ -16,7 +16,7 @@ namespace VirtualCompany.Infrastructure.Sales;
 
 public sealed class SalesMeetingChangeProposalService(VirtualCompanyDbContext db, ISalesMeetingChangePolicy policy,
     IApprovalRequestService approvals, ISalesMeetingCanonicalChangeCommandHandler canonical,
-    ICompanyOutboxEnqueuer outbox, TimeProvider time) : ISalesMeetingChangeProposalService
+    ICompanyOutboxEnqueuer outbox, TimeProvider time, ISalesBrowserMeetingScheduling? browserMeetings=null) : ISalesMeetingChangeProposalService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -140,7 +140,14 @@ public sealed class SalesMeetingChangeProposalService(VirtualCompanyDbContext db
         var contact = session.ContactId.HasValue ? await db.Contacts.AsNoTracking().SingleOrDefaultAsync(c => c.CompanyId == x.CompanyId && c.Id == session.ContactId, ct) : null;
         if (contact is null) throw Conflict(SalesMeetingChangeProposalProblemCodes.Conflict, "A meeting contact with an email address is required.");
         var deliveryKey = $"sales-next-meeting:{x.CompanyId:N}:{x.SessionId:N}:{contact.Email.ToLowerInvariant()}:{x.ConcurrencyVersion}";
+        var conferencing=SalesMeetingConferencing.Resolve(value.Conferencing,value.CreateOnlineMeeting,connection.Provider);
+        if(conferencing==SalesMeetingConferencing.Browser)
+        {
+            (browserMeetings??throw new InvalidOperationException("Browser scheduling is not configured.")).ValidateWindow(value.StartsUtc,value.EndsUtc);
+            value=value with {Description=$"{value.Description}\n\n{SalesMeetingSchedulingService.AiMeetingDisclosure}"};
+        }
         var invitation = new SalesMeetingInvitation(Guid.NewGuid(), x.CompanyId, session.LeadId, session.DealId, session.ContactId, connection.Id, connection.Provider, connection.AccountEmail, contact.Email, contact.FullName, value.Title, value.Description, value.StartsUtc, value.EndsUtc, value.TimeZoneId, value.Location, value.CreateOnlineMeeting, userId, Now(), deliveryKey);
+        invitation.SelectConferencing(conferencing);invitation.UseCalendar(connection.CalendarId);
         invitation.SubmitForApproval(x.ApprovalRequestId!.Value); invitation.MarkApproved(userId, Now()); db.SalesMeetingInvitations.Add(invitation);
         x.MarkQueued(JsonSerializer.Serialize("not_scheduled", Json), JsonSerializer.Serialize(new { invitationId = invitation.Id, status = "queued" }, Json), Now());
         x.BindProviderReference(invitation.Id.ToString("D"), Now());

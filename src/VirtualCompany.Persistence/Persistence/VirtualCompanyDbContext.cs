@@ -468,6 +468,12 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
     public DbSet<SalesMeetingInvitation> SalesMeetingInvitations => Set<SalesMeetingInvitation>();
     public DbSet<SalesMeetingChangeRequest> SalesMeetingChangeRequests => Set<SalesMeetingChangeRequest>();
+    public DbSet<SalesBrowserRoom> SalesBrowserRooms => Set<SalesBrowserRoom>();
+    public DbSet<SalesRoomInvitationGrant> SalesRoomInvitationGrants => Set<SalesRoomInvitationGrant>();
+    public DbSet<SalesRoomParticipant> SalesRoomParticipants => Set<SalesRoomParticipant>();
+    public DbSet<SalesRoomConsent> SalesRoomConsents => Set<SalesRoomConsent>();
+    public DbSet<SalesRoomOperation> SalesRoomOperations => Set<SalesRoomOperation>();
+    public DbSet<SalesRoomProviderEvent> SalesRoomProviderEvents => Set<SalesRoomProviderEvent>();
     public DbSet<SalesMeetingSession> SalesMeetingSessions => Set<SalesMeetingSession>();
     public DbSet<SalesPresentationDeck> SalesPresentationDecks => Set<SalesPresentationDeck>();
     public DbSet<SalesPresentationSlide> SalesPresentationSlides => Set<SalesPresentationSlide>();
@@ -1097,6 +1103,13 @@ public sealed class VirtualCompanyDbContext : DbContext
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
+        modelBuilder.Entity<SalesBrowserRoom>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomInvitationGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomParticipant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomConsent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomOperation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomProviderEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+
         ApplySqliteCompatibilityMappings(modelBuilder);
         modelBuilder.Entity<CompanyOwnedNote>()
             .HasQueryFilter(note =>

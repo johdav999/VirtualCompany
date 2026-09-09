@@ -41926,6 +41926,73 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("sales_automation_policies", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesBrowserRoom", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AgentHealth")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("InvitationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LiveStartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("MeetingSessionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("OrganizerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ProviderReference")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid>("ProvisionOperationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderReference")
+                        .IsUnique()
+                        .HasFilter("[ProviderReference] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "InvitationId")
+                        .IsUnique()
+                        .HasFilter("[InvitationId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "MeetingSessionId")
+                        .IsUnique()
+                        .HasFilter("[MeetingSessionId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "State", "ExpiresUtc");
+
+                    b.ToTable("sales_browser_rooms", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaign", b =>
                 {
                     b.Property<Guid>("Id")
@@ -43763,6 +43830,7 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnName("starts_at");
 
                     b.Property<string>("Status")
+                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)")
@@ -44030,6 +44098,10 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("nvarchar(160)")
                         .HasColumnName("attendee_name");
 
+                    b.Property<Guid?>("BrowserRoomId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("browser_room_id");
+
                     b.Property<Guid>("CalendarConnectionId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("calendar_connection_id");
@@ -44043,6 +44115,12 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("company_id");
+
+                    b.Property<string>("Conferencing")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("conferencing");
 
                     b.Property<int>("ConfirmationAttemptCount")
                         .ValueGeneratedOnAdd()
@@ -44182,6 +44260,11 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("nvarchar(256)")
                         .HasColumnName("organizer_email");
 
+                    b.Property<string>("ProtectedBrowserInvitationLink")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("protected_browser_invitation_link");
+
                     b.Property<string>("Provider")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -44202,6 +44285,7 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnName("starts_at");
 
                     b.Property<string>("Status")
+                        .IsConcurrencyToken()
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("nvarchar(40)")
@@ -46325,6 +46409,275 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
 
                             t.HasCheckConstraint("CK_sales_presentation_slides_numbers", "processing_version >= 1 AND slide_number >= 1");
                         });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomConsent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Granted")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("NoticeVersion")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ParticipantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "RoomId");
+
+                    b.HasIndex("CompanyId", "ParticipantId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("sales_room_consents", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomInvitationGrant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("RedeemedParticipantId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Revoked")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SecretHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("SecretHash")
+                        .IsUnique()
+                        .HasFilter("[SecretHash] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "RoomId");
+
+                    b.ToTable("sales_room_invitation_grants", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<Guid?>("ActorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("CommandId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LeaseUntilUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ProblemCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<Guid?>("TargetId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "CommandId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "RoomId");
+
+                    b.HasIndex("State", "LeaseUntilUtc");
+
+                    b.ToTable("sales_room_operations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomParticipant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("AiProcessingAllowed")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Connected")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long>("Generation")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("LastProviderEventUtc")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("LastTokenExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("MemberUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SessionHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<bool>("TranscriptRetentionAllowed")
+                        .HasColumnType("bit");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SessionHash")
+                        .IsUnique()
+                        .HasFilter("[SessionHash] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "RoomId", "MemberUserId")
+                        .IsUnique()
+                        .HasFilter("[MemberUserId] IS NOT NULL");
+
+                    b.ToTable("sales_room_participants", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomProviderEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<long>("OccurredUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ParticipantIdentity")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("ProviderEventId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("ProviderEventId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "RoomId");
+
+                    b.ToTable("sales_room_provider_events", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesSequence", b =>
@@ -61309,6 +61662,21 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesBrowserRoom", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesMeetingInvitation", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "InvitationId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesMeetingSession", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MeetingSessionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaign", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -62035,6 +62403,63 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Deck");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomConsent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesRoomParticipant", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ParticipantId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesBrowserRoom", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RoomId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomInvitationGrant", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesBrowserRoom", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RoomId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomOperation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesBrowserRoom", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RoomId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomParticipant", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesBrowserRoom", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RoomId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesRoomProviderEvent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesBrowserRoom", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RoomId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesSequence", b =>

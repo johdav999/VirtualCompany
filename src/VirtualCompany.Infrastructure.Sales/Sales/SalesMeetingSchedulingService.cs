@@ -13,25 +13,27 @@ namespace VirtualCompany.Infrastructure.Sales;
 
 public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedulingService
 {
-    private const string AiMeetingDisclosure = "AI meeting assistant notice: Alex is an AI sales assistant. If the organizer enables Alex during the meeting, Alex may present the approved deck and, only after explicit consent, process meeting audio. Alex cannot make commitments for the company. The organizer can pause or remove Alex at any time.";
+    internal const string AiMeetingDisclosure = "AI meeting assistant notice: Alex is an AI sales assistant. If the organizer enables Alex during the meeting, Alex may present the approved deck and, only after explicit consent, process meeting audio. Alex cannot make commitments for the company. The organizer can pause or remove Alex at any time.";
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IApprovalRequestService _approvalService;
     private readonly ICalendarOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICalendarProviderRegistry _providerRegistry;
     private readonly ICompanyOutboxEnqueuer _outbox;
+    private readonly ISalesBrowserMeetingScheduling? _browserMeetings;
 
     public SalesMeetingSchedulingService(
         VirtualCompanyDbContext dbContext,
         IApprovalRequestService approvalService,
         ICalendarOAuthAccessTokenLeaseService tokenLeaseService,
         ICalendarProviderRegistry providerRegistry,
-        ICompanyOutboxEnqueuer outbox)
+        ICompanyOutboxEnqueuer outbox, ISalesBrowserMeetingScheduling? browserMeetings = null)
     {
         _dbContext = dbContext;
         _approvalService = approvalService;
         _tokenLeaseService = tokenLeaseService;
         _providerRegistry = providerRegistry;
         _outbox = outbox;
+        _browserMeetings = browserMeetings;
     }
 
     public async Task<IReadOnlyList<SalesCalendarConnectionResponse>> ListCalendarConnectionsAsync(
@@ -133,6 +135,16 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
         var provider = _providerRegistry.Resolve(connection.Provider);
         await _tokenLeaseService.AcquireAsync(companyId, connection.Id, provider.RequiredScopes, cancellationToken);
 
+        string conferencing;
+        try
+        {
+            conferencing = SalesMeetingConferencing.Resolve(request.Conferencing, request.CreateOnlineMeeting, connection.Provider);
+            if (conferencing == SalesMeetingConferencing.Browser)
+                (_browserMeetings ?? throw new InvalidOperationException("Browser scheduling is not configured.")).ValidateWindow(NormalizeUtc(request.StartsUtc), NormalizeUtc(request.EndsUtc));
+        }
+        catch (Exception ex) when (ex is ArgumentException or CalendarProviderException or InvalidOperationException)
+        { throw Validation(nameof(request.Conferencing), ex.Message); }
+
         var invitation = new SalesMeetingInvitation(
             Guid.NewGuid(),
             companyId,
@@ -145,15 +157,29 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
             attendeeEmail,
             lead.PrimaryContact?.FullName,
             request.Title,
-            request.CreateOnlineMeeting ? $"{request.Description.Trim()}\n\n{AiMeetingDisclosure}" : request.Description,
+            conferencing != SalesMeetingConferencing.None ? $"{request.Description.Trim()}\n\n{AiMeetingDisclosure}" : request.Description,
             request.StartsUtc,
             request.EndsUtc,
             request.TimeZoneId,
             request.Location,
             request.CreateOnlineMeeting,
-            userId);
+            userId, idempotencyKey: request.CommandId.HasValue ? $"sales-meeting:{companyId:N}:command:{request.CommandId.Value:N}" : null);
+        invitation.SelectConferencing(conferencing);
+        invitation.UseCalendar(connection.CalendarId);
+        if (request.CommandId.HasValue)
+        {
+            if (request.CommandId == Guid.Empty) throw Validation(nameof(request.CommandId), "A non-empty command ID is required.");
+            var replay = await _dbContext.SalesMeetingInvitations.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.IdempotencyKey == invitation.IdempotencyKey, cancellationToken);
+            if (replay != null) return ReplayedInvitation(replay, invitation);
+        }
         _dbContext.SalesMeetingInvitations.Add(invitation);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        try { await _dbContext.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateException) when (request.CommandId.HasValue)
+        {
+            _dbContext.Entry(invitation).State = EntityState.Detached;
+            var replay = await _dbContext.SalesMeetingInvitations.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.IdempotencyKey == invitation.IdempotencyKey, cancellationToken);
+            if (replay == null) throw; return ReplayedInvitation(replay, invitation);
+        }
 
         ApprovalRequestDto approval;
         try
@@ -174,7 +200,8 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
                         ["startsUtc"] = JsonValue.Create(invitation.StartsUtc),
                         ["endsUtc"] = JsonValue.Create(invitation.EndsUtc),
                         ["timeZoneId"] = JsonValue.Create(invitation.TimeZoneId),
-                        ["provider"] = JsonValue.Create(invitation.Provider.ToStorageValue())
+                        ["provider"] = JsonValue.Create(invitation.Provider.ToStorageValue()),
+                        ["conferencing"] = JsonValue.Create(invitation.Conferencing)
                     },
                     RequiredRole: "owner"),
                 cancellationToken);
@@ -291,10 +318,18 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
         if (string.IsNullOrWhiteSpace(request.TimeZoneId)) errors[nameof(request.TimeZoneId)] = ["Choose a time zone."];
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Trim().Length > 200) errors[nameof(request.Title)] = ["Enter a title of 200 characters or fewer."];
         var descriptionLength = request.Description?.Trim().Length ?? 0;
-        if (descriptionLength == 0 || descriptionLength + (request.CreateOnlineMeeting ? AiMeetingDisclosure.Length + 2 : 0) > 4000)
+        if (descriptionLength == 0 || descriptionLength + (request.CreateOnlineMeeting || request.Conferencing == SalesMeetingConferencing.Browser ? AiMeetingDisclosure.Length + 2 : 0) > 4000)
             errors[nameof(request.Description)] = ["Enter an agenda that leaves room for the required AI meeting-assistant notice (4,000 characters total)."];
         if (request.Location?.Trim().Length > 500) errors[nameof(request.Location)] = ["Location must be 500 characters or fewer."];
         if (errors.Count > 0) throw new SalesValidationException(errors);
+    }
+
+    private static SalesMeetingInvitationResponse ReplayedInvitation(SalesMeetingInvitation saved, SalesMeetingInvitation candidate)
+    {
+        if (saved.CreatedByUserId != candidate.CreatedByUserId || saved.LeadId != candidate.LeadId || saved.CalendarConnectionId != candidate.CalendarConnectionId || saved.StartsUtc != candidate.StartsUtc || saved.EndsUtc != candidate.EndsUtc || saved.TimeZoneId != candidate.TimeZoneId || saved.Title != candidate.Title || saved.Description != candidate.Description || saved.Location != candidate.Location || saved.Conferencing != candidate.Conferencing)
+            throw Validation("CommandId", "This command ID was already used for another invitation request.");
+        if (saved.Status == SalesMeetingInvitationStatus.Draft) throw Validation("CommandId", "This invitation request is still being prepared. Retry with the same command ID.");
+        return ToResponse(saved);
     }
 
     private static SalesValidationException Validation(string field, string message) =>
@@ -313,7 +348,7 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
             x.ConfirmationStatus.ToStorageValue(), x.ConfirmationMailboxConnectionId,
             x.ConfirmationProviderMessageId, x.ConfirmationProviderThreadId,
             x.ConfirmationThreadingMode.ToStorageValue(), x.ConfirmationAttemptCount, x.ConfirmationErrorCode,
-            x.ConfirmationErrorSummary, x.ConfirmationSentUtc);
+            x.ConfirmationErrorSummary, x.ConfirmationSentUtc, x.Conferencing, x.BrowserRoomId);
 }
 
 public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvitationDeliveryDispatcher
@@ -322,17 +357,19 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
     private readonly ICalendarOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICalendarProviderRegistry _providerRegistry;
     private readonly ICompanyOutboxEnqueuer _outbox;
+    private readonly ISalesBrowserMeetingScheduling? _browserMeetings;
 
     public SalesMeetingInvitationDeliveryDispatcher(
         VirtualCompanyDbContext dbContext,
         ICalendarOAuthAccessTokenLeaseService tokenLeaseService,
         ICalendarProviderRegistry providerRegistry,
-        ICompanyOutboxEnqueuer outbox)
+        ICompanyOutboxEnqueuer outbox, ISalesBrowserMeetingScheduling? browserMeetings = null)
     {
         _dbContext = dbContext;
         _tokenLeaseService = tokenLeaseService;
         _providerRegistry = providerRegistry;
         _outbox = outbox;
+        _browserMeetings = browserMeetings;
     }
 
     public async Task DispatchAsync(
@@ -345,6 +382,11 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
         if (!string.Equals(invitation.IdempotencyKey, message.IdempotencyKey, StringComparison.Ordinal))
             throw new InvalidOperationException("Meeting invitation idempotency key does not match.");
         if (invitation.Status == SalesMeetingInvitationStatus.Scheduled) return;
+        if (!message.ReconcileOnly && invitation.Conferencing == SalesMeetingConferencing.Browser && invitation.Status is SalesMeetingInvitationStatus.Scheduling or SalesMeetingInvitationStatus.ReconciliationRequired)
+        {
+            invitation.MarkReconciliationRequired("calendar_outcome_unknown", "Inspect the calendar outcome before retrying this invitation.");
+            await _dbContext.SaveChangesAsync(cancellationToken); return;
+        }
         if (!invitation.ApprovalRequestId.HasValue)
             throw new InvalidOperationException("Meeting invitation has no approval request.");
 
@@ -360,26 +402,37 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
         var provider = _providerRegistry.Resolve(invitation.Provider);
         try
         {
+            var browserLink = invitation.Conferencing == SalesMeetingConferencing.Browser
+                ? await (_browserMeetings ?? throw new InvalidOperationException("Browser scheduling is not configured.")).PrepareAsync(invitation.CompanyId, invitation.Id, cancellationToken) : null;
+            if (browserLink != null) invitation = await _dbContext.SalesMeetingInvitations.SingleAsync(x => x.CompanyId == message.CompanyId && x.Id == message.InvitationId, cancellationToken);
             var lease = await _tokenLeaseService.AcquireAsync(
                 invitation.CompanyId, invitation.CalendarConnectionId,
                 provider.RequiredScopes, cancellationToken);
-            invitation.BeginScheduling();
+            if (!message.ReconcileOnly) invitation.BeginScheduling();
             await _dbContext.SaveChangesAsync(cancellationToken);
 
-            var result = await provider.CreateMeetingAsync(
+            CalendarMeetingCreateResult? result = null;
+            if (message.ReconcileOnly || browserLink != null && invitation.ExecutionAttemptCount > 1)
+            {
+                var observed = await provider.InspectMeetingAsync(new CalendarProviderContext(invitation.CompanyId, invitation.CalendarConnectionId, invitation.Provider, invitation.OrganizerEmail, lease.AccessToken, invitation.CalendarId), invitation.Id, invitation.ExternalEventId, invitation.StartsUtc, invitation.EndsUtc, cancellationToken);
+                if (observed == null && message.ReconcileOnly || observed != null && (observed.Cancelled || observed.StartsUtc != invitation.StartsUtc || observed.EndsUtc != invitation.EndsUtc || observed.Title != invitation.Title))
+                    throw new CalendarProviderException("calendar_outcome_unconfirmed", "The calendar does not confirm this invitation. Review the provider event; no invitation was resent.", CalendarProviderFailureKind.Ambiguous);
+                result = observed?.Event;
+            }
+            if (result == null) result = await provider.CreateMeetingAsync(
                 new CalendarProviderContext(
                     invitation.CompanyId, invitation.CalendarConnectionId,
                     invitation.Provider, invitation.OrganizerEmail,
                     lease.AccessToken, invitation.CalendarId),
                 new CalendarMeetingCreateRequest(
                     invitation.Id, invitation.IdempotencyKey, invitation.Title,
-                    invitation.Description, invitation.StartsUtc, invitation.EndsUtc,
+                    browserLink is null ? invitation.Description : $"{invitation.Description}\n\nJoin browser meeting: {browserLink}", invitation.StartsUtc, invitation.EndsUtc,
                     invitation.TimeZoneId, invitation.Location, invitation.AttendeeEmail,
                     invitation.AttendeeName, invitation.CreateOnlineMeeting),
                 cancellationToken);
             invitation.MarkScheduled(
                 result.ExternalEventId, result.ExternalICalUid,
-                result.ProviderWebUrl, result.OnlineMeetingUrl, DateTime.UtcNow);
+                result.ProviderWebUrl, browserLink is null ? result.OnlineMeetingUrl : new Uri(browserLink).GetLeftPart(UriPartial.Path), DateTime.UtcNow);
             await UpdateProposalAsync(invitation, SalesMeetingChangeProposalStatus.Executed, result.ExternalEventId, null, null, cancellationToken);
             invitation.QueueConfirmation();
             _outbox.Enqueue(

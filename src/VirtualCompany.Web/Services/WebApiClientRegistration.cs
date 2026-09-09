@@ -93,6 +93,7 @@ public static class WebApiClientRegistration
             sp.GetRequiredService<ICompanyApiTransport>(),
             IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesBrowserMeetingApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesMeetingChangeProposalApiClient(
             sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));

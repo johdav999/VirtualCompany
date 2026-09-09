@@ -46,6 +46,21 @@ public sealed partial class SalesMeetingSchedulingService
         if (invitation.Status != SalesMeetingInvitationStatus.Scheduled || string.IsNullOrWhiteSpace(invitation.ExternalEventId))
             throw Validation(nameof(invitationId), "Only a confirmed calendar meeting can be changed.");
 
+        if(request!=null)
+        {
+            if(request.Conferencing!=null&&request.Conferencing!=invitation.Conferencing)
+                throw Validation(nameof(request.Conferencing),"To change meeting type, cancel this invitation and submit a new invitation for approval.");
+            if(request.Conferencing!=null)request=request with {CreateOnlineMeeting=SalesMeetingConferencing.UsesCalendarConference(request.Conferencing)};
+            if(invitation.Conferencing==SalesMeetingConferencing.Browser)
+            {
+                try {await (_browserMeetings??throw new InvalidOperationException("Browser scheduling is not configured.")).ValidateRescheduleAsync(companyId,invitationId,request.StartsUtc,request.EndsUtc,cancellationToken);}
+                catch(CalendarProviderException ex){throw Validation(nameof(request.StartsUtc),ex.Message);}
+                var description=request.Description.Contains(AiMeetingDisclosure,StringComparison.Ordinal)?request.Description:$"{request.Description.Trim()}\n\n{AiMeetingDisclosure}";
+                if(description.Length>4000)throw Validation(nameof(request.Description),"Leave space for the AI meeting notice.");
+                request=request with {CreateOnlineMeeting=false,Description=description};
+            }
+        }
+
         var hasOpenChange = await _dbContext.SalesMeetingChangeRequests.AnyAsync(
             x => x.CompanyId == companyId && x.InvitationId == invitationId &&
                 (x.Status == SalesMeetingChangeRequestStatus.Draft ||
@@ -114,7 +129,9 @@ public sealed partial class SalesMeetingSchedulingService
             ["proposedStartsUtc"] = JsonValue.Create(change.StartsUtc),
             ["proposedEndsUtc"] = JsonValue.Create(change.EndsUtc),
             ["timeZoneId"] = JsonValue.Create(change.TimeZoneId ?? invitation.TimeZoneId),
-            ["provider"] = JsonValue.Create(invitation.Provider.ToStorageValue())
+            ["provider"] = JsonValue.Create(invitation.Provider.ToStorageValue()),
+            ["conferencing"] = JsonValue.Create(invitation.Conferencing),
+            ["createOnlineMeeting"] = JsonValue.Create(change.CreateOnlineMeeting??invitation.CreateOnlineMeeting)
         };
 
     private static void ValidateReschedule(CreateSalesMeetingRescheduleRequest request)

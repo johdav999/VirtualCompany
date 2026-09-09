@@ -160,6 +160,11 @@ public sealed class SalesMeetingSessionService(
             now);
 
         dbContext.SalesMeetingSessions.Add(session);
+        if(invitation.BrowserRoomId.HasValue)
+        {
+            var browserRoom=await dbContext.SalesBrowserRooms.SingleAsync(x=>x.CompanyId==companyId&&x.Id==invitation.BrowserRoomId&&x.InvitationId==invitation.Id,cancellationToken);
+            browserRoom.AttachSession(session.Id);
+        }
         AddAudit(
             session,
             actorUserId,

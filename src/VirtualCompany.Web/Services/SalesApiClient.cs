@@ -344,12 +344,12 @@ public sealed record SalesLeadDetailResponse(
     IReadOnlyList<SalesRecommendationResponse> Recommendations);
 
 public sealed record SalesCalendarConnectionResponse(Guid Id, string Provider, string EmailAddress, string? DisplayName, string Status, bool HasCalendarPermission, bool RequiresReconnect);
-public sealed record CreateSalesMeetingInvitationRequest(Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true);
+public sealed record CreateSalesMeetingInvitationRequest(Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true, string? Conferencing = null, Guid? CommandId=null);
 public sealed record SalesMeetingAvailabilityRequest(Guid CalendarConnectionId, DateTime FromUtc, DateTime ToUtc, string TimeZoneId, int DurationMinutes = 30);
 public sealed record CalendarBusyWindow(DateTime StartsUtc, DateTime EndsUtc);
 public sealed record CalendarAvailableSlot(DateTime StartsUtc, DateTime EndsUtc);
 public sealed record SalesMeetingAvailabilityResponse(Guid CalendarConnectionId, string Provider, IReadOnlyList<CalendarBusyWindow> BusyWindows, IReadOnlyList<CalendarAvailableSlot> SuggestedSlots);
-public sealed record CreateSalesMeetingRescheduleRequest(DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true);
+public sealed record CreateSalesMeetingRescheduleRequest(DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true, string? Conferencing = null);
 public sealed record SalesMeetingChangeRequestResponse(
     Guid Id, Guid InvitationId, string Operation, string Status,
     DateTime? StartsUtc, DateTime? EndsUtc, string? TimeZoneId,
@@ -368,7 +368,7 @@ public sealed record SalesMeetingInvitationResponse(
     string ConfirmationStatus, Guid? ConfirmationMailboxConnectionId,
     string? ConfirmationProviderMessageId, string? ConfirmationProviderThreadId,
     string ConfirmationThreadingMode, int ConfirmationAttemptCount, string? ConfirmationErrorCode,
-    string? ConfirmationErrorSummary, DateTime? ConfirmationSentUtc);
+    string? ConfirmationErrorSummary, DateTime? ConfirmationSentUtc, string Conferencing = "none", Guid? BrowserRoomId = null);
 public sealed record SalesLeadSourceEmailResponse(
     Guid LinkId,
     string ProviderMessageId,

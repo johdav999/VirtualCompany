@@ -1,0 +1,11 @@
+@inject SalesBrowserMeetingApiClient BrowserMeetings
+<button type="button" class="sales-button" disabled="@busy" @onclick="Inspect">@(busy?"Requesting inspection…":RetryFailed?"Retry approved change":"Inspect calendar outcome")</button>
+@if(message!=null){<span role="status">@message</span>}
+@code {
+    [Parameter] public Guid CompanyId {get;set;}
+    [Parameter] public Guid InvitationId {get;set;}
+    [Parameter] public bool RetryFailed {get;set;}
+    [Parameter] public Guid? ChangeId {get;set;}
+    private bool busy;private string? message;
+    private async Task Inspect(){busy=true;try{if(RetryFailed&&ChangeId.HasValue){await BrowserMeetings.RetryChangeAsync(CompanyId,InvitationId,ChangeId.Value);message="Retry requested for the approved change. Refresh this page for the result.";}else{await BrowserMeetings.ReconcileAsync(CompanyId,InvitationId,ChangeId);message="Calendar inspection queued. Refresh this page for the result. No invitation is resent.";}}catch(InvalidOperationException ex){message=ex.Message;}finally{busy=false;}}
+}

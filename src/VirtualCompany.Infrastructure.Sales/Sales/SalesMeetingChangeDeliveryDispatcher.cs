@@ -14,15 +14,17 @@ public sealed class SalesMeetingChangeDeliveryDispatcher : ISalesMeetingChangeDe
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICalendarOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICalendarProviderRegistry _providerRegistry;
+    private readonly ISalesBrowserMeetingScheduling? _browserMeetings;
 
     public SalesMeetingChangeDeliveryDispatcher(
         VirtualCompanyDbContext dbContext,
         ICalendarOAuthAccessTokenLeaseService tokenLeaseService,
-        ICalendarProviderRegistry providerRegistry)
+        ICalendarProviderRegistry providerRegistry, ISalesBrowserMeetingScheduling? browserMeetings = null)
     {
         _dbContext = dbContext;
         _tokenLeaseService = tokenLeaseService;
         _providerRegistry = providerRegistry;
+        _browserMeetings = browserMeetings;
     }
 
     public async Task DispatchAsync(
@@ -49,13 +51,15 @@ public sealed class SalesMeetingChangeDeliveryDispatcher : ISalesMeetingChangeDe
         if (invitation.Status != SalesMeetingInvitationStatus.Scheduled || string.IsNullOrWhiteSpace(invitation.ExternalEventId))
             throw new InvalidOperationException("The confirmed provider event is no longer available for this change.");
 
+        if(!message.ReconcileOnly&&invitation.Conferencing==SalesMeetingConferencing.Browser&&change.Status is SalesMeetingChangeRequestStatus.Executing or SalesMeetingChangeRequestStatus.ReconciliationRequired)
+        {change.MarkReconciliationRequired("calendar_change_outcome_unknown","Inspect the calendar before retrying this change.");await _dbContext.SaveChangesAsync(cancellationToken);return;}
         var provider = _providerRegistry.Resolve(invitation.Provider);
         try
         {
             var lease = await _tokenLeaseService.AcquireAsync(
                 invitation.CompanyId, invitation.CalendarConnectionId,
                 provider.RequiredScopes, cancellationToken);
-            change.BeginExecution();
+            if(!message.ReconcileOnly)change.BeginExecution();
             await _dbContext.SaveChangesAsync(cancellationToken);
             var context = new CalendarProviderContext(
                 invitation.CompanyId, invitation.CalendarConnectionId,
@@ -64,24 +68,49 @@ public sealed class SalesMeetingChangeDeliveryDispatcher : ISalesMeetingChangeDe
 
             if (change.Operation == SalesMeetingChangeOperation.Reschedule)
             {
-                var result = await provider.UpdateMeetingAsync(
+                string? browserLink=null;
+                if(invitation.Conferencing==SalesMeetingConferencing.Browser)
+                {
+                    if(_browserMeetings==null)throw new InvalidOperationException("Browser scheduling is not configured.");
+                    await _browserMeetings.ValidateRescheduleAsync(invitation.CompanyId,invitation.Id,change.StartsUtc!.Value,change.EndsUtc!.Value,cancellationToken);
+                    browserLink=await _browserMeetings.DeliveryLinkAsync(invitation.CompanyId,invitation.Id,cancellationToken);
+                }
+                CalendarMeetingCreateResult? result=null;
+                if(message.ReconcileOnly || browserLink!=null&&change.ExecutionAttemptCount>1)
+                {
+                    var observed=await provider.InspectMeetingAsync(context,invitation.Id,invitation.ExternalEventId,change.StartsUtc!.Value,change.EndsUtc!.Value,cancellationToken);
+                    if(message.ReconcileOnly&&(observed==null||observed.Cancelled||observed.StartsUtc!=change.StartsUtc||observed.EndsUtc!=change.EndsUtc||observed.Title!=change.Title))
+                        throw new CalendarProviderException("calendar_change_unconfirmed","The calendar does not confirm the requested change. No update was resent.",CalendarProviderFailureKind.Ambiguous);
+                    if(observed!=null&&!observed.Cancelled&&observed.StartsUtc==change.StartsUtc&&observed.EndsUtc==change.EndsUtc&&observed.Title==change.Title)result=observed.Event;
+                }
+                if(result==null) result = await provider.UpdateMeetingAsync(
                     context,
                     new CalendarMeetingUpdateRequest(
                         change.Id, change.IdempotencyKey, invitation.ExternalEventId,
-                        change.Title!, change.Description!, change.StartsUtc!.Value,
+                        change.Title!, browserLink is null?change.Description!:$"{change.Description}\n\nJoin browser meeting: {browserLink}", change.StartsUtc!.Value,
                         change.EndsUtc!.Value, change.TimeZoneId!, change.Location,
                         invitation.AttendeeEmail, invitation.AttendeeName,
-                        change.CreateOnlineMeeting ?? invitation.CreateOnlineMeeting),
+                        invitation.Conferencing==SalesMeetingConferencing.Browser?false:change.CreateOnlineMeeting ?? invitation.CreateOnlineMeeting),
                     cancellationToken);
                 invitation.ApplyReschedule(
-                    change.Title!, change.Description!, change.StartsUtc.Value,
-                    change.EndsUtc.Value, change.TimeZoneId!, change.Location,
-                    change.CreateOnlineMeeting ?? invitation.CreateOnlineMeeting,
-                    result.ProviderWebUrl, result.OnlineMeetingUrl, DateTime.UtcNow);
+                    change.Title!, change.Description!, DateTime.SpecifyKind(change.StartsUtc.Value,DateTimeKind.Utc),
+                    DateTime.SpecifyKind(change.EndsUtc.Value,DateTimeKind.Utc), change.TimeZoneId!, change.Location,
+                    invitation.Conferencing==SalesMeetingConferencing.Browser?false:change.CreateOnlineMeeting ?? invitation.CreateOnlineMeeting,
+                    result.ProviderWebUrl, browserLink is null?result.OnlineMeetingUrl:new Uri(browserLink).GetLeftPart(UriPartial.Path), DateTime.UtcNow);
+                if(browserLink!=null)await _browserMeetings!.RescheduledAsync(invitation.CompanyId,invitation.Id,cancellationToken);
             }
             else
             {
-                await provider.CancelMeetingAsync(
+                if(invitation.Conferencing==SalesMeetingConferencing.Browser)
+                    await (_browserMeetings??throw new InvalidOperationException("Browser scheduling is not configured.")).CancelAsync(invitation.CompanyId,invitation.Id,change.Id,cancellationToken);
+                var cancellationConfirmed=false;
+                if(message.ReconcileOnly||invitation.Conferencing==SalesMeetingConferencing.Browser&&change.ExecutionAttemptCount>1)
+                {
+                    var observed=await provider.InspectMeetingAsync(context,invitation.Id,invitation.ExternalEventId,invitation.StartsUtc,invitation.EndsUtc,cancellationToken);
+                    cancellationConfirmed=observed==null||observed.Cancelled;
+                    if(!cancellationConfirmed&&message.ReconcileOnly)throw new CalendarProviderException("calendar_cancellation_unconfirmed","The calendar still shows this event. No cancellation was resent.",CalendarProviderFailureKind.Ambiguous);
+                }
+                if(!cancellationConfirmed) await provider.CancelMeetingAsync(
                     context, invitation.ExternalEventId,
                     change.IdempotencyKey, cancellationToken);
                 invitation.MarkCancelled(DateTime.UtcNow);

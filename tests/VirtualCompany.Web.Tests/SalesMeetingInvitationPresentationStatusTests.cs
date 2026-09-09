@@ -38,6 +38,13 @@ public sealed class SalesMeetingInvitationPresentationStatusTests
     }
 
     [Fact]
+    public void Browser_ready_invitation_never_links_to_Teams()
+    {
+        var model=Model("ready",true,true);model=model with {Invitation=model.Invitation with {Conferencing="browser"}};
+        using var context=CreateContext(new StatusHandler(model));var cut=Render(context);
+        cut.WaitForAssertion(()=>Assert.Contains("Continue preparation",cut.Markup));Assert.DoesNotContain("/teams/meetings/",cut.Markup);
+    }
+    [Fact]
     public void Retryable_failure_uses_safe_authoritative_status()
     {
         var model = Model("blocked", true, false) with

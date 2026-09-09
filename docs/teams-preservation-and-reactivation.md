@@ -46,3 +46,9 @@ Preserve existing runbooks: `/docs/teams-presenter-production-rollout.md`, `/doc
 7. With deployment authorization, enable the scoped pilot/allowlists. Production release retains its existing requirements. Browser settings remain independent.
 
 Browser implementation acceptance requires Teams source/assets retained and applicable regressions verified, with explicit pre-existing/environment blockers. It does not require switching Teams on. Maintain this document with exact changed paths/configuration mappings during implementation.
+
+## Prompt 1 preservation evidence — 9 September 2026
+
+The browser transport was added through one call to `AddSalesRoomMedia` in `src/VirtualCompany.Infrastructure.Sales/Sales/SalesModuleRegistration.cs` and two pinned package references in the Sales project file. Existing Teams source/settings/contracts were not replaced. The distinct `SalesBrowserRoom` configuration and `browser_livekit_room` route do not alter `TeamsPresenter` or the single-user `browser_webrtc` route. No database changes or live Teams resource operations occurred.
+
+The 746-path baseline and content-hash comparison are under `/docs/verification/browser-sales-room/`; full verification, package provenance and remaining live/Azure gates are recorded in `/docs/verification/browser-sales-room-implementation.md`. Teams media/readiness/package/runtime/deployment regressions and the Windows API build remain executable. Live Teams readiness and SDK freshness on a future reactivation date still require the original runbooks and gates.

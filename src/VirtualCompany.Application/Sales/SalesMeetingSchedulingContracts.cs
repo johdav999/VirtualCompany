@@ -16,7 +16,7 @@ public sealed record SalesCalendarConnectionResponse(
 public sealed record CreateSalesMeetingInvitationRequest(
     Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc,
     string TimeZoneId, string Title, string Description, string? Location,
-    bool CreateOnlineMeeting = true);
+    bool CreateOnlineMeeting = true, string? Conferencing = null, Guid? CommandId = null);
 
 public sealed record SalesMeetingInvitationResponse(
     Guid Id, Guid LeadId, Guid? DealId, Guid? ContactId, Guid CalendarConnectionId,
@@ -30,7 +30,7 @@ public sealed record SalesMeetingInvitationResponse(
     string? ConfirmationProviderMessageId, string? ConfirmationProviderThreadId,
     string ConfirmationThreadingMode,
     int ConfirmationAttemptCount, string? ConfirmationErrorCode,
-    string? ConfirmationErrorSummary, DateTime? ConfirmationSentUtc);
+    string? ConfirmationErrorSummary, DateTime? ConfirmationSentUtc, string Conferencing = "none", Guid? BrowserRoomId = null);
 
 public sealed record SalesMeetingAvailabilityRequest(
     Guid CalendarConnectionId, DateTime FromUtc, DateTime ToUtc, string TimeZoneId,
@@ -47,7 +47,7 @@ public sealed record SalesMeetingAvailabilityResponse(
 public sealed record CreateSalesMeetingRescheduleRequest(
     DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId,
     string Title, string Description, string? Location,
-    bool CreateOnlineMeeting = true);
+    bool CreateOnlineMeeting = true, string? Conferencing = null);
 
 public sealed record SalesMeetingChangeRequestResponse(
     Guid Id, Guid InvitationId, string Operation, string Status,
@@ -108,8 +108,11 @@ public sealed class CalendarProviderException : Exception
     public CalendarProviderFailureKind Kind { get; }
 }
 
+public sealed record CalendarMeetingObservation(CalendarMeetingCreateResult Event, DateTime StartsUtc, DateTime EndsUtc, string Title, bool Cancelled);
 public interface ICalendarProviderClient
 {
+    Task<CalendarMeetingObservation?> InspectMeetingAsync(CalendarProviderContext context, Guid invitationId, string? externalEventId, DateTime startsUtc, DateTime endsUtc, CancellationToken ct)
+        => throw new NotSupportedException("Calendar inspection is not implemented by this provider.");
     ExternalAccountProvider Provider { get; }
     IReadOnlyCollection<string> RequiredScopes { get; }
     Task<IReadOnlyList<CalendarBusyWindow>> GetBusyWindowsAsync(
@@ -132,14 +135,14 @@ public interface ICalendarProviderRegistry
 }
 
 public sealed record SalesMeetingInvitationDeliveryRequestedMessage(
-    Guid CompanyId, Guid InvitationId, string IdempotencyKey, string? CorrelationId);
+    Guid CompanyId, Guid InvitationId, string IdempotencyKey, string? CorrelationId, bool ReconcileOnly = false);
 
 public interface ISalesMeetingInvitationDeliveryDispatcher
 {
     Task DispatchAsync(SalesMeetingInvitationDeliveryRequestedMessage message, CancellationToken cancellationToken);
 }
 public sealed record SalesMeetingChangeDeliveryRequestedMessage(
-    Guid CompanyId, Guid ChangeRequestId, string IdempotencyKey, string? CorrelationId);
+    Guid CompanyId, Guid ChangeRequestId, string IdempotencyKey, string? CorrelationId, bool ReconcileOnly = false);
 
 public sealed record SalesMeetingConfirmationDeliveryRequestedMessage(
     Guid CompanyId, Guid InvitationId, string IdempotencyKey, string? CorrelationId);

@@ -42,6 +42,7 @@ public sealed class SalesMeetingInvitation : ICompanyOwnedEntity
         TimeZoneId = NormalizeRequired(timeZoneId, nameof(timeZoneId), 100);
         Location = NormalizeOptional(location, nameof(location), 500);
         CreateOnlineMeeting = createOnlineMeeting;
+        Conferencing = SalesMeetingConferencing.Resolve(null, createOnlineMeeting, provider);
         CreatedByUserId = createdByUserId;
         IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? $"sales-meeting:{companyId:N}:{Id:N}:v1" : NormalizeRequired(idempotencyKey, nameof(idempotencyKey), 300);
         ConfirmationIdempotencyKey = $"{IdempotencyKey}:confirmation:v1";
@@ -70,6 +71,22 @@ public sealed class SalesMeetingInvitation : ICompanyOwnedEntity
     public string TimeZoneId { get; private set; } = null!;
     public string? Location { get; private set; }
     public bool CreateOnlineMeeting { get; private set; }
+    public string Conferencing { get; private set; } = SalesMeetingConferencing.None;
+    public Guid? BrowserRoomId { get; private set; }
+    public string? ProtectedBrowserInvitationLink { get; private set; }
+    public void UseCalendar(string calendarId) {if(Status!=SalesMeetingInvitationStatus.Draft)throw new InvalidOperationException("Calendar selection requires a new invitation.");CalendarId=NormalizeRequired(calendarId,nameof(calendarId),256);}
+    public void SelectConferencing(string route)
+    {
+        if(Status!=SalesMeetingInvitationStatus.Draft)throw new InvalidOperationException("Meeting type changes require a reviewed replacement invitation.");
+        Conferencing=SalesMeetingConferencing.Resolve(route,CreateOnlineMeeting,Provider);
+        CreateOnlineMeeting=SalesMeetingConferencing.UsesCalendarConference(Conferencing);
+    }
+    public void BindBrowserRoom(Guid room,string protectedSecret)
+    {
+        if(Conferencing!=SalesMeetingConferencing.Browser||room==Guid.Empty)throw new InvalidOperationException("Browser invitation required.");
+        if(BrowserRoomId.HasValue&&BrowserRoomId!=room)throw new InvalidOperationException("Browser room already bound.");
+        BrowserRoomId=room;ProtectedBrowserInvitationLink=protectedSecret;
+    }
     public SalesMeetingInvitationStatus Status { get; private set; }
     public Guid? ApprovalRequestId { get; private set; }
     public Guid CreatedByUserId { get; private set; }
@@ -262,7 +279,8 @@ public sealed class SalesMeetingInvitation : ICompanyOwnedEntity
         EndsUtc = end;
         TimeZoneId = NormalizeRequired(timeZoneId, nameof(timeZoneId), 100);
         Location = NormalizeOptional(location, nameof(location), 500);
-        CreateOnlineMeeting = createOnlineMeeting;
+        CreateOnlineMeeting = Conferencing==SalesMeetingConferencing.Browser?false:createOnlineMeeting;
+        if(Conferencing!=SalesMeetingConferencing.Browser)Conferencing=SalesMeetingConferencing.Resolve(null,createOnlineMeeting,Provider);
         ProviderWebUrl = NormalizeOptional(providerWebUrl, nameof(providerWebUrl), 2000) ?? ProviderWebUrl;
         OnlineMeetingUrl = NormalizeOptional(onlineMeetingUrl, nameof(onlineMeetingUrl), 2000) ?? OnlineMeetingUrl;
         UpdatedUtc = NormalizeUtc(updatedUtc, nameof(updatedUtc));

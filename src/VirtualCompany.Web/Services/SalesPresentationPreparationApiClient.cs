@@ -88,7 +88,7 @@ public sealed record SalesPresentationPreparationInvitationViewModel(
     Guid Id, Guid LeadId, Guid? DealId, Guid? ContactId, string Title,
     DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string? Location,
     bool CreateOnlineMeeting, string Provider, string Status,
-    bool HasProviderEvent, bool IsEligibleForSessionCreation);
+    bool HasProviderEvent, bool IsEligibleForSessionCreation, string Conferencing="none", Guid? BrowserRoomId=null);
 
 public sealed record SalesPresentationPreparationAgentViewModel(
     Guid Id, string DisplayName, string RoleName, string TemplateId,

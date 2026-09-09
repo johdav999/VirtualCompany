@@ -91,6 +91,11 @@ public sealed class SalesMeetingChangeRequest : ICompanyOwnedEntity
         UpdatedUtc = NormalizeUtc(decidedUtc, nameof(decidedUtc));
     }
 
+    public void QueueRetry()
+    {
+        if(Status!=SalesMeetingChangeRequestStatus.Failed)throw new InvalidOperationException("Only a failed approved change can be retried.");
+        Status=SalesMeetingChangeRequestStatus.Queued;LastErrorCode=null;LastErrorSummary=null;UpdatedUtc=DateTime.UtcNow;
+    }
     public void BeginExecution()
     {
         if (Status is not (SalesMeetingChangeRequestStatus.Queued or SalesMeetingChangeRequestStatus.Failed))

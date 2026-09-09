@@ -14,7 +14,7 @@ using VirtualCompany.Infrastructure.Sales;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesMeetingSchedulingServiceTests
+public sealed partial class SalesMeetingSchedulingServiceTests
 {
     [Fact]
     public async Task Preparing_invitation_creates_owner_approval_without_calling_calendar_provider()
@@ -345,7 +345,7 @@ public sealed class SalesMeetingSchedulingServiceTests
                 null,
                 true);
 
-        public async Task<SalesMeetingInvitation> CreateApprovedInvitationAsync()
+        public async Task<SalesMeetingInvitation> CreateApprovedInvitationAsync(string? conferencing = null)
         {
             var approvalId = Guid.NewGuid();
             var contactId = await Db.Contacts.Select(x => (Guid?)x.Id).SingleAsync();
@@ -356,6 +356,7 @@ public sealed class SalesMeetingSchedulingServiceTests
                 "Product overview and next steps.", DateTime.UtcNow.AddDays(2),
                 DateTime.UtcNow.AddDays(2).AddMinutes(30), "Europe/Stockholm",
                 null, true, UserId);
+            if (conferencing != null) invitation.SelectConferencing(conferencing);
             invitation.SubmitForApproval(approvalId);
             invitation.MarkApproved(UserId, DateTime.UtcNow);
             var approval = ApprovalRequest.CreateForTarget(
@@ -549,6 +550,12 @@ public sealed class SalesMeetingSchedulingServiceTests
     private sealed class RecordingCalendarProvider : ICalendarProviderClient
     {
         public int CreateCalls { get; private set; }
+        public CalendarMeetingCreateRequest? LastCreate { get; private set; }
+        public CalendarMeetingUpdateRequest? LastUpdate { get; private set; }
+        public int CancelCalls { get; private set; }
+        public bool FailAfterCreate { get; set; }
+        public CalendarProviderFailureKind FailureKind { get; set; } = CalendarProviderFailureKind.Ambiguous;
+        public Task<CalendarMeetingObservation?> InspectMeetingAsync(CalendarProviderContext context, Guid invitationId, string? eventId, DateTime starts, DateTime ends, CancellationToken ct) => Task.FromResult(LastCreate == null ? null : new CalendarMeetingObservation(new("event", null, null, null), LastCreate.StartsUtc, LastCreate.EndsUtc, LastCreate.Title, false));
         public ExternalAccountProvider Provider => ExternalAccountProvider.Google;
         public IReadOnlyCollection<string> RequiredScopes { get; } =
         [
@@ -569,22 +576,23 @@ public sealed class SalesMeetingSchedulingServiceTests
             CalendarMeetingCreateRequest request,
             CancellationToken cancellationToken)
         {
-            CreateCalls++;
+            CreateCalls++; LastCreate = request;
+            if (FailAfterCreate) { FailAfterCreate = false; throw new CalendarProviderException("calendar_outcome_unknown", "Calendar outcome unknown.", FailureKind); }
             return Task.FromResult(new CalendarMeetingCreateResult("event", null, null, null));
         }
 
         public Task<CalendarMeetingCreateResult> UpdateMeetingAsync(
             CalendarProviderContext context,
             CalendarMeetingUpdateRequest request,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(new CalendarMeetingCreateResult(request.ExternalEventId, null, null, null));
+            CancellationToken cancellationToken)
+        { LastUpdate = request; return Task.FromResult(new CalendarMeetingCreateResult(request.ExternalEventId, null, null, null)); }
 
         public Task CancelMeetingAsync(
             CalendarProviderContext context,
             string externalEventId,
             string idempotencyKey,
-            CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+            CancellationToken cancellationToken)
+        { CancelCalls++; return Task.CompletedTask; }
     }
 
     private sealed class TestCompanyContextAccessor : ICompanyContextAccessor

@@ -22,7 +22,7 @@ public sealed class CalendarProviderRegistry : ICalendarProviderRegistry
             : throw new InvalidOperationException("This connected account does not support calendar scheduling.");
 }
 
-public sealed class GoogleCalendarProviderClient : ICalendarProviderClient
+public sealed partial class GoogleCalendarProviderClient : ICalendarProviderClient
 {
     public const string ClientName = "google-calendar";
     private readonly IHttpClientFactory _httpClientFactory;
@@ -238,7 +238,7 @@ public sealed class GoogleCalendarProviderClient : ICalendarProviderClient
         }
     }
 
-    private static string FormatUtc(DateTime value) => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+    private static string FormatUtc(DateTime value) => (value.Kind==DateTimeKind.Local?value.ToUniversalTime():DateTime.SpecifyKind(value,DateTimeKind.Utc)).ToString("O", CultureInfo.InvariantCulture);
     private static string ReadRequired(JsonElement root, string name, string message) => ReadOptional(root, name) ?? throw new CalendarProviderException("calendar_response_invalid", message, CalendarProviderFailureKind.Ambiguous);
     private static string? ReadOptional(JsonElement root, string name) => root.TryGetProperty(name, out var value) ? value.GetString() : null;
     private static string? ReadConferenceJoinUrl(JsonElement root)
@@ -251,7 +251,7 @@ public sealed class GoogleCalendarProviderClient : ICalendarProviderClient
     }
 }
 
-public sealed class Microsoft365CalendarProviderClient : ICalendarProviderClient
+public sealed partial class Microsoft365CalendarProviderClient : ICalendarProviderClient
 {
     public const string ClientName = "microsoft365-calendar";
     private readonly IHttpClientFactory _httpClientFactory;
@@ -301,7 +301,7 @@ public sealed class Microsoft365CalendarProviderClient : ICalendarProviderClient
         _logger.LogDebug(
             "Creating Microsoft 365 calendar event. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. InvitationId: {InvitationId}. CreateOnlineMeeting: {CreateOnlineMeeting}.",
             context.CompanyId, context.ConnectionId, meeting.InvitationId, meeting.CreateOnlineMeeting);
-        using var request = Authorized(HttpMethod.Post, "https://graph.microsoft.com/v1.0/me/events", context.AccessToken);
+        using var request = Authorized(HttpMethod.Post, context.CalendarId=="primary"?"https://graph.microsoft.com/v1.0/me/events":$"https://graph.microsoft.com/v1.0/me/calendars/{Uri.EscapeDataString(context.CalendarId)}/events", context.AccessToken);
         request.Headers.TryAddWithoutValidation("Prefer", "outlook.timezone=\"UTC\"");
         request.Content = JsonContent.Create(new
         {
@@ -567,7 +567,7 @@ public sealed class Microsoft365CalendarProviderClient : ICalendarProviderClient
         return request;
     }
 
-    private static string FormatGraphUtc(DateTime value) => value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+    private static string FormatGraphUtc(DateTime value) => (value.Kind==DateTimeKind.Local?value.ToUniversalTime():DateTime.SpecifyKind(value,DateTimeKind.Utc)).ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
     private static DateTime ParseGraphUtc(string value) => DateTime.SpecifyKind(DateTime.Parse(value, CultureInfo.InvariantCulture), DateTimeKind.Utc);
     private static string ReadRequired(JsonElement root, string name, string message) => ReadOptional(root, name) ?? throw new CalendarProviderException("calendar_response_invalid", message, CalendarProviderFailureKind.Ambiguous);
     private static string? ReadOptional(JsonElement root, string name) =>

@@ -11,6 +11,7 @@ internal sealed class SalesMeetingChangeRequestConfiguration : IEntityTypeConfig
     {
         builder.ToTable("sales_meeting_change_requests");
         builder.HasKey(x => x.Id);
+        builder.Property(x=>x.Status).IsConcurrencyToken();
         builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();

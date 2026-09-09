@@ -73,6 +73,10 @@
             </dl>
         </section>
 
+        @if(preparation.Invitation.Conferencing=="browser")
+        {
+            <section class="meeting-preparation-state"><div><strong>Browser meeting</strong><p>The invitation link admits one guest to the lobby. The organizer controls admission and AI participation.</p><SalesBrowserInvitationLink CompanyId="preparation.CompanyId" InvitationId="InvitationId" /></div></section>
+        }
         <section class="meeting-readiness" aria-labelledby="meeting-readiness-title">
             <div class="meeting-readiness__heading">
                 <div>
@@ -134,7 +138,7 @@
             </section>
         }
 
-        @if (preparation.Session is not null)
+        @if (preparation.Session is not null && preparation.Invitation.Conferencing!="browser")
         {
             <VirtualCompany.Web.Components.Sales.TeamsMeetingPresenterPicker CompanyId="@preparation.CompanyId" SessionId="@preparation.Session.Id" OnSaved="RefreshPreparationAsync" />
         }
@@ -536,7 +540,7 @@
     private bool HasActiveDeck => preparation?.CanOpenPresenter == true &&
         preparation.ActiveDeckId is not null && preparation.ActiveDeckSlideCount > 0;
 
-    private bool CanOpenBrowserPresenter => MeetingUiOptions.Value.BrowserDiagnosticsEnabled &&
+    private bool CanOpenBrowserPresenter => preparation?.Invitation.Conferencing!="browser" && MeetingUiOptions.Value.BrowserDiagnosticsEnabled &&
         preparation?.CanOpenPresenter == true && preparation.MeetingSessionId is not null;
 
     private string BrowserPresenterPath => preparation?.MeetingSessionId is Guid sessionId &&
@@ -554,11 +558,11 @@
         ? SalesText["ActiveDeckSlideCount", preparation!.ActiveDeckSlideCount]
         : SalesText["NoActiveProcessedDeck"];
 
-    private string EnvironmentHeading => MeetingUiOptions.Value.BrowserDiagnosticsEnabled
+    private string EnvironmentHeading => preparation?.Invitation.Conferencing=="browser" ? "Browser meeting" : MeetingUiOptions.Value.BrowserDiagnosticsEnabled
         ? SalesText["BrowserDiagnosticsAvailable"]
         : SalesText["TeamsOrganizerSurfaceRequired"];
 
-    private string EnvironmentGuidance => MeetingUiOptions.Value.BrowserDiagnosticsEnabled
+    private string EnvironmentGuidance => preparation?.Invitation.Conferencing=="browser" ? "Use the browser invitation link. The organizer controls admission and consent before AI participation." : MeetingUiOptions.Value.BrowserDiagnosticsEnabled
         ? SalesText["BrowserDiagnosticsLimitations"]
         : SalesText["TeamsOrganizerSurfaceGuidance"];
 

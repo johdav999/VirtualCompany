@@ -8,7 +8,7 @@ using VirtualCompany.Infrastructure.Sales;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesCalendarProviderClientTests
+public sealed partial class SalesCalendarProviderClientTests
 {
     [Fact]
     public async Task Google_create_uses_deterministic_event_id_and_sends_updates()

@@ -195,7 +195,7 @@ public sealed class SalesMeetingPresentationPreparationQuery(
                 invitation.Title, invitation.StartsUtc, invitation.EndsUtc,
                 invitation.TimeZoneId, invitation.Location, invitation.CreateOnlineMeeting,
                 invitation.Provider.ToStorageValue(), invitation.Status.ToStorageValue(),
-                hasProviderEvent, invitationEligible),
+                hasProviderEvent, invitationEligible, invitation.Conferencing, invitation.BrowserRoomId),
             session is null ? null : MapSession(session),
             agents, decks, activeDeckId, activeDeckSlideCount, readiness,
             canOpenPresenter, blockers, actions);

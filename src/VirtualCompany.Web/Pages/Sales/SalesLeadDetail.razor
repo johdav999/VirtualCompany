@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inherits SalesPageBase
 @using System.Text.RegularExpressions
+@inject SalesBrowserMeetingApiClient BrowserMeetings
 
 <PageTitle>@(lead?.Title ?? "Sales lead")</PageTitle>
 
@@ -186,10 +187,7 @@
                             <label class="sales-meeting-grid__title"><span>Title</span><input class="sales-input" maxlength="200" @bind="meetingTitle" /></label>
                             <label class="sales-meeting-grid__location"><span>Location</span><input class="sales-input" maxlength="500" placeholder="Online meeting" @bind="meetingLocation" /></label>
                             <label class="sales-meeting-grid__agenda"><span>Agenda</span><textarea class="sales-input" rows="3" maxlength="4000" @bind="meetingDescription"></textarea></label>
-                            <label class="sales-meeting-online">
-                                <input type="checkbox" @bind="createOnlineMeeting" />
-                                <span><strong>Create online meeting</strong><small>@OnlineMeetingLabel</small></span>
-                            </label>
+                            <SalesMeetingTypePicker @bind-Value="meetingType" BrowserReady="browserReadiness.Ready" UnavailableReason="browserReadiness.Reason" CalendarMeetingLabel="OnlineMeetingLabel" />
                         </div>
 
                         <div class="sales-availability">
@@ -240,7 +238,8 @@
                                 <div><dt>Organizer</dt><dd>@invitation.OrganizerEmail</dd></div>
                                 <div><dt>Attendee</dt><dd>@invitation.AttendeeEmail</dd></div>
                                 <div><dt>Date and time</dt><dd>@MeetingDateLabel(invitation)</dd></div>
-                                <div><dt>Provider</dt><dd>@ProviderName(invitation.Provider)</dd></div>
+                                <div><dt>Calendar</dt><dd>@ProviderName(invitation.Provider)</dd></div>
+                                <div><dt>Meeting type</dt><dd>@MeetingTypeName(invitation.Conferencing)</dd></div>
                             </dl>
                             <div class="sales-meeting-status__actions">
                                 @if (string.Equals(invitation.Status, "waiting_for_approval", StringComparison.OrdinalIgnoreCase) && invitation.ApprovalRequestId is Guid approvalId)
@@ -249,7 +248,9 @@
                                 }
                                 else if (string.Equals(invitation.Status, "scheduled", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    @if (!string.IsNullOrWhiteSpace(invitation.OnlineMeetingUrl))
+                                    @if(invitation.Conferencing=="browser" && ResolvedCompanyId is Guid roomCompany)
+                                    {<SalesBrowserInvitationLink CompanyId="roomCompany" InvitationId="invitation.Id" />}
+                                    else if (!string.IsNullOrWhiteSpace(invitation.OnlineMeetingUrl))
                                     {
                                         <a class="sales-meeting-status__link" href="@invitation.OnlineMeetingUrl" target="_blank" rel="noopener">Join meeting</a>
                                     }
@@ -269,6 +270,8 @@
                                     <button type="button" class="sales-meeting-status__retry" disabled="@isBusy" @onclick="() => RetryMeetingInvitationAsync(invitation.Id)">Retry delivery</button>
                                 }
                             </div>
+                            @if(invitation.Conferencing=="browser" && invitation.Status is "reconciliation_required" or "scheduling" && ResolvedCompanyId is Guid inspectCompany)
+                            {<SalesBrowserMeetingReconcile CompanyId="inspectCompany" InvitationId="invitation.Id" />}
                             @if (ResolvedCompanyId is Guid invitationCompanyId)
                             {
                                 <SalesMeetingInvitationPresentationStatus
@@ -280,6 +283,10 @@
                                 <div class="sales-meeting-change-state">
                                     <span class="bi @MeetingChangeStatusIcon(change.Status)" aria-hidden="true"></span>
                                     <strong>@FriendlyMeetingChange(change)</strong>
+                                    @if(invitation.Conferencing=="browser" && change.Status=="failed" && ResolvedCompanyId is Guid retryChangeCompany)
+                                    {<SalesBrowserMeetingReconcile CompanyId="retryChangeCompany" InvitationId="invitation.Id" ChangeId="change.Id" RetryFailed="true" />}
+                                    @if(invitation.Conferencing=="browser" && change.Status is "reconciliation_required" or "executing" && ResolvedCompanyId is Guid inspectChangeCompany)
+                                    {<SalesBrowserMeetingReconcile CompanyId="inspectChangeCompany" InvitationId="invitation.Id" ChangeId="change.Id" />}
                                     @if (change.ApprovalRequestId is Guid changeApprovalId && string.Equals(change.Status, "waiting_for_approval", StringComparison.OrdinalIgnoreCase))
                                     {
                                         <a href="@ApprovalPath(changeApprovalId)">Review approval</a>
@@ -326,7 +333,7 @@
                                         <label class="sales-meeting-grid__title"><span>Title</span><input class="sales-input" maxlength="200" @bind="changeTitle" /></label>
                                         <label class="sales-meeting-grid__location"><span>Location</span><input class="sales-input" maxlength="500" placeholder="Online meeting" @bind="changeLocation" /></label>
                                         <label class="sales-meeting-grid__agenda"><span>Agenda</span><textarea class="sales-input" rows="3" maxlength="4000" @bind="changeDescription"></textarea></label>
-                                        <label class="sales-meeting-online"><input type="checkbox" @bind="changeCreateOnlineMeeting" /><span><strong>Keep online meeting</strong><small>@ProviderName(invitation.Provider)</small></span></label>
+                                        <p class="sales-meeting-grid__wide">@MeetingTypeName(invitation.Conferencing). The invitation link is preserved when rescheduling. To change meeting type, cancel this invitation and submit a new one for approval.</p>
                                     </div>
                                 }
                                 <div class="sales-meeting-change-panel__footer">
@@ -533,7 +540,9 @@
     private string meetingTitle = "";
     private string meetingDescription = "";
     private string? meetingLocation;
-    private bool createOnlineMeeting = true;
+    private string meetingType="calendar_online";
+    private Guid meetingCommandId=Guid.NewGuid();
+    private SalesBrowserMeetingReadinessView browserReadiness=new(false,"Checking browser meeting availability…");
     private Guid? changingInvitationId;
     private string? changeOperation;
     private Guid changeFormKey = Guid.NewGuid();
@@ -597,6 +606,8 @@
             sourceEmails = await emailTask;
             AgentPanelDashboard = await dashboardTask;
             calendarConnections = await calendarsTask;
+            try {browserReadiness=await BrowserMeetings.ReadinessAsync(companyId);}
+            catch(InvalidOperationException){browserReadiness=new(false,"Browser meeting availability could not be checked. Calendar meetings remain available.");}
             meetingInvitations = await invitationsTask;
             meetingChanges = (await Task.WhenAll(meetingInvitations.Select(x => SalesApiClient.ListMeetingChangesAsync(companyId, x.Id))))
                 .SelectMany(x => x).OrderByDescending(x => x.CreatedUtc).ToArray();
@@ -668,6 +679,7 @@
 
     private void ShowMeetingForm()
     {
+        meetingCommandId=Guid.NewGuid();
         if (!CanSchedule || lead is null) return;
         meetingDate ??= DateTime.Today.AddDays(1);
         meetingTitle = string.IsNullOrWhiteSpace(meetingTitle) ? $"Virtual Company demo · {lead.CustomerCompanyName ?? lead.ContactName ?? "Sales conversation"}" : meetingTitle;
@@ -749,7 +761,7 @@
                     meetingTitle,
                     meetingDescription,
                     meetingLocation,
-                    createOnlineMeeting));
+                    meetingType=="calendar_online", meetingType=="calendar_online"?null:meetingType,meetingCommandId));
             meetingInvitations = [invitation, .. meetingInvitations.Where(x => x.Id != invitation.Id)];
             showMeetingForm = false;
             busyWindows = [];
@@ -853,7 +865,7 @@
             {
                 var (startsUtc, endsUtc) = BuildChangeMeetingTime();
                 change = await SalesApiClient.RequestMeetingRescheduleAsync(companyId, invitationId,
-                    new CreateSalesMeetingRescheduleRequest(startsUtc, endsUtc, changeTimeZoneId, changeTitle, changeDescription, changeLocation, changeCreateOnlineMeeting));
+                    new CreateSalesMeetingRescheduleRequest(startsUtc, endsUtc, changeTimeZoneId, changeTitle, changeDescription, changeLocation, changeCreateOnlineMeeting, meetingInvitations.Single(x=>x.Id==invitationId).Conferencing));
             }
             meetingChanges = [change, .. meetingChanges.Where(x => x.Id != change.Id)];
             CloseMeetingChangeForm();
@@ -984,6 +996,7 @@
         }
     }
 
+    private static string MeetingTypeName(string value)=>value switch {"browser"=>"Browser meeting","teams"=>"Microsoft Teams","google_meet"=>"Google Meet",_=>"No online meeting"};
     private static string ProviderName(string provider) => provider.ToLowerInvariant() switch
     {
         "gmail" => "Google Calendar",

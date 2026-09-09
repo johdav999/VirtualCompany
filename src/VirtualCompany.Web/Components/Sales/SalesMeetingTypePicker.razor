@@ -1,0 +1,18 @@
+<label class="meeting-type-picker">
+    <span>Meeting type</span>
+    <select class="sales-input" value="@Value" @onchange="Changed" aria-describedby="browser-meeting-type-help">
+        <option value="calendar_online">Calendar online meeting (@CalendarMeetingLabel)</option>
+        <option value="browser" disabled="@(!BrowserReady)">Browser meeting</option>
+        <option value="none">No online meeting</option>
+    </select>
+    <small id="browser-meeting-type-help">@(Value=="browser" ? "Customers join using our meeting link. An AI assistant may present; audio processing requires consent. Schedule within seven days." : "Your calendar and meeting type are selected separately.")</small>
+    @if(!BrowserReady && !string.IsNullOrWhiteSpace(UnavailableReason)){<small role="status">@UnavailableReason</small>}
+</label>
+@code {
+    [Parameter] public string Value {get;set;}="calendar_online";
+    [Parameter] public EventCallback<string> ValueChanged {get;set;}
+    [Parameter] public bool BrowserReady {get;set;}
+    [Parameter] public string? UnavailableReason {get;set;}
+    [Parameter] public string CalendarMeetingLabel {get;set;}="Teams or Google Meet";
+    private Task Changed(ChangeEventArgs args)=>ValueChanged.InvokeAsync(args.Value?.ToString()??"calendar_online");
+}

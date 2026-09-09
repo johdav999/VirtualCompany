@@ -15,15 +15,17 @@ public sealed class SalesMeetingConfirmationDeliveryDispatcher : ISalesMeetingCo
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IMailboxOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly IMailboxProviderRegistry _mailboxProviderRegistry;
+    private readonly ISalesBrowserMeetingScheduling? _browserMeetings;
 
     public SalesMeetingConfirmationDeliveryDispatcher(
         VirtualCompanyDbContext dbContext,
         IMailboxOAuthAccessTokenLeaseService tokenLeaseService,
-        IMailboxProviderRegistry mailboxProviderRegistry)
+        IMailboxProviderRegistry mailboxProviderRegistry, ISalesBrowserMeetingScheduling? browserMeetings = null)
     {
         _dbContext = dbContext;
         _tokenLeaseService = tokenLeaseService;
         _mailboxProviderRegistry = mailboxProviderRegistry;
+        _browserMeetings = browserMeetings;
     }
 
     public async Task DispatchAsync(
@@ -66,6 +68,8 @@ public sealed class SalesMeetingConfirmationDeliveryDispatcher : ISalesMeetingCo
                 source.Connection.Id,
                 mailboxProvider.ReplyRequiredScopes,
                 cancellationToken);
+            var browserLink=invitation.Conferencing==SalesMeetingConferencing.Browser
+                ? await (_browserMeetings??throw new InvalidOperationException("Browser scheduling is not configured.")).DeliveryLinkAsync(invitation.CompanyId,invitation.Id,cancellationToken) : null;
             invitation.BeginConfirmationDelivery();
             await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -85,7 +89,7 @@ public sealed class SalesMeetingConfirmationDeliveryDispatcher : ISalesMeetingCo
                     invitation.AttendeeEmail,
                     invitation.AttendeeName,
                     original.Subject ?? invitation.Title,
-                    BuildBody(invitation),
+                    BuildBody(invitation,browserLink),
                     invitation.ConfirmationIdempotencyKey),
                 cancellationToken);
 
@@ -199,7 +203,7 @@ public sealed class SalesMeetingConfirmationDeliveryDispatcher : ISalesMeetingCo
             correlationId));
     }
 
-    private static string BuildBody(SalesMeetingInvitation invitation)
+    private static string BuildBody(SalesMeetingInvitation invitation,string? browserLink=null)
     {
         var (starts, ends) = LocalTimes(invitation);
         var builder = new StringBuilder();
@@ -209,10 +213,11 @@ public sealed class SalesMeetingConfirmationDeliveryDispatcher : ISalesMeetingCo
             .Append('-').Append(ends.ToString("HH:mm"))
             .Append(" (").Append(invitation.TimeZoneId).AppendLine(").");
         builder.AppendLine().AppendLine(invitation.Title);
-        if (!string.IsNullOrWhiteSpace(invitation.OnlineMeetingUrl))
-            builder.Append("Join online: ").AppendLine(invitation.OnlineMeetingUrl);
+        if (!string.IsNullOrWhiteSpace(browserLink??invitation.OnlineMeetingUrl))
+            builder.Append("Join online: ").AppendLine(browserLink??invitation.OnlineMeetingUrl);
         else if (!string.IsNullOrWhiteSpace(invitation.Location))
             builder.Append("Location: ").AppendLine(invitation.Location);
+        if(browserLink!=null)builder.AppendLine().AppendLine(SalesMeetingSchedulingService.AiMeetingDisclosure);
         builder.AppendLine().AppendLine("A calendar invitation has also been sent.");
         builder.Append("Best regards,").AppendLine().Append(invitation.OrganizerEmail);
         return builder.ToString();

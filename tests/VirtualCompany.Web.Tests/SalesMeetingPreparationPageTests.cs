@@ -11,7 +11,7 @@ using VirtualCompany.Web.Services;
 
 namespace VirtualCompany.Web.Tests;
 
-public sealed class SalesMeetingPreparationPageTests
+public sealed partial class SalesMeetingPreparationPageTests
 {
     private static readonly Guid CompanyId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid InvitationId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -226,6 +226,7 @@ public sealed class SalesMeetingPreparationPageTests
         context.Services.AddSingleton(serviceProvider => new SalesMeetingSessionApiClient(
             transport, false, serviceProvider.GetRequiredService<IApiProblemMessageResolver>()));
         context.Services.AddSingleton(new SalesPresentationDeckApiClient(transport, false));
+        context.Services.AddSingleton(new SalesBrowserMeetingApiClient(transport,false));
         context.Services.AddSingleton(new TeamsCallControlApiClient(transport, false));
         context.Services.AddSingleton(new SalesPresentationPreparationTelemetry());
         context.Services.AddSingleton<IOptions<TeamsMeetingUiOptions>>(
@@ -258,6 +259,7 @@ public sealed class SalesMeetingPreparationPageTests
         public bool Blocked { get; init; }
         public bool Forbidden { get; init; }
         public bool Ready { get; init; }
+        public string Conferencing {get;init;}="teams";
         public int PreparationCalls { get; private set; }
         public int PutCalls { get; private set; }
         public CreateOrUpdateSalesMeetingSessionViewModel? LastRequest { get; private set; }
@@ -316,7 +318,7 @@ public sealed class SalesMeetingPreparationPageTests
                 InvitationId, Guid.Parse("55555555-5555-5555-5555-555555555555"), null, null,
                 "Welheld discovery", new DateTime(2026, 9, 15, 9, 0, 0, DateTimeKind.Utc),
                 new DateTime(2026, 9, 15, 9, 45, 0, DateTimeKind.Utc), "Europe/Stockholm", null,
-                true, "microsoft365", Blocked ? "waiting_for_approval" : "scheduled", !Blocked, !Blocked);
+                Conferencing!="browser", "microsoft365", Blocked ? "waiting_for_approval" : "scheduled", !Blocked, !Blocked,Conferencing);
             var agents = Blocked
                 ? Array.Empty<SalesPresentationPreparationAgentViewModel>()
                 : [new SalesPresentationPreparationAgentViewModel(AgentId, "Alex", "Sales representative", "alex-sales", "Sales", "active", null)];

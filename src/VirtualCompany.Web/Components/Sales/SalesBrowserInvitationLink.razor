@@ -1,0 +1,16 @@
+@inject SalesBrowserMeetingApiClient BrowserMeetings
+@inject Microsoft.JSInterop.IJSRuntime JS
+<button type="button" class="sales-button" disabled="@busy" @onclick="Copy">@(busy?"Copying…":"Copy invitation link")</button>
+@if(message!=null){<span role="status">@message</span>}
+@code {
+    [Parameter] public Guid CompanyId {get;set;}
+    [Parameter] public Guid InvitationId {get;set;}
+    private bool busy;private string? message;
+    private async Task Copy()
+    {
+        busy=true;message=null;
+        try {var link=await BrowserMeetings.LinkAsync(CompanyId,InvitationId);await JS.InvokeVoidAsync("navigator.clipboard.writeText",link.Url);message="Invitation link copied. The link admits one guest to the lobby.";}
+        catch(Exception ex) when(ex is InvalidOperationException or Microsoft.JSInterop.JSException){message="Could not copy the invitation link. The organizer can try again once delivery is confirmed and clipboard access is allowed.";}
+        finally{busy=false;}
+    }
+}
