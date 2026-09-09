@@ -30,6 +30,7 @@ public interface ISalesOperationsService
     Task<SalesDealDetailResponse?> ConvertLeadAsync(Guid companyId, Guid userId, Guid leadId, ConvertLeadRequest request, CancellationToken cancellationToken);
     Task<SalesPipelineResponse> GetPipelineAsync(Guid companyId, CancellationToken cancellationToken);
     Task<SalesDealDetailResponse?> GetDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
+    Task<SalesDealDetailResponse?> LinkDealCustomerCompanyAsync(Guid companyId, Guid userId, Guid dealId, LinkDealCustomerCompanyRequest request, CancellationToken cancellationToken);
     Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
     Task<IReadOnlyList<SalesEmailTimelineResponse>> ListDealEmailsAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
     Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken);
@@ -258,6 +259,7 @@ public sealed record SalesEmailTimelineResponse(
     Guid? DealId);
 
 public sealed record SalesActionRequest(string? Note);
+public sealed record LinkDealCustomerCompanyRequest(string CompanyName);
 public sealed record UpdateLeadQualificationRequest(
     string Fit,
     string Temperature,

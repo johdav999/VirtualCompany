@@ -74,6 +74,41 @@ public sealed class SalesMeetingSchedulingServiceTests
     }
 
     [Fact]
+    public async Task Failed_approved_invitation_can_be_requeued_after_calendar_reconnect()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var invitation = await fixture.CreateApprovedInvitationAsync();
+        invitation.BeginScheduling();
+        invitation.MarkFailed("calendar_authorization_required", "Reconnect Google Calendar and grant calendar access.");
+        await fixture.Db.SaveChangesAsync();
+
+        var result = await fixture.Service.RetryDeliveryAsync(
+            fixture.CompanyId, invitation.Id, CancellationToken.None);
+
+        Assert.Equal("queued", result.Status);
+        Assert.Null(result.LastErrorCode);
+        Assert.Null(result.LastErrorSummary);
+        Assert.Equal(0, fixture.Provider.CreateCalls);
+        var message = Assert.Single(fixture.Outbox.Messages);
+        Assert.Equal(CompanyOutboxTopics.SalesMeetingInvitationDeliveryRequested, message.Topic);
+        Assert.EndsWith(":retry:2", message.IdempotencyKey, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Invitation_that_has_not_failed_cannot_be_requeued()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var invitation = await fixture.CreateApprovedInvitationAsync();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.Service.RetryDeliveryAsync(
+                fixture.CompanyId, invitation.Id, CancellationToken.None));
+
+        Assert.Contains("failed", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(fixture.Outbox.Messages);
+    }
+
+    [Fact]
     public async Task Approved_delivery_is_idempotent_and_records_audit_evidence()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -268,6 +303,7 @@ public sealed class SalesMeetingSchedulingServiceTests
             SalesMeetingSchedulingService service,
             CapturingApprovalService approvals,
             RecordingCalendarProvider provider,
+            CapturingOutbox outbox,
             Guid companyId,
             Guid userId,
             Guid leadId,
@@ -279,6 +315,7 @@ public sealed class SalesMeetingSchedulingServiceTests
             Service = service;
             Approvals = approvals;
             Provider = provider;
+            Outbox = outbox;
             CompanyId = companyId;
             UserId = userId;
             LeadId = leadId;
@@ -290,6 +327,7 @@ public sealed class SalesMeetingSchedulingServiceTests
         public SalesMeetingSchedulingService Service { get; }
         public CapturingApprovalService Approvals { get; }
         public RecordingCalendarProvider Provider { get; }
+        public CapturingOutbox Outbox { get; }
         public Guid CompanyId { get; }
         public Guid UserId { get; }
         public Guid LeadId { get; }
@@ -392,13 +430,15 @@ public sealed class SalesMeetingSchedulingServiceTests
             var provider = new RecordingCalendarProvider();
             var approvals = new CapturingApprovalService(approvalFailure);
             var tokenLease = new StaticCalendarTokenLeaseService();
+            var outbox = new CapturingOutbox();
             var service = new SalesMeetingSchedulingService(
                 db,
                 approvals,
                 tokenLease,
-                new CalendarProviderRegistry([provider]));
+                new CalendarProviderRegistry([provider]),
+                outbox);
             return new Fixture(
-                connection, db, service, approvals, provider,
+                connection, db, service, approvals, provider, outbox,
                 companyId, userId, leadId, calendarConnectionId, mailboxConnectionId);
         }
 

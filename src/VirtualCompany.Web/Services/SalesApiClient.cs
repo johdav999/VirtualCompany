@@ -47,6 +47,8 @@ public sealed partial class SalesApiClient
 
     public Task<SalesMeetingInvitationResponse> CreateMeetingInvitationAsync(Guid companyId, Guid leadId, CreateSalesMeetingInvitationRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<CreateSalesMeetingInvitationRequest, SalesMeetingInvitationResponse>(companyId, HttpMethod.Post, $"api/sales/leads/{leadId:D}/meeting-invitations", request, cancellationToken);
+    public Task<SalesMeetingInvitationResponse> RetryMeetingInvitationDeliveryAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken = default) =>
+        SendAsync<object, SalesMeetingInvitationResponse>(companyId, HttpMethod.Post, $"api/sales/meeting-invitations/{invitationId:D}/retry", new { }, cancellationToken);
     public async Task<IReadOnlyList<SalesMeetingChangeRequestResponse>> ListMeetingChangesAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken = default) =>
         await GetAsync<List<SalesMeetingChangeRequestResponse>>(companyId, $"api/sales/meeting-invitations/{invitationId:D}/changes", allowNotFound: false, cancellationToken) ?? [];
     public Task<SalesMeetingChangeRequestResponse> RequestMeetingRescheduleAsync(Guid companyId, Guid invitationId, CreateSalesMeetingRescheduleRequest request, CancellationToken cancellationToken = default) =>
@@ -70,6 +72,9 @@ public sealed partial class SalesApiClient
 
     public Task<SalesDealDetailResponse?> GetDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
         GetAsync<SalesDealDetailResponse>(companyId, $"api/sales/deals/{dealId:D}", allowNotFound: true, cancellationToken);
+
+    public Task<SalesDealDetailResponse> LinkDealCustomerCompanyAsync(Guid companyId, Guid dealId, string companyName, CancellationToken cancellationToken = default) =>
+        SendAsync<LinkDealCustomerCompanyRequest, SalesDealDetailResponse>(companyId, HttpMethod.Put, $"api/sales/deals/{dealId:D}/customer-company", new(companyName), cancellationToken);
 
     public async Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
         await GetAsync<List<SalesActivityResponse>>(companyId, $"api/sales/deals/{dealId:D}/activities", allowNotFound: false, cancellationToken) ?? [];
@@ -431,6 +436,7 @@ public sealed record SalesActivityResponse(Guid Id, string ActivityType, string 
 public sealed record SalesEmailTimelineResponse(Guid Id, string ProviderMessageId, string Status, string? DetectedIntent, string? ProductOrServiceInterest, decimal? Confidence, string? Rationale, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
 public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, string Category, string TriggerCondition, string ActionType, string RiskLevel, bool RequiresApproval, string ApprovalStatus, string ExecutionStatus, string? FailureSummary, DateTime CreatedUtc);
 public sealed record SalesActionRequest(string? Note);
+public sealed record LinkDealCustomerCompanyRequest(string CompanyName);
 public sealed record UpdateLeadQualificationRequest(string Fit, string Temperature, string Priority, string SuggestedNextAction, string? Note);
 public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
 public sealed record ChangeDealStageRequest(Guid StageId, string? Note);

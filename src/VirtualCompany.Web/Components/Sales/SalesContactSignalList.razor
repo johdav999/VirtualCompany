@@ -1,0 +1,32 @@
+@using System.Globalization
+
+@if (Items.Count == 0)
+{
+    <div class="sales-empty sales-empty--compact">@EmptyText</div>
+}
+else
+{
+    <div class="sales-signal-list">
+        @foreach (var signal in Items)
+        {
+            <div>
+                <strong>@PlainLabel(signal.Key)</strong>
+                <span>@signal.Value</span>
+                <small>@LocalNumber.Percentage(signal.Confidence, 0) confidence - @LocalDateTime.DateTime(signal.ObservedUtc)</small>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter]
+    public IReadOnlyList<CustomerMemorySignal> Items { get; set; } = [];
+
+    [Parameter]
+    public string EmptyText { get; set; } = "No signals recorded yet.";
+
+    private static string PlainLabel(string value) =>
+        CultureInfo.CurrentCulture.TextInfo.ToTitleCase(
+            value.Replace("_", " ", StringComparison.Ordinal)
+                .Replace("-", " ", StringComparison.Ordinal));
+}

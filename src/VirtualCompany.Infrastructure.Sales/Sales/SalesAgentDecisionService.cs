@@ -332,8 +332,9 @@ public sealed class SalesAgentDecisionService(
         var policy = await db.SalesAutomationPolicies.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId, ct);
         var queryText = $"product catalog pricing commercial policy proposal terms {request.RequestedProduct} {request.RequestedTerms}";
+        var accessContext = await BuildKnowledgeAccessContextAsync(companyId, actorUserId, ct);
         var results = await knowledge.SearchAsync(new CompanyKnowledgeSemanticSearchQuery(companyId, queryText, 12,
-            new CompanyKnowledgeAccessContext(companyId, DataScopes: ["sales", "knowledge"])), ct);
+            accessContext), ct);
         var authoritative = results.Where(x => x.Score >= .25d).Take(12).ToArray();
         var sourceIds = authoritative.Select(x => $"knowledge-chunk:{x.ChunkId:N}").ToArray();
         var combined = string.Join("\n", authoritative.Select(x => x.Content));
@@ -372,6 +373,20 @@ public sealed class SalesAgentDecisionService(
         Guid? subjectId, string? objective, DateTime now, CancellationToken ct, int horizon = 30) =>
         analysis.AnalyzeAsync(companyId, agentId, actorUserId,
             new RoleAgentAnalysisRequest(type, subjectId, horizon, objective, now), ct);
+
+    private async Task<CompanyKnowledgeAccessContext> BuildKnowledgeAccessContextAsync(
+        Guid companyId, Guid? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue)
+            return new CompanyKnowledgeAccessContext(companyId, DataScopes: ["sales", "knowledge"]);
+        var membership = await db.CompanyMemberships.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == actorUserId.Value &&
+                                       x.Status == CompanyMembershipStatus.Active, cancellationToken)
+            ?? throw new UnauthorizedAccessException("An active company membership is required for Sales knowledge retrieval.");
+        return new CompanyKnowledgeAccessContext(
+            companyId, membership.Id, membership.UserId, membership.Role.ToStorageValue(),
+            ["sales", "knowledge"]);
+    }
 
     private static SalesForecastScenarioDto Scenario(string name, decimal gross, decimal expected, decimal baseline,
         string currency, int deals, int highRisk, int unknownRisk, IReadOnlyList<string> assumptions, string sourceId) =>

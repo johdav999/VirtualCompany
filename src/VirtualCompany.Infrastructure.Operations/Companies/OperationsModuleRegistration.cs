@@ -146,6 +146,19 @@ public static class OperationsModuleRegistration
                     options.ApiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
                 }
             });
+        services.AddOptions<SharedRealtimeAgentOptions>()
+            .Bind(configuration.GetSection(SharedRealtimeAgentOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                if (string.IsNullOrWhiteSpace(options.ApiKey))
+                    options.ApiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+            })
+            .Validate(options => Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps &&
+                                 (!options.Enabled || (!string.IsNullOrWhiteSpace(options.Model) && !string.IsNullOrWhiteSpace(options.Voice) &&
+                                  !string.IsNullOrWhiteSpace(options.TranscriptionModel) && options.TimeoutSeconds is >= 5 and <= 60 &&
+                                  options.ClientSecretTtlSeconds is >= 30 and <= 600)),
+                "Shared Realtime Agent configuration is outside supported safety boundaries.")
+            .ValidateOnStart();
         services.AddOptions<FinanceToolPlannerOptions>()
             .Bind(configuration.GetSection(FinanceToolPlannerOptions.SectionName))
             .Validate(options =>
@@ -184,6 +197,13 @@ public static class OperationsModuleRegistration
                 "Durable Finance conversation run options are outside supported safety boundaries.")
             .ValidateOnStart();
         services.AddHttpClient(SharedAgentReasoningGateway.ClientName);
+        services.AddHttpClient(OpenAiRealtimeAgentSessionGateway.ClientName);
+        services.AddSingleton<OpenAiRealtimeAgentSessionGateway>();
+        services.AddSingleton<IRealtimeAgentSessionGateway>(provider =>
+            provider.GetRequiredService<OpenAiRealtimeAgentSessionGateway>());
+        services.AddSingleton<IRealtimeAgentPcmSessionGateway>(provider =>
+            provider.GetRequiredService<OpenAiRealtimeAgentSessionGateway>());
+        services.AddHealthChecks().AddCheck<RealtimeAgentGatewayHealthCheck>("shared-realtime-agent", tags: ["ready"]);
         services.AddOptions<AgentMemoryCandidateExpiryOptions>()
             .Bind(configuration.GetSection(AgentMemoryCandidateExpiryOptions.SectionName));
 
@@ -460,15 +480,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IAuthorizationHandler, CompanyPermissionAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyPermissionResourceAuthorizationHandler>();
 
-        services
-            .AddAuthentication(options =>
-            {
-                options.DefaultAuthenticateScheme = DevHeaderAuthenticationDefaults.Scheme;
-                options.DefaultChallengeScheme = DevHeaderAuthenticationDefaults.Scheme;
-            })
-            .AddScheme<AuthenticationSchemeOptions, DevHeaderAuthenticationHandler>(
-                DevHeaderAuthenticationDefaults.Scheme,
-                _ => { });
+        services.AddVirtualCompanyAuthentication(configuration);
 
         return services;
     }

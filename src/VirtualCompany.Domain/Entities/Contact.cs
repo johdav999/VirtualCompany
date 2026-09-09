@@ -68,4 +68,40 @@ public sealed class Contact : ICompanyOwnedEntity
         UpdatedUtc = DateTime.UtcNow;
     }
 
+    public void UpdateIdentity(string fullName, string email, string? title, string? phone)
+    {
+        FullName = SalesEntityText.NormalizeRequired(fullName, nameof(fullName), 160);
+        Email = SalesEntityText.NormalizeRequired(email, nameof(email), 256).ToLowerInvariant();
+        Title = SalesEntityText.NormalizeOptional(title, nameof(title), 120);
+        Phone = SalesEntityText.NormalizeOptional(phone, nameof(phone), 64);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void AssignCustomerCompany(Guid customerCompanyId)
+    {
+        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void RestoreActiveState(
+        string fullName,
+        string email,
+        Guid? customerCompanyId,
+        string? title,
+        string? phone,
+        string? preferredLanguage,
+        DateTime updatedUtc)
+    {
+        FullName = SalesEntityText.NormalizeRequired(fullName, nameof(fullName), 160);
+        Email = SalesEntityText.NormalizeRequired(email, nameof(email), 256).ToLowerInvariant();
+        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
+        Status = SalesStatuses.Active;
+        Title = SalesEntityText.NormalizeOptional(title, nameof(title), 120);
+        Phone = SalesEntityText.NormalizeOptional(phone, nameof(phone), 64);
+        PreferredLanguage = CommunicationLanguageTag.NormalizeOptional(preferredLanguage, nameof(preferredLanguage));
+        IsDeleted = false;
+        DeletedUtc = null;
+        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
 }

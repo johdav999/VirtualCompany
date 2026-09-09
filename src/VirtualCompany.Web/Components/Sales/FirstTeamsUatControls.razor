@@ -1,0 +1,52 @@
+@inject TeamsPresenterAdminApiClient Api
+<section class="vc-panel mt-3" aria-labelledby="first-test-title">
+    <h2 id="first-test-title">First live test</h2>
+    <p>Test access expires automatically. Production approval stays unchanged. Only the allowlisted organizer and meeting can use this permission.</p>
+    @if (!string.IsNullOrWhiteSpace(error)) { <p class="alert alert-danger" role="alert">@error</p> }
+    <p role="status">@(state?.ExpiresUtc is { } expiry ? (expiry <= DateTime.UtcNow ? $"Test access expired {expiry:u}." : $"Test access expires {expiry:u}.") : "No test authorized.")</p>
+    <div class="row g-3">
+        <div class="col-md-6"><label for="uat-organizer">Organizer user ID</label><input id="uat-organizer" class="form-control" @bind="organizer" disabled="@busy" /></div>
+        <div class="col-md-6"><label for="uat-meeting">Meeting session ID</label><input id="uat-meeting" class="form-control" @bind="meeting" disabled="@busy" /></div>
+        <div class="col-md-4"><label for="uat-minutes">Duration (minutes)</label><input id="uat-minutes" class="form-control" type="number" min="1" max="60" @bind="minutes" disabled="@busy" /></div>
+        <div class="col-md-8"><label for="uat-reason">Reason</label><input id="uat-reason" class="form-control" maxlength="500" @bind="reason" disabled="@busy" /></div>
+    </div>
+    <div class="d-flex gap-2 mt-3">
+        <button type="button" class="btn btn-primary" @onclick="AuthorizeAsync" disabled="@(busy || state is null)">Authorize first test</button>
+        <button type="button" class="btn btn-outline-danger" @onclick="RevokeAsync" disabled="@(busy || state?.MeetingSessionId is null)">Revoke test</button>
+        <button type="button" class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@busy">Refresh test status</button>
+    </div>
+</section>
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    private FirstTeamsUatViewModel? state;
+    private string organizer = "", meeting = "", reason = "";
+    private int minutes = 30;
+    private bool busy;
+    private string? error;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        busy = true; error = null; state = null;
+        try { state = await Api.GetFirstUatAsync(CompanyId); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+    private async Task AuthorizeAsync()
+    {
+        if (state is null) return;
+        if (!Guid.TryParse(organizer, out var userId) || !Guid.TryParse(meeting, out var sessionId) ||
+            minutes is < 1 or > 60 || string.IsNullOrWhiteSpace(reason)) { error = "Enter valid organizer and meeting IDs, a reason, and a duration from 1 to 60 minutes."; return; }
+        busy = true; error = null;
+        try { state = await Api.AuthorizeFirstUatAsync(CompanyId, userId, sessionId, minutes, reason, state.Version); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+    private async Task RevokeAsync()
+    {
+        if (state is null) return;
+        busy = true; error = null;
+        try { state = await Api.RevokeFirstUatAsync(CompanyId, state.Version); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+}

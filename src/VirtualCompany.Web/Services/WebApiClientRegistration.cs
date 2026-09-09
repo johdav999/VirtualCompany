@@ -51,6 +51,51 @@ public static class WebApiClientRegistration
         services.AddScoped<TreasuryWorkspaceUsageTelemetry>();
         services.AddScoped(sp => new DashboardSummaryApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesMeetingSessionApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesPresentationPreparationApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new TeamsCallControlApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new TeamsPresenterAdminApiClient(
+            sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
+        services.AddScoped(sp => new DemoScenarioApiClient(
+            sp.GetRequiredService<HttpClient>(),
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesPresentationDeckApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped<SalesPresentationPreparationTelemetry>();
+        services.AddScoped(sp => new SalesPresentationRuntimeClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            sp.GetRequiredService<HttpClient>(),
+            IsOffline(sp)));
+        services.AddScoped(sp => new SalesMeetingCaptureApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesMeetingRealtimeApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesMeetingClosingApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesMeetingTranscriptReconciliationApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesMeetingChangeProposalApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new MarketingApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new GuidedWorkApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesAutomationApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));

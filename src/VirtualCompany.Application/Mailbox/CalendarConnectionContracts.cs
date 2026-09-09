@@ -75,7 +75,7 @@ public static class CalendarOAuthScopes
             "https://www.googleapis.com/auth/calendar.events.freebusy"
         ],
         ExternalAccountProvider.Microsoft365 =>
-            ["offline_access", "User.Read", "Calendars.ReadWrite"],
+            ["offline_access", "User.Read", "Calendars.ReadWrite", "OnlineMeetings.Read", "OnlineMeetingTranscript.Read.All"],
         _ => throw new ArgumentOutOfRangeException(nameof(provider), "Unsupported calendar provider.")
     };
 

@@ -238,6 +238,8 @@ internal sealed class DealConfiguration : IEntityTypeConfiguration<Deal>
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         builder.Property(x => x.ExpectedCloseUtc).HasColumnName("expected_close_at");
+        builder.Property(x => x.Probability).HasColumnName("probability").HasPrecision(5, 4);
+        builder.Property(x => x.NextStep).HasColumnName("next_step").HasMaxLength(500);
         ConfigureAudit(builder);
 
         builder.HasIndex(x => x.CompanyId);

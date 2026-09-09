@@ -38,6 +38,10 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
     private readonly bool _seedCompanySetupTemplates;
     private readonly IReadOnlyList<IInterceptor> _dbInterceptors;
+    private readonly string _dataProtectionKeyRingPath = Path.Combine(
+        Path.GetTempPath(),
+        "virtual-company-tests",
+        $"data-protection-{Guid.NewGuid():N}");
     private int _disposeStarted;
 
     public TestWebApplicationFactory()
@@ -92,6 +96,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.UseSetting("DataProtection:KeyRingPath", _dataProtectionKeyRingPath);
         builder.ConfigureAppConfiguration((_, configurationBuilder) =>
         {
             var settings = new Dictionary<string, string?>
@@ -274,6 +279,18 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         {
             base.Dispose(true);
             _connection?.Dispose();
+
+            try
+            {
+                if (Directory.Exists(_dataProtectionKeyRingPath))
+                {
+                    Directory.Delete(_dataProtectionKeyRingPath, recursive: true);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A test host must not mask its result because temporary key cleanup failed.
+            }
         }
     }
 

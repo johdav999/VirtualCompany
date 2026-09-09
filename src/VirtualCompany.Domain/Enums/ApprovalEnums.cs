@@ -27,7 +27,8 @@ public enum ApprovalTargetEntityType
     AccountingAllocation = 23,
     AccountingSchedule = 24,
     AccountingCloseTask = 25,
-    AccountingCloseWaiver = 26
+    AccountingCloseWaiver = 26,
+    SalesMeetingChangeProposal = 27
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -59,7 +60,8 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.AccountingAllocation] = "accounting_allocation",
         [ApprovalTargetEntityType.AccountingSchedule] = "accounting_schedule",
         [ApprovalTargetEntityType.AccountingCloseTask] = "accounting_close_task",
-        [ApprovalTargetEntityType.AccountingCloseWaiver] = "accounting_close_waiver"
+        [ApprovalTargetEntityType.AccountingCloseWaiver] = "accounting_close_waiver",
+        [ApprovalTargetEntityType.SalesMeetingChangeProposal] = "sales_meeting_change_proposal"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

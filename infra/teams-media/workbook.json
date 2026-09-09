@@ -1,0 +1,50 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Alex Teams media operations\nInstance-level, tenant-safe operational signals. No transcripts, participant names, tokens, or raw media are collected."
+      },
+      "name": "title"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics | where TimeGenerated > ago(24h) | where Name in ('teams.media_host.active_calls','teams.media_host.admissions','teams.media_host.admission_rejections','teams.call.join.requests','teams.call.failures') | summarize Value=sum(Sum) by Name, bin(TimeGenerated, 5m) | render timechart",
+        "size": 0,
+        "title": "Calls, admissions, and failures",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components"
+      },
+      "name": "call-health"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppMetrics | where TimeGenerated > ago(24h) | where Name in ('teams.media.setup.latency','teams.call.provider.latency','teams.media.frame.jitter','teams.media.frames.dropped') | summarize P95=percentile(Max,95), Total=sum(Sum) by Name, bin(TimeGenerated, 5m) | render timechart",
+        "size": 0,
+        "title": "Media quality and provider latency",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components"
+      },
+      "name": "media-quality"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "AppTraces | where TimeGenerated > ago(24h) | where Message has_any ('Teams media host','Teams media start failed','callback authentication','throttl') | project TimeGenerated, SeverityLevel, Message | order by TimeGenerated desc",
+        "size": 0,
+        "title": "Operational events",
+        "queryType": 0,
+        "resourceType": "microsoft.insights/components"
+      },
+      "name": "events"
+    }
+  ],
+  "isLocked": true,
+  "fallbackResourceIds": []
+}

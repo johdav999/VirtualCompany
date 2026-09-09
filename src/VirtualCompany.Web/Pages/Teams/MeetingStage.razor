@@ -1,0 +1,155 @@
+@page "/teams/meetings/{MeetingSessionId:guid}/stage"
+@layout TeamsMeetingLayout
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject SalesPresentationRuntimeClient Presentation
+
+<PageTitle>Alex Sales Presentation</PageTitle>
+
+<section class="meeting-stage" aria-label="Shared sales presentation">
+    <header class="meeting-stage__header">
+        <div class="meeting-stage__identity"><span aria-hidden="true">A</span><strong>Alex</strong><small>Sales presenter</small></div>
+        <div class="meeting-stage__state" role="status" aria-live="polite">
+            <span class="meeting-stage__pulse" aria-hidden="true"></span>@StatusText
+        </div>
+    </header>
+
+    <div class="meeting-stage__canvas">
+        @if (!string.IsNullOrWhiteSpace(displayedImage) && displayed is not null)
+        {
+            <div class="meeting-stage__slide" style="@AspectStyle(displayed)">
+                <img @key="imageKey" src="@displayedImage" alt="@SlideAlt(displayed)" @onload="AcknowledgeDisplayedAsync" @onerror="HandleImageError" />
+            </div>
+        }
+        else
+        {
+            <div class="meeting-stage__neutral" role="alert">
+                <span aria-hidden="true">A</span>
+                <h1>@NeutralTitle</h1>
+                <p>@statusMessage</p>
+            </div>
+        }
+    </div>
+
+    <footer class="meeting-stage__footer">
+        <span>@(displayed is null ? "Waiting for an authorized slide" : $"Slide {displayed.SlideNumber} of {displayed.SlideCount}")</span>
+        <span>Virtual Company · protected meeting stage</span>
+    </footer>
+</section>
+
+@code {
+    [Parameter] public Guid MeetingSessionId { get; set; }
+    [SupplyParameterFromQuery(Name = "stageToken")] public string? StageToken { get; set; }
+
+    private SalesPresentationStageSnapshotViewModel? displayed;
+    private SalesPresentationStageSnapshotViewModel? pendingAck;
+    private string? displayedImage;
+    private string imageKey = string.Empty;
+    private string statusMessage = "Connecting to the authoritative presentation…";
+    private bool loading = true;
+    private CancellationTokenSource? slideLoad;
+
+    private string StatusText => Presentation.State switch
+    {
+        SalesPresentationConnectionState.Connected when pendingAck is null => "Slide displayed",
+        SalesPresentationConnectionState.Connected => "Rendering slide",
+        SalesPresentationConnectionState.Reconnecting => "Reconnecting · keeping the last safe slide",
+        SalesPresentationConnectionState.Degraded => "Presentation paused · organizer action needed",
+        _ when loading => "Connecting",
+        _ => statusMessage
+    };
+    private string NeutralTitle => Presentation.State == SalesPresentationConnectionState.Degraded
+        ? "Presentation paused" : "Preparing the presentation";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        Presentation.StateChanged += OnConnectionStateChanged;
+        if (string.IsNullOrWhiteSpace(StageToken))
+        {
+            loading = false;
+            statusMessage = "This stage link is missing its short-lived meeting authorization.";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        try
+        {
+            var snapshot = await Presentation.GetStageSnapshotAsync(MeetingSessionId, StageToken);
+            await RenderSnapshotAsync(snapshot);
+            await Presentation.ConnectStageAsync(MeetingSessionId, StageToken, RenderSnapshotAsync);
+        }
+        catch (Exception exception)
+        {
+            loading = false;
+            statusMessage = SafeMessage(exception);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RenderSnapshotAsync(SalesPresentationStageSnapshotViewModel snapshot)
+    {
+        slideLoad?.Cancel();
+        slideLoad?.Dispose();
+        slideLoad = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+        loading = true;
+        statusMessage = $"Loading slide {snapshot.SlideNumber}…";
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var image = await Presentation.GetStageSlideImageAsync(MeetingSessionId, StageToken!, snapshot, slideLoad.Token);
+            displayed = snapshot;
+            pendingAck = snapshot;
+            displayedImage = image.DataUrl;
+            imageKey = $"{snapshot.DeckId:N}:{snapshot.DeckVersion}:{snapshot.SlideNumber}:{snapshot.Version}";
+            loading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { }
+        catch
+        {
+            loading = false;
+            pendingAck = null;
+            statusMessage = "The next slide could not be loaded. The last safe slide remains visible.";
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task AcknowledgeDisplayedAsync()
+    {
+        var snapshot = pendingAck;
+        if (snapshot is null || displayed?.Version != snapshot.Version) return;
+        try
+        {
+            await Presentation.AcknowledgeStageRenderAsync(snapshot, DateTime.UtcNow);
+            pendingAck = null;
+            statusMessage = $"Slide {snapshot.SlideNumber} displayed";
+        }
+        catch
+        {
+            statusMessage = "The slide is visible, but render confirmation failed. Alex is paused.";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleImageError()
+    {
+        pendingAck = null;
+        statusMessage = "The slide image could not be decoded. Alex is paused.";
+    }
+
+    private void OnConnectionStateChanged(SalesPresentationConnectionState state) => _ = InvokeAsync(StateHasChanged);
+    private static string AspectStyle(SalesPresentationStageSnapshotViewModel value) =>
+        $"aspect-ratio: {Math.Max(value.ImageWidthPixels, 1)} / {Math.Max(value.ImageHeightPixels, 1)}";
+    private static string SlideAlt(SalesPresentationStageSnapshotViewModel value) =>
+        $"Slide {value.SlideNumber}: {value.SlideTitle ?? "Untitled slide"}";
+    private static string SafeMessage(Exception exception) => exception is SalesPresentationRuntimeClientException
+        ? "This meeting stage authorization is invalid, expired, or unavailable." : "The presentation stage could not start.";
+
+    public async ValueTask DisposeAsync()
+    {
+        Presentation.StateChanged -= OnConnectionStateChanged;
+        slideLoad?.Cancel();
+        slideLoad?.Dispose();
+        await Presentation.DisposeAsync();
+    }
+}

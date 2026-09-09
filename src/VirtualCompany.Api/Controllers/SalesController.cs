@@ -119,6 +119,27 @@ public sealed class SalesController : ControllerBase
         var result = await _meetingScheduling.GetAsync(CompanyId(), invitationId, cancellationToken);
         return result is null ? NotFound() : Ok(result);
     }
+
+    [HttpPost("meeting-invitations/{invitationId:guid}/retry")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<SalesMeetingInvitationResponse>> RetryMeetingInvitationAsync(
+        Guid invitationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _meetingScheduling.RetryDeliveryAsync(
+                CompanyId(), invitationId, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or CalendarProviderException)
+        {
+            return Problem(title: "Meeting invitation could not be retried.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
     [HttpGet("meeting-invitations/{invitationId:guid}/changes")]
     public Task<IReadOnlyList<SalesMeetingChangeRequestResponse>> ListMeetingChangesAsync(
         Guid invitationId, CancellationToken cancellationToken) =>
@@ -238,6 +259,24 @@ public sealed class SalesController : ControllerBase
     [HttpGet("pipeline")]
     public Task<SalesPipelineResponse> GetPipelineAsync(CancellationToken cancellationToken) =>
         _salesOperations.GetPipelineAsync(CompanyId(), cancellationToken);
+
+    [HttpPut("deals/{id:guid}/customer-company")]
+    public async Task<ActionResult<SalesDealDetailResponse>> LinkDealCustomerCompanyAsync(
+        Guid id,
+        [FromBody] LinkDealCustomerCompanyRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _salesOperations.LinkDealCustomerCompanyAsync(
+                CompanyId(), UserId(), id, request, cancellationToken);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (SalesValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+    }
 
     [HttpGet("forecast")]
     public async Task<ActionResult<RevenueForecastSnapshotDto>> GetRevenueForecastAsync(CancellationToken cancellationToken)

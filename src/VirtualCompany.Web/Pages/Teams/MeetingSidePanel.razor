@@ -1,0 +1,480 @@
+@page "/teams/meetings/{MeetingSessionId:guid}/side-panel"
+@layout TeamsMeetingLayout
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using Microsoft.Extensions.Options
+@inject SalesPresentationRuntimeClient Presentation
+@inject SalesMeetingRealtimeApiClient Voice
+@inject TeamsCallControlApiClient Calls
+@inject TeamsMeetingContextService Teams
+@inject NavigationManager Navigation
+@inject IOptions<TeamsMeetingUiOptions> UiOptions
+
+<PageTitle>presenter meeting controls</PageTitle>
+
+<section class="meeting-panel" aria-label="Private presenter presentation controls">
+    <header class="meeting-panel__header">
+        <div class="meeting-panel__avatar" aria-hidden="true">A</div>
+        <div><strong>presenter</strong><span>Sales presenter</span></div>
+        <span class="meeting-panel__connection meeting-panel__connection--@Presentation.State.ToString().ToLowerInvariant()" role="status">@ConnectionLabel</span>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(message))
+    {
+        <div class="meeting-panel__notice" role="status" aria-live="polite">@message</div>
+    }
+
+    @if (organizerState is not null)
+    {
+        <section class="meeting-panel__lifecycle" aria-labelledby="alex-lifecycle-title">
+            <div class="meeting-panel__lifecycle-heading"><div><small>ORGANIZER CONTROL</small><h1 id="alex-lifecycle-title">Bring presenter into this meeting</h1></div><button type="button" @onclick="RefreshOrganizerAsync" disabled="@busy" aria-label="Refresh presenter meeting state">↻</button></div>
+            <div class="meeting-panel__consent @(organizerState.ConsentStatus == "granted" ? "is-active" : "is-blocked")" role="status" aria-live="polite">
+                <span aria-hidden="true">●</span><strong>@(organizerState.ConsentStatus == "granted" ? "Meeting consent granted" : "Meeting media blocked")</strong>
+                <small>@(organizerState.Call?.MediaStartAuthorized == true ? "presenter can currently hear or speak." : "presenter cannot hear or speak.")</small>
+            </div>
+            <p class="meeting-panel__disclosure">@organizerState.AttendeeDisclosure</p>
+            <div class="meeting-panel__lifecycle-actions">
+                @if (!string.IsNullOrWhiteSpace(organizerState.MeetingJoinUrl)) { <a href="@organizerState.MeetingJoinUrl" target="_blank" rel="noopener noreferrer">Open Teams meeting</a> }
+                @if (!string.IsNullOrWhiteSpace(organizerState.Rollout.InstallUrl)) { <a href="@organizerState.Rollout.InstallUrl" target="_blank" rel="noopener noreferrer">Open / install Teams app</a> }
+                @if (organizerState.Call is null || organizerState.Call.State is "ended" or "failed" or "rejected")
+                {
+                    <button type="button" class="meeting-panel__primary" @onclick="RequestJoinAsync" disabled="@(busy || !organizerState.Rollout.Allowed || !organizerState.IsOrganizer)">Request presenter to join</button>
+                }
+                else if (organizerState.Call.State == "connected" && !organizerState.Call.MediaStartAuthorized)
+                {
+                    <button type="button" class="meeting-panel__primary" @onclick="StartTeamsAudioAsync" disabled="@(busy || organizerState.ConsentStatus != "granted")">Start presenter audio</button>
+                }
+                @if (organizerState.Call?.State == "reconciliation_required") { <button type="button" @onclick="ReconcileAsync" disabled="@busy">Reconcile state</button> }
+                @if (organizerState.Call is { State: not "ended" and not "failed" and not "rejected" }) { <button type="button" @onclick="RemoveAlexAsync" disabled="@busy">Remove / leave</button> }
+            </div>
+            <div class="meeting-panel__guidance @(organizerState.Guidance.RequiresNativeTeamsAction ? "is-native" : null)">
+                <strong>@organizerState.Guidance.Title</strong><p>@organizerState.Guidance.Message</p>
+                @if (organizerState.Guidance.Steps.Count > 0) { <ol>@foreach (var step in organizerState.Guidance.Steps) { <li>@step</li> }</ol> }
+            </div>
+        </section>
+    }
+
+    @if (snapshot is null)
+    {
+        <div class="meeting-panel__empty" role="alert">
+            <h1>Meeting controls unavailable</h1>
+            <p>@(loading ? "Loading the authoritative meeting state…" : "Use an authorized organizer link for this meeting.")</p>
+        </div>
+    }
+    else
+    {
+        <div class="meeting-panel__share">
+            <div><strong>Shared meeting stage</strong><span>@StageStatus</span></div>
+            <button type="button" class="meeting-panel__primary" @onclick="ShareAsync" disabled="@busy">Share to meeting</button>
+        </div>
+
+        <section class="meeting-panel__preview" aria-label="Current slide preview">
+            @if (!string.IsNullOrWhiteSpace(previewImage))
+            {
+                <img src="@previewImage" alt="@($"Preview of slide {snapshot.Stage.SlideNumber}: {snapshot.Stage.SlideTitle}")" />
+            }
+            else
+            {
+                <div class="meeting-panel__text-preview"><small>Slide @snapshot.Stage.SlideNumber</small><strong>@snapshot.Stage.SlideTitle</strong><p>@snapshot.Stage.SlideText</p></div>
+            }
+            <div><strong>@($"{snapshot.Stage.SlideNumber} / {snapshot.Stage.SlideCount}")</strong><span>@snapshot.Stage.SlideTitle</span></div>
+        </section>
+
+        <div class="meeting-panel__status" aria-live="polite">
+            <strong>@PresenterSummary</strong>
+            <span>@RenderStatus</span>
+        </div>
+
+        <div class="meeting-panel__signals" aria-label="Meeting and presenter status">
+            <span>Meeting <strong>@snapshot.Stage.SessionStatus</strong></span>
+            <span>presenter audio <strong>@(voiceStatus?.State ?? "typed fallback")</strong></span>
+        </div>
+
+        <section class="meeting-panel__section">
+            <h2>Presentation control</h2>
+            <div class="meeting-panel__segmented" role="group" aria-label="presenter autonomy mode">
+                @foreach (var mode in new[] { "manual", "assisted", "autonomous" })
+                {
+                    <button type="button" class="@(snapshot.ControlMode == mode ? "is-active" : null)" aria-pressed="@(snapshot.ControlMode == mode)" @onclick="() => ChangeModeAsync(mode)" disabled="@busy">@Title(mode)</button>
+                }
+            </div>
+            <p class="meeting-panel__help">@ModeHelp</p>
+            <small class="meeting-panel__authority">Enabled by @ControlOwner @ControlUpdatedLabel</small>
+            @if (snapshot.ControlMode == "assisted" && !string.IsNullOrWhiteSpace(snapshot.TransitionText))
+            {
+                <div class="meeting-panel__proposal"><strong>presenter proposes next</strong><p>@snapshot.TransitionText</p><div><button type="button" @onclick='() => ExecuteAsync("presentation.next")' disabled="@busy">Approve next</button><button type="button" @onclick="RejectProposalAsync" disabled="@busy">Reject and keep control</button></div></div>
+            }
+        </section>
+
+        <section class="meeting-panel__section">
+            <h2>Slide controls</h2>
+            <div class="meeting-panel__controls">
+                <button type="button" @onclick='() => ExecuteAsync("presentation.previous")' disabled="@busy">← Previous</button>
+                <button type="button" @onclick='() => ExecuteAsync("presentation.next")' disabled="@busy">Next →</button>
+                <button type="button" @onclick="TogglePauseAsync" disabled="@busy">@(IsPaused ? "Resume" : "Pause")</button>
+            </div>
+            <div class="meeting-panel__goto">
+                <label for="goto-slide">Go to slide</label>
+                <input id="goto-slide" type="number" min="1" max="@snapshot.Stage.SlideCount" @bind="gotoSlide" />
+                <button type="button" @onclick="GotoAsync" disabled="@busy">Go</button>
+            </div>
+        </section>
+
+        <section class="meeting-panel__section meeting-panel__private-note">
+            <span>PRIVATE · ORGANIZER ONLY</span>
+            <h2>Talking point</h2>
+            <p>@snapshot.Objective</p>
+            @if (!string.IsNullOrWhiteSpace(snapshot.SpeakerNotes)) { <p class="meeting-panel__notes">@snapshot.SpeakerNotes</p> }
+            @if (!string.IsNullOrWhiteSpace(snapshot.TransitionText)) { <small>Suggested transition: @snapshot.TransitionText</small> }
+        </section>
+
+        <section class="meeting-panel__section">
+            <h2>Typed fallback &amp; slide search</h2>
+            <div class="meeting-panel__search">
+                <label class="visually-hidden" for="slide-search">Find a relevant slide</label>
+                <input id="slide-search" placeholder="Find a slide by topic…" @bind="searchText" @onkeydown="SearchKeyDown" />
+                <button type="button" @onclick="SearchAsync" disabled="@busy">Search</button>
+            </div>
+            @if (searchResults.Count > 0)
+            {
+                <ul class="meeting-panel__results">
+                    @foreach (var result in searchResults)
+                    {
+                        <li><button type="button" @onclick="() => GotoResultAsync(result.SlideNumber)" disabled="@busy"><strong>Slide @result.SlideNumber · @result.Title</strong><span>@result.Snippet</span></button></li>
+                    }
+                </ul>
+            }
+        </section>
+
+        <footer class="meeting-panel__footer">
+            <button type="button" class="meeting-panel__take-control" @onclick="TakeControlAsync" disabled="@busy">Pause presenter · Take control</button>
+            <button type="button" @onclick="StopTeamsAudioAsync" disabled="@(busy || organizerState?.Call?.MediaStartAuthorized != true)">Mute / stop presenter audio</button>
+            <button type="button" @onclick="RevokeConsentAsync" disabled="@(busy || organizerState?.Call is null || organizerState?.ConsentStatus == "revoked")">Revoke meeting consent</button>
+            <button type="button" @onclick="StopSharingHelp">Stop sharing</button>
+        </footer>
+    }
+</section>
+
+@code {
+    [Parameter] public Guid MeetingSessionId { get; set; }
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+
+    private SalesPresentationPrivateSnapshotViewModel? snapshot;
+    private SalesPresentationStageAccessGrantViewModel? stageGrant;
+    private SalesPresentationRenderAcknowledgementViewModel? lastRender;
+    private SalesMeetingRealtimeStatusViewModel? voiceStatus;
+    private TeamsMeetingContext? teamsContext;
+    private TeamsOrganizerPresenterStateViewModel? organizerState;
+    private readonly List<SalesPresentationSearchResultViewModel> searchResults = [];
+    private string? previewImage;
+    private string? message;
+    private string searchText = string.Empty;
+    private int gotoSlide = 1;
+    private bool loading = true;
+    private bool busy;
+
+    private string ConnectionLabel => Presentation.State switch
+    {
+        SalesPresentationConnectionState.Connected => "Synced",
+        SalesPresentationConnectionState.Reconnecting => "Reconnecting",
+        SalesPresentationConnectionState.Degraded => "Degraded",
+        _ => Presentation.State.ToString()
+    };
+    private string StageStatus => teamsContext?.InTeams != true
+        ? "Browser diagnostic · sharing requires Teams"
+        : teamsContext?.CanShareToStage == true ? "Ready for organizer-authorized sharing" : "Teams permission not granted";
+    private string RenderStatus => lastRender?.PresentationVersion == snapshot?.Stage.Version
+        ? $"Stage render confirmed at {lastRender!.RenderedUtc.ToLocalTime():HH:mm:ss}"
+        : "Waiting for the shared stage to confirm this exact slide version";
+    private string PresenterSummary => lastRender?.PresentationVersion == snapshot?.Stage.Version
+        ? $"Slide {snapshot!.Stage.SlideNumber} displayed · presenter presenting talking point {snapshot.TalkingPointIndex + 1}"
+        : $"Slide {snapshot!.Stage.SlideNumber} selected · presenter narration paused until display confirmation";
+    private bool IsPaused => snapshot?.Stage.SessionStatus.Contains("pause", StringComparison.OrdinalIgnoreCase) == true || snapshot?.ResumeMarker is not null;
+    private string ModeHelp => snapshot?.ControlMode switch
+    {
+        "autonomous" => "presenter may advance after the final talking point. Human controls always preempt stale narration.",
+        "assisted" => "presenter proposes transitions; you confirm them with the slide controls.",
+        _ => "presenter narrates only. Slide changes require a human control."
+    };
+    private string ControlOwner => Guid.TryParse(teamsContext?.UserId, out var teamsUserId) &&
+        snapshot?.ControlModeUpdatedByUserId == teamsUserId ? "you" : "the meeting organizer";
+    private string ControlUpdatedLabel => snapshot?.ControlModeUpdatedUtc is { } updated ? $"at {updated.ToLocalTime():g}" : string.Empty;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        Presentation.StateChanged += OnConnectionStateChanged;
+        Presentation.StageRenderAcknowledged += OnStageRenderAcknowledged;
+        try
+        {
+            teamsContext = await Teams.InitializeAsync();
+            if (teamsContext.InTeams && !teamsContext.HasSsoToken)
+                throw new InvalidOperationException("Teams sign-in did not return an SSO token.");
+            if (!teamsContext.InTeams && !UiOptions.Value.BrowserDiagnosticsEnabled)
+                throw new InvalidOperationException("This organizer surface must be opened inside the installed Teams app.");
+            if (CompanyId is not { } companyId || companyId == Guid.Empty)
+                throw new InvalidOperationException("The authorized company context is missing from this meeting link.");
+
+            organizerState = await Calls.GetOrganizerStateAsync(companyId, MeetingSessionId);
+            var current = await Presentation.GetCurrentAsync(companyId, MeetingSessionId)
+                ?? throw new InvalidOperationException("No processed presentation is active for this meeting.");
+            snapshot = current.Private;
+            gotoSlide = snapshot.Stage.SlideNumber;
+            voiceStatus = await Voice.GetStatusAsync(companyId, MeetingSessionId);
+            await Presentation.ConnectAsync(companyId, MeetingSessionId, SalesPresentationSurface.Private, onPrivate: ReceiveSnapshotAsync);
+            await RefreshGrantAndPreviewAsync(companyId);
+        }
+        catch (Exception exception)
+        {
+            message = exception.Message;
+        }
+        finally
+        {
+            loading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ReceiveSnapshotAsync(SalesPresentationPrivateSnapshotViewModel value)
+    {
+        snapshot = value;
+        gotoSlide = value.Stage.SlideNumber;
+        await LoadPreviewAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshGrantAndPreviewAsync(Guid companyId)
+    {
+        try
+        {
+            stageGrant = await Presentation.IssueStageAccessAsync(companyId, MeetingSessionId);
+            await LoadPreviewAsync();
+        }
+        catch (SalesPresentationRuntimeClientException)
+        {
+            stageGrant = null;
+            message = "Shared stage is disabled or unavailable. Private presentation controls remain available.";
+        }
+    }
+
+    private async Task LoadPreviewAsync()
+    {
+        if (snapshot is null || stageGrant is null) return;
+        try { previewImage = (await Presentation.GetStageSlideImageAsync(MeetingSessionId, stageGrant.AccessToken, snapshot.Stage)).DataUrl; }
+        catch { previewImage = null; }
+    }
+
+    private async Task ShareAsync()
+    {
+        if (busy || snapshot is null || CompanyId is not { } companyId) return;
+        busy = true; message = null;
+        try
+        {
+            if (stageGrant is null || stageGrant.ExpiresUtc <= DateTime.UtcNow.AddMinutes(1))
+                await RefreshGrantAndPreviewAsync(companyId);
+            if (stageGrant is null) return;
+            var stageUrl = Navigation.GetUriWithQueryParameters(
+                $"teams/meetings/{MeetingSessionId:D}/stage",
+                new Dictionary<string, object?> { ["stageToken"] = stageGrant.AccessToken });
+            var result = await Teams.ShareToMeetingAsync(stageUrl);
+            message = result.Succeeded ? "Teams accepted the stage share. Waiting for the stage render confirmation." : result.Message;
+        }
+        catch (Exception exception) { message = exception.Message; }
+        finally { busy = false; }
+    }
+
+    private async Task ExecuteAsync(string toolName, int? slideNumber = null)
+    {
+        if (busy || snapshot is null || CompanyId is not { } companyId) return;
+        busy = true; message = null;
+        try
+        {
+            var command = new SalesPresentationCommandViewModel(Guid.NewGuid(), snapshot.Stage.Sequence + 1,
+                snapshot.Stage.Version, slideNumber, snapshot.TalkingPointIndex,
+                toolName == "presentation.pause" ? $"slide:{snapshot.Stage.SlideNumber}:talking-point:{snapshot.TalkingPointIndex}" : snapshot.ResumeMarker);
+            var result = await Presentation.ExecuteAsync(companyId, MeetingSessionId, toolName, command);
+            snapshot = result.Snapshot.Private;
+            message = result.Disposition == "accepted" ? "Authoritative presentation state updated." : $"Command {result.Disposition}; state refreshed.";
+        }
+        catch (SalesPresentationRuntimeClientException exception)
+        {
+            message = exception.StatusCode == System.Net.HttpStatusCode.Conflict
+                ? "The presentation changed first. The authoritative state is being reloaded." : exception.Message;
+            var current = await Presentation.GetCurrentAsync(companyId, MeetingSessionId);
+            snapshot = current?.Private;
+            if (current is null)
+            {
+                stageGrant = null;
+                previewImage = null;
+                message = "No processed presentation is active for this meeting. Return to preparation and activate a deck.";
+            }
+        }
+        finally { busy = false; }
+    }
+
+    private Task TogglePauseAsync() => ExecuteAsync(IsPaused ? "presentation.resume" : "presentation.pause");
+    private Task GotoAsync() => ExecuteAsync("presentation.goto", Math.Clamp(gotoSlide, 1, snapshot?.Stage.SlideCount ?? 1));
+    private Task GotoResultAsync(int slide) => ExecuteAsync("presentation.goto", slide);
+
+    private async Task ChangeModeAsync(string mode)
+    {
+        if (busy || snapshot is null || CompanyId is not { } companyId || snapshot.ControlMode == mode) return;
+        busy = true;
+        try
+        {
+            await Presentation.SetControlModeAsync(companyId, MeetingSessionId, mode, snapshot.Stage.Version);
+            var current = await Presentation.GetCurrentAsync(companyId, MeetingSessionId);
+            if (current is not null) snapshot = current.Private;
+            message = $"{Title(mode)} mode is active.";
+        }
+        catch (Exception exception) { message = exception.Message; }
+        finally { busy = false; }
+    }
+
+    private async Task RefreshOrganizerAsync()
+    {
+        if (CompanyId is not { } companyId) return;
+        try { organizerState = await Calls.GetOrganizerStateAsync(companyId, MeetingSessionId); voiceStatus = await Voice.GetStatusAsync(companyId, MeetingSessionId); }
+        catch (Exception exception) { message = exception.Message; }
+    }
+
+    private async Task RequestJoinAsync()
+    {
+        if (CompanyId is not { } companyId) return;
+        await RunCallAsync(async () => { var call = organizerState?.Call; await Calls.JoinAsync(companyId, MeetingSessionId, call?.Version); message = "presenter join requested. Waiting for Microsoft Teams provider state."; });
+    }
+
+    private async Task ReconcileAsync()
+    {
+        if (CompanyId is not { } companyId || organizerState?.Call is not { } call) return;
+        await RunCallAsync(async () => { await Calls.ReconcileAsync(companyId, MeetingSessionId, call.Version); message = "Reconciliation requested. Success will appear only after provider confirmation."; });
+    }
+
+    private async Task StartTeamsAudioAsync()
+    {
+        if (CompanyId is not { } companyId || organizerState?.Call is not { } call) return;
+        await RunCallAsync(async () => { await Calls.StartAudioAsync(companyId, MeetingSessionId, call.Version); message = "presenter audio was explicitly authorized. The active indicator remains visible while media can run."; });
+    }
+
+    private async Task StopTeamsAudioAsync()
+    {
+        if (CompanyId is not { } companyId || organizerState?.Call is not { } call) return;
+        await RunCallAsync(async () => { await Calls.StopAudioAsync(companyId, MeetingSessionId, call.Version); message = "presenter meeting audio stopped. Typed presentation controls remain available."; });
+    }
+
+    private async Task RemoveAlexAsync()
+    {
+        if (CompanyId is not { } companyId || organizerState?.Call is not { } call) return;
+        await RunCallAsync(async () => { await Calls.LeaveAsync(companyId, MeetingSessionId, call.Version, "organizer_removed"); message = "presenter leave requested. Waiting for Microsoft Teams provider confirmation."; });
+    }
+
+    private async Task RevokeConsentAsync()
+    {
+        if (CompanyId is not { } companyId || organizerState?.Call is not { } call) return;
+        await RunCallAsync(async () => { await Calls.RevokeConsentAsync(companyId, MeetingSessionId, call.Version); message = organizerState?.ConsentDisclosure; });
+    }
+
+    private async Task RunCallAsync(Func<Task> action)
+    {
+        if (busy) return; busy = true; message = null;
+        try { await action(); await RefreshOrganizerAsync(); }
+        catch (TeamsCallControlApiException exception) { message = ReasonGuidance(exception.ReasonCode, exception.Message); await RefreshOrganizerAsync(); }
+        catch (Exception exception) { message = exception.Message; }
+        finally { busy = false; }
+    }
+
+    private async Task TakeControlAsync()
+    {
+        if (busy || snapshot is null || CompanyId is not { } companyId) return;
+        busy = true; message = null;
+        try
+        {
+            if (snapshot.ControlMode != "manual")
+            {
+                await Presentation.SetControlModeAsync(companyId, MeetingSessionId, "manual", snapshot.Stage.Version);
+                var refreshed = await Presentation.GetCurrentAsync(companyId, MeetingSessionId);
+                if (refreshed is not null) snapshot = refreshed.Private;
+            }
+            if (snapshot.Stage.SessionStatus == "presenting")
+            {
+                var command = new SalesPresentationCommandViewModel(Guid.NewGuid(), snapshot.Stage.Sequence + 1,
+                    snapshot.Stage.Version, snapshot.Stage.SlideNumber, snapshot.TalkingPointIndex,
+                    $"slide:{snapshot.Stage.SlideNumber}:talking-point:{snapshot.TalkingPointIndex}");
+                snapshot = (await Presentation.ExecuteAsync(companyId, MeetingSessionId, "presentation.pause", command)).Snapshot.Private;
+            }
+            if (voiceStatus?.VoiceSessionId is { } voiceId)
+                voiceStatus = (await Voice.CancelResponseAsync(companyId, MeetingSessionId, new(voiceId, null)))?.Status ?? voiceStatus;
+            message = "You have control. Autonomous transitions and stale narration were preempted; re-enable autonomy explicitly when ready.";
+        }
+        catch (Exception exception) { message = exception.Message; }
+        finally { busy = false; }
+    }
+
+    private Task RejectProposalAsync() => ChangeModeAsync("manual");
+    private static string ReasonGuidance(string? code, string fallback) => code switch
+    {
+        "teams_presenter.tenant_mismatch" => "Open the app from the approved Teams tenant for this company.",
+        "teams_presenter.demo_tenant_blocked" => "Live Teams side effects are disabled for demo companies. Use the typed presentation workflow.",
+        "teams_presenter.live_uat_required" => "A platform administrator must approve live restrictive-policy UAT before this pilot can run.",
+        "teams_presenter.global_capacity_reached" => "The meeting limit is reached. Retry after another presenter meeting ends.",
+        "teams_presenter.cost_limit_reached" => "The monthly presenter meeting budget is unavailable or exhausted. Continue with typed presentation controls.",
+        "teams_call.consent_required" => "Record explicit meeting-media consent before inviting or starting presenter audio.",
+        _ => fallback
+    };
+
+    private async Task SearchAsync()
+    {
+        if (busy || string.IsNullOrWhiteSpace(searchText) || CompanyId is not { } companyId) return;
+        busy = true;
+        try { searchResults.Clear(); searchResults.AddRange(await Presentation.SearchSlidesAsync(companyId, MeetingSessionId, searchText)); }
+        catch (Exception exception) { message = exception.Message; }
+        finally { busy = false; }
+    }
+    private async Task SearchKeyDown(KeyboardEventArgs args) { if (args.Key == "Enter") await SearchAsync(); }
+
+    private void StopSharingHelp() => message = "Use Teams’ Stop presenting control. Teams does not let this app silently remove another participant’s shared stage.";
+    private void OnConnectionStateChanged(SalesPresentationConnectionState state)
+    {
+        if (state == SalesPresentationConnectionState.Connected)
+            _ = InvokeAsync(RecoverAuthoritativeStateAsync);
+        else
+            _ = InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RecoverAuthoritativeStateAsync()
+    {
+        if (CompanyId is not { } companyId) return;
+        try
+        {
+            var current = await Presentation.GetCurrentAsync(companyId, MeetingSessionId);
+            snapshot = current?.Private;
+            if (current is null)
+            {
+                stageGrant = null;
+                previewImage = null;
+                message = "The active deck changed or is no longer available. Return to preparation and activate a processed deck.";
+            }
+            else
+            {
+                gotoSlide = snapshot!.Stage.SlideNumber;
+                await RefreshGrantAndPreviewAsync(companyId);
+                message = "Authoritative presentation state reconnected.";
+            }
+        }
+        catch (Exception exception)
+        {
+            message = $"Presentation state could not be refreshed: {exception.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+    private void OnStageRenderAcknowledged(SalesPresentationRenderAcknowledgementViewModel value) { lastRender = value; _ = InvokeAsync(StateHasChanged); }
+    private static string Title(string value) => char.ToUpperInvariant(value[0]) + value[1..];
+
+    public async ValueTask DisposeAsync()
+    {
+        Presentation.StateChanged -= OnConnectionStateChanged;
+        Presentation.StageRenderAcknowledged -= OnStageRenderAcknowledged;
+        await Presentation.DisposeAsync();
+        await Teams.DisposeAsync();
+    }
+}

@@ -27,8 +27,12 @@ builder.Services.Configure<RequestLocalizationOptions>(options =>
         new AcceptLanguageHeaderRequestCultureProvider()
     ];
 });
+// Blazor's restricted frame-ancestors CSP is the embedding authority for Teams.
+builder.Services.AddAntiforgery(options => options.SuppressXFrameOptionsHeader = true);
 builder.Services.AddHttpContextAccessor();
 builder.Services.Configure<FinanceSimulationControlPanelOptions>(builder.Configuration.GetSection(FinanceSimulationControlPanelOptions.SectionName));
+builder.Services.Configure<TeamsMeetingUiOptions>(builder.Configuration.GetSection(TeamsMeetingUiOptions.SectionName));
+builder.Services.AddScoped<TeamsMeetingContextService>();
 builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
 builder.Services.AddScoped<FinanceAccessResolver>();
 builder.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
@@ -107,7 +111,8 @@ app.MapPost("/localization/apply", async (HttpContext context, IAntiforgery anti
 });
 
 app.MapRazorComponents<App>()
-    .AddInteractiveServerRenderMode();
+    .AddInteractiveServerRenderMode(options => options.ContentSecurityFrameAncestorsPolicy =
+        "'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft");
 
 app.Run();
 

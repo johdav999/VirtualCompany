@@ -1,0 +1,692 @@
+@page "/app/sales/meeting-invitations/{InvitationId:guid}/prepare"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using System.ComponentModel.DataAnnotations
+@using System.Net
+@using Microsoft.Extensions.Options
+@inject SalesPresentationPreparationApiClient PreparationClient
+@inject SalesMeetingSessionApiClient SessionClient
+@inject IOptions<TeamsMeetingUiOptions> MeetingUiOptions
+
+<PageTitle>@SalesText["PrepareSalesPresentation"]</PageTitle>
+
+<main class="meeting-preparation-page">
+    <header class="meeting-preparation-header">
+        <a class="meeting-preparation-back" href="@LeadPath">
+            <span class="bi bi-arrow-left" aria-hidden="true"></span>
+            @SalesText["BackToLead"]
+        </a>
+        <div>
+            <span class="vc-kicker">@SalesText["Sales"]</span>
+            <h1>@SalesText["PrepareSalesPresentation"]</h1>
+            <p>@SalesText["PrepareSalesPresentationDescription"]</p>
+        </div>
+    </header>
+
+    @if (isLoading)
+    {
+        <section class="meeting-preparation-state" aria-live="polite">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            @SalesText["LoadingPresentationPreparation"]
+        </section>
+    }
+    else if (!string.IsNullOrWhiteSpace(loadError))
+    {
+        <section class="meeting-preparation-state meeting-preparation-state--error" role="alert">
+            <span class="meeting-preparation-state__icon bi bi-exclamation-triangle" aria-hidden="true"></span>
+            <div>
+                <h2>@SalesText["PresentationPreparationUnavailable"]</h2>
+                <p>@loadError</p>
+                <button class="sales-button sales-button--primary" type="button" @onclick="LoadAsync">
+                    @SalesText["Reload"]
+                </button>
+            </div>
+        </section>
+    }
+    else if (preparation is null)
+    {
+        <section class="meeting-preparation-state">
+            <span class="meeting-preparation-state__icon bi bi-calendar-x" aria-hidden="true"></span>
+            <div>
+                <h2>@SalesText["MeetingInvitationNotFound"]</h2>
+                <p>@SalesText["MeetingInvitationNotFoundDescription"]</p>
+                <a class="sales-button" href="@SalesPath">@SalesText["ReturnToSales"]</a>
+            </div>
+        </section>
+    }
+    else
+    {
+        <section class="meeting-invitation-summary" aria-labelledby="invitation-summary-title">
+            <span class="meeting-invitation-summary__icon bi bi-calendar-check" aria-hidden="true"></span>
+            <div class="meeting-invitation-summary__primary">
+                <span>@SalesText["Invitation"]</span>
+                <h2 id="invitation-summary-title">@preparation.Invitation.Title</h2>
+                <p>@MeetingTime</p>
+            </div>
+            <dl class="meeting-invitation-summary__facts">
+                <div><dt>@SalesText["Customer"]</dt><dd>@CustomerContext</dd></div>
+                <div><dt>@SalesText["Provider"]</dt><dd>@ProviderLabel(preparation.Invitation.Provider)</dd></div>
+                <div>
+                    <dt>@SalesText["InvitationStatus"]</dt>
+                    <dd><span class="meeting-status-pill @InvitationStatusClass">@InvitationStatusLabel</span></dd>
+                </div>
+            </dl>
+        </section>
+
+        <section class="meeting-readiness" aria-labelledby="meeting-readiness-title">
+            <div class="meeting-readiness__heading">
+                <div>
+                    <span class="vc-kicker">@SalesText["Readiness"]</span>
+                    <h2 id="meeting-readiness-title">@SalesText["SessionReadiness"]</h2>
+                </div>
+                <span class="meeting-readiness__state @ReadinessClass">@ReadinessLabel</span>
+            </div>
+            <ol class="meeting-readiness__list">
+                <li class="@ChecklistClass(IsScheduled)">
+                    <span class="bi @ChecklistIcon(IsScheduled)" aria-hidden="true"></span>
+                    <div>
+                        <strong>@SalesText["InvitationScheduled"]</strong>
+                        <small>@(IsScheduled ? SalesText["InvitationScheduledReady"] : SalesText["InvitationScheduledBlocked"])</small>
+                    </div>
+                </li>
+                <li class="@ChecklistClass(preparation.Invitation.HasProviderEvent)">
+                    <span class="bi @ChecklistIcon(preparation.Invitation.HasProviderEvent)" aria-hidden="true"></span>
+                    <div>
+                        <strong>@SalesText["ProviderEvent"]</strong>
+                        <small>@(preparation.Invitation.HasProviderEvent ? SalesText["ProviderEventReady"] : SalesText["ProviderEventBlocked"])</small>
+                    </div>
+                </li>
+                <li class="@ChecklistClass(preparation.EligibleAgents.Count > 0)">
+                    <span class="bi @ChecklistIcon(preparation.EligibleAgents.Count > 0)" aria-hidden="true"></span>
+                    <div>
+                        <strong>@SalesText["SalesPresenter"]</strong>
+                        <small>@(preparation.EligibleAgents.Count > 0 ? SalesText["SalesPresenterReady", preparation.EligibleAgents.Count] : SalesText["SalesPresenterBlocked"])</small>
+                    </div>
+                </li>
+            </ol>
+        </section>
+
+        @if (preparation.BlockingReasons.Count > 0 && !CanSave)
+        {
+            <section class="meeting-guidance" role="status">
+                <span class="bi bi-info-circle" aria-hidden="true"></span>
+                <div>
+                    <strong>@SalesText["BeforeYouContinue"]</strong>
+                    <ul>
+                        @foreach (var blocker in preparation.BlockingReasons)
+                        {
+                            <li data-reason-code="@blocker.Code">@blocker.Explanation</li>
+                        }
+                    </ul>
+                    @if (string.Equals(preparation.Invitation.Status, "waiting_for_approval", StringComparison.OrdinalIgnoreCase))
+                    {
+                        <a class="sales-button sales-button--primary meeting-guidance__action" href="@LeadPath">
+                            @SalesText["ReviewInvitationApproval"]
+                        </a>
+                    }
+                    else if (preparation.BlockingReasons.Any(x => x.Code == CustomerCompanyMissingCode))
+                    {
+                        <a class="sales-button sales-button--primary meeting-guidance__action" href="@LeadPath">
+                            Return to lead and identify company
+                        </a>
+                    }
+                </div>
+            </section>
+        }
+
+        @if (preparation.Session is not null)
+        {
+            <VirtualCompany.Web.Components.Sales.TeamsMeetingPresenterPicker CompanyId="@preparation.CompanyId" SessionId="@preparation.Session.Id" OnSaved="RefreshPreparationAsync" />
+        }
+        <div class="meeting-preparation-layout">
+            <section class="meeting-session-card" aria-labelledby="session-details-title">
+                <div class="meeting-session-card__heading">
+                    <div>
+                        <span class="meeting-step-number">1</span>
+                        <div>
+                            <span class="vc-kicker">@SalesText["SessionDetails"]</span>
+                            <h2 id="session-details-title">@SessionHeading</h2>
+                            <p>@SalesText["SessionDetailsDescription"]</p>
+                        </div>
+                    </div>
+                    @if (preparation.Session is not null)
+                    {
+                        <span class="meeting-saved-pill">
+                            <span class="bi bi-check-circle" aria-hidden="true"></span>
+                            @SalesText["SessionSaved"]
+                        </span>
+                    }
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(saveMessage))
+                {
+                    <div class="meeting-form-message meeting-form-message--success" role="status">
+                        <span class="bi bi-check-circle" aria-hidden="true"></span>@saveMessage
+                    </div>
+                }
+                @if (!string.IsNullOrWhiteSpace(saveError))
+                {
+                    <div class="meeting-form-message meeting-form-message--error" role="alert">
+                        <span class="bi bi-exclamation-triangle" aria-hidden="true"></span>
+                        <div>
+                            <span>@saveError</span>
+                            @if (showReloadAction)
+                            {
+                                <button type="button" @onclick="LoadAsync">@SalesText["ReloadLatestSession"]</button>
+                            }
+                        </div>
+                    </div>
+                }
+
+                <EditForm @key="formKey" Model="form" OnValidSubmit="SaveAsync" class="meeting-session-form">
+                    <DataAnnotationsValidator />
+                    <fieldset disabled="@(!CanSave || isSaving)">
+                        <div class="meeting-form-field meeting-form-field--wide">
+                            <label for="meeting-presenter">@SalesText["Presenter"]</label>
+                            <InputSelect id="meeting-presenter" class="sales-input" @bind-Value="form.PresenterId">
+                                <option value="">@SalesText["ChoosePresenter"]</option>
+                                @foreach (var agent in preparation.EligibleAgents)
+                                {
+                                    <option value="@agent.Id">@agent.DisplayName · @agent.RoleName</option>
+                                }
+                            </InputSelect>
+                            @if (SelectedAgent is { } selectedAgent)
+                            {
+                                <div class="meeting-presenter-summary">
+                                    <span class="meeting-presenter-avatar" aria-hidden="true">@Initials(selectedAgent.DisplayName)</span>
+                                    <span>
+                                        <strong>@selectedAgent.DisplayName</strong>
+                                        <small>@selectedAgent.RoleName · @selectedAgent.TemplateId</small>
+                                    </span>
+                                </div>
+                            }
+                            <ValidationMessage For="@(() => form.PresenterId)" />
+                        </div>
+
+                        <div class="meeting-form-grid">
+                            <div class="meeting-form-field meeting-form-field--wide">
+                                <label for="meeting-goal">@SalesText["MeetingGoal"]</label>
+                                <InputTextArea id="meeting-goal" class="sales-input" rows="3"
+                                               @bind-Value="form.MeetingGoal" />
+                                <small>@SalesText["MeetingGoalHelp"]</small>
+                                <ValidationMessage For="@(() => form.MeetingGoal)" />
+                            </div>
+
+                            <div class="meeting-form-field meeting-form-field--wide">
+                                <label for="meeting-audience">@SalesText["IntendedAudience"]</label>
+                                <InputText id="meeting-audience" class="sales-input"
+                                           @bind-Value="form.IntendedAudience" />
+                                <small>@SalesText["IntendedAudienceHelp"]</small>
+                                <ValidationMessage For="@(() => form.IntendedAudience)" />
+                            </div>
+
+                            <div class="meeting-form-field">
+                                <label for="meeting-duration">@SalesText["PlannedDuration"]</label>
+                                <div class="meeting-input-suffix">
+                                    <InputNumber id="meeting-duration" class="sales-input" min="5" max="480"
+                                                 @bind-Value="form.PlannedDurationMinutes" />
+                                    <span>@SalesText["Minutes"]</span>
+                                </div>
+                                <ValidationMessage For="@(() => form.PlannedDurationMinutes)" />
+                            </div>
+
+                            <div class="meeting-form-field">
+                                <label for="meeting-demo">@SalesText["DemoScenarioOptional"]</label>
+                                <InputText id="meeting-demo" class="sales-input" @bind-Value="form.DemoScenario" />
+                                <small>@SalesText["DemoScenarioHelp"]</small>
+                                <ValidationMessage For="@(() => form.DemoScenario)" />
+                            </div>
+
+                            <div class="meeting-form-field">
+                                <label for="meeting-consent">@SalesText["ConsentStatus"]</label>
+                                <InputSelect id="meeting-consent" class="sales-input" @bind-Value="form.ConsentStatus">
+                                    <option value="not_requested">@SalesText["ConsentNotRequested"]</option>
+                                    <option value="pending">@SalesText["ConsentPending"]</option>
+                                    <option value="granted">@SalesText["ConsentGranted"]</option>
+                                    <option value="denied">@SalesText["ConsentDenied"]</option>
+                                    <option value="revoked">@SalesText["ConsentRevoked"]</option>
+                                </InputSelect>
+                                <small>@ConsentHelp</small>
+                            </div>
+
+                            <div class="meeting-form-field">
+                                <label for="meeting-retention-policy">@SalesText["RetentionPolicy"]</label>
+                                <InputSelect id="meeting-retention-policy" class="sales-input"
+                                             @bind-Value="form.RetentionPolicy"
+                                             @bind-Value:after="RetentionPolicyChanged">
+                                    <option value="standard">@SalesText["RetentionStandard"]</option>
+                                    <option value="custom">@SalesText["RetentionCustom"]</option>
+                                </InputSelect>
+                                <div class="meeting-retention-days">
+                                    <InputNumber id="meeting-retention-days" class="sales-input"
+                                                 min="1" max="3650"
+                                                 disabled="@(form.RetentionPolicy == "standard")"
+                                                 @bind-Value="form.RetentionDays" />
+                                    <span>@SalesText["Days"]</span>
+                                </div>
+                                <small>@RetentionHelp</small>
+                                <ValidationMessage For="@(() => form.RetentionDays)" />
+                            </div>
+                        </div>
+                    </fieldset>
+
+                    <ValidationSummary class="meeting-validation-summary" />
+                    <div class="meeting-session-form__footer">
+                        <p>
+                            <span class="bi bi-shield-check" aria-hidden="true"></span>
+                            @SalesText["SessionSaveSafety"]
+                        </p>
+                        <button type="submit" class="sales-button sales-button--primary"
+                                disabled="@(!CanSave || isSaving)">
+                            @if (isSaving)
+                            {
+                                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                            }
+                            <span>@(isSaving ? SalesText["SavingSession"] : SalesText["SaveSession"])</span>
+                        </button>
+                    </div>
+                </EditForm>
+            </section>
+
+            <SalesPresentationDeckWorkflow
+                CompanyId="@preparation.CompanyId"
+                SessionId="@(preparation.Session?.Id ?? Guid.Empty)"
+                AgentId="@form.PresenterId"
+                PresenterDisplayName="@SelectedAgent?.DisplayName"
+                MaximumUploadBytes="@preparation.MaximumUploadBytes"
+                Decks="@preparation.Decks"
+                AllowedActions="@preparation.AllowedActions"
+                RefreshRequested="RefreshPreparationAsync" />
+
+            <section class="meeting-final-review" aria-labelledby="meeting-final-review-title">
+                <div class="meeting-final-review__heading">
+                    <span class="meeting-step-number">3</span>
+                    <div>
+                        <span class="vc-kicker">@SalesText["FinalReadinessReview"]</span>
+                        <h2 id="meeting-final-review-title">@SalesText["ReadyForPresenterControls"]</h2>
+                        <p>@SalesText["FinalReadinessReviewDescription"]</p>
+                    </div>
+                    <span class="meeting-readiness__state @ReadinessClass">@ReadinessLabel</span>
+                </div>
+
+                <ul class="meeting-final-review__checks">
+                    <li class="@ChecklistClass(preparation.Invitation.HasProviderEvent)">
+                        <span class="bi @ChecklistIcon(preparation.Invitation.HasProviderEvent)" aria-hidden="true"></span>
+                        <div><strong>@SalesText["ScheduledProviderEvent"]</strong><small>@ProviderEventReview</small></div>
+                    </li>
+                    <li class="@ChecklistClass(SelectedAgent is not null)">
+                        <span class="bi @ChecklistIcon(SelectedAgent is not null)" aria-hidden="true"></span>
+                        <div><strong>@SalesText["SelectedSalesAgent"]</strong><small>@(SelectedAgent?.DisplayName ?? SalesText["ChoosePresenter"])</small></div>
+                    </li>
+                    <li class="@ChecklistClass(preparation.Session is not null)">
+                        <span class="bi @ChecklistIcon(preparation.Session is not null)" aria-hidden="true"></span>
+                        <div><strong>@SalesText["SavedMeetingSession"]</strong><small>@(preparation.Session is null ? SalesText["NotConfigured"] : SalesText["Configured"])</small></div>
+                    </li>
+                    <li class="@ChecklistClass(HasActiveDeck)">
+                        <span class="bi @ChecklistIcon(HasActiveDeck)" aria-hidden="true"></span>
+                        <div><strong>@SalesText["ProcessedActiveDeck"]</strong><small>@ActiveDeckReview</small></div>
+                    </li>
+                </ul>
+
+                <div class="meeting-environment-note @(MeetingUiOptions.Value.BrowserDiagnosticsEnabled ? "meeting-environment-note--diagnostic" : null)">
+                    <span class="bi @(MeetingUiOptions.Value.BrowserDiagnosticsEnabled ? "bi-display" : "bi-microsoft-teams")" aria-hidden="true"></span>
+                    <div>
+                        <strong>@EnvironmentHeading</strong>
+                        <p>@EnvironmentGuidance</p>
+                    </div>
+                </div>
+
+                <div class="meeting-final-review__footer">
+                    @if (preparation.BlockingReasons.FirstOrDefault() is { } finalBlocker && !preparation.CanOpenPresenter)
+                    {
+                        <p data-reason-code="@finalBlocker.Code"><span class="bi bi-info-circle" aria-hidden="true"></span>@finalBlocker.Explanation</p>
+                    }
+                    else
+                    {
+                        <p><span class="bi bi-shield-lock" aria-hidden="true"></span>@SalesText["PrivatePresenterSeparation"]</p>
+                    }
+                    <div class="meeting-final-review__actions">
+                        <button type="button" class="sales-button" @onclick="RefreshPreparationAsync">@SalesText["RefreshReadiness"]</button>
+                        @if (CanOpenBrowserPresenter)
+                        {
+                            <a class="sales-button sales-button--primary" href="@BrowserPresenterPath">@SalesText["OpenBrowserPresenter"]</a>
+                        }
+                    </div>
+                </div>
+            </section>
+        </div>
+    }
+</main>
+
+@code {
+    [Parameter] public Guid InvitationId { get; set; }
+
+    private SalesPresentationPreparationViewModel? preparation;
+    private SessionPreparationForm form = new();
+    private Guid formKey = Guid.NewGuid();
+    private bool isLoading = true;
+    private bool isSaving;
+    private bool showReloadAction;
+    private string? loadError;
+    private string? saveError;
+    private string? saveMessage;
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        loadError = null;
+        try
+        {
+            if (!await ResolveCompanyAsync())
+            {
+                loadError = ShellErrorMessage;
+                return;
+            }
+
+            preparation = await PreparationClient.GetAsync(
+                ResolvedCompanyId!.Value, InvitationId);
+            if (preparation is not null) InitializeForm(preparation);
+        }
+        catch (SalesPresentationPreparationApiException ex)
+        {
+            loadError = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void InitializeForm(SalesPresentationPreparationViewModel model)
+    {
+        var previousAgentId = form.PresenterId;
+        var session = model.Session;
+        var selectedAgentId = previousAgentId is Guid previous &&
+                              model.EligibleAgents.Any(x => x.Id == previous)
+            ? previous
+            : SelectDefaultAgent(model);
+        var invitationMinutes = Math.Clamp(
+            (int)(model.Invitation.EndsUtc - model.Invitation.StartsUtc).TotalMinutes,
+            5, 480);
+
+        form = session is null
+            ? new SessionPreparationForm
+            {
+                PresenterId = selectedAgentId,
+                PlannedDurationMinutes = invitationMinutes,
+                ConsentStatus = "not_requested",
+                RetentionPolicy = "standard",
+                RetentionDays = 365
+            }
+            : new SessionPreparationForm
+            {
+                PresenterId = selectedAgentId,
+                MeetingGoal = session.MeetingGoal,
+                IntendedAudience = session.IntendedAudience,
+                PlannedDurationMinutes = session.PlannedDurationMinutes,
+                DemoScenario = session.DemoScenario,
+                ConsentStatus = session.ConsentStatus,
+                RetentionPolicy = session.RetentionPolicy,
+                RetentionDays = session.RetentionDays
+            };
+        formKey = Guid.NewGuid();
+    }
+
+    private static Guid? SelectDefaultAgent(SalesPresentationPreparationViewModel model)
+    {
+        var deckAgentId = model.Decks.FirstOrDefault(x => x.IsActive)?.AgentId;
+        if (deckAgentId is Guid activeAgent &&
+            model.EligibleAgents.Any(x => x.Id == activeAgent))
+        {
+            return activeAgent;
+        }
+
+        return model.EligibleAgents.FirstOrDefault(x =>
+                   x.DisplayName.Equals("Alex", StringComparison.OrdinalIgnoreCase) ||
+                   x.TemplateId.Contains("alex", StringComparison.OrdinalIgnoreCase))?.Id
+               ?? model.EligibleAgents.FirstOrDefault()?.Id;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!CanSave || preparation is null ||
+            ResolvedCompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        if (form.RetentionPolicy == "standard") form.RetentionDays = 365;
+        isSaving = true;
+        saveError = null;
+        saveMessage = null;
+        showReloadAction = false;
+        try
+        {
+            var saved = await SessionClient.CreateOrUpdateAsync(
+                companyId,
+                InvitationId,
+                new CreateOrUpdateSalesMeetingSessionViewModel(
+                    form.MeetingGoal.Trim(),
+                    form.IntendedAudience.Trim(),
+                    form.PlannedDurationMinutes,
+                    string.IsNullOrWhiteSpace(form.DemoScenario)
+                        ? null
+                        : form.DemoScenario.Trim(),
+                    form.ConsentStatus,
+                    form.RetentionPolicy,
+                    form.RetentionDays,
+                    preparation.Session?.ConcurrencyVersion));
+            await RefreshPreparationAsync();
+            saveMessage = saved.ConcurrencyVersion == 1
+                ? SalesText["SessionCreated"]
+                : SalesText["SessionUpdated"];
+        }
+        catch (SalesMeetingSessionApiException ex) when (
+            ex.StatusCode == HttpStatusCode.Conflict &&
+            ex.ProblemCode == SessionConflictCode)
+        {
+            await RefreshPreparationAsync();
+            saveError = SalesText["SessionConcurrencyConflict"];
+            showReloadAction = true;
+        }
+        catch (SalesMeetingSessionApiException ex)
+        {
+            saveError = ex.Errors?.SelectMany(x => x.Value).FirstOrDefault()
+                ?? ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private const string SessionConflictCode = "sales.meeting_session.conflict";
+    private const string CustomerCompanyMissingCode = "customer_company_missing";
+
+    private async Task RefreshPreparationAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId) return;
+        preparation = await PreparationClient.GetAsync(companyId, InvitationId);
+        if (preparation is not null) InitializeForm(preparation);
+    }
+
+    private Task RetentionPolicyChanged()
+    {
+        if (form.RetentionPolicy == "standard") form.RetentionDays = 365;
+        return Task.CompletedTask;
+    }
+
+    private bool IsScheduled =>
+        preparation?.Invitation.Status.Equals(
+            "scheduled", StringComparison.OrdinalIgnoreCase) == true;
+
+    private bool CanSave =>
+        preparation is not null &&
+        form.PresenterId is not null &&
+        (preparation.AllowedActions.Contains("create_session", StringComparer.Ordinal) ||
+         preparation.AllowedActions.Contains("update_session", StringComparer.Ordinal));
+
+    private SalesPresentationPreparationAgentViewModel? SelectedAgent =>
+        form.PresenterId is Guid id
+            ? preparation?.EligibleAgents.FirstOrDefault(x => x.Id == id)
+            : null;
+
+    private bool HasActiveDeck => preparation?.CanOpenPresenter == true &&
+        preparation.ActiveDeckId is not null && preparation.ActiveDeckSlideCount > 0;
+
+    private bool CanOpenBrowserPresenter => MeetingUiOptions.Value.BrowserDiagnosticsEnabled &&
+        preparation?.CanOpenPresenter == true && preparation.MeetingSessionId is not null;
+
+    private string BrowserPresenterPath => preparation?.MeetingSessionId is Guid sessionId &&
+        ResolvedCompanyId is Guid companyId
+            ? $"/teams/meetings/{sessionId:D}/side-panel?companyId={companyId:D}"
+            : "#";
+
+    private string ProviderEventReview => preparation is null
+        ? SalesText["NotConfigured"]
+        : preparation.Invitation.HasProviderEvent
+            ? $"{ProviderLabel(preparation.Invitation.Provider)} · {LocalDateTime.DateTime(preparation.Invitation.StartsUtc)}"
+            : SalesText["ProviderEventBlocked"];
+
+    private string ActiveDeckReview => HasActiveDeck
+        ? SalesText["ActiveDeckSlideCount", preparation!.ActiveDeckSlideCount]
+        : SalesText["NoActiveProcessedDeck"];
+
+    private string EnvironmentHeading => MeetingUiOptions.Value.BrowserDiagnosticsEnabled
+        ? SalesText["BrowserDiagnosticsAvailable"]
+        : SalesText["TeamsOrganizerSurfaceRequired"];
+
+    private string EnvironmentGuidance => MeetingUiOptions.Value.BrowserDiagnosticsEnabled
+        ? SalesText["BrowserDiagnosticsLimitations"]
+        : SalesText["TeamsOrganizerSurfaceGuidance"];
+
+    private string LeadPath => preparation is null
+        ? SalesPath
+        : BuildPath($"/app/sales/leads/{preparation.LeadId:D}");
+
+    private string SalesPath => BuildPath("/app/sales");
+    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId
+        ? $"{path}?companyId={companyId:D}"
+        : path;
+
+    private string CustomerContext =>
+        string.IsNullOrWhiteSpace(preparation?.CustomerCompanyName)
+            ? preparation?.LeadTitle ?? SalesText["Lead"]
+            : $"{preparation.CustomerCompanyName} · {preparation.LeadTitle}";
+
+    private string MeetingTime => preparation is null
+        ? string.Empty
+        : $"{LocalDateTime.DateTime(preparation.Invitation.StartsUtc)} · {DurationLabel}";
+
+    private string DurationLabel => preparation is null
+        ? string.Empty
+        : SalesText["DurationMinutes",
+            Math.Max(0, (int)(preparation.Invitation.EndsUtc -
+                              preparation.Invitation.StartsUtc).TotalMinutes)];
+
+    private string InvitationStatusLabel => preparation?.Invitation.Status switch
+    {
+        "scheduled" => SalesText["InvitationReady"],
+        "waiting_for_approval" => SalesText["WaitingForApproval"],
+        "failed" => SalesText["StatusFailed"],
+        "cancelled" => SalesText["StatusCancelled"],
+        _ => SalesText["StatusFallback", preparation?.Invitation.Status ?? string.Empty]
+    };
+
+    private string InvitationStatusClass =>
+        preparation?.Invitation.IsEligibleForSessionCreation == true ||
+        preparation?.Session is not null
+            ? "meeting-status-pill--ready"
+            : "meeting-status-pill--blocked";
+
+    private string ReadinessClass => preparation?.ReadinessState == "ready"
+        ? "meeting-readiness__state--ready"
+        : preparation?.ReadinessState is "session_required" or "deck_required"
+            ? "meeting-readiness__state--next"
+            : "meeting-readiness__state--blocked";
+
+    private string ReadinessLabel => preparation?.ReadinessState switch
+    {
+        "ready" => SalesText["ReadyToPresent"],
+        "session_required" => SalesText["ReadyForSessionSetup"],
+        "deck_required" => SalesText["SessionReady"],
+        "processing" => SalesText["PresentationProcessing"],
+        "activation_required" => SalesText["PresentationNeedsActivation"],
+        _ => SalesText["ActionRequired"]
+    };
+
+    private string ConsentHelp => form.ConsentStatus switch
+    {
+        "granted" => SalesText["ConsentGrantedHelp"],
+        "pending" => SalesText["ConsentPendingHelp"],
+        "denied" => SalesText["ConsentDeniedHelp"],
+        "revoked" => SalesText["ConsentRevokedHelp"],
+        _ => SalesText["ConsentNotRequestedHelp"]
+    };
+
+    private string RetentionHelp => form.RetentionPolicy == "standard"
+        ? SalesText["StandardRetentionHelp"]
+        : SalesText["CustomRetentionHelp"];
+
+    private string SessionHeading => preparation?.Session is null
+        ? SalesText["CreateMeetingSession"]
+        : SalesText["EditMeetingSession"];
+
+    private static string ProviderLabel(string provider) => provider switch
+    {
+        "microsoft365" => "Microsoft 365",
+        "gmail" => "Google Workspace",
+        _ => provider.Replace('_', ' ')
+    };
+
+    private static string ChecklistClass(bool complete) =>
+        complete ? "meeting-readiness__item--complete" : "meeting-readiness__item--blocked";
+
+    private static string ChecklistIcon(bool complete) =>
+        complete ? "bi-check-circle-fill" : "bi-exclamation-circle-fill";
+
+    private static string Initials(string value)
+    {
+        var parts = value.Split(' ',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Concat(parts.Take(2).Select(x => char.ToUpperInvariant(x[0])));
+    }
+
+    private sealed class SessionPreparationForm : IValidatableObject
+    {
+        [Required(ErrorMessage = "Choose an eligible Sales presenter.")]
+        public Guid? PresenterId { get; set; }
+
+        [Required(ErrorMessage = "Enter the meeting goal.")]
+        [StringLength(1000, ErrorMessage = "The meeting goal must be 1,000 characters or fewer.")]
+        public string MeetingGoal { get; set; } = string.Empty;
+
+        [Required(ErrorMessage = "Enter the intended audience.")]
+        [StringLength(1000, ErrorMessage = "The intended audience must be 1,000 characters or fewer.")]
+        public string IntendedAudience { get; set; } = string.Empty;
+
+        [Range(5, 480, ErrorMessage = "Duration must be between 5 and 480 minutes.")]
+        public int PlannedDurationMinutes { get; set; } = 45;
+
+        [StringLength(4000, ErrorMessage = "The demo scenario must be 4,000 characters or fewer.")]
+        public string? DemoScenario { get; set; }
+
+        public string ConsentStatus { get; set; } = "not_requested";
+        public string RetentionPolicy { get; set; } = "standard";
+
+        [Range(1, 3650, ErrorMessage = "Retention must be between 1 and 3,650 days.")]
+        public int RetentionDays { get; set; } = 365;
+
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (RetentionPolicy == "standard" && RetentionDays != 365)
+            {
+                yield return new ValidationResult(
+                    "Standard retention is exactly 365 days.",
+                    [nameof(RetentionDays)]);
+            }
+        }
+    }
+}

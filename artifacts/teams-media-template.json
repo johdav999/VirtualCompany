@@ -1,0 +1,1179 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "8182713239296116529"
+    }
+  },
+  "parameters": {
+    "deploymentLocation": {
+      "type": "string"
+    },
+    "resourceGroupName": {
+      "type": "string"
+    },
+    "namePrefix": {
+      "type": "string"
+    },
+    "environmentName": {
+      "type": "string"
+    },
+    "vmSku": {
+      "type": "string",
+      "defaultValue": "Standard_D4s_v5"
+    },
+    "instanceCount": {
+      "type": "int",
+      "defaultValue": 2
+    },
+    "minimumInstances": {
+      "type": "int",
+      "defaultValue": 2
+    },
+    "maximumInstances": {
+      "type": "int",
+      "defaultValue": 6
+    },
+    "adminUsername": {
+      "type": "string"
+    },
+    "adminPassword": {
+      "type": "securestring"
+    },
+    "apiPackageUri": {
+      "type": "securestring"
+    },
+    "bootstrapScriptUri": {
+      "type": "securestring"
+    },
+    "apiPackageSha256": {
+      "type": "string"
+    },
+    "keyVaultName": {
+      "type": "string"
+    },
+    "mediaCertificateSecretName": {
+      "type": "string"
+    },
+    "teamsConfigurationSecretName": {
+      "type": "string",
+      "defaultValue": "teams-media-host-configuration"
+    },
+    "dnsZoneName": {
+      "type": "string"
+    },
+    "serviceDnsRecordName": {
+      "type": "string",
+      "defaultValue": "teams-media"
+    },
+    "callbackDnsLabel": {
+      "type": "string"
+    },
+    "alertEmailAddresses": {
+      "type": "array",
+      "defaultValue": []
+    },
+    "monthlyBudgetAmount": {
+      "type": "int",
+      "defaultValue": 2500,
+      "minValue": 100
+    },
+    "budgetStartDate": {
+      "type": "string"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2024-03-01",
+      "name": "[parameters('resourceGroupName')]",
+      "location": "[parameters('deploymentLocation')]"
+    },
+    {
+      "type": "Microsoft.Consumption/budgets",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-{1}-teams-media-budget', parameters('namePrefix'), parameters('environmentName'))]",
+      "properties": {
+        "amount": "[parameters('monthlyBudgetAmount')]",
+        "category": "Cost",
+        "timeGrain": "Monthly",
+        "timePeriod": {
+          "startDate": "[parameters('budgetStartDate')]"
+        },
+        "filter": {
+          "dimensions": {
+            "name": "ResourceGroupName",
+            "operator": "In",
+            "values": [
+              "[parameters('resourceGroupName')]"
+            ]
+          }
+        },
+        "notifications": {
+          "forecast80": {
+            "enabled": true,
+            "operator": "GreaterThan",
+            "threshold": 80,
+            "thresholdType": "Forecasted",
+            "contactEmails": "[parameters('alertEmailAddresses')]",
+            "contactRoles": [
+              "Owner"
+            ],
+            "contactGroups": []
+          },
+          "actual100": {
+            "enabled": true,
+            "operator": "GreaterThan",
+            "threshold": 100,
+            "thresholdType": "Actual",
+            "contactEmails": "[parameters('alertEmailAddresses')]",
+            "contactRoles": [
+              "Owner"
+            ],
+            "contactGroups": []
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('teams-media-{0}', parameters('environmentName'))]",
+      "resourceGroup": "[parameters('resourceGroupName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "namePrefix": {
+            "value": "[parameters('namePrefix')]"
+          },
+          "location": {
+            "value": "[parameters('deploymentLocation')]"
+          },
+          "environmentName": {
+            "value": "[parameters('environmentName')]"
+          },
+          "vmSku": {
+            "value": "[parameters('vmSku')]"
+          },
+          "instanceCount": {
+            "value": "[parameters('instanceCount')]"
+          },
+          "minimumInstances": {
+            "value": "[parameters('minimumInstances')]"
+          },
+          "maximumInstances": {
+            "value": "[parameters('maximumInstances')]"
+          },
+          "adminUsername": {
+            "value": "[parameters('adminUsername')]"
+          },
+          "adminPassword": {
+            "value": "[parameters('adminPassword')]"
+          },
+          "apiPackageUri": {
+            "value": "[parameters('apiPackageUri')]"
+          },
+          "bootstrapScriptUri": {
+            "value": "[parameters('bootstrapScriptUri')]"
+          },
+          "apiPackageSha256": {
+            "value": "[parameters('apiPackageSha256')]"
+          },
+          "keyVaultName": {
+            "value": "[parameters('keyVaultName')]"
+          },
+          "mediaCertificateSecretName": {
+            "value": "[parameters('mediaCertificateSecretName')]"
+          },
+          "teamsConfigurationSecretName": {
+            "value": "[parameters('teamsConfigurationSecretName')]"
+          },
+          "dnsZoneName": {
+            "value": "[parameters('dnsZoneName')]"
+          },
+          "serviceDnsRecordName": {
+            "value": "[parameters('serviceDnsRecordName')]"
+          },
+          "callbackDnsLabel": {
+            "value": "[parameters('callbackDnsLabel')]"
+          },
+          "alertEmailAddresses": {
+            "value": "[parameters('alertEmailAddresses')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.46.1.21595",
+              "templateHash": "2035709821191610239"
+            }
+          },
+          "parameters": {
+            "namePrefix": {
+              "type": "string",
+              "minLength": 3,
+              "maxLength": 18,
+              "metadata": {
+                "description": "Short lowercase prefix used for Azure resource names."
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "[resourceGroup().location]"
+            },
+            "environmentName": {
+              "type": "string"
+            },
+            "vmSku": {
+              "type": "string",
+              "defaultValue": "Standard_D4s_v5"
+            },
+            "instanceCount": {
+              "type": "int",
+              "defaultValue": 2,
+              "minValue": 1,
+              "maxValue": 20
+            },
+            "minimumInstances": {
+              "type": "int",
+              "defaultValue": 2,
+              "minValue": 1,
+              "maxValue": 20
+            },
+            "maximumInstances": {
+              "type": "int",
+              "defaultValue": 6,
+              "minValue": 1,
+              "maxValue": 20
+            },
+            "adminUsername": {
+              "type": "string"
+            },
+            "adminPassword": {
+              "type": "securestring"
+            },
+            "apiPackageUri": {
+              "type": "securestring"
+            },
+            "bootstrapScriptUri": {
+              "type": "securestring"
+            },
+            "apiPackageSha256": {
+              "type": "string"
+            },
+            "keyVaultName": {
+              "type": "string"
+            },
+            "mediaCertificateSecretName": {
+              "type": "string"
+            },
+            "teamsConfigurationSecretName": {
+              "type": "string",
+              "defaultValue": "teams-media-host-configuration"
+            },
+            "dnsZoneName": {
+              "type": "string"
+            },
+            "serviceDnsRecordName": {
+              "type": "string",
+              "defaultValue": "teams-media"
+            },
+            "callbackDnsLabel": {
+              "type": "string"
+            },
+            "mediaInternalPort": {
+              "type": "int",
+              "defaultValue": 8445
+            },
+            "mediaPublicPort": {
+              "type": "int",
+              "defaultValue": 8445
+            },
+            "alertEmailAddresses": {
+              "type": "array",
+              "defaultValue": []
+            }
+          },
+          "variables": {
+            "workbookData": "{\n  \"version\": \"Notebook/1.0\",\n  \"items\": [\n    {\n      \"type\": 1,\n      \"content\": {\n        \"json\": \"# Alex Teams media operations\\nInstance-level, tenant-safe operational signals. No transcripts, participant names, tokens, or raw media are collected.\"\n      },\n      \"name\": \"title\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AppMetrics | where TimeGenerated > ago(24h) | where Name in ('teams.media_host.active_calls','teams.media_host.admissions','teams.media_host.admission_rejections','teams.call.join.requests','teams.call.failures') | summarize Value=sum(Sum) by Name, bin(TimeGenerated, 5m) | render timechart\",\n        \"size\": 0,\n        \"title\": \"Calls, admissions, and failures\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.insights/components\"\n      },\n      \"name\": \"call-health\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AppMetrics | where TimeGenerated > ago(24h) | where Name in ('teams.media.setup.latency','teams.call.provider.latency','teams.media.frame.jitter','teams.media.frames.dropped') | summarize P95=percentile(Max,95), Total=sum(Sum) by Name, bin(TimeGenerated, 5m) | render timechart\",\n        \"size\": 0,\n        \"title\": \"Media quality and provider latency\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.insights/components\"\n      },\n      \"name\": \"media-quality\"\n    },\n    {\n      \"type\": 3,\n      \"content\": {\n        \"version\": \"KqlItem/1.0\",\n        \"query\": \"AppTraces | where TimeGenerated > ago(24h) | where Message has_any ('Teams media host','Teams media start failed','callback authentication','throttl') | project TimeGenerated, SeverityLevel, Message | order by TimeGenerated desc\",\n        \"size\": 0,\n        \"title\": \"Operational events\",\n        \"queryType\": 0,\n        \"resourceType\": \"microsoft.insights/components\"\n      },\n      \"name\": \"events\"\n    }\n  ],\n  \"isLocked\": true,\n  \"fallbackResourceIds\": []\n}\n",
+            "suffix": "[toLower(format('{0}-{1}', parameters('namePrefix'), parameters('environmentName')))]",
+            "vmssName": "[format('{0}-media-vmss', variables('suffix'))]",
+            "identityName": "[format('{0}-media-id', variables('suffix'))]",
+            "workspaceName": "[format('{0}-logs', variables('suffix'))]",
+            "appInsightsName": "[format('{0}-appi', variables('suffix'))]",
+            "actionGroupName": "[format('{0}-ops', variables('suffix'))]",
+            "serviceFqdn": "[format('{0}.{1}', parameters('serviceDnsRecordName'), parameters('dnsZoneName'))]",
+            "applicationAlertDefinitions": [
+              {
+                "name": "media-or-callback-failures",
+                "description": "Teams media admission, callback authentication, or forced termination failed.",
+                "query": "AppTraces | where Message has_any (\"Teams media start failed\", \"callback authentication\", \"forced_termination\", \"runtime validation is fail-closed\") | summarize Breaches=count()",
+                "threshold": 0
+              },
+              {
+                "name": "dropped-media-frames",
+                "description": "Teams media frames were dropped during the alert window.",
+                "query": "AppMetrics | where Name == \"teams.media.frames.dropped\" | summarize Breaches=sum(Sum)",
+                "threshold": 10
+              },
+              {
+                "name": "realtime-latency",
+                "description": "Teams media setup or realtime latency exceeded the approved threshold.",
+                "query": "AppMetrics | where Name in (\"teams.media.setup.latency\", \"teams.call.provider.latency\") | summarize Breaches=percentile(Max, 95)",
+                "threshold": 3000
+              }
+            ]
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+              "apiVersion": "2023-01-31",
+              "name": "[variables('identityName')]",
+              "location": "[parameters('location')]"
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}-vnet', variables('suffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "10.42.0.0/16"
+                  ]
+                },
+                "subnets": [
+                  {
+                    "name": "media-hosts",
+                    "properties": {
+                      "addressPrefix": "10.42.1.0/24",
+                      "networkSecurityGroup": {
+                        "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-media-nsg', variables('suffix')))]"
+                      },
+                      "privateEndpointNetworkPolicies": "Disabled"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-media-nsg', variables('suffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/networkSecurityGroups",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}-media-nsg', variables('suffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "securityRules": [
+                  {
+                    "name": "allow-teams-callback-https",
+                    "properties": {
+                      "priority": 100,
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "protocol": "Tcp",
+                      "sourceAddressPrefix": "Internet",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "8443"
+                    }
+                  },
+                  {
+                    "name": "allow-teams-media-tcp",
+                    "properties": {
+                      "priority": 110,
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "protocol": "Tcp",
+                      "sourceAddressPrefix": "Internet",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "[string(parameters('mediaPublicPort'))]"
+                    }
+                  },
+                  {
+                    "name": "allow-teams-media-udp",
+                    "properties": {
+                      "priority": 120,
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "protocol": "Udp",
+                      "sourceAddressPrefix": "Internet",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "[string(parameters('mediaPublicPort'))]"
+                    }
+                  },
+                  {
+                    "name": "allow-vnet-sql",
+                    "properties": {
+                      "priority": 200,
+                      "access": "Allow",
+                      "direction": "Outbound",
+                      "protocol": "Tcp",
+                      "sourceAddressPrefix": "VirtualNetwork",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "1433"
+                    }
+                  },
+                  {
+                    "name": "allow-vnet-redis-tls",
+                    "properties": {
+                      "priority": 210,
+                      "access": "Allow",
+                      "direction": "Outbound",
+                      "protocol": "Tcp",
+                      "sourceAddressPrefix": "VirtualNetwork",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "6380"
+                    }
+                  },
+                  {
+                    "name": "deny-management-inbound",
+                    "properties": {
+                      "priority": 4000,
+                      "access": "Deny",
+                      "direction": "Inbound",
+                      "protocol": "*",
+                      "sourceAddressPrefix": "Internet",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRanges": [
+                        "22",
+                        "3389",
+                        "5985",
+                        "5986"
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/publicIPAddresses",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}-callback-pip', variables('suffix'))]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "Standard"
+              },
+              "properties": {
+                "publicIPAllocationMethod": "Static",
+                "dnsSettings": {
+                  "domainNameLabel": "[parameters('callbackDnsLabel')]"
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Network/dnsZones",
+              "apiVersion": "2018-05-01",
+              "name": "[parameters('dnsZoneName')]",
+              "location": "global"
+            },
+            {
+              "type": "Microsoft.Network/dnsZones/A",
+              "apiVersion": "2018-05-01",
+              "name": "[format('{0}/{1}', parameters('dnsZoneName'), parameters('serviceDnsRecordName'))]",
+              "properties": {
+                "TTL": 60,
+                "ARecords": [
+                  {
+                    "ipv4Address": "[reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix'))), '2024-05-01').ipAddress]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix')))]",
+                "[resourceId('Microsoft.Network/dnsZones', parameters('dnsZoneName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/loadBalancers",
+              "apiVersion": "2024-05-01",
+              "name": "[format('{0}-callback-lb', variables('suffix'))]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "Standard"
+              },
+              "properties": {
+                "frontendIPConfigurations": [
+                  {
+                    "name": "callback",
+                    "properties": {
+                      "publicIPAddress": {
+                        "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix')))]"
+                      }
+                    }
+                  }
+                ],
+                "backendAddressPools": [
+                  {
+                    "name": "media-hosts"
+                  }
+                ],
+                "probes": [
+                  {
+                    "name": "media-host-ready",
+                    "properties": {
+                      "protocol": "Https",
+                      "port": 8443,
+                      "requestPath": "/health/media-host/live",
+                      "intervalInSeconds": 10,
+                      "numberOfProbes": 2
+                    }
+                  }
+                ],
+                "loadBalancingRules": [
+                  {
+                    "name": "teams-callback-https",
+                    "properties": {
+                      "protocol": "Tcp",
+                      "frontendPort": 443,
+                      "backendPort": 8443,
+                      "enableFloatingIP": false,
+                      "idleTimeoutInMinutes": 30,
+                      "enableTcpReset": true,
+                      "loadDistribution": "SourceIPProtocol",
+                      "frontendIPConfiguration": {
+                        "id": "[resourceId('Microsoft.Network/loadBalancers/frontendIPConfigurations', format('{0}-callback-lb', variables('suffix')), 'callback')]"
+                      },
+                      "backendAddressPool": {
+                        "id": "[resourceId('Microsoft.Network/loadBalancers/backendAddressPools', format('{0}-callback-lb', variables('suffix')), 'media-hosts')]"
+                      },
+                      "probe": {
+                        "id": "[resourceId('Microsoft.Network/loadBalancers/probes', format('{0}-callback-lb', variables('suffix')), 'media-host-ready')]"
+                      }
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Compute/virtualMachineScaleSets",
+              "apiVersion": "2024-07-01",
+              "name": "[variables('vmssName')]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "[parameters('vmSku')]",
+                "tier": "Standard",
+                "capacity": "[parameters('instanceCount')]"
+              },
+              "identity": {
+                "type": "UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')))]": {}
+                }
+              },
+              "properties": {
+                "orchestrationMode": "Uniform",
+                "overprovision": false,
+                "singlePlacementGroup": false,
+                "upgradePolicy": {
+                  "mode": "Manual"
+                },
+                "automaticRepairsPolicy": {
+                  "enabled": true,
+                  "gracePeriod": "PT30M",
+                  "repairAction": "Replace"
+                },
+                "scaleInPolicy": {
+                  "rules": [
+                    "OldestVM"
+                  ],
+                  "forceDeletion": false
+                },
+                "virtualMachineProfile": {
+                  "osProfile": {
+                    "computerNamePrefix": "[take(replace(variables('suffix'), '-', ''), 9)]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "adminPassword": "[parameters('adminPassword')]",
+                    "windowsConfiguration": {
+                      "provisionVMAgent": true,
+                      "enableAutomaticUpdates": true,
+                      "patchSettings": {
+                        "patchMode": "AutomaticByPlatform",
+                        "assessmentMode": "AutomaticByPlatform"
+                      }
+                    }
+                  },
+                  "storageProfile": {
+                    "imageReference": {
+                      "publisher": "MicrosoftWindowsServer",
+                      "offer": "WindowsServer",
+                      "sku": "2022-datacenter-azure-edition",
+                      "version": "latest"
+                    },
+                    "osDisk": {
+                      "createOption": "FromImage",
+                      "caching": "ReadWrite",
+                      "managedDisk": {
+                        "storageAccountType": "Premium_LRS"
+                      }
+                    }
+                  },
+                  "networkProfile": {
+                    "healthProbe": {
+                      "id": "[resourceId('Microsoft.Network/loadBalancers/probes', format('{0}-callback-lb', variables('suffix')), 'media-host-ready')]"
+                    },
+                    "networkInterfaceConfigurations": [
+                      {
+                        "name": "media-nic",
+                        "properties": {
+                          "primary": true,
+                          "enableAcceleratedNetworking": true,
+                          "networkSecurityGroup": {
+                            "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-media-nsg', variables('suffix')))]"
+                          },
+                          "ipConfigurations": [
+                            {
+                              "name": "media-ip",
+                              "properties": {
+                                "primary": true,
+                                "subnet": {
+                                  "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', format('{0}-vnet', variables('suffix')), 'media-hosts')]"
+                                },
+                                "loadBalancerBackendAddressPools": [
+                                  {
+                                    "id": "[resourceId('Microsoft.Network/loadBalancers/backendAddressPools', format('{0}-callback-lb', variables('suffix')), 'media-hosts')]"
+                                  }
+                                ],
+                                "publicIPAddressConfiguration": {
+                                  "name": "instance-public-ip",
+                                  "properties": {
+                                    "idleTimeoutInMinutes": 30
+                                  },
+                                  "sku": {
+                                    "name": "Standard",
+                                    "tier": "Regional"
+                                  }
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "extensionProfile": {
+                    "extensions": [
+                      {
+                        "name": "bootstrap-teams-media",
+                        "properties": {
+                          "publisher": "Microsoft.Compute",
+                          "type": "CustomScriptExtension",
+                          "typeHandlerVersion": "1.10",
+                          "autoUpgradeMinorVersion": true,
+                          "settings": {},
+                          "protectedSettings": {
+                            "fileUris": [
+                              "[parameters('bootstrapScriptUri')]",
+                              "[parameters('apiPackageUri')]"
+                            ],
+                            "commandToExecute": "[format('powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy AllSigned -File .\\Install-TeamsMediaHost.ps1 -ApiPackagePath .\\VirtualCompany.Api.zip -ApiPackageSha256 {0} -KeyVaultName {1} -CertificateSecretName {2} -ConfigurationSecretName {3} -ServiceFqdn {4} -MediaInternalPort {5} -MediaPublicPort {6} -ManagedIdentityClientId {7}', parameters('apiPackageSha256'), parameters('keyVaultName'), parameters('mediaCertificateSecretName'), parameters('teamsConfigurationSecretName'), variables('serviceFqdn'), parameters('mediaInternalPort'), parameters('mediaPublicPort'), reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').clientId)]"
+                          }
+                        }
+                      },
+                      {
+                        "name": "AzureMonitorWindowsAgent",
+                        "properties": {
+                          "publisher": "Microsoft.Azure.Monitor",
+                          "type": "AzureMonitorWindowsAgent",
+                          "typeHandlerVersion": "1.30",
+                          "autoUpgradeMinorVersion": true,
+                          "enableAutomaticUpgrade": true,
+                          "settings": {
+                            "authentication": {
+                              "managedIdentity": {
+                                "identifier-name": "mi_res_id",
+                                "identifier-value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), 'applicationinsights--connectionstring')]",
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
+                "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), 'Key Vault Secrets User'))]",
+                "[resourceId('Microsoft.Network/loadBalancers', format('{0}-callback-lb', variables('suffix')))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-media-nsg', variables('suffix')))]",
+                "[resourceId('Microsoft.Network/dnsZones/A', parameters('dnsZoneName'), parameters('serviceDnsRecordName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('{0}-vnet', variables('suffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), 'Key Vault Secrets User')]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]",
+              "name": "[guid(resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), 'VMSS instance protection')]",
+              "properties": {
+                "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '9980e02c-c2be-4d73-94e8-173b1dc7cf3c')]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
+                "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2023-09-01",
+              "name": "[variables('workspaceName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "retentionInDays": 30,
+                "features": {
+                  "enableLogAccessUsingOnlyResourcePermissions": true
+                }
+              }
+            },
+            {
+              "type": "Microsoft.Insights/components",
+              "apiVersion": "2020-02-02",
+              "name": "[variables('appInsightsName')]",
+              "location": "[parameters('location')]",
+              "kind": "web",
+              "properties": {
+                "Application_Type": "web",
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]",
+                "DisableLocalAuth": true
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/dataCollectionRules",
+              "apiVersion": "2023-03-11",
+              "name": "[format('{0}-media-dcr', variables('suffix'))]",
+              "location": "[parameters('location')]",
+              "kind": "Windows",
+              "properties": {
+                "dataSources": {
+                  "performanceCounters": [
+                    {
+                      "name": "media-host-performance",
+                      "streams": [
+                        "Microsoft-Perf"
+                      ],
+                      "samplingFrequencyInSeconds": 60,
+                      "counterSpecifiers": [
+                        "\\Processor(_Total)\\% Processor Time",
+                        "\\Memory\\Available MBytes",
+                        "\\Network Interface(*)\\Bytes Total/sec",
+                        "\\Process(dotnet*)\\Private Bytes"
+                      ]
+                    }
+                  ]
+                },
+                "destinations": {
+                  "logAnalytics": [
+                    {
+                      "name": "operations-workspace",
+                      "workspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+                    }
+                  ]
+                },
+                "dataFlows": [
+                  {
+                    "streams": [
+                      "Microsoft-Perf"
+                    ],
+                    "destinations": [
+                      "operations-workspace"
+                    ]
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/dataCollectionRuleAssociations",
+              "apiVersion": "2023-03-11",
+              "scope": "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]",
+              "name": "[format('{0}-media-dcr-association', variables('suffix'))]",
+              "properties": {
+                "dataCollectionRuleId": "[resourceId('Microsoft.Insights/dataCollectionRules', format('{0}-media-dcr', variables('suffix')))]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/dataCollectionRules', format('{0}-media-dcr', variables('suffix')))]",
+                "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[resourceId('Microsoft.Network/loadBalancers', format('{0}-callback-lb', variables('suffix')))]",
+              "name": "[format('{0}-load-balancer-diagnostics', variables('suffix'))]",
+              "properties": {
+                "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]",
+                "logs": [
+                  {
+                    "categoryGroup": "allLogs",
+                    "enabled": true
+                  }
+                ],
+                "metrics": [
+                  {
+                    "category": "AllMetrics",
+                    "enabled": true
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/loadBalancers', format('{0}-callback-lb', variables('suffix')))]",
+                "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix')))]",
+              "name": "[format('{0}-public-ip-diagnostics', variables('suffix'))]",
+              "properties": {
+                "workspaceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]",
+                "logs": [
+                  {
+                    "categoryGroup": "allLogs",
+                    "enabled": true
+                  }
+                ],
+                "metrics": [
+                  {
+                    "category": "AllMetrics",
+                    "enabled": true
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix')))]",
+                "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.KeyVault/vaults/secrets",
+              "apiVersion": "2023-07-01",
+              "name": "[format('{0}/{1}', parameters('keyVaultName'), 'applicationinsights--connectionstring')]",
+              "properties": {
+                "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/actionGroups",
+              "apiVersion": "2023-01-01",
+              "name": "[variables('actionGroupName')]",
+              "location": "global",
+              "properties": {
+                "copy": [
+                  {
+                    "name": "emailReceivers",
+                    "count": "[length(parameters('alertEmailAddresses'))]",
+                    "input": {
+                      "name": "[format('operator-{0}', copyIndex('emailReceivers'))]",
+                      "emailAddress": "[parameters('alertEmailAddresses')[copyIndex('emailReceivers')]]",
+                      "useCommonAlertSchema": true
+                    }
+                  }
+                ],
+                "groupShortName": "[take(replace(parameters('namePrefix'), '-', ''), 12)]",
+                "enabled": true
+              }
+            },
+            {
+              "type": "Microsoft.Insights/metricAlerts",
+              "apiVersion": "2018-03-01",
+              "name": "[format('{0}-cpu-saturation', variables('suffix'))]",
+              "location": "global",
+              "properties": {
+                "description": "Teams media host CPU exceeds the admission safety threshold.",
+                "severity": 1,
+                "enabled": true,
+                "scopes": [
+                  "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+                ],
+                "evaluationFrequency": "PT1M",
+                "windowSize": "PT5M",
+                "criteria": {
+                  "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+                  "allOf": [
+                    {
+                      "name": "cpu",
+                      "metricName": "Percentage CPU",
+                      "metricNamespace": "Microsoft.Compute/virtualMachineScaleSets",
+                      "operator": "GreaterThan",
+                      "threshold": 80,
+                      "timeAggregation": "Average",
+                      "criterionType": "StaticThresholdCriterion"
+                    }
+                  ]
+                },
+                "actions": [
+                  {
+                    "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', variables('actionGroupName'))]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/actionGroups', variables('actionGroupName'))]",
+                "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/metricAlerts",
+              "apiVersion": "2018-03-01",
+              "name": "[format('{0}-network-saturation', variables('suffix'))]",
+              "location": "global",
+              "properties": {
+                "description": "Teams media ingress exceeds the measured capacity ceiling.",
+                "severity": 2,
+                "enabled": true,
+                "scopes": [
+                  "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+                ],
+                "evaluationFrequency": "PT1M",
+                "windowSize": "PT5M",
+                "criteria": {
+                  "odata.type": "Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria",
+                  "allOf": [
+                    {
+                      "name": "network",
+                      "metricName": "Network In Total",
+                      "metricNamespace": "Microsoft.Compute/virtualMachineScaleSets",
+                      "operator": "GreaterThan",
+                      "threshold": 1073741824,
+                      "timeAggregation": "Total",
+                      "criterionType": "StaticThresholdCriterion"
+                    }
+                  ]
+                },
+                "actions": [
+                  {
+                    "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', variables('actionGroupName'))]"
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/actionGroups', variables('actionGroupName'))]",
+                "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "applicationAlerts",
+                "count": "[length(variables('applicationAlertDefinitions'))]"
+              },
+              "type": "Microsoft.Insights/scheduledQueryRules",
+              "apiVersion": "2023-12-01",
+              "name": "[format('{0}-{1}', variables('suffix'), variables('applicationAlertDefinitions')[copyIndex()].name)]",
+              "location": "[parameters('location')]",
+              "kind": "LogAlert",
+              "properties": {
+                "description": "[variables('applicationAlertDefinitions')[copyIndex()].description]",
+                "severity": 1,
+                "enabled": true,
+                "scopes": [
+                  "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+                ],
+                "evaluationFrequency": "PT5M",
+                "windowSize": "PT5M",
+                "autoMitigate": true,
+                "skipQueryValidation": true,
+                "criteria": {
+                  "allOf": [
+                    {
+                      "query": "[variables('applicationAlertDefinitions')[copyIndex()].query]",
+                      "timeAggregation": "Total",
+                      "metricMeasureColumn": "Breaches",
+                      "operator": "GreaterThan",
+                      "threshold": "[variables('applicationAlertDefinitions')[copyIndex()].threshold]",
+                      "failingPeriods": {
+                        "numberOfEvaluationPeriods": 1,
+                        "minFailingPeriodsToAlert": 1
+                      }
+                    }
+                  ]
+                },
+                "actions": {
+                  "actionGroups": [
+                    "[resourceId('Microsoft.Insights/actionGroups', variables('actionGroupName'))]"
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/actionGroups', variables('actionGroupName'))]",
+                "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/workbooks",
+              "apiVersion": "2023-06-01",
+              "name": "[guid(resourceGroup().id, variables('suffix'), 'teams-media-operations')]",
+              "location": "[parameters('location')]",
+              "kind": "shared",
+              "properties": {
+                "displayName": "Alex Teams media operations",
+                "category": "workbook",
+                "sourceId": "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+                "serializedData": "[variables('workbookData')]",
+                "version": "1.0"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Insights/autoscalesettings",
+              "apiVersion": "2022-10-01",
+              "name": "[format('{0}-media-autoscale', variables('suffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "enabled": true,
+                "targetResourceUri": "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]",
+                "profiles": [
+                  {
+                    "name": "bounded-cpu-capacity",
+                    "capacity": {
+                      "minimum": "[string(parameters('minimumInstances'))]",
+                      "maximum": "[string(parameters('maximumInstances'))]",
+                      "default": "[string(parameters('instanceCount'))]"
+                    },
+                    "rules": [
+                      {
+                        "metricTrigger": {
+                          "metricName": "Percentage CPU",
+                          "metricResourceUri": "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]",
+                          "timeGrain": "PT1M",
+                          "statistic": "Average",
+                          "timeWindow": "PT5M",
+                          "timeAggregation": "Average",
+                          "operator": "GreaterThan",
+                          "threshold": 60,
+                          "dividePerInstance": false
+                        },
+                        "scaleAction": {
+                          "direction": "Increase",
+                          "type": "ChangeCount",
+                          "value": "1",
+                          "cooldown": "PT10M"
+                        }
+                      },
+                      {
+                        "metricTrigger": {
+                          "metricName": "Percentage CPU",
+                          "metricResourceUri": "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]",
+                          "timeGrain": "PT1M",
+                          "statistic": "Average",
+                          "timeWindow": "PT15M",
+                          "timeAggregation": "Average",
+                          "operator": "LessThan",
+                          "threshold": 25,
+                          "dividePerInstance": false
+                        },
+                        "scaleAction": {
+                          "direction": "Decrease",
+                          "type": "ChangeCount",
+                          "value": "1",
+                          "cooldown": "PT20M"
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "notifications": []
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Compute/virtualMachineScaleSets', variables('vmssName'))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "callbackFqdn": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/publicIPAddresses', format('{0}-callback-pip', variables('suffix'))), '2024-05-01').dnsSettings.fqdn]"
+            },
+            "serviceFqdn": {
+              "type": "string",
+              "value": "[variables('serviceFqdn')]"
+            },
+            "mediaHostVmssName": {
+              "type": "string",
+              "value": "[variables('vmssName')]"
+            },
+            "managedIdentityClientId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').clientId]"
+            },
+            "applicationInsightsName": {
+              "type": "string",
+              "value": "[variables('appInsightsName')]"
+            },
+            "operationsWorkbookName": {
+              "type": "string",
+              "value": "[guid(resourceGroup().id, variables('suffix'), 'teams-media-operations')]"
+            },
+            "deploymentState": {
+              "type": "string",
+              "value": "templates_deployed_not_live_validated"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('resourceGroupName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "callbackFqdn": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', format('teams-media-{0}', parameters('environmentName'))), '2025-04-01').outputs.callbackFqdn.value]"
+    },
+    "vmssName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', format('teams-media-{0}', parameters('environmentName'))), '2025-04-01').outputs.mediaHostVmssName.value]"
+    },
+    "validationState": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, parameters('resourceGroupName')), 'Microsoft.Resources/deployments', format('teams-media-{0}', parameters('environmentName'))), '2025-04-01').outputs.deploymentState.value]"
+    }
+  }
+}

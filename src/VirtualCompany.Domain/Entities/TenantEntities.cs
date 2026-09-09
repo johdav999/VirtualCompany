@@ -108,6 +108,9 @@ public sealed class Company
     public DateTime? OnboardingAbandonedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public bool IsDemoTenant { get; private set; }
+    public string? DemoScenarioKey { get; private set; }
+    public int? DemoScenarioVersion { get; private set; }
     public ICollection<CompanyMembership> Memberships { get; } = new List<CompanyMembership>();
     public ICollection<CompanyResponsibilityAssignment> ResponsibilityAssignments { get; } = new List<CompanyResponsibilityAssignment>();
     public ICollection<CompanyOwnedNote> Notes { get; } = new List<CompanyOwnedNote>();
@@ -177,6 +180,24 @@ public sealed class Company
         OnboardingStatus = CompanyOnboardingStatus.Completed;
         OnboardingAbandonedUtc = null;
         UpdatedUtc = OnboardingLastSavedUtc ?? completedUtc;
+    }
+
+    public void MarkAsDemoTenant(string scenarioKey, int scenarioVersion)
+    {
+        if (IsDemoTenant)
+        {
+            throw new InvalidOperationException("The company is already marked as a demo tenant.");
+        }
+
+        if (scenarioVersion < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scenarioVersion));
+        }
+
+        IsDemoTenant = true;
+        DemoScenarioKey = NormalizeRequired(scenarioKey, nameof(scenarioKey), 100).ToLowerInvariant();
+        DemoScenarioVersion = scenarioVersion;
+        UpdatedUtc = DateTime.UtcNow;
     }
 
     public void AbandonOnboarding()

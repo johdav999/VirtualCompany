@@ -48,6 +48,63 @@ public sealed class SalesOperationsApiIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Linking_deal_company_synchronizes_source_lead_and_contact_and_is_tenant_scoped()
+    {
+        var seed = await SeedAsync();
+        using var client = Client(seed.CompanyAId);
+
+        var response = await client.PutAsJsonAsync(
+            $"/api/sales/deals/{seed.DealAId}/customer-company",
+            new LinkDealCustomerCompanyRequest("Northstar AB"));
+        var crossTenant = await client.PutAsJsonAsync(
+            $"/api/sales/deals/{seed.DealBId}/customer-company",
+            new LinkDealCustomerCompanyRequest("Must not change"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, crossTenant.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<SalesDealDetailResponse>();
+        Assert.Equal("Northstar AB", result?.CustomerCompanyName);
+
+        var state = await _factory.ExecuteDbContextAsync(async dbContext =>
+        {
+            var deal = await dbContext.Deals.IgnoreQueryFilters().SingleAsync(x => x.Id == seed.DealAId);
+            var lead = await dbContext.Leads.IgnoreQueryFilters().SingleAsync(x => x.Id == seed.LeadAId);
+            var contact = await dbContext.Contacts.IgnoreQueryFilters().SingleAsync(x => x.Id == seed.ContactAId);
+            var audit = await dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x =>
+                x.CompanyId == seed.CompanyAId &&
+                x.Action == AuditEventActions.SalesDealCustomerCompanyLinked &&
+                x.TargetId == seed.DealAId.ToString("D"));
+            return new
+            {
+                deal.CustomerCompanyId,
+                LeadCustomerCompanyId = lead.CustomerCompanyId,
+                ContactCustomerCompanyId = contact.CustomerCompanyId,
+                audit
+            };
+        });
+
+        Assert.NotNull(state.CustomerCompanyId);
+        Assert.Equal(state.CustomerCompanyId, state.LeadCustomerCompanyId);
+        Assert.Equal(state.CustomerCompanyId, state.ContactCustomerCompanyId);
+        Assert.True(state.audit);
+    }
+
+    [Fact]
+    public async Task Linking_deal_company_requires_a_name()
+    {
+        var seed = await SeedAsync();
+        using var client = Client(seed.CompanyAId);
+
+        var response = await client.PutAsJsonAsync(
+            $"/api/sales/deals/{seed.DealAId}/customer-company",
+            new LinkDealCustomerCompanyRequest("   "));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<HttpValidationProblemDetails>();
+        Assert.Contains(nameof(LinkDealCustomerCompanyRequest.CompanyName), problem!.Errors.Keys);
+    }
+
+    [Fact]
     public async Task Qualify_reject_convert_and_deal_actions_persist_state_and_audit_events()
     {
         var seed = await SeedAsync();
@@ -278,7 +335,7 @@ public sealed class SalesOperationsApiIntegrationTests : IDisposable
         dbContext.Contacts.Add(new Contact(contactId, companyId, $"Buyer {suffix}", $"buyer-{suffix}@example.com", customerId));
         dbContext.Leads.Add(new Lead(leadId, companyId, $"Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
         dbContext.Leads.Add(new Lead(rejectLeadId, companyId, $"Reject Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
-        dbContext.Deals.Add(new Deal(dealId, companyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 1000m, "USD", primaryContactId: contactId, customerCompanyId: customerId));
+        dbContext.Deals.Add(new Deal(dealId, companyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 1000m, "USD", sourceLeadId: leadId, primaryContactId: contactId, customerCompanyId: customerId));
         dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $"message-{suffix}", leadId, dealId, contactId, customerId, SalesStatuses.Linked, detectedIntent: "pricing request", productOrServiceInterest: "Platform", confidence: 0.87m, rationale: $"Buyer {suffix} asked for pricing and prefers a concise email summary."));
         dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "email", $"Email {suffix}", DateTime.UtcNow, leadId: leadId, dealId: dealId, contactId: contactId, customerCompanyId: customerId));
         dbContext.SalesAgentRecommendations.Add(new SalesAgentRecommendation(Guid.NewGuid(), companyId, $"Follow up {suffix}", "The buyer asked for pricing.", leadId, dealId));

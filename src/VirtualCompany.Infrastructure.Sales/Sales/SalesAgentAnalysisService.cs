@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
@@ -17,7 +18,7 @@ public sealed class SalesAgentAnalysisService(
         Validate(companyId, agentId, request);
         var now = request.AsOfUtc?.ToUniversalTime() ?? DateTime.UtcNow;
         var horizon = Math.Clamp(request.HorizonDays, 1, 365);
-        var evidence = await BuildEvidenceAsync(companyId, request, now, horizon, cancellationToken);
+        var evidence = await BuildEvidenceAsync(companyId, actorUserId, request, now, horizon, cancellationToken);
         var capabilityId = CapabilityId(request.AnalysisType);
         var result = await reasoning.ReasonAsync(new AgentReasoningRequest(companyId, agentId, capabilityId, "1.0.0",
             $"sales-role-v1:{NormalizeCadence(request.Cadence)}", "1.0.0", Instruction(request.AnalysisType, horizon, request.Objective), evidence.Sources,
@@ -28,7 +29,7 @@ public sealed class SalesAgentAnalysisService(
             result.Status != AgentAiRunStatuses.Completed || missing.Length > 0);
     }
 
-    private async Task<Evidence> BuildEvidenceAsync(Guid companyId, RoleAgentAnalysisRequest request, DateTime now,
+    private async Task<Evidence> BuildEvidenceAsync(Guid companyId, Guid? actorUserId, RoleAgentAnalysisRequest request, DateTime now,
         int horizon, CancellationToken ct)
     {
         var type = request.AnalysisType.Trim().ToLowerInvariant();
@@ -115,8 +116,9 @@ public sealed class SalesAgentAnalysisService(
             var queryText = string.IsNullOrWhiteSpace(request.Objective)
                 ? "products services pricing proposal terms sales policy"
                 : request.Objective.Trim();
+            var accessContext = await BuildKnowledgeAccessContextAsync(companyId, actorUserId, ct);
             var results = await knowledge.SearchAsync(new CompanyKnowledgeSemanticSearchQuery(companyId, queryText, 8,
-                new CompanyKnowledgeAccessContext(companyId, DataScopes: ["sales", "knowledge"])), ct);
+                accessContext), ct);
             foreach (var item in results.Where(x => x.Score >= .25d).Take(8))
             {
                 sources.Add(new AgentAiSource($"knowledge-chunk:{item.ChunkId:N}", "company_knowledge", item.DocumentTitle,
@@ -158,6 +160,20 @@ public sealed class SalesAgentAnalysisService(
     }
 
     private static string NormalizeCadence(string? value) => value?.Trim().ToLowerInvariant() is "daily" or "weekly" ? value.Trim().ToLowerInvariant() : "on_demand";
+
+    private async Task<CompanyKnowledgeAccessContext> BuildKnowledgeAccessContextAsync(
+        Guid companyId, Guid? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue)
+            return new CompanyKnowledgeAccessContext(companyId, DataScopes: ["sales", "knowledge"]);
+        var membership = await db.CompanyMemberships.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.UserId == actorUserId.Value &&
+                                       x.Status == CompanyMembershipStatus.Active, cancellationToken)
+            ?? throw new UnauthorizedAccessException("An active company membership is required for Sales knowledge retrieval.");
+        return new CompanyKnowledgeAccessContext(
+            companyId, membership.Id, membership.UserId, membership.Role.ToStorageValue(),
+            ["sales", "knowledge"]);
+    }
 
     private sealed record Evidence(IReadOnlyList<AgentAiSource> Sources, IReadOnlyList<RoleAgentMetric> Metrics,
         IReadOnlyList<RoleAgentPriority> Priorities, IReadOnlyList<string> Missing);

@@ -17,6 +17,7 @@ using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Workflows;
@@ -203,11 +204,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ISalesMeetingInvitationDeliveryDispatcher? _salesMeetingInvitationDelivery;
     private readonly ISalesMeetingChangeDeliveryDispatcher? _salesMeetingChangeDelivery;
     private readonly ISalesMeetingConfirmationDeliveryDispatcher? _salesMeetingConfirmationDelivery;
+    private readonly ISalesMeetingTranscriptIngestionDispatcher? _salesMeetingTranscriptIngestion;
+    private readonly ISalesMeetingCustomerMinutesDeliveryDispatcher? _salesMeetingCustomerMinutesDelivery;
+    private readonly ITeamsCallControlDispatcher? _teamsCallControl;
     private readonly IGuidedResearchContinuationService? _guidedResearch;
     private readonly ICompanyOnboardingDocumentGenerationService? _onboardingDocuments;
     private readonly IPaymentBatchExecutionDispatcher? _paymentExecutionDispatcher;
     private readonly IFinanceAutonomyTriggerService? _financeAutonomyTriggers;
     private readonly IFinanceAutonomyBudgetService? _financeAutonomyBudgets;
+    private readonly IDemoTenantExternalSideEffectPolicy? _demoTenantSideEffects;
+    private readonly IAuditEventWriter? _auditEventWriter;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -233,11 +239,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ISalesMeetingInvitationDeliveryDispatcher? salesMeetingInvitationDelivery = null,
         ISalesMeetingChangeDeliveryDispatcher? salesMeetingChangeDelivery = null,
         ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null,
+        ISalesMeetingTranscriptIngestionDispatcher? salesMeetingTranscriptIngestion = null,
+        ISalesMeetingCustomerMinutesDeliveryDispatcher? salesMeetingCustomerMinutesDelivery = null,
+        ITeamsCallControlDispatcher? teamsCallControl = null,
         IGuidedResearchContinuationService? guidedResearch = null,
         ICompanyOnboardingDocumentGenerationService? onboardingDocuments = null,
         IPaymentBatchExecutionDispatcher? paymentExecutionDispatcher = null,
         IFinanceAutonomyTriggerService? financeAutonomyTriggers = null,
-        IFinanceAutonomyBudgetService? financeAutonomyBudgets = null)
+        IFinanceAutonomyBudgetService? financeAutonomyBudgets = null,
+        IDemoTenantExternalSideEffectPolicy? demoTenantSideEffects = null,
+        IAuditEventWriter? auditEventWriter = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -262,11 +273,16 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _salesMeetingInvitationDelivery = salesMeetingInvitationDelivery;
         _salesMeetingChangeDelivery = salesMeetingChangeDelivery;
         _salesMeetingConfirmationDelivery = salesMeetingConfirmationDelivery;
+        _salesMeetingTranscriptIngestion = salesMeetingTranscriptIngestion;
+        _salesMeetingCustomerMinutesDelivery = salesMeetingCustomerMinutesDelivery;
+        _teamsCallControl = teamsCallControl;
         _guidedResearch = guidedResearch;
         _onboardingDocuments = onboardingDocuments;
         _paymentExecutionDispatcher = paymentExecutionDispatcher;
         _financeAutonomyTriggers = financeAutonomyTriggers;
         _financeAutonomyBudgets = financeAutonomyBudgets;
+        _demoTenantSideEffects = demoTenantSideEffects;
+        _auditEventWriter = auditEventWriter;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -588,6 +604,40 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             throw new CompanyOutboxPermanentException("Company outbox message is missing tenant context.");
         }
 
+        if (_demoTenantSideEffects is not null)
+        {
+            var decision = await _demoTenantSideEffects.EvaluateAsync(message.CompanyId, message.Topic, cancellationToken);
+            if (!decision.Allowed)
+            {
+                if (_auditEventWriter is not null)
+                {
+                    await _auditEventWriter.WriteAsync(new AuditEventWriteRequest(
+                        message.CompanyId,
+                        "system",
+                        null,
+                        AuditEventActions.DemoScenarioExternalSideEffectBlocked,
+                        "company_outbox_message",
+                        message.Id.ToString("D"),
+                        AuditEventOutcomes.Denied,
+                        decision.Explanation,
+                        ["demo_tenant_policy", "company_outbox"],
+                        new Dictionary<string, string?>
+                        {
+                            ["topic"] = message.Topic,
+                            ["reasonCode"] = decision.ReasonCode,
+                            ["idempotencyKey"] = message.IdempotencyKey
+                        },
+                        message.CorrelationId), cancellationToken);
+                    await _dbContext.SaveChangesAsync(cancellationToken);
+                }
+
+                _logger.LogWarning(
+                    "Blocked company outbox topic {Topic} for synthetic demo tenant {CompanyId}. ReasonCode: {ReasonCode}.",
+                    message.Topic, message.CompanyId, decision.ReasonCode);
+                throw new CompanyOutboxPermanentException(decision.Explanation);
+            }
+        }
+
         switch (message.Topic)
         {
             case CompanyOutboxTopics.PaymentBatchSubmissionRequested:
@@ -758,6 +808,42 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 await _salesMeetingConfirmationDelivery.DispatchAsync(
                     payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
                     cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SalesMeetingTranscriptIngestionRequested:
+            {
+                var payload = Deserialize<SalesMeetingTranscriptIngestionRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                    throw new CompanyOutboxPermanentException("Sales meeting transcript ingestion payload tenant does not match the outbox message tenant.");
+                if (_salesMeetingTranscriptIngestion is null)
+                    throw new InvalidOperationException("Sales meeting transcript ingestion is not configured.");
+                await _salesMeetingTranscriptIngestion.DispatchAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
+                    cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SalesMeetingCustomerMinutesDeliveryRequested:
+            {
+                var payload = Deserialize<SalesMeetingCustomerMinutesDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Sales meeting minutes payload tenant does not match the outbox message tenant.");
+                if (_salesMeetingCustomerMinutesDelivery is null) throw new InvalidOperationException("Sales meeting minutes delivery is not configured.");
+                await _salesMeetingCustomerMinutesDelivery.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.TeamsCallControlRequested:
+            {
+                var payload = Deserialize<TeamsCallControlWorkItem>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Teams call control");
+                if (_teamsCallControl is null) throw new InvalidOperationException("Teams call control is not configured.");
+                await _teamsCallControl.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.TeamsCallCallbackProcessingRequested:
+            {
+                var payload = Deserialize<TeamsCallCallbackWorkItem>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Teams call callback");
+                if (_teamsCallControl is null) throw new InvalidOperationException("Teams call control is not configured.");
+                await _teamsCallControl.ProcessCallbackAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.TaskCreated:

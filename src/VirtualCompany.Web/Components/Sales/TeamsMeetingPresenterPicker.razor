@@ -1,0 +1,42 @@
+@inject TeamsCallControlApiClient Api
+<section class="vc-panel" aria-labelledby="meeting-presenter-title">
+    <h2 id="meeting-presenter-title">Meeting presenter</h2>
+    <p>Choose the assistant who will speak in this meeting. End any active Teams call before changing the presenter.</p>
+    @if (!string.IsNullOrWhiteSpace(error)) { <p class="alert alert-danger" role="alert">@error</p> }
+    @if (state is not null)
+    {
+        <label for="meeting-presenter">Presenter</label>
+        <select id="meeting-presenter" class="form-select" @bind="selectedId" disabled="@busy">
+            <option value="">Choose an assistant</option>
+            @foreach (var agent in state.Choices) { <option value="@agent.Id">@agent.Name · @agent.Department</option> }
+        </select>
+        @if (state.Choices.Count == 0) { <p role="status">No assistant has permitted meeting tools. Ask your administrator to review the assistant's tool permissions.</p> }
+        <button type="button" class="btn btn-primary mt-3" @onclick="SaveAsync" disabled="@(busy || string.IsNullOrWhiteSpace(selectedId))">Save presenter</button>
+        @if (saved) { <p role="status">Presenter saved.</p> }
+    }
+    else if (busy) { <p role="status">Loading presenters…</p> }
+</section>
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid SessionId { get; set; }
+    [Parameter] public EventCallback OnSaved { get; set; }
+    private TeamsMeetingPresenterViewModel? state;
+    private string selectedId = "";
+    private string? error;
+    private bool busy, saved;
+    protected override async Task OnParametersSetAsync()
+    {
+        busy = true; error = null; state = null;
+        try { state = await Api.GetPresenterAsync(CompanyId, SessionId); selectedId = state?.AgentId?.ToString() ?? ""; }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+    private async Task SaveAsync()
+    {
+        if (state is null || !Guid.TryParse(selectedId, out var agentId)) return;
+        busy = true; error = null; saved = false;
+        try { state = await Api.SelectPresenterAsync(CompanyId, SessionId, agentId, state.Version); saved = true; await OnSaved.InvokeAsync(); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+}

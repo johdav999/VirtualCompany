@@ -796,6 +796,24 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                     change.Id, previousStatus, change.Status.ToStorageValue());
             }
         }
+        else if (targetType == ApprovalTargetEntityType.SalesMeetingChangeProposal)
+        {
+            var proposal = await _dbContext.SalesMeetingChangeProposals.SingleAsync(
+                x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
+            var binding = approval.ThresholdContext.TryGetValue("bindingHash", out var node) ? node?.GetValue<string>() : null;
+            if (proposal.ApprovalRequestId != approval.Id || string.IsNullOrWhiteSpace(binding) || !string.Equals(binding, proposal.ApprovalBindingHash, StringComparison.Ordinal)) return null;
+            if (approval.Status == ApprovalRequestStatus.Approved)
+            {
+                var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
+                if (approver.HasValue) proposal.Approve(proposal.ConcurrencyVersion, binding, approver.Value, DateTime.UtcNow);
+            }
+            else if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            {
+                var reviewer = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId ?? approval.RequestedByActorId;
+                proposal.Reject(proposal.ConcurrencyVersion, reviewer, approval.DecisionSummary, DateTime.UtcNow);
+            }
+            return null;
+        }
         else if (targetType == ApprovalTargetEntityType.FinanceIntegrationWrite)
         {
             var command = await _dbContext.FinanceIntegrationWriteCommands
@@ -1105,6 +1123,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.SalesMeetingChangeRequest => await _dbContext.SalesMeetingChangeRequests
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.SalesMeetingChangeProposal => await _dbContext.SalesMeetingChangeProposals
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.OperatingPlan => await _dbContext.OperatingPlans

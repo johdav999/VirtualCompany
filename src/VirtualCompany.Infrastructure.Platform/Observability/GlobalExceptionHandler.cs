@@ -74,6 +74,10 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         var problemDetails = CreateProblemDetails(httpContext, mappedException, correlationId, traceId);
         problemDetails.Extensions["correlationId"] = correlationId;
         problemDetails.Extensions["traceId"] = traceId;
+        if (mappedException.Code is not null)
+        {
+            problemDetails.Extensions["code"] = mappedException.Code;
+        }
 
         httpContext.Response.StatusCode = mappedException.StatusCode;
         httpContext.Response.Headers[_options.Value.CorrelationId.HeaderName] = correlationId;
@@ -116,6 +120,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 operationException.StatusCode,
                 operationException.Title,
                 operationException.Detail),
+            TeamsIdentityException identityException => MapTeamsIdentityException(identityException),
 
             CompanyMembershipAdministrationValidationException validationException => ValidationFailure(validationException.Errors),
             LeadGenerationValidationException validationException => new ExceptionHandlingResult(
@@ -152,6 +157,23 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 UnexpectedErrorDetail)
         };
 
+    private static ExceptionHandlingResult MapTeamsIdentityException(TeamsIdentityException exception)
+    {
+        var statusCode = exception.Code switch
+        {
+            TeamsIdentityFailureCodes.TenantAlreadyAssociated => StatusCodes.Status409Conflict,
+            TeamsIdentityFailureCodes.ConsentStateInvalid or
+            TeamsIdentityFailureCodes.ConsentStateExpired or
+            TeamsIdentityFailureCodes.ConsentStateReplayed or
+            TeamsIdentityFailureCodes.ConsentTenantMismatch or
+            TeamsIdentityFailureCodes.ConsentDenied => StatusCodes.Status400BadRequest,
+            TeamsIdentityFailureCodes.TenantNotAssociated or
+            TeamsIdentityFailureCodes.TenantDisabled => StatusCodes.Status409Conflict,
+            _ => StatusCodes.Status503ServiceUnavailable
+        };
+        return new ExceptionHandlingResult(statusCode, "Teams presenter identity is not ready", exception.Message, Code: exception.Code);
+    }
+
     private static ExceptionHandlingResult ValidationFailure(IReadOnlyDictionary<string, string[]> errors) =>
         new(
             StatusCodes.Status400BadRequest,
@@ -159,5 +181,10 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             "One or more validation errors occurred.",
             new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
 
-    private sealed record ExceptionHandlingResult(int StatusCode, string Title, string Detail, IDictionary<string, string[]>? Errors = null);
+    private sealed record ExceptionHandlingResult(
+        int StatusCode,
+        string Title,
+        string Detail,
+        IDictionary<string, string[]>? Errors = null,
+        string? Code = null);
 }

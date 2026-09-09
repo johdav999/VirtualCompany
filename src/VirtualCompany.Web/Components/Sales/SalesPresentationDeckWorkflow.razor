@@ -1,0 +1,452 @@
+@implements IAsyncDisposable
+@inject SalesPresentationDeckApiClient DeckClient
+@inject SalesPresentationPreparationTelemetry Telemetry
+
+<section class="presentation-deck-workflow" aria-labelledby="presentation-deck-title">
+    <div class="presentation-deck-heading">
+        <span class="meeting-step-number">2</span>
+        <div>
+            <span class="vc-kicker">@SalesText["PresentationDeckStep"]</span>
+            <h2 id="presentation-deck-title">@SalesText["PresentationDeck"]</h2>
+            <p>@SalesText["PresentationDeckDescription"]</p>
+        </div>
+    </div>
+
+    @if (SessionId == Guid.Empty)
+    {
+        <div class="presentation-deck-locked" role="status">
+            <span class="bi bi-lock" aria-hidden="true"></span>
+            <div><strong>@SalesText["UploadPresentationLocked"]</strong><small>@SalesText["UploadPresentationLockedHelp"]</small></div>
+        </div>
+    }
+    else
+    {
+        @if (!string.IsNullOrWhiteSpace(actionMessage))
+        {
+            <div class="presentation-deck-message presentation-deck-message--success" role="status">
+                <span class="bi bi-check-circle" aria-hidden="true"></span>@actionMessage
+            </div>
+        }
+        @if (!string.IsNullOrWhiteSpace(actionError))
+        {
+            <div class="presentation-deck-message presentation-deck-message--error" role="alert">
+                <span class="bi bi-exclamation-triangle" aria-hidden="true"></span>
+                <div><span>@actionError</span><button type="button" @onclick="RefreshAfterErrorAsync">@SalesText["Reload"]</button></div>
+            </div>
+        }
+
+        <div class="presentation-upload-grid">
+            <div class="presentation-file-field">
+                <span class="presentation-field-label">@SalesText["DeckFile"]</span>
+                <label class="presentation-drop-zone @(CanChooseFile ? null : "presentation-drop-zone--disabled")" for="presentation-deck-file">
+                    <span class="presentation-drop-zone__icon bi bi-file-earmark-slides" aria-hidden="true"></span>
+                    <span>
+                        <strong>@(selectedFile is null ? SalesText["ChoosePowerPoint"] : selectedFile.Name)</strong>
+                        <small>@(selectedFile is null ? UploadGuidance : FileSize(selectedFile.Size))</small>
+                    </span>
+                    <InputFile id="presentation-deck-file" class="visually-hidden" OnChange="FileSelected"
+                               accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                               disabled="@(!CanChooseFile)" />
+                </label>
+                @if (!string.IsNullOrWhiteSpace(fileError))
+                {
+                    <small class="presentation-field-error" role="alert">@fileError</small>
+                }
+            </div>
+
+            <div class="presentation-upload-details">
+                <div class="presentation-form-field">
+                    <label for="presentation-deck-title-input">@SalesText["DeckTitle"]</label>
+                    <InputText id="presentation-deck-title-input" class="sales-input" maxlength="200"
+                               @bind-Value="deckTitle" disabled="@(!CanChooseFile)" />
+                    <small>@SalesText["DeckTitleHelp"]</small>
+                </div>
+                <div class="presentation-selected-agent">
+                    <span class="presentation-selected-agent__avatar" aria-hidden="true">@PresenterInitials</span>
+                    <span><small>@SalesText["Presenter"]</small><strong>@PresenterName</strong></span>
+                </div>
+                <div class="presentation-upload-actions">
+                    @if (isUploading)
+                    {
+                        <button type="button" class="sales-button" @onclick="CancelUpload">
+                            @SalesText["CancelUpload"]
+                        </button>
+                    }
+                    <button type="button" class="sales-button sales-button--primary" @onclick="UploadAsync"
+                            disabled="@(!CanSubmitUpload)">
+                        @if (isUploading) { <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> }
+                        <span>@(isUploading ? SalesText["UploadingPresentation"] : SalesText["UploadPowerPoint"])</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="presentation-history-heading">
+            <div>
+                <h3>@SalesText["DeckHistory"]</h3>
+                <p>@SalesText["DeckHistoryDescription"]</p>
+            </div>
+            @if (isMonitoring)
+            {
+                <button type="button" class="presentation-monitor-action" @onclick="StopMonitoring">
+                    <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                    @SalesText["StopMonitoring"]
+                </button>
+            }
+        </div>
+
+        @if (displayDecks.Count == 0)
+        {
+            <div class="presentation-history-empty">
+                <span class="bi bi-file-earmark-plus" aria-hidden="true"></span>
+                <div><strong>@SalesText["NoPresentationDecks"]</strong><small>@SalesText["NoPresentationDecksHelp"]</small></div>
+            </div>
+        }
+        else
+        {
+            <ol class="presentation-deck-list">
+                @foreach (var deck in displayDecks)
+                {
+                    <li class="presentation-deck-item @(deck.IsActive ? "presentation-deck-item--active" : null)" data-deck-id="@deck.Id">
+                        <span class="presentation-deck-item__icon bi @DeckIcon(deck)" aria-hidden="true"></span>
+                        <div class="presentation-deck-item__identity">
+                            <strong>@deck.Title</strong>
+                            <small>@deck.OriginalFileName · @SalesText["DeckVersion", deck.Version]</small>
+                        </div>
+                        <div class="presentation-deck-item__state">
+                            <span class="presentation-deck-status @DeckStatusClass(deck.Status)">@DeckStatusLabel(deck.Status)</span>
+                            @if (deck.IsActive)
+                            {
+                                <span class="presentation-active-badge"><span class="bi bi-star-fill" aria-hidden="true"></span>@SalesText["ActivePresentation"]</span>
+                            }
+                            @if (deck.Status == "processed" && deck.SlideCount == 0)
+                            {
+                                <small class="presentation-zero-slides">@SalesText["ProcessedWithoutSlides"]</small>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(deck.FailureSummary))
+                            {
+                                <small class="presentation-failure-summary">@deck.FailureSummary</small>
+                            }
+                        </div>
+                        <dl class="presentation-deck-item__facts">
+                            <div><dt>@SalesText["Slides"]</dt><dd>@deck.SlideCount</dd></div>
+                            <div><dt>@SalesText["Updated"]</dt><dd>@LocalDateTime.DateTime(deck.UpdatedUtc)</dd></div>
+                        </dl>
+                        <div class="presentation-deck-item__actions">
+                            @if (CanRetry(deck))
+                            {
+                                <button type="button" class="sales-button sales-button--small" @onclick="() => RetryAsync(deck)"
+                                        disabled="@IsMutating(deck.Id)">@SalesText["RetryProcessing"]</button>
+                            }
+                            @if (CanActivate(deck))
+                            {
+                                <button type="button" class="sales-button sales-button--small" @onclick="() => AskToActivate(deck.Id)"
+                                        disabled="@IsMutating(deck.Id)">@SalesText["MakeActive"]</button>
+                            }
+                        </div>
+                        @if (pendingActivationDeckId == deck.Id)
+                        {
+                            <div class="presentation-activation-confirm" role="alertdialog" aria-labelledby="activate-title-@deck.Id">
+                                <div>
+                                    <strong id="activate-title-@deck.Id">@SalesText["ConfirmDeckActivation"]</strong>
+                                    <small>@SalesText["ConfirmDeckActivationHelp"]</small>
+                                </div>
+                                <button type="button" class="sales-button sales-button--small" @onclick="CancelActivation">@SalesText["Cancel"]</button>
+                                <button type="button" class="sales-button sales-button--primary sales-button--small"
+                                        @onclick="() => ActivateAsync(deck)" disabled="@IsMutating(deck.Id)">@SalesText["ConfirmMakeActive"]</button>
+                            </div>
+                        }
+                    </li>
+                }
+            </ol>
+        }
+    }
+</section>
+
+@code {
+    private const string PowerPointContentType = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public Guid SessionId { get; set; }
+    [Parameter] public Guid? AgentId { get; set; }
+    [Parameter] public string? PresenterDisplayName { get; set; }
+    [Parameter] public long MaximumUploadBytes { get; set; } = 25 * 1024 * 1024;
+    [Parameter] public IReadOnlyList<SalesPresentationPreparationDeckViewModel> Decks { get; set; } = [];
+    [Parameter] public IReadOnlyList<string> AllowedActions { get; set; } = [];
+    [Parameter] public EventCallback RefreshRequested { get; set; }
+    [Parameter] public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(2);
+    [Parameter] public int MaximumPollAttempts { get; set; } = 45;
+
+    private readonly CancellationTokenSource disposal = new();
+    private readonly HashSet<Guid> mutatingDeckIds = [];
+    private List<SalesPresentationPreparationDeckViewModel> displayDecks = [];
+    private CancellationTokenSource? uploadCancellation;
+    private CancellationTokenSource? pollingCancellation;
+    private IBrowserFile? selectedFile;
+    private string deckTitle = string.Empty;
+    private string? fileError;
+    private string? actionError;
+    private string? actionMessage;
+    private Guid? pendingActivationDeckId;
+    private bool isUploading;
+    private bool isMonitoring;
+
+    protected override void OnParametersSet() =>
+        displayDecks = Decks.OrderByDescending(x => x.Version).ThenBy(x => x.Id).ToList();
+
+    private void FileSelected(InputFileChangeEventArgs args)
+    {
+        selectedFile = args.File;
+        fileError = ValidateFile(selectedFile);
+        actionError = null;
+        actionMessage = null;
+        if (string.IsNullOrWhiteSpace(deckTitle) && string.IsNullOrWhiteSpace(fileError))
+            deckTitle = Path.GetFileNameWithoutExtension(selectedFile.Name);
+    }
+
+    private async Task UploadAsync()
+    {
+        if (!CanSubmitUpload || selectedFile is null || AgentId is not Guid agentId) return;
+        fileError = ValidateFile(selectedFile);
+        if (fileError is not null) return;
+
+        isUploading = true;
+        actionError = null;
+        actionMessage = null;
+        uploadCancellation?.Cancel();
+        uploadCancellation?.Dispose();
+        uploadCancellation = CancellationTokenSource.CreateLinkedTokenSource(disposal.Token);
+        try
+        {
+            await using var stream = selectedFile.OpenReadStream(MaximumUploadBytes, uploadCancellation.Token);
+            var accepted = await DeckClient.ImportAsync(
+                CompanyId, SessionId, agentId, string.IsNullOrWhiteSpace(deckTitle) ? null : deckTitle,
+                selectedFile.Name, string.IsNullOrWhiteSpace(selectedFile.ContentType) ? PowerPointContentType : selectedFile.ContentType,
+                stream, uploadCancellation.Token);
+            Telemetry.UploadAccepted();
+            Upsert(accepted);
+            actionMessage = SalesText["PresentationUploadAccepted"];
+            selectedFile = null;
+            deckTitle = string.Empty;
+            isUploading = false;
+            await RefreshRequested.InvokeAsync();
+            await PollUntilTerminalAsync(accepted.Id);
+        }
+        catch (OperationCanceledException) when (uploadCancellation.IsCancellationRequested)
+        {
+            actionMessage = SalesText["PresentationUploadCancelled"];
+        }
+        catch (SalesPresentationDeckApiException ex)
+        {
+            actionError = ErrorMessage(ex);
+        }
+        catch (IOException)
+        {
+            actionError = SalesText["PresentationFileReadFailed"];
+        }
+        finally
+        {
+            isUploading = false;
+        }
+    }
+
+    private async Task PollUntilTerminalAsync(Guid deckId)
+    {
+        pollingCancellation?.Cancel();
+        pollingCancellation?.Dispose();
+        pollingCancellation = CancellationTokenSource.CreateLinkedTokenSource(disposal.Token);
+        var token = pollingCancellation.Token;
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        isMonitoring = true;
+        try
+        {
+            for (var attempt = 0; attempt < Math.Max(1, MaximumPollAttempts); attempt++)
+            {
+                await Task.Delay(PollInterval, token);
+                var current = await DeckClient.GetAsync(CompanyId, SessionId, deckId, token);
+                if (current is null)
+                {
+                    actionError = SalesText["PresentationDeckNoLongerAvailable"];
+                    await RefreshRequested.InvokeAsync();
+                    return;
+                }
+
+                Upsert(current);
+                await InvokeAsync(StateHasChanged);
+                if (current.Status is "processed" or "failed" or "blocked")
+                {
+                    var outcome = current.Status == "processed" ? "succeeded" : "failed";
+                    Telemetry.ProcessingObserved(started.Elapsed, outcome);
+                    if (outcome == "failed") Telemetry.ProcessingFailed(current.FailureCode);
+                    actionMessage = current.Status == "processed"
+                        ? SalesText["PresentationProcessingComplete", current.SlideCount]
+                        : null;
+                    await RefreshRequested.InvokeAsync();
+                    return;
+                }
+            }
+
+            Telemetry.ProcessingObserved(started.Elapsed, "timeout");
+            actionMessage = SalesText["PresentationMonitoringTimedOut"];
+            await RefreshRequested.InvokeAsync();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            Telemetry.ProcessingObserved(started.Elapsed, "cancelled");
+        }
+        catch (SalesPresentationDeckApiException ex)
+        {
+            actionError = ErrorMessage(ex);
+        }
+        finally
+        {
+            isMonitoring = false;
+            if (!disposal.IsCancellationRequested)
+                await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RetryAsync(SalesPresentationPreparationDeckViewModel deck)
+    {
+        if (!CanRetry(deck) || !mutatingDeckIds.Add(deck.Id)) return;
+        ClearMessages();
+        try
+        {
+            var queued = await DeckClient.RetryAsync(CompanyId, SessionId, deck.Id, disposal.Token);
+            if (queued is null)
+            {
+                actionError = SalesText["PresentationDeckNoLongerAvailable"];
+                await RefreshRequested.InvokeAsync();
+                return;
+            }
+            Telemetry.RetryRequested();
+            Upsert(queued);
+            actionMessage = SalesText["PresentationRetryQueued"];
+            await RefreshRequested.InvokeAsync();
+            await PollUntilTerminalAsync(deck.Id);
+        }
+        catch (SalesPresentationDeckApiException ex)
+        {
+            actionError = ex.StatusCode == System.Net.HttpStatusCode.Conflict
+                ? SalesText["PresentationChangedReloaded"]
+                : ErrorMessage(ex);
+            await RefreshRequested.InvokeAsync();
+        }
+        finally { mutatingDeckIds.Remove(deck.Id); }
+    }
+
+    private async Task ActivateAsync(SalesPresentationPreparationDeckViewModel deck)
+    {
+        if (!CanActivate(deck) || !mutatingDeckIds.Add(deck.Id)) return;
+        ClearMessages();
+        try
+        {
+            var active = await DeckClient.ActivateAsync(CompanyId, SessionId, deck.Id, disposal.Token);
+            if (active is null)
+            {
+                Telemetry.ActivationCompleted("failed");
+                actionError = SalesText["PresentationDeckNoLongerAvailable"];
+            }
+            else
+            {
+                Telemetry.ActivationCompleted("succeeded");
+                displayDecks = displayDecks.Select(x => x with { IsActive = x.Id == active.Id }).ToList();
+                Upsert(active);
+                actionMessage = SalesText["PresentationActivated"];
+            }
+            pendingActivationDeckId = null;
+            await RefreshRequested.InvokeAsync();
+        }
+        catch (SalesPresentationDeckApiException ex)
+        {
+            var conflict = ex.StatusCode == System.Net.HttpStatusCode.Conflict;
+            Telemetry.ActivationCompleted(conflict ? "conflict" : "failed");
+            actionError = conflict ? SalesText["PresentationChangedReloaded"] : ErrorMessage(ex);
+            pendingActivationDeckId = null;
+            await RefreshRequested.InvokeAsync();
+        }
+        finally { mutatingDeckIds.Remove(deck.Id); }
+    }
+
+    private void Upsert(SalesPresentationDeckViewModel deck)
+    {
+        var projected = new SalesPresentationPreparationDeckViewModel(
+            deck.Id, deck.AgentId, deck.Version, deck.Title, deck.OriginalFileName, deck.Status,
+            deck.ProcessingVersion, deck.ProcessingAttemptCount, deck.SlideCount, deck.FailureCode,
+            deck.FailureSummary, deck.CanRetry, deck.IsActive, deck.CreatedUtc, deck.UpdatedUtc,
+            deck.ProcessedUtc, deck.FailedUtc, deck.ActivatedUtc, deck.ConcurrencyVersion);
+        displayDecks.RemoveAll(x => x.Id == deck.Id);
+        displayDecks.Add(projected);
+        displayDecks = displayDecks.OrderByDescending(x => x.Version).ThenBy(x => x.Id).ToList();
+    }
+
+    private string? ValidateFile(IBrowserFile file)
+    {
+        if (!Path.GetExtension(file.Name).Equals(".pptx", StringComparison.OrdinalIgnoreCase))
+            return SalesText["PresentationFileTypeInvalid"];
+        if (file.Size < 1) return SalesText["PresentationFileEmpty"];
+        if (file.Size > MaximumUploadBytes)
+            return SalesText["PresentationFileTooLarge", FileSize(MaximumUploadBytes)];
+        return null;
+    }
+
+    private bool CanChooseFile => SessionId != Guid.Empty && AgentId.HasValue &&
+        AllowedActions.Contains("upload_deck", StringComparer.Ordinal) && !isUploading;
+    private bool CanSubmitUpload => CanChooseFile && selectedFile is not null && fileError is null &&
+        !string.IsNullOrWhiteSpace(deckTitle) && deckTitle.Trim().Length <= 200;
+    private bool CanRetry(SalesPresentationPreparationDeckViewModel deck) => deck.Status == "failed" && deck.CanRetry &&
+        AllowedActions.Contains("retry_processing", StringComparer.Ordinal) && !IsMutating(deck.Id);
+    private bool CanActivate(SalesPresentationPreparationDeckViewModel deck) => deck.Status == "processed" &&
+        deck.SlideCount > 0 && !deck.IsActive && AllowedActions.Contains("activate_deck", StringComparer.Ordinal) && !IsMutating(deck.Id);
+    private bool IsMutating(Guid deckId) => mutatingDeckIds.Contains(deckId);
+    private string UploadGuidance => SalesText["PowerPointUploadGuidance", FileSize(MaximumUploadBytes)];
+    private string PresenterName => string.IsNullOrWhiteSpace(PresenterDisplayName) ? SalesText["ChoosePresenter"].Value : PresenterDisplayName;
+    private string PresenterInitials => string.IsNullOrWhiteSpace(PresenterDisplayName) ? "—" :
+        string.Concat(PresenterDisplayName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(x => char.ToUpperInvariant(x[0])));
+
+    private string DeckStatusLabel(string status) => status switch
+    {
+        "pending_scan" => SalesText["PresentationPendingScan"],
+        "processing" => SalesText["PresentationProcessing"],
+        "processed" => SalesText["PresentationProcessed"],
+        "failed" => SalesText["StatusFailed"],
+        "blocked" => SalesText["PresentationBlocked"],
+        _ => SalesText["StatusFallback", status]
+    };
+    private static string DeckStatusClass(string status) => status switch
+    {
+        "processed" => "presentation-deck-status--success",
+        "failed" or "blocked" => "presentation-deck-status--danger",
+        _ => "presentation-deck-status--progress"
+    };
+    private static string DeckIcon(SalesPresentationPreparationDeckViewModel deck) => deck.IsActive
+        ? "bi-star-fill" : deck.Status switch
+        {
+            "processed" => "bi-check-circle",
+            "failed" or "blocked" => "bi-exclamation-triangle",
+            _ => "bi-arrow-repeat"
+        };
+
+    private static string FileSize(long bytes) => bytes >= 1024 * 1024
+        ? $"{bytes / 1024d / 1024d:0.#} MB"
+        : bytes >= 1024 ? $"{bytes / 1024d:0.#} KB" : $"{bytes} B";
+    private static string ErrorMessage(SalesPresentationDeckApiException ex) =>
+        ex.Errors?.SelectMany(x => x.Value).FirstOrDefault() ?? ex.Message;
+    private void ClearMessages() { actionError = null; actionMessage = null; }
+    private void AskToActivate(Guid deckId) { ClearMessages(); pendingActivationDeckId = deckId; }
+    private void CancelActivation() => pendingActivationDeckId = null;
+    private void CancelUpload() => uploadCancellation?.Cancel();
+    private void StopMonitoring() => pollingCancellation?.Cancel();
+    private async Task RefreshAfterErrorAsync() { ClearMessages(); await RefreshRequested.InvokeAsync(); }
+
+    public ValueTask DisposeAsync()
+    {
+        disposal.Cancel();
+        uploadCancellation?.Cancel();
+        pollingCancellation?.Cancel();
+        uploadCancellation?.Dispose();
+        pollingCancellation?.Dispose();
+        disposal.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

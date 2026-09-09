@@ -141,7 +141,7 @@
                                 <h2>@SalesText["Preferences"]</h2>
                             </div>
                         </div>
-                        <SignalList Items="@profile.Preferences" EmptyText="@SalesText["NoPreferences"]" />
+                        <SalesContactSignalList Items="@profile.Preferences" EmptyText="@SalesText["NoPreferences"]" />
                     </section>
 
                     <section class="sales-card">
@@ -151,7 +151,7 @@
                                 <h2>@SalesText["PriceSensitivity"]</h2>
                             </div>
                         </div>
-                        <SignalList Items="@profile.PriceSensitivityIndicators" EmptyText="@SalesText["NoPriceSensitivity"]" />
+                        <SalesContactSignalList Items="@profile.PriceSensitivityIndicators" EmptyText="@SalesText["NoPriceSensitivity"]" />
                     </section>
 
                     <section class="sales-card">
@@ -161,7 +161,7 @@
                                 <h2>@SalesText["IndustrySignals"]</h2>
                             </div>
                         </div>
-                        <SignalList Items="@profile.IndustrySignals" EmptyText="@SalesText["NoIndustrySignals"]" />
+                        <SalesContactSignalList Items="@profile.IndustrySignals" EmptyText="@SalesText["NoIndustrySignals"]" />
                     </section>
                 </aside>
             </div>
@@ -219,42 +219,4 @@
     private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
 
-    private sealed partial class SignalList : ComponentBase
-    {
-        [Parameter] public IReadOnlyList<CustomerMemorySignal> Items { get; set; } = [];
-        [Parameter] public string EmptyText { get; set; } = "No signals recorded yet.";
-        [Inject] public INumberFormatter LocalNumber { get; set; } = default!;
-        [Inject] public ILocalDateTimeFormatter LocalDateTime { get; set; } = default!;
-
-        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
-        {
-            var sequence = 0;
-            if (Items.Count == 0)
-            {
-                builder.OpenElement(sequence++, "div");
-                builder.AddAttribute(sequence++, "class", "sales-empty sales-empty--compact");
-                builder.AddContent(sequence++, EmptyText);
-                builder.CloseElement();
-                return;
-            }
-
-            builder.OpenElement(sequence++, "div");
-            builder.AddAttribute(sequence++, "class", "sales-signal-list");
-            foreach (var signal in Items)
-            {
-                builder.OpenElement(sequence++, "div");
-                builder.OpenElement(sequence++, "strong");
-                builder.AddContent(sequence++, PlainLabel(signal.Key));
-                builder.CloseElement();
-                builder.OpenElement(sequence++, "span");
-                builder.AddContent(sequence++, signal.Value);
-                builder.CloseElement();
-                builder.OpenElement(sequence++, "small");
-                builder.AddContent(sequence++, $"{LocalNumber.Percentage(signal.Confidence, 0)} confidence - {LocalDateTime.DateTime(signal.ObservedUtc)}");
-                builder.CloseElement();
-                builder.CloseElement();
-            }
-            builder.CloseElement();
-        }
-    }
 }

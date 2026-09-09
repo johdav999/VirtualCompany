@@ -26,6 +26,8 @@ public static class AgentCapabilityIds
     public const string SalesCampaignOptimization = "sales_campaign_optimization";
     public const string SalesProposalAdvice = "sales_proposal_advice";
     public const string SalesOperatingCadence = "sales_operating_cadence";
+    public const string SalesMeetingQuestionAnswering = "sales_meeting_question_answering";
+    public const string SalesMeetingClosingSummary = "sales_meeting_closing_summary";
     public const string SupportTriageAnalysis = "support_triage_analysis";
     public const string SupportGroundedReply = "support_grounded_reply";
     public const string SupportRiskEscalation = "support_risk_escalation";

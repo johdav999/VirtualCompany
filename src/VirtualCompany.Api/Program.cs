@@ -1,5 +1,7 @@
 using Azure.Extensions.AspNetCore.Configuration.Secrets;
 using Azure.Identity;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
+using OpenTelemetry.Metrics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using VirtualCompany.Infrastructure;
@@ -11,8 +13,13 @@ using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Activity;
 using VirtualCompany.Infrastructure.Tenancy;
 using VirtualCompany.Infrastructure.Observability;
+using VirtualCompany.Api.Hubs;
+using VirtualCompany.Application.Sales;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseWindowsService(options => options.ServiceName = "VirtualCompanyTeamsMedia");
+builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = TimeSpan.FromMinutes(2));
+builder.Configuration.AddJsonFile("appsettings.MediaHost.json", optional: true, reloadOnChange: false);
 const string DevelopmentCorsPolicy = "DevelopmentWebClient";
 
 var keyVaultUriValue = builder.Configuration["AzureKeyVault:Uri"] ?? builder.Configuration["KeyVault:Uri"];
@@ -23,12 +30,27 @@ if (!string.IsNullOrWhiteSpace(keyVaultUriValue))
         throw new InvalidOperationException("Azure Key Vault URI configuration value is invalid.");
     }
 
-    builder.Configuration.AddAzureKeyVault(keyVaultUri, new DefaultAzureCredential());
+    builder.Configuration.AddAzureKeyVault(keyVaultUri, new DefaultAzureCredential(new DefaultAzureCredentialOptions
+    {
+        ManagedIdentityClientId = builder.Configuration["AzureKeyVault:ManagedIdentityClientId"]
+    }));
 }
 
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
+
+var monitoringConnection = builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"] ??
+    builder.Configuration["ApplicationInsights:ConnectionString"];
+if (!string.IsNullOrWhiteSpace(monitoringConnection))
+{
+    builder.Services.AddOpenTelemetry().UseAzureMonitor(options => options.ConnectionString = monitoringConnection);
+    builder.Services.ConfigureOpenTelemetryMeterProvider(metrics => metrics.AddMeter(
+        "VirtualCompany.Sales.TeamsPresenter",
+        "VirtualCompany.Teams.CallControl",
+        "VirtualCompany.Sales.TeamsMedia",
+        "VirtualCompany.Sales.TeamsMediaHost"));
+}
 
 var dataProtectionKeyRing = DataProtectionKeyRingConfiguration.Configure(
     builder.Services,
@@ -59,6 +81,7 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<IActivityEventPublisher, SignalRActivityEventPublisher>();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
+builder.Services.AddSingleton<ISalesPresentationEventPublisher, SignalRSalesPresentationEventPublisher>();
 builder.Services.AddCompanyAuthorization(builder.Environment);
 builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
 builder.Services.Configure<DatabaseInitializationOptions>(builder.Configuration.GetSection(DatabaseInitializationOptions.SectionName));
@@ -70,6 +93,18 @@ app.Logger.LogInformation(
     "ASP.NET Core Data Protection keys are persisted to {KeyRingPath}. Preserve this directory across restarts and deployments.",
     dataProtectionKeyRing.FullName);
 
+var teamsPackageExitCode = await TeamsPresenterPackageCommand.TryExecuteAsync(
+    args,
+    app.Services,
+    Console.Out,
+    Console.Error,
+    app.Lifetime.ApplicationStopping);
+if (teamsPackageExitCode is not null)
+{
+    Environment.ExitCode = teamsPackageExitCode.Value;
+    return;
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -78,7 +113,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseMiddleware<CorrelationIdMiddleware>();
 app.UseExceptionHandler();
-app.UseHttpsRedirection();
+app.UseWhen(context => !(context.Connection.LocalPort == 8080 &&
+    context.Connection.RemoteIpAddress is { } address && System.Net.IPAddress.IsLoopback(address)),
+    branch => branch.UseHttpsRedirection());
 app.UseRouting();
 app.UseCors(DevelopmentCorsPolicy);
 app.UseAuthentication();
@@ -114,6 +151,9 @@ if (TryParseFinanceSeedCliCommand(args, out var seedCommand, out var seedCommand
 app.MapVirtualCompanyHealthEndpoints();
 app.MapControllers();
 app.MapHub<ActivityFeedHub>(ActivityFeedHub.Route).RequireAuthorization(CompanyPolicies.AuthenticatedUser);
+// The hub authenticates each connection itself: members use normal authentication while the
+// customer-visible stage uses a short-lived, session/deck-scoped capability.
+app.MapHub<SalesMeetingHub>(SalesMeetingHub.Route);
 app.Run();
 
 static bool TryParseFinanceSeedCliCommand(string[] args, out FinanceSeedBootstrapCommand? command, out string? error)

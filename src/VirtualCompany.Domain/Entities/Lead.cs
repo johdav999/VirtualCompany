@@ -157,5 +157,49 @@ public sealed class Lead : ICompanyOwnedEntity
         DeletedUtc = DateTime.UtcNow;
         UpdatedUtc = DeletedUtc.Value;
     }
+
+    public void SetEstimatedValue(decimal? value) { if (value < 0m) throw new ArgumentOutOfRangeException(nameof(value)); EstimatedValue = value; UpdatedUtc = DateTime.UtcNow; }
+    public void SetSuggestedNextAction(string? value) { SuggestedNextAction = SalesEntityText.NormalizeOptional(value, nameof(value), 500); UpdatedUtc = DateTime.UtcNow; }
+
+    public void AssignCustomerCompany(Guid customerCompanyId)
+    {
+        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void RestoreOpenState(
+        string title,
+        Guid pipelineStageId,
+        Guid? primaryContactId,
+        Guid? customerCompanyId,
+        decimal? estimatedValue,
+        string? currency,
+        string? source,
+        DateTime updatedUtc)
+    {
+        if (pipelineStageId == Guid.Empty) throw new ArgumentException("PipelineStageId is required.", nameof(pipelineStageId));
+        if (estimatedValue < 0m) throw new ArgumentOutOfRangeException(nameof(estimatedValue));
+
+        Title = SalesEntityText.NormalizeRequired(title, nameof(title), 200);
+        PipelineStageId = pipelineStageId;
+        PrimaryContactId = SalesEntityText.NormalizeOptionalId(primaryContactId, nameof(primaryContactId));
+        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
+        EstimatedValue = estimatedValue;
+        Currency = SalesEntityText.NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
+        Source = SalesEntityText.NormalizeOptional(source, nameof(source), 120);
+        Status = SalesStatuses.Open;
+        ConvertedDealId = null;
+        Fit = null;
+        Temperature = null;
+        Priority = null;
+        SuggestedNextAction = null;
+        QualifiedUtc = null;
+        QualifiedByUserId = null;
+        WebsiteSubmissionEmail = null;
+        WebsiteLeadSubmissionId = null;
+        IsDeleted = false;
+        DeletedUtc = null;
+        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
 }
 

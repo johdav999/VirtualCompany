@@ -1,0 +1,185 @@
+@page "/system/admin/teams-presenter"
+@rendermode InteractiveServer
+@inject TeamsPresenterAdminApiClient Api
+@inject OnboardingApiClient Onboarding
+@inject NavigationManager Navigation
+@inject IJSRuntime Js
+
+<PageTitle>Teams presenter administration</PageTitle>
+
+<main class="teams-admin">
+    <header class="teams-admin__header">
+        <div><span class="vc-kicker">System administration</span><h1>Teams presenter</h1><p>Verify access, evidence, and rollout controls before Alex joins a customer meeting.</p></div>
+        <div class="teams-admin__header-actions"><button type="button" class="btn btn-outline-primary" @onclick="LoadAsync" disabled="@busy">Refresh checks</button><span class="teams-admin__gate @GateClass">@GateLabel</span></div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(error))
+    {
+        <div class="alert alert-danger" role="alert">@error</div>
+    }
+    @if (loading)
+    {
+        <section class="vc-panel teams-admin__loading" role="status">Loading authoritative Teams readiness…</section>
+    }
+    else if (CompanyId is null)
+    {
+        <section class="vc-panel"><h2>Select a company</h2><p>Open this page with an authorized company context.</p></section>
+    }
+    else if (readiness is not null)
+    {
+        <section class="teams-admin__summary" aria-label="Teams presenter readiness summary">
+            @foreach (var card in SummaryCards)
+            {
+                <article class="vc-panel teams-admin__summary-card"><span class="@StatusClass(card.Ready)">@(card.Ready ? "Ready" : "Action required")</span><h2>@card.Title</h2><strong>@card.State</strong><p>@card.Detail</p></article>
+            }
+        </section>
+
+        @if (readiness.TenantRegistration is null)
+        {
+            <section class="vc-panel teams-admin__associate">
+                <div><h2>Associate a Teams tenant</h2><p>Use the exact Microsoft Entra tenant ID approved for this company.</p></div>
+                <label for="tenant-id">Entra tenant ID</label><input id="tenant-id" class="form-control" @bind="tenantIdText" placeholder="00000000-0000-0000-0000-000000000000" />
+                <button type="button" class="btn btn-primary" @onclick="AssociateAsync" disabled="@busy">Associate tenant</button>
+            </section>
+        }
+        else
+        {
+            <div class="teams-admin__workspace">
+                <section class="vc-panel teams-admin__access">
+                    <div class="teams-admin__section-heading"><div><h2>Required access and configuration</h2><p>Backend-verified state only. Credentials and tokens are never displayed.</p></div><button class="btn btn-sm btn-outline-primary" type="button" @onclick="LoadAsync" disabled="@busy">Recheck all</button></div>
+                    <dl class="teams-admin__identity">
+                        <div><dt>Entra tenant</dt><dd>@readiness.TenantRegistration.EntraTenantId</dd></div>
+                        <div><dt>Teams app</dt><dd>@readiness.TenantRegistration.TeamsAppId</dd></div>
+                        <div><dt>Approved media route</dt><dd>@readiness.TenantRegistration.ApprovedMediaRoute</dd></div>
+                    </dl>
+                    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Permission</th><th>Required</th><th>Granted</th><th>Status</th></tr></thead><tbody>
+                        @foreach (var permission in PermissionRows)
+                        {
+                            <tr><td><code>@permission.Name</code></td><td>Yes</td><td>@(permission.Granted ? "Yes" : "No")</td><td><span class="@StatusClass(permission.Granted)">@(permission.Granted ? "Verified" : "Missing")</span></td></tr>
+                        }
+                    </tbody></table></div>
+                    <ul class="teams-admin__checks">
+                        @foreach (var check in readiness.Checks.Where(c => c.Name is "tenant_policy" or "callback_authentication" or "media_host" or "shared_stage"))
+                        {
+                            <li><span class="@StatusClass(check.Ready)">@(check.Ready ? "Ready" : "Blocked")</span><div><strong>@CheckTitle(check.Name)</strong><p>@check.Message</p></div></li>
+                        }
+                        <li><span class="@StatusClass(CertificateHealthy)">@(CertificateHealthy ? "Valid" : "Evidence required")</span><div><strong>Media certificate</strong><p>@CertificateMessage</p></div></li>
+                    </ul>
+                </section>
+
+                <aside class="vc-panel teams-admin__rollout">
+                    <h2>Pilot rollout controls</h2><p>Production stays disabled until deterministic and live evidence passes.</p>
+                    @if (readiness.Rollout is { } rollout)
+                    {
+                        <dl>
+                            <div><dt>Production gate</dt><dd>@YesNo(rollout.ProductionEnabled)</dd></div>
+                            <div><dt>Company allowlist</dt><dd>@YesNo(rollout.CompanyAllowed)</dd></div>
+                            <div><dt>User allowlist</dt><dd>@YesNo(rollout.UserAllowed)</dd></div>
+                            <div><dt>Concurrent meetings</dt><dd>@rollout.ActiveCalls / @rollout.MaximumActiveCalls</dd></div>
+                            <div><dt>Monthly cost</dt><dd>@rollout.Currency @rollout.MonthlyCostUsed / @rollout.MonthlyCostLimit</dd></div>
+                            <div><dt>Package requirement</dt><dd>@rollout.MinimumPackageVersion or newer</dd></div>
+                            <div><dt>Installed package</dt><dd>@(rollout.InstalledPackageVersion ?? "Not attested")</dd></div>
+                            <div><dt>Fallback</dt><dd>Typed/browser-hosted</dd></div>
+                        </dl>
+                        <p class="teams-admin__rollout-note">@rollout.Message</p>
+                    }
+                    <div class="teams-admin__danger"><button class="btn btn-outline-danger" type="button" @onclick="EmergencyDisableAsync" disabled="@busy">Emergency disable company</button><small>Stops new calls and requests active Alex calls to terminate.</small></div>
+                </aside>
+            </div>
+
+            <VirtualCompany.Web.Components.Sales.FirstTeamsUatControls CompanyId="@CompanyId.Value" />
+            <section class="vc-panel teams-admin__remediation">
+                <div><h2>Safe remediation</h2><p>Complete native Microsoft administration steps, then refresh verified state.</p></div>
+                <div class="teams-admin__links">
+                    <a href="/api/platform/teams-presenter/package" download>Download approved app package</a>
+                    @if (!string.IsNullOrWhiteSpace(readiness.Rollout?.InstallUrl)) { <a href="@readiness.Rollout.InstallUrl" target="_blank" rel="noopener noreferrer">Open app installation</a> }
+                    <button type="button" @onclick="StartConsentAsync" disabled="@busy">Grant admin consent</button>
+                    <a href="https://admin.teams.microsoft.com/policies/app-setup" target="_blank" rel="noopener noreferrer">Verify Teams app policy</a>
+                    <a href="https://admin.teams.microsoft.com/policies/meeting" target="_blank" rel="noopener noreferrer">Verify meeting policy</a>
+                    <button type="button" @onclick="() => AttestPolicyAsync(true)" disabled="@busy">Record policy attestation</button>
+                </div>
+            </section>
+
+            <section class="vc-panel teams-admin__evidence">
+                <div><h2>Release evidence</h2><p>No customer data or raw audio is recorded in UAT evidence.</p></div>
+                <div class="teams-admin__evidence-grid">
+                    @foreach (var card in EvidenceCards)
+                    {
+                        <article><span class="@StatusClass(card.Ready)">@(card.Ready ? "Recorded" : "Required")</span><h3>@card.Title</h3><p>@card.Detail</p></article>
+                    }
+                </div>
+            </section>
+        }
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    private TeamsPresenterReadinessViewModel? readiness;
+    private bool loading = true;
+    private bool busy;
+    private string? error;
+    private string tenantIdText = string.Empty;
+    private string GateLabel => readiness?.Rollout?.Allowed == true ? "Pilot allowed" : "Production disabled";
+    private string GateClass => readiness?.Rollout?.Allowed == true ? "is-ready" : "is-blocked";
+    private string FirstBlockingMessage => readiness?.Checks.FirstOrDefault(c => !c.Ready)?.Message ?? "All checks passed.";
+    private IReadOnlyList<StatusCard> SummaryCards => readiness is null ? [] :
+    [
+        new("Tenant association", readiness.TenantRegistration?.Status == "ready", readiness.TenantRegistration?.Status ?? "Not associated", "Admin consent and Teams policy are verified per company."),
+        new("App package", readiness.PackageReady && readiness.Rollout?.PackageCompatible == true, readiness.PackageVersion, readiness.Rollout?.AppInstallationAttested == true ? "Installed package was attested." : "Installation evidence is required."),
+        new("Calling and media", readiness.LiveCallingReady, readiness.LiveCallingReady ? "Ready" : "Action required", FirstBlockingMessage),
+        new("Controlled rollout", readiness.Rollout?.Allowed == true, readiness.Rollout?.Allowed == true ? "Allowed" : "Disabled", readiness.Rollout?.Message ?? "Rollout state is unavailable.")
+    ];
+    private IReadOnlyList<StatusCard> EvidenceCards => readiness is null ? [] :
+    [
+        new("Automated verification", readiness.Rollout?.AutomatedEvidenceApproved == true, "", readiness.Rollout?.AutomatedEvidenceApproved == true ? "Approved" : "Not approved"),
+        new("Live restrictive-policy UAT", readiness.Rollout?.LiveUatApproved == true, "", readiness.Rollout?.LiveUatApproved == true ? $"Approved · {readiness.Rollout.LiveUatCompletedUtc:d}" : "Not recorded — production remains disabled"),
+        new("Release owner", !string.IsNullOrWhiteSpace(readiness.Rollout?.LiveUatOwner), "", readiness.Rollout?.LiveUatOwner ?? "Not assigned")
+    ];
+    private bool CertificateHealthy => readiness?.Rollout?.CertificateExpiresUtc is { } expiry && expiry > DateTime.UtcNow.AddDays(30);
+    private string CertificateMessage => readiness?.Rollout?.CertificateExpiresUtc is { } expiry ? $"Expires {expiry:d}." : "Expiry evidence is not configured.";
+    private IEnumerable<(string Name, bool Granted)> PermissionRows => readiness?.TenantRegistration?.RequiredPermissions.Select(p => (p, readiness.TenantRegistration.GrantedPermissions.Contains(p, StringComparer.Ordinal))) ?? [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is null)
+        {
+            var context = await Onboarding.GetCurrentUserContextAsync(null);
+            if (context?.ActiveCompany is { } company) { Navigation.NavigateTo($"/system/admin/teams-presenter?companyId={company.CompanyId:D}", true); return; }
+        }
+        await LoadAsync();
+    }
+    private async Task LoadAsync()
+    {
+        if (CompanyId is not { } companyId) { loading = false; return; }
+        loading = true; error = null;
+        try { readiness = await Api.GetReadinessAsync(companyId); }
+        catch (TeamsPresenterAdminApiException ex) { error = ex.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized ? "Platform administrator access is required." : ex.Message; }
+        finally { loading = false; }
+    }
+    private async Task AssociateAsync()
+    {
+        if (CompanyId is not { } companyId || !Guid.TryParse(tenantIdText, out var tenantId)) { error = "Enter a valid Entra tenant ID."; return; }
+        await RunAsync(async () => { await Api.AssociateAsync(companyId, tenantId, "teams_application_hosted"); await LoadAsync(); });
+    }
+    private async Task StartConsentAsync()
+    {
+        if (CompanyId is not { } companyId) return;
+        await RunAsync(async () => { var result = await Api.StartConsentAsync(companyId); Navigation.NavigateTo(result.AuthorizationUrl.ToString(), true); });
+    }
+    private async Task AttestPolicyAsync(bool approved)
+    {
+        if (CompanyId is not { } companyId) return;
+        await RunAsync(async () => { await Api.AttestPolicyAsync(companyId, approved); await LoadAsync(); });
+    }
+    private async Task EmergencyDisableAsync()
+    {
+        if (CompanyId is not { } companyId || !await Js.InvokeAsync<bool>("confirm", "Emergency-disable Alex for this company and terminate active calls?")) return;
+        await RunAsync(async () => { await Api.DisableAsync(companyId, false); await LoadAsync(); });
+    }
+    private async Task RunAsync(Func<Task> action) { busy = true; error = null; try { await action(); } catch (Exception ex) { error = ex.Message; } finally { busy = false; } }
+    private static string StatusClass(bool ready) => ready ? "teams-admin__status is-ready" : "teams-admin__status is-blocked";
+    private static string YesNo(bool value) => value ? "Allowed" : "Not allowed";
+    private static string CheckTitle(string value) => value.Replace('_', ' ');
+    private sealed record StatusCard(string Title, bool Ready, string State, string Detail);
+}

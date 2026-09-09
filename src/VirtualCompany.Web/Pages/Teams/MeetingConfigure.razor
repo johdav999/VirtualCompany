@@ -1,0 +1,40 @@
+@page "/teams/meetings/configure"
+@layout TeamsMeetingLayout
+@rendermode InteractiveServer
+@inject TeamsMeetingContextService Teams
+@inject NavigationManager Navigation
+
+<PageTitle>Configure Alex Sales Presenter</PageTitle>
+
+<section class="meeting-configure">
+    <div class="meeting-configure__mark" aria-hidden="true">A</div>
+    <h1>Add Alex to this sales meeting</h1>
+    <p>Alex’s organizer controls stay private in the meeting side panel. Slides are shared only after an organizer selects <strong>Share to meeting</strong>.</p>
+    <div class="meeting-configure__status" role="status" aria-live="polite">@status</div>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "meetingSessionId")] public Guid? MeetingSessionId { get; set; }
+    private string status = "Checking the Teams meeting context…";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            var context = await Teams.InitializeAsync();
+            if (!context.InTeams) throw new InvalidOperationException("Open this configuration page from the Teams meeting app.");
+            if (CompanyId is not { } companyId || companyId == Guid.Empty || MeetingSessionId is not { } sessionId || sessionId == Guid.Empty)
+                throw new InvalidOperationException("Select an authorized Virtual Company meeting before installing this tab.");
+
+            var panelUrl = Navigation.GetUriWithQueryParameters(
+                $"teams/meetings/{sessionId:D}/side-panel",
+                new Dictionary<string, object?> { ["companyId"] = companyId });
+            var result = await Teams.ConfigureTabAsync(panelUrl, panelUrl);
+            status = result.Succeeded ? "Alex is configured for this meeting." : result.Message ?? "Teams rejected the configuration.";
+        }
+        catch (Exception exception) { status = exception.Message; }
+        await InvokeAsync(StateHasChanged);
+    }
+}

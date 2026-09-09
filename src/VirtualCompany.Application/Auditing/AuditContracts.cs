@@ -585,9 +585,46 @@ public static class AuditEventActions
     public const string SalesLeadRejected = "sales.lead.rejected";
     public const string SalesLeadConverted = "sales.lead.converted";
     public const string SalesDealStageChanged = "sales.deal.stage_changed";
+    public const string SalesDealCustomerCompanyLinked = "sales.deal.customer_company_linked";
     public const string SalesDealWon = "sales.deal.won";
     public const string SalesDealLost = "sales.deal.lost";
     public const string SalesEmailProcessed = "sales.email.processed";
+    public const string SalesMeetingSessionCreated = "sales.meeting_session.created";
+    public const string SalesMeetingSessionPreparationUpdated = "sales.meeting_session.preparation_updated";
+    public const string SalesMeetingSessionTransitioned = "sales.meeting_session.transitioned";
+    public const string SalesPresentationDeckImported = "sales.presentation_deck.imported";
+    public const string SalesPresentationDeckProcessed = "sales.presentation_deck.processed";
+    public const string SalesPresentationDeckProcessingFailed = "sales.presentation_deck.processing_failed";
+    public const string SalesPresentationDeckActivated = "sales.presentation_deck.activated";
+    public const string SalesPresentationDeckRetryQueued = "sales.presentation_deck.retry_queued";
+    public const string SalesMeetingBriefRegenerationQueued = "sales.meeting_brief.regeneration_queued";
+    public const string SalesPresentationCommandAccepted = "sales.presentation.command_accepted";
+    public const string SalesPresentationCommandRejected = "sales.presentation.command_rejected";
+    public const string SalesPresentationClientReconnected = "sales.presentation.client_reconnected";
+    public const string SalesMeetingCaptureAutosaved = "sales.meeting_capture.autosaved";
+    public const string SalesMeetingQuestionAnswered = "sales.meeting_question.answered";
+    public const string SalesMeetingQuestionFailed = "sales.meeting_question.failed";
+    public const string SalesMeetingAnswerApprovedForStage = "sales.meeting_answer.approved_for_stage";
+    public const string SalesMeetingClosingPrepared = "sales.meeting_closing.prepared";
+    public const string SalesMeetingMinutesEdited = "sales.meeting_minutes.edited";
+    public const string SalesMeetingMinutesSubmitted = "sales.meeting_minutes.submitted";
+    public const string SalesMeetingMinutesApproved = "sales.meeting_minutes.approved";
+    public const string SalesMeetingInternalIntelligenceEdited = "sales.meeting_internal_intelligence.edited";
+    public const string SalesMeetingInternalIntelligenceSubmitted = "sales.meeting_internal_intelligence.submitted";
+    public const string SalesMeetingInternalIntelligenceApproved = "sales.meeting_internal_intelligence.approved";
+    public const string SalesMeetingClosingCompleted = "sales.meeting_closing.completed";
+    public const string SalesMeetingTranscriptSubscriptionCreated = "sales.meeting_transcript.subscription_created";
+    public const string SalesMeetingTranscriptSubscriptionRenewed = "sales.meeting_transcript.subscription_renewed";
+    public const string SalesMeetingTranscriptNotificationAccepted = "sales.meeting_transcript.notification_accepted";
+    public const string SalesMeetingTranscriptReconciled = "sales.meeting_transcript.reconciled";
+    public const string DemoScenarioProvisioned = "sales.demo_scenario.provisioned";
+    public const string DemoScenarioMeetingLinked = "sales.demo_scenario.meeting_linked";
+    public const string DemoScenarioStarted = "sales.demo_scenario.started";
+    public const string DemoScenarioResetPreviewed = "sales.demo_scenario.reset_previewed";
+    public const string DemoScenarioReset = "sales.demo_scenario.reset";
+    public const string DemoScenarioCommandExecuted = "sales.demo_scenario.command_executed";
+    public const string DemoScenarioCommandRejected = "sales.demo_scenario.command_rejected";
+    public const string DemoScenarioExternalSideEffectBlocked = "sales.demo_scenario.external_side_effect_blocked";
 }
 
 public static class AuditBoundaryDecisionOutcomes

@@ -61,5 +61,16 @@ public sealed class CustomerCompany : ICompanyOwnedEntity
         DeletedUtc = DateTime.UtcNow;
         UpdatedUtc = DeletedUtc.Value;
     }
+
+    public void RestoreActiveState(string name, string? website, string? industry, DateTime updatedUtc)
+    {
+        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 200);
+        Status = SalesStatuses.Active;
+        Website = SalesEntityText.NormalizeOptional(website, nameof(website), 256);
+        Industry = SalesEntityText.NormalizeOptional(industry, nameof(industry), 120);
+        IsDeleted = false;
+        DeletedUtc = null;
+        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
 }
 

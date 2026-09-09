@@ -220,6 +220,77 @@ public sealed class SalesOperationsService : ISalesOperationsService
         return MapDealDetail(deal, memory);
     }
 
+    public async Task<SalesDealDetailResponse?> LinkDealCustomerCompanyAsync(
+        Guid companyId,
+        Guid userId,
+        Guid dealId,
+        LinkDealCustomerCompanyRequest request,
+        CancellationToken cancellationToken)
+    {
+        EnsureCompany(companyId);
+        EnsureUser(userId);
+        EnsureId(dealId, nameof(dealId));
+
+        var companyName = request.CompanyName?.Trim();
+        if (string.IsNullOrWhiteSpace(companyName))
+            throw Validation(nameof(request.CompanyName), "Enter the customer company name.");
+        if (companyName.Length > 200)
+            throw Validation(nameof(request.CompanyName), "Company name cannot exceed 200 characters.");
+
+        var deal = await MutableDealAsync(companyId, dealId, cancellationToken);
+        if (deal is null) return null;
+
+        var customer = await _dbContext.CustomerCompanies.IgnoreQueryFilters()
+            .SingleOrDefaultAsync(
+                x => x.CompanyId == companyId && !x.IsDeleted && x.Name.ToLower() == companyName.ToLower(),
+                cancellationToken);
+        if (customer is null)
+        {
+            customer = new CustomerCompany(Guid.NewGuid(), companyId, companyName);
+            _dbContext.CustomerCompanies.Add(customer);
+        }
+
+        var previousCustomerCompanyId = deal.CustomerCompanyId;
+        deal.AssignCustomerCompany(customer.Id);
+
+        Lead? sourceLead = null;
+        if (deal.SourceLeadId is Guid sourceLeadId)
+        {
+            sourceLead = await MutableLeadAsync(companyId, sourceLeadId, cancellationToken);
+            sourceLead?.AssignCustomerCompany(customer.Id);
+        }
+
+        Contact? contact = null;
+        if (deal.PrimaryContactId is Guid contactId)
+        {
+            contact = await _dbContext.Contacts.IgnoreQueryFilters()
+                .SingleOrDefaultAsync(
+                    x => x.CompanyId == companyId && x.Id == contactId && !x.IsDeleted,
+                    cancellationToken);
+            contact?.AssignCustomerCompany(customer.Id);
+        }
+
+        _dbContext.SalesActivities.Add(new SalesActivity(
+            Guid.NewGuid(), companyId, "company linked",
+            $"Linked deal to customer company {customer.Name}.", DateTime.UtcNow,
+            sourceLead?.Id, deal.Id, contact?.Id, customer.Id));
+        AddAudit(
+            companyId, userId, AuditEventActions.SalesDealCustomerCompanyLinked,
+            "deal", deal.Id, AuditEventOutcomes.Succeeded,
+            "The organizer identified the customer company for this deal.",
+            new Dictionary<string, string?>
+            {
+                ["previousCustomerCompanyId"] = previousCustomerCompanyId?.ToString("D"),
+                ["customerCompanyId"] = customer.Id.ToString("D"),
+                ["customerCompanyName"] = customer.Name,
+                ["sourceLeadId"] = sourceLead?.Id.ToString("D"),
+                ["contactId"] = contact?.Id.ToString("D")
+            });
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return await GetDealAsync(companyId, dealId, cancellationToken);
+    }
+
     public async Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
     {
         EnsureCompany(companyId);

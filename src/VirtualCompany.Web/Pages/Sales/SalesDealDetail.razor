@@ -155,6 +155,22 @@
                                 <div><dt>@SalesText["Company"]</dt><dd>@(deal.CustomerCompanyName ?? SalesText["NoCompanyLinked"])</dd></div>
                                 <div><dt>@SalesText["Source"]</dt><dd>@SourceLabel</dd></div>
                             </dl>
+                            @if (string.IsNullOrWhiteSpace(deal.CustomerCompanyName))
+                            {
+                                <form class="deal-company-link" @onsubmit="LinkCompanyAsync" @onsubmit:preventDefault="true">
+                                    <label for="deal-company-name">@SalesText["CompanyName"]</label>
+                                    <div>
+                                        <input id="deal-company-name" maxlength="200" required
+                                               placeholder="@SalesText["CompanyNamePlaceholder"]"
+                                               @bind="companyName" @bind:event="oninput" />
+                                        <button class="deal-button deal-button--primary" type="submit"
+                                                disabled="@(isSubmitting || string.IsNullOrWhiteSpace(companyName))">
+                                            @SalesText["LinkCompany"]
+                                        </button>
+                                    </div>
+                                    <small>@SalesText["LinkCompanyHelp"]</small>
+                                </form>
+                            }
                         </section>
 
                         <section class="deal-panel deal-signals-panel">
@@ -362,6 +378,7 @@
     private bool isSubmitting;
     private string? errorMessage;
     private string? actionMessage;
+    private string companyName = string.Empty;
     private string activeTab = "overview";
     private string searchQuery = string.Empty;
     private SalesDealDetailResponse? deal;
@@ -461,6 +478,29 @@
     }
 
     private async Task MarkWonAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkWonAsync(companyId, DealId, "Marked won from the sales review screen."), "Deal marked won.");
+
+    private async Task LinkCompanyAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || string.IsNullOrWhiteSpace(companyName)) return;
+
+        isSubmitting = true;
+        actionMessage = null;
+        try
+        {
+            deal = await SalesApiClient.LinkDealCustomerCompanyAsync(companyId, DealId, companyName.Trim());
+            companyName = string.Empty;
+            actionMessage = SalesText["CompanyLinkedSuccess"];
+            await RefreshAgentPanelAsync();
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
     private async Task MarkLostAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkLostAsync(companyId, DealId, "Marked lost from the sales review screen."), "Deal marked lost.");
     private async Task ApproveFinanceHandoffAsync() => await RunDealActionAsync(async companyId => financeHandoff = await SalesApiClient.ApproveFinanceHandoffAsync(companyId, DealId, "Approved from the deal review screen."), "Finance draft approved.");
     private async Task RetryFinanceHandoffAsync() => await RunDealActionAsync(async companyId => financeHandoff = await SalesApiClient.RetryFinanceHandoffAsync(companyId, DealId), "Finance draft retry started.");

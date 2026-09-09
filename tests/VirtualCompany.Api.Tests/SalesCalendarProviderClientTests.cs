@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Sales;
@@ -49,7 +50,7 @@ public sealed class SalesCalendarProviderClientTests
               "onlineMeeting": { "joinUrl": "https://teams.microsoft.com/l/meetup-join/example" }
             }
             """);
-        var client = new Microsoft365CalendarProviderClient(new SingleClientFactory(handler));
+        var client = MicrosoftClient(handler);
 
         var result = await client.CreateMeetingAsync(
             Context(ExternalAccountProvider.Microsoft365),
@@ -62,6 +63,61 @@ public sealed class SalesCalendarProviderClientTests
         Assert.True(payload.RootElement.GetProperty("isOnlineMeeting").GetBoolean());
         Assert.Equal("teamsForBusiness", payload.RootElement.GetProperty("onlineMeetingProvider").GetString());
         Assert.Equal("https://teams.microsoft.com/l/meetup-join/example", result.OnlineMeetingUrl);
+    }
+
+    [Fact]
+    public async Task Microsoft_create_recovers_a_missing_online_meeting_on_the_same_event()
+    {
+        var invitationId = Guid.Parse("efd8b4d2-da9d-438e-990e-d2ac719bf608");
+        var handler = new SequenceCapturingHandler(
+            """
+            {
+              "id": "AAMk-event",
+              "iCalUId": "ical-id",
+              "webLink": "https://outlook.office.com/calendar/item",
+              "isOnlineMeeting": false,
+              "onlineMeetingProvider": "unknown",
+              "onlineMeeting": null
+            }
+            """,
+            """
+            {
+              "allowedOnlineMeetingProviders": ["teamsForBusiness"],
+              "defaultOnlineMeetingProvider": "teamsForBusiness"
+            }
+            """,
+            """
+            {
+              "id": "AAMk-event",
+              "iCalUId": "ical-id",
+              "webLink": "https://outlook.office.com/calendar/item",
+              "isOnlineMeeting": true,
+              "onlineMeetingProvider": "teamsForBusiness",
+              "onlineMeeting": { "joinUrl": "https://teams.microsoft.com/l/meetup-join/recovered" }
+            }
+            """);
+        var client = MicrosoftClient(handler);
+
+        var result = await client.CreateMeetingAsync(
+            Context(ExternalAccountProvider.Microsoft365),
+            Meeting(invitationId),
+            CancellationToken.None);
+
+        Assert.Equal("AAMk-event", result.ExternalEventId);
+        Assert.Equal("https://outlook.office.com/calendar/item", result.ProviderWebUrl);
+        Assert.Equal("https://teams.microsoft.com/l/meetup-join/recovered", result.OnlineMeetingUrl);
+        Assert.Collection(
+            handler.Requests,
+            request => Assert.Equal((HttpMethod.Post, "https://graph.microsoft.com/v1.0/me/events"), (request.Method, request.Uri.ToString())),
+            request => Assert.Equal((HttpMethod.Get, "https://graph.microsoft.com/v1.0/me/calendar?$select=allowedOnlineMeetingProviders,defaultOnlineMeetingProvider"), (request.Method, request.Uri.ToString())),
+            request =>
+            {
+                Assert.Equal(HttpMethod.Patch, request.Method);
+                Assert.Equal("https://graph.microsoft.com/v1.0/me/events/AAMk-event", request.Uri.ToString());
+                using var payload = JsonDocument.Parse(request.Body!);
+                Assert.True(payload.RootElement.GetProperty("isOnlineMeeting").GetBoolean());
+                Assert.Equal("teamsForBusiness", payload.RootElement.GetProperty("onlineMeetingProvider").GetString());
+            });
     }
 
     [Fact]
@@ -98,8 +154,9 @@ public sealed class SalesCalendarProviderClientTests
     [Fact]
     public async Task Microsoft_update_patches_the_existing_event()
     {
-        var handler = new CapturingHandler("""{"id":"existing-event","webLink":"https://outlook.office.com/calendar/item"}""");
-        var client = new Microsoft365CalendarProviderClient(new SingleClientFactory(handler));
+        var handler = new CapturingHandler(
+            """{"id":"existing-event","webLink":"https://outlook.office.com/calendar/item","onlineMeeting":{"joinUrl":"https://teams.microsoft.com/l/meetup-join/existing"}}""");
+        var client = MicrosoftClient(handler);
 
         var result = await client.UpdateMeetingAsync(
             Context(ExternalAccountProvider.Microsoft365),
@@ -109,13 +166,14 @@ public sealed class SalesCalendarProviderClientTests
         Assert.Equal(HttpMethod.Patch, handler.RequestMethod);
         Assert.Equal("https://graph.microsoft.com/v1.0/me/events/existing-event", handler.RequestUri!.ToString());
         Assert.Equal("existing-event", result.ExternalEventId);
+        Assert.Equal("https://teams.microsoft.com/l/meetup-join/existing", result.OnlineMeetingUrl);
     }
 
     [Fact]
     public async Task Microsoft_cancel_deletes_the_existing_event()
     {
         var handler = new CapturingHandler("{}");
-        var client = new Microsoft365CalendarProviderClient(new SingleClientFactory(handler));
+        var client = MicrosoftClient(handler);
 
         await client.CancelMeetingAsync(
             Context(ExternalAccountProvider.Microsoft365), "existing-event", "change-key", CancellationToken.None);
@@ -155,15 +213,66 @@ public sealed class SalesCalendarProviderClientTests
     public void Provider_clients_declare_explicit_calendar_permissions()
     {
         var google = new GoogleCalendarProviderClient(new SingleClientFactory(new CapturingHandler("{}")));
-        var microsoft = new Microsoft365CalendarProviderClient(new SingleClientFactory(new CapturingHandler("{}")));
+        var microsoft = MicrosoftClient(new CapturingHandler("{}"));
 
         Assert.Contains("https://www.googleapis.com/auth/calendar.events", google.RequiredScopes);
         Assert.Contains("https://www.googleapis.com/auth/calendar.events.freebusy", google.RequiredScopes);
         Assert.Equal(["Calendars.ReadWrite"], microsoft.RequiredScopes);
     }
 
+    [Fact]
+    public async Task Google_service_disabled_is_not_misreported_as_reconnect_required()
+    {
+        var handler = new CapturingHandler("""
+            {
+              "error": {
+                "code": 403,
+                "message": "Calendar API is disabled.",
+                "errors": [{ "domain": "usageLimits", "reason": "accessNotConfigured" }]
+              }
+            }
+            """, HttpStatusCode.Forbidden);
+        var client = new GoogleCalendarProviderClient(new SingleClientFactory(handler));
+
+        var error = await Assert.ThrowsAsync<CalendarProviderException>(() =>
+            client.GetBusyWindowsAsync(
+                Context(ExternalAccountProvider.Google),
+                new DateTime(2026, 8, 10, 0, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 8, 11, 0, 0, 0, DateTimeKind.Utc),
+                "Europe/Stockholm",
+                CancellationToken.None));
+
+        Assert.Equal("google_calendar_api_disabled", error.Code);
+        Assert.Equal(CalendarProviderFailureKind.Permanent, error.Kind);
+        Assert.Contains("Enable the Google Calendar API", error.Message);
+        Assert.DoesNotContain("grant calendar access", error.Message);
+    }
+
+    [Fact]
+    public async Task Google_insufficient_scope_still_requires_reconnection()
+    {
+        var handler = new CapturingHandler("""
+            { "error": { "code": 403, "errors": [{ "reason": "insufficientPermissions" }] } }
+            """, HttpStatusCode.Forbidden);
+        var client = new GoogleCalendarProviderClient(new SingleClientFactory(handler));
+
+        var error = await Assert.ThrowsAsync<CalendarProviderException>(() =>
+            client.GetBusyWindowsAsync(
+                Context(ExternalAccountProvider.Google),
+                new DateTime(2026, 8, 10, 0, 0, 0, DateTimeKind.Utc),
+                new DateTime(2026, 8, 11, 0, 0, 0, DateTimeKind.Utc),
+                "Europe/Stockholm",
+                CancellationToken.None));
+
+        Assert.Equal("calendar_authorization_required", error.Code);
+        Assert.Equal(CalendarProviderFailureKind.AuthenticationRequired, error.Kind);
+    }
+
     private static CalendarProviderContext Context(ExternalAccountProvider provider) =>
         new(Guid.NewGuid(), Guid.NewGuid(), provider, "sales@example.com", "secret-token", "primary");
+
+    private static Microsoft365CalendarProviderClient MicrosoftClient(HttpMessageHandler handler) =>
+        new(new SingleClientFactory(handler), NullLogger<Microsoft365CalendarProviderClient>.Instance);
 
     private static CalendarMeetingCreateRequest Meeting(Guid invitationId) =>
         new(
@@ -198,7 +307,9 @@ public sealed class SalesCalendarProviderClientTests
         public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
     }
 
-    private sealed class CapturingHandler(string responseJson) : HttpMessageHandler
+    private sealed class CapturingHandler(
+        string responseJson,
+        HttpStatusCode responseStatusCode = HttpStatusCode.OK) : HttpMessageHandler
     {
         public Uri? RequestUri { get; private set; }
         public HttpMethod? RequestMethod { get; private set; }
@@ -213,9 +324,29 @@ public sealed class SalesCalendarProviderClientTests
             RequestBody = request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(responseStatusCode)
             {
                 Content = new StringContent(responseJson, Encoding.UTF8, "application/json")
+            };
+        }
+    }
+
+    private sealed class SequenceCapturingHandler(params string[] responseJson) : HttpMessageHandler
+    {
+        private readonly Queue<string> _responses = new(responseJson);
+        public List<(HttpMethod Method, Uri Uri, string? Body)> Requests { get; } = [];
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var body = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync(cancellationToken);
+            Requests.Add((request.Method, request.RequestUri!, body));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json")
             };
         }
     }

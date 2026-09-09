@@ -50,4 +50,20 @@ public sealed class SalesProspectingToolRegistryTests
         Assert.True(registry.TryGetTool(name, out var registration));
         Assert.Contains("sales", registration.Scopes);
     }
+
+    [Theory]
+    [InlineData(SalesMeetingCaptureToolNames.ReadContext, ToolActionType.Read)]
+    [InlineData(SalesMeetingCaptureToolNames.SearchApprovedKnowledge, ToolActionType.Read)]
+    [InlineData(SalesMeetingCaptureToolNames.AnswerQuestion, ToolActionType.Recommend)]
+    [InlineData(SalesMeetingClosingToolNames.ReadEvidence, ToolActionType.Read)]
+    [InlineData(SalesMeetingClosingToolNames.GenerateSummary, ToolActionType.Recommend)]
+    public void Alex_meeting_tools_are_read_or_recommend_only(string name, ToolActionType action)
+    {
+        var registry = new StaticCompanyToolRegistry();
+        Assert.True(registry.TryGetToolDefinition(name, out var definition));
+        Assert.Equal(action, definition.ActionType);
+        Assert.NotEqual(ToolActionType.Execute, definition.ActionType);
+        Assert.True(registry.TryGetTool(name, out var registration));
+        Assert.Contains("sales", registration.Scopes);
+    }
 }

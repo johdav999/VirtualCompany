@@ -128,11 +128,11 @@ else
                         @foreach (var section in Workspace.Sections)
                         {
                             <article class="monthly-section monthly-section--@Tone(section.Status)">
-                                <div class="monthly-section__intro"><span class="monthly-section__icon monthly-feature-icon--@Tone(section.Status)"><MonthlyWorkspaceIcon Kind="@LensIcon(section.Lens)" Size="21" /></span><div><h3>@section.Title</h3><p>@section.Summary</p></div></div>
+                                <div class="monthly-section__intro"><span class="monthly-section__icon monthly-feature-icon--@Tone(section.Status)"><MonthlyWorkspaceIcon Kind="@LensIcon(section.Lens)" Size="21" /></span><div><h3>@(section.Title)</h3><p>@(section.Summary)</p></div></div>
                                 <div class="monthly-section__facts">
                                     @foreach (var fact in section.Facts.Take(4)) { <span class="monthly-fact--@Tone(fact.Status)"><i aria-hidden="true"></i><small>@fact.Label</small><strong>@fact.Value</strong></span> }
                                 </div>
-                                <div class="monthly-section__action"><small class="monthly-coverage monthly-coverage--@Tone(section.Status)"><i aria-hidden="true"></i>@section.CoverageSummary</small><a href="@Resolve(section.SetupDeepLink ?? section.DeepLink)" @onclick='() => Record("section", section.SetupDeepLink ?? section.DeepLink, section.Lens, "monthly_section", section.Title)'>@(section.SetupDeepLink is null ? CommonText["TodayOpenWorkspace"] : CommonText["MonthlySetUpSource"])</a><MonthlyWorkspaceIcon Kind="chevron-right" Size="16" /></div>
+                                <div class="monthly-section__action"><small class="monthly-coverage monthly-coverage--@Tone(section.Status)"><i aria-hidden="true"></i>@(section.CoverageSummary)</small><a href="@Resolve(section.SetupDeepLink ?? section.DeepLink)" @onclick='() => Record("section", section.SetupDeepLink ?? section.DeepLink, section.Lens, "monthly_section", section.Title)'>@(section.SetupDeepLink is null ? CommonText["TodayOpenWorkspace"] : CommonText["MonthlySetUpSource"])</a><MonthlyWorkspaceIcon Kind="chevron-right" Size="16" /></div>
                             </article>
                         }
                     </div>

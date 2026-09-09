@@ -1,0 +1,100 @@
+@inject SalesPresentationPreparationApiClient PreparationClient
+
+<div class="invitation-presentation" aria-live="polite">
+    @if (loading)
+    {
+        <span class="invitation-presentation__status invitation-presentation__status--loading">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            @SalesText["LoadingPresentationStatus"]
+        </span>
+    }
+    else if (preparation is null)
+    {
+        <span class="invitation-presentation__status invitation-presentation__status--unavailable">
+            <span class="bi bi-exclamation-circle" aria-hidden="true"></span>
+            @SalesText["PresentationStatusUnavailable"]
+        </span>
+        <button type="button" class="invitation-presentation__retry" @onclick="LoadAsync">
+            @SalesText["RetryStatus"]
+        </button>
+    }
+    else
+    {
+        <span class="invitation-presentation__status @StatusClass" data-readiness="@preparation.ReadinessState">
+            <span class="bi @StatusIcon" aria-hidden="true"></span>
+            @StatusLabel
+        </span>
+        <a class="invitation-presentation__action" href="@ActionPath">
+            @ActionLabel<span class="bi bi-arrow-right" aria-hidden="true"></span>
+        </a>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter, EditorRequired] public Guid InvitationId { get; set; }
+
+    private SalesPresentationPreparationViewModel? preparation;
+    private bool loading = true;
+
+    protected override Task OnParametersSetAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        preparation = null;
+        try
+        {
+            preparation = await PreparationClient.GetAsync(CompanyId, InvitationId);
+        }
+        catch (SalesPresentationPreparationApiException)
+        {
+            // Keep authorization and tenant failures deliberately indistinguishable here.
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private bool IsReady => preparation?.CanOpenPresenter == true &&
+        preparation.MeetingSessionId is not null;
+
+    private string ActionPath => IsReady
+        ? $"/teams/meetings/{preparation!.MeetingSessionId:D}/side-panel?companyId={CompanyId:D}"
+        : $"/app/sales/meeting-invitations/{InvitationId:D}/prepare?companyId={CompanyId:D}";
+
+    private string ActionLabel => IsReady
+        ? SalesText["OpenPresenterControls"]
+        : preparation?.MeetingSessionId is null
+            ? SalesText["PreparePresentation"]
+            : SalesText["ContinuePreparation"];
+
+    private string StatusLabel => preparation?.ReadinessState switch
+    {
+        "session_required" => SalesText["SessionNotConfigured"],
+        "deck_required" => SalesText["PresentationDeckNeeded"],
+        "processing" => SalesText["DeckProcessingStatus"],
+        "activation_required" => SalesText["DeckReadyToActivate"],
+        "ready" => SalesText["PresentationActiveStatus"],
+        _ when preparation?.BlockingReasons.Any(x => x.Code == "deck_processing_failed") == true
+            => SalesText["DeckFailedStatus"],
+        _ => SalesText["PresentationActionRequired"]
+    };
+
+    private string StatusClass => preparation?.ReadinessState switch
+    {
+        "ready" => "invitation-presentation__status--ready",
+        "processing" => "invitation-presentation__status--processing",
+        "session_required" or "deck_required" or "activation_required" => "invitation-presentation__status--next",
+        _ => "invitation-presentation__status--blocked"
+    };
+
+    private string StatusIcon => preparation?.ReadinessState switch
+    {
+        "ready" => "bi-check-circle-fill",
+        "processing" => "bi-arrow-repeat",
+        "session_required" or "deck_required" or "activation_required" => "bi-circle-half",
+        _ => "bi-exclamation-circle-fill"
+    };
+}

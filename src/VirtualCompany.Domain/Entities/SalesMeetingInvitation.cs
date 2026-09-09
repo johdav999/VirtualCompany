@@ -11,7 +11,7 @@ public sealed class SalesMeetingInvitation : ICompanyOwnedEntity
         Guid calendarConnectionId, ExternalAccountProvider provider, string organizerEmail,
         string attendeeEmail, string? attendeeName, string title, string description,
         DateTime startsUtc, DateTime endsUtc, string timeZoneId, string? location,
-        bool createOnlineMeeting, Guid createdByUserId, DateTime? createdUtc = null)
+        bool createOnlineMeeting, Guid createdByUserId, DateTime? createdUtc = null, string? idempotencyKey = null)
     {
         if (companyId == Guid.Empty) throw new ArgumentException("CompanyId is required.", nameof(companyId));
         if (leadId == Guid.Empty) throw new ArgumentException("LeadId is required.", nameof(leadId));
@@ -43,7 +43,7 @@ public sealed class SalesMeetingInvitation : ICompanyOwnedEntity
         Location = NormalizeOptional(location, nameof(location), 500);
         CreateOnlineMeeting = createOnlineMeeting;
         CreatedByUserId = createdByUserId;
-        IdempotencyKey = $"sales-meeting:{companyId:N}:{Id:N}:v1";
+        IdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey) ? $"sales-meeting:{companyId:N}:{Id:N}:v1" : NormalizeRequired(idempotencyKey, nameof(idempotencyKey), 300);
         ConfirmationIdempotencyKey = $"{IdempotencyKey}:confirmation:v1";
         Status = SalesMeetingInvitationStatus.Draft;
         ConfirmationStatus = SalesMeetingConfirmationStatus.NotQueued;
@@ -158,6 +158,21 @@ public sealed class SalesMeetingInvitation : ICompanyOwnedEntity
         LastErrorSummary = NormalizeRequired(summary, nameof(summary), 1000);
         Status = SalesMeetingInvitationStatus.Failed;
         UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void QueueDeliveryRetry(DateTime queuedUtc)
+    {
+        if (Status != SalesMeetingInvitationStatus.Failed)
+            throw new InvalidOperationException("Only a failed meeting invitation can be retried.");
+        if (!ApprovalRequestId.HasValue)
+            throw new InvalidOperationException("The meeting invitation has no approval request.");
+        if (!string.IsNullOrWhiteSpace(ExternalEventId))
+            throw new InvalidOperationException("A meeting invitation with an external event cannot be retried.");
+
+        Status = SalesMeetingInvitationStatus.Queued;
+        LastErrorCode = null;
+        LastErrorSummary = null;
+        UpdatedUtc = NormalizeUtc(queuedUtc, nameof(queuedUtc));
     }
 
     public void MarkReconciliationRequired(string code, string summary)

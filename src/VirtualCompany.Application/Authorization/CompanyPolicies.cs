@@ -5,6 +5,7 @@ public static class CompanyPolicies
     public const string AuthenticatedUser = "AuthenticatedUser";
     public const string CompanyMember = "CompanyMember";
     public const string CompanyManager = "CompanyManager";
+    public const string DemoScenarioControl = "DemoScenarioControl";
     public const string AuditReview = "AuditReview";
     public const string CompanyOwnerOrAdmin = "CompanyOwnerOrAdmin";
     public const string FinanceView = "FinanceView";

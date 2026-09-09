@@ -29,6 +29,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<UserPreference> UserPreferences => Set<UserPreference>();
     public DbSet<UserPreferenceChange> UserPreferenceChanges => Set<UserPreferenceChange>();
     public DbSet<Company> Companies => Set<Company>();
+    public DbSet<DemoScenarioRun> DemoScenarioRuns => Set<DemoScenarioRun>();
+    public DbSet<DemoScenarioCommandExecution> DemoScenarioCommandExecutions => Set<DemoScenarioCommandExecution>();
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
     public DbSet<CompanyResponsibilityAssignment> CompanyResponsibilityAssignments => Set<CompanyResponsibilityAssignment>();
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
@@ -466,6 +468,30 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
     public DbSet<SalesMeetingInvitation> SalesMeetingInvitations => Set<SalesMeetingInvitation>();
     public DbSet<SalesMeetingChangeRequest> SalesMeetingChangeRequests => Set<SalesMeetingChangeRequest>();
+    public DbSet<SalesMeetingSession> SalesMeetingSessions => Set<SalesMeetingSession>();
+    public DbSet<SalesPresentationDeck> SalesPresentationDecks => Set<SalesPresentationDeck>();
+    public DbSet<SalesPresentationSlide> SalesPresentationSlides => Set<SalesPresentationSlide>();
+    public DbSet<SalesMeetingArtifact> SalesMeetingArtifacts => Set<SalesMeetingArtifact>();
+    public DbSet<SalesMeetingTranscriptSegment> SalesMeetingTranscriptSegments => Set<SalesMeetingTranscriptSegment>();
+    public DbSet<SalesMeetingQuestion> SalesMeetingQuestions => Set<SalesMeetingQuestion>();
+    public DbSet<SalesMeetingQuestionEvidence> SalesMeetingQuestionEvidence => Set<SalesMeetingQuestionEvidence>();
+    public DbSet<SalesMeetingObservation> SalesMeetingObservations => Set<SalesMeetingObservation>();
+    public DbSet<SalesMeetingActionItem> SalesMeetingActionItems => Set<SalesMeetingActionItem>();
+    public DbSet<SalesMeetingMinutes> SalesMeetingMinutes => Set<SalesMeetingMinutes>();
+    public DbSet<SalesMeetingMinutesItem> SalesMeetingMinutesItems => Set<SalesMeetingMinutesItem>();
+    public DbSet<SalesMeetingInternalIntelligence> SalesMeetingInternalIntelligence => Set<SalesMeetingInternalIntelligence>();
+    public DbSet<SalesMeetingInternalIntelligenceItem> SalesMeetingInternalIntelligenceItems => Set<SalesMeetingInternalIntelligenceItem>();
+    public DbSet<SalesMeetingChangeProposal> SalesMeetingChangeProposals => Set<SalesMeetingChangeProposal>();
+    public DbSet<SalesMeetingVoiceSession> SalesMeetingVoiceSessions => Set<SalesMeetingVoiceSession>();
+    public DbSet<SalesMeetingVoiceEventReceipt> SalesMeetingVoiceEventReceipts => Set<SalesMeetingVoiceEventReceipt>();
+    public DbSet<SalesMeetingTranscriptSubscription> SalesMeetingTranscriptSubscriptions => Set<SalesMeetingTranscriptSubscription>();
+    public DbSet<SalesMeetingTranscriptIngestion> SalesMeetingTranscriptIngestions => Set<SalesMeetingTranscriptIngestion>();
+    public DbSet<SalesMeetingProviderTranscript> SalesMeetingProviderTranscripts => Set<SalesMeetingProviderTranscript>();
+    public DbSet<SalesMeetingTranscriptProvenance> SalesMeetingTranscriptProvenance => Set<SalesMeetingTranscriptProvenance>();
+    public DbSet<TeamsTenantRegistration> TeamsTenantRegistrations => Set<TeamsTenantRegistration>();
+    public DbSet<TeamsAdminConsentSession> TeamsAdminConsentSessions => Set<TeamsAdminConsentSession>();
+    public DbSet<TeamsMeetingCall> TeamsMeetingCalls => Set<TeamsMeetingCall>();
+    public DbSet<TeamsCallNotificationReceipt> TeamsCallNotificationReceipts => Set<TeamsCallNotificationReceipt>();
     public DbSet<SalesActionApproval> SalesActionApprovals => Set<SalesActionApproval>();
     public DbSet<SalesEmailLink> SalesEmailLinks => Set<SalesEmailLink>();
     public DbSet<SalesSequence> SalesSequences => Set<SalesSequence>();
@@ -990,6 +1016,26 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is SalesAgentRecommendation ||
                 entry.Entity is SalesMeetingInvitation ||
                 entry.Entity is SalesMeetingChangeRequest ||
+                entry.Entity is SalesMeetingSession ||
+                entry.Entity is SalesPresentationDeck ||
+                entry.Entity is SalesPresentationSlide ||
+                entry.Entity is SalesMeetingArtifact ||
+                entry.Entity is SalesMeetingTranscriptSegment ||
+                entry.Entity is SalesMeetingQuestion ||
+                entry.Entity is SalesMeetingQuestionEvidence ||
+                entry.Entity is SalesMeetingObservation ||
+                entry.Entity is SalesMeetingActionItem ||
+                entry.Entity is SalesMeetingMinutes ||
+                entry.Entity is SalesMeetingMinutesItem ||
+                entry.Entity is SalesMeetingInternalIntelligence ||
+                entry.Entity is SalesMeetingInternalIntelligenceItem ||
+                entry.Entity is SalesMeetingChangeProposal ||
+                entry.Entity is SalesMeetingTranscriptSubscription ||
+                entry.Entity is SalesMeetingTranscriptIngestion ||
+                entry.Entity is SalesMeetingProviderTranscript ||
+                entry.Entity is SalesMeetingTranscriptProvenance ||
+                entry.Entity is TeamsTenantRegistration ||
+                entry.Entity is TeamsAdminConsentSession ||
                 entry.Entity is SalesAutomationPolicy ||
                 entry.Entity is SalesSequence ||
                 entry.Entity is SalesSequenceStep ||
@@ -1055,6 +1101,10 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyOwnedNote>()
             .HasQueryFilter(note =>
                 CurrentCompanyId != null && note.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<DemoScenarioRun>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<DemoScenarioCommandExecution>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BackgroundExecution>()
             .HasQueryFilter(execution =>
                 CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
@@ -1137,6 +1187,35 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SalesMeetingChangeRequest>()
             .HasQueryFilter(changeRequest =>
                 CurrentCompanyId != null && changeRequest.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingSession>()
+            .HasQueryFilter(session =>
+                CurrentCompanyId != null && session.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationDeck>()
+            .HasQueryFilter(deck => CurrentCompanyId != null && deck.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationSlide>()
+            .HasQueryFilter(slide => CurrentCompanyId != null && slide.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingArtifact>()
+            .HasQueryFilter(artifact => CurrentCompanyId != null && artifact.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingTranscriptSegment>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingQuestion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingQuestionEvidence>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingObservation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingActionItem>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingMinutes>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingMinutesItem>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingInternalIntelligence>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingInternalIntelligenceItem>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingChangeProposal>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingVoiceSession>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingVoiceEventReceipt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingTranscriptSubscription>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingTranscriptIngestion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingProviderTranscript>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingTranscriptProvenance>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TeamsTenantRegistration>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TeamsAdminConsentSession>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TeamsMeetingCall>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TeamsCallNotificationReceipt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentOrchestrationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentHandoff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentMemoryCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);

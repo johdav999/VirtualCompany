@@ -52,6 +52,8 @@ public sealed class Deal : ICompanyOwnedEntity
     public string Currency { get; private set; } = null!;
     public string Status { get; private set; } = null!;
     public DateTime? ExpectedCloseUtc { get; private set; }
+    public decimal? Probability { get; private set; }
+    public string? NextStep { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public bool IsDeleted { get; private set; }
@@ -73,6 +75,16 @@ public sealed class Deal : ICompanyOwnedEntity
         }
 
         PipelineStageId = pipelineStageId == Guid.Empty ? throw new ArgumentException("PipelineStageId is required.", nameof(pipelineStageId)) : pipelineStageId;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void SetAmount(decimal amount) { if (amount < 0m) throw new ArgumentOutOfRangeException(nameof(amount)); Amount = amount; UpdatedUtc = DateTime.UtcNow; }
+    public void SetProbability(decimal probability) { if (probability is < 0m or > 1m) throw new ArgumentOutOfRangeException(nameof(probability), "Probability must be between 0 and 1."); Probability = probability; UpdatedUtc = DateTime.UtcNow; }
+    public void SetNextStep(string? nextStep) { NextStep = SalesEntityText.NormalizeOptional(nextStep, nameof(nextStep), 500); UpdatedUtc = DateTime.UtcNow; }
+
+    public void AssignCustomerCompany(Guid customerCompanyId)
+    {
+        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
         UpdatedUtc = DateTime.UtcNow;
     }
 

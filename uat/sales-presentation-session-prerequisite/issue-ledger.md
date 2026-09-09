@@ -1,0 +1,6 @@
+# Issue ledger
+
+| ID | Severity | Status | Finding | Acceptance evidence |
+| --- | --- | --- | --- | --- |
+| UAT-SALES-PREP-001 | P1 | Verified | A missing customer-company relationship was returned as HTTP 409 and every 409 was mislabeled as an optimistic-concurrency conflict. The refresh also replaced unsaved form values, while the deck upload remained locked without the real prerequisite being shown. | The preparation query now returns `customer_company_missing`, `blocked`, and no `create_session` action. The client preserves the API problem code, and only `sales.meeting_session.conflict` triggers reload behavior. Focused page tests 10/10 and query tests 4/4 pass. Live tenant payload returned HTTP 200 with the new blocker. |
+| UAT-SALES-LINK-001 | P1 | Verified | A deal could display “No company linked,” but the organizer had no supported correction action, permanently blocking presentation preparation. | The deal page now exposes a company-name control only for unlinked deals. The tenant-scoped command reuses or creates a customer company, synchronizes deal/source lead/contact in one save, records activity and audit evidence, and validates required input. Focused API tests 2/2 pass; Web build passes; the restarted live page returns HTTP 200 with the control rendered while the existing deal remains unchanged pending explicit user input. |

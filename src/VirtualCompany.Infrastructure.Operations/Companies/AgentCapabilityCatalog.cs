@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Marketing;
+using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Documents;
 
@@ -118,6 +119,16 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
         RoleCapability(AgentCapabilityIds.SalesCampaignOptimization, "Campaign optimization", "Analyze reviewed campaign outcomes and recommend policy-safe improvements.", "Sales"),
         RoleCapability(AgentCapabilityIds.SalesProposalAdvice, "Proposal advice", "Recommend source-backed product, proposal, and terms guidance for review.", "Sales"),
         RoleCapability(AgentCapabilityIds.SalesOperatingCadence, "Sales operating cadence", "Prepare continuous, daily, and weekly Sales management priorities.", "Sales"),
+        new(AgentCapabilityIds.SalesMeetingQuestionAnswering, "1.0.0", "Grounded meeting questions",
+            "Answer meeting questions from the visible slide and approved company evidence without changing sales records.",
+            "Sales", ToolActionType.Recommend,
+            [SalesMeetingCaptureToolNames.ReadContext, SalesMeetingCaptureToolNames.SearchApprovedKnowledge, SalesMeetingCaptureToolNames.AnswerQuestion],
+            ["sales", "knowledge"], [SharedAiProviderSignal], AgentAutonomyLevel.Level0, "none", true),
+        new(AgentCapabilityIds.SalesMeetingClosingSummary, "1.0.0", "Meeting closing summaries",
+            "Produce separately governed customer minutes and internal sales intelligence from persisted meeting evidence.",
+            "Sales", ToolActionType.Recommend,
+            [SalesMeetingClosingToolNames.ReadEvidence, SalesMeetingClosingToolNames.GenerateSummary],
+            ["sales", "knowledge"], [SharedAiProviderSignal], AgentAutonomyLevel.Level0, "none", true),
         RoleCapability(AgentCapabilityIds.SupportTriageAnalysis, "Support triage analysis", "Explain deterministic case priority, context ambiguity, and assignment needs.", "Support"),
         RoleCapability(AgentCapabilityIds.SupportGroundedReply, "Grounded reply advice", "Assess answerability and provide cited reply advice without sending.", "Support"),
         RoleCapability(AgentCapabilityIds.SupportRiskEscalation, "Support risk and escalation", "Explain SLA and severe-risk evidence while deterministic policy controls escalation.", "Support"),

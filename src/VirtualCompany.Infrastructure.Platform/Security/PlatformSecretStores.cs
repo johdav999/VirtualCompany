@@ -17,6 +17,7 @@ public sealed class PlatformSecretStoreOptions
 
     public string Provider { get; set; } = "auto";
     public string? KeyVaultUri { get; set; }
+    public string? ManagedIdentityClientId { get; set; }
     public string? LocalEncryptedFilePath { get; set; }
 }
 
@@ -25,9 +26,9 @@ public sealed class AzureKeyVaultPlatformSecretStore : IPlatformSecretStore
     private readonly SecretClient _client;
     private readonly TimeProvider _timeProvider;
 
-    public AzureKeyVaultPlatformSecretStore(Uri vaultUri, TimeProvider timeProvider)
+    public AzureKeyVaultPlatformSecretStore(Uri vaultUri, TimeProvider timeProvider, string? managedIdentityClientId = null)
     {
-        _client = new SecretClient(vaultUri, new DefaultAzureCredential());
+        _client = new SecretClient(vaultUri, new DefaultAzureCredential(new DefaultAzureCredentialOptions { ManagedIdentityClientId = managedIdentityClientId }));
         _timeProvider = timeProvider;
     }
 
@@ -305,7 +306,7 @@ public static class PlatformSecretStoreRegistration
                     throw new InvalidOperationException("PlatformSecrets:KeyVaultUri must be an absolute URI.");
                 }
 
-                return new AzureKeyVaultPlatformSecretStore(vaultUri, timeProvider);
+                return new AzureKeyVaultPlatformSecretStore(vaultUri, timeProvider, options.ManagedIdentityClientId ?? configuration["AzureKeyVault:ManagedIdentityClientId"]);
             }
 
             if (provider is "local_encrypted_file" or "local-encrypted-file" ||

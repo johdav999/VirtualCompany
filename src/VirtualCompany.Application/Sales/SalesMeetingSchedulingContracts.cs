@@ -62,6 +62,7 @@ public interface ISalesMeetingSchedulingService
     Task<IReadOnlyList<SalesMeetingInvitationResponse>> ListForLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken);
     Task<SalesMeetingInvitationResponse?> GetAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken);
     Task<SalesMeetingInvitationResponse> CreateForLeadAsync(Guid companyId, Guid userId, Guid leadId, CreateSalesMeetingInvitationRequest request, CancellationToken cancellationToken);
+    Task<SalesMeetingInvitationResponse> RetryDeliveryAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken);
     Task<SalesMeetingAvailabilityResponse> GetAvailabilityAsync(Guid companyId, SalesMeetingAvailabilityRequest request, CancellationToken cancellationToken);
     Task<IReadOnlyList<SalesMeetingChangeRequestResponse>> ListChangesAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken);
     Task<SalesMeetingChangeRequestResponse> RequestRescheduleAsync(Guid companyId, Guid userId, Guid invitationId, CreateSalesMeetingRescheduleRequest request, CancellationToken cancellationToken);

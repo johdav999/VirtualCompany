@@ -61,11 +61,19 @@ internal sealed class CompanyConfiguration : IEntityTypeConfiguration<Company>
         builder.Property(x => x.OnboardingAbandonedUtc);
         builder.Property(x => x.CreatedUtc).IsRequired();
         builder.Property(x => x.UpdatedUtc).IsRequired();
-        builder.ToTable(t => t.HasCheckConstraint("CK_companies_finance_seed_status", FinanceSeedingStateValues.BuildCheckConstraintSql("finance_seed_status")));
+        builder.Property(x => x.IsDemoTenant).HasColumnName("is_demo_tenant").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.DemoScenarioKey).HasColumnName("demo_scenario_key").HasMaxLength(100);
+        builder.Property(x => x.DemoScenarioVersion).HasColumnName("demo_scenario_version");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_companies_finance_seed_status", FinanceSeedingStateValues.BuildCheckConstraintSql("finance_seed_status"));
+            t.HasCheckConstraint("CK_companies_demo_marker", "is_demo_tenant = 0 OR (demo_scenario_key IS NOT NULL AND demo_scenario_version >= 1)");
+        });
         builder.HasIndex(x => x.FinanceSeedStatus);
         builder.HasIndex(x => x.OnboardingCompletedUtc);
         builder.HasIndex(x => x.OnboardingStatus);
         builder.HasIndex(x => x.SizeBand);
+        builder.HasIndex(x => new { x.IsDemoTenant, x.DemoScenarioKey, x.DemoScenarioVersion });
 
         builder.HasMany(x => x.Memberships)
             .WithOne(x => x.Company)

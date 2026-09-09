@@ -1,0 +1,142 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.46.1.21595",
+      "templateHash": "8988080098855255388"
+    }
+  },
+  "variables": {
+    "location": "swedencentral",
+    "tags": {
+      "application": "VirtualCompany",
+      "environment": "dev",
+      "purpose": "TeamsMarketAssistant"
+    },
+    "endpoints": [
+      {
+        "name": "vco-dev-sql-pe",
+        "resourceId": "[resourceId('Microsoft.Sql/servers', 'vco-dev-sql-etr7qjsd')]",
+        "groupId": "sqlServer",
+        "zone": "[format('privatelink{0}', environment().suffixes.sqlServerHostname)]"
+      },
+      {
+        "name": "vco-dev-redis-pe",
+        "resourceId": "[resourceId('Microsoft.Cache/redisEnterprise', 'vco-dev-redis-etr7qjsd')]",
+        "groupId": "redisEnterprise",
+        "zone": "privatelink.redis.azure.net"
+      },
+      {
+        "name": "vco-dev-vault-pe",
+        "resourceId": "[resourceId('Microsoft.KeyVault/vaults', 'vco-dev-kv-etr7qjsd')]",
+        "groupId": "vault",
+        "zone": "privatelink.vaultcore.azure.net"
+      },
+      {
+        "name": "vco-dev-blob-pe",
+        "resourceId": "[resourceId('Microsoft.Storage/storageAccounts', 'vcoteamsetr7qjsd')]",
+        "groupId": "blob",
+        "zone": "[format('privatelink.blob.{0}', environment().suffixes.storage)]"
+      },
+      {
+        "name": "vco-dev-file-pe",
+        "resourceId": "[resourceId('Microsoft.Storage/storageAccounts', 'vcoteamsetr7qjsd')]",
+        "groupId": "file",
+        "zone": "[format('privatelink.file.{0}', environment().suffixes.storage)]"
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Cache/redisEnterprise",
+      "apiVersion": "2025-07-01",
+      "name": "vco-dev-redis-etr7qjsd",
+      "location": "[variables('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Balanced_B0"
+      },
+      "properties": {
+        "minimumTlsVersion": "1.2",
+        "highAvailability": "Disabled",
+        "publicNetworkAccess": "Disabled"
+      }
+    },
+    {
+      "type": "Microsoft.Cache/redisEnterprise/databases",
+      "apiVersion": "2025-07-01",
+      "name": "[format('{0}/{1}', 'vco-dev-redis-etr7qjsd', 'default')]",
+      "properties": {
+        "clientProtocol": "Encrypted",
+        "clusteringPolicy": "NoCluster",
+        "evictionPolicy": "NoEviction",
+        "accessKeysAuthentication": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cache/redisEnterprise', 'vco-dev-redis-etr7qjsd')]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "privateEndpoints",
+        "count": "[length(variables('endpoints'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2024-05-01",
+      "name": "[variables('endpoints')[copyIndex()].name]",
+      "location": "[variables('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', 'vco-dev-services-vnet', 'private-endpoints')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[replace(replace(variables('endpoints')[copyIndex()].name, 'vco-dev-', ''), '-pe', '')]",
+            "properties": {
+              "privateLinkServiceId": "[variables('endpoints')[copyIndex()].resourceId]",
+              "groupIds": [
+                "[variables('endpoints')[copyIndex()].groupId]"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cache/redisEnterprise', 'vco-dev-redis-etr7qjsd')]",
+        "[resourceId('Microsoft.Cache/redisEnterprise/databases', 'vco-dev-redis-etr7qjsd', 'default')]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "zoneGroups",
+        "count": "[length(variables('endpoints'))]"
+      },
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', variables('endpoints')[copyIndex()].name, 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[replace(replace(variables('endpoints')[copyIndex()].name, 'vco-dev-', ''), '-pe', '')]",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('endpoints')[copyIndex()].zone)]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', variables('endpoints')[copyIndex()].name)]",
+        "[resourceId('Microsoft.Cache/redisEnterprise', 'vco-dev-redis-etr7qjsd')]"
+      ]
+    }
+  ],
+  "outputs": {
+    "redisName": {
+      "type": "string",
+      "value": "vco-dev-redis-etr7qjsd"
+    }
+  }
+}

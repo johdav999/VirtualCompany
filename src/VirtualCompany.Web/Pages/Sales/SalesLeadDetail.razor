@@ -256,11 +256,25 @@
                                     <button type="button" class="sales-icon-button bi bi-calendar2-week" title="Reschedule" aria-label="Reschedule meeting" disabled="@isBusy" @onclick="() => ShowRescheduleForm(invitation)"></button>
                                     <button type="button" class="sales-icon-button sales-icon-button--danger bi bi-calendar-x" title="Cancel meeting" aria-label="Cancel meeting" disabled="@isBusy" @onclick="() => ShowCancellationConfirmation(invitation)"></button>
                                 }
-                                else if (!string.IsNullOrWhiteSpace(invitation.LastErrorSummary))
+                                else if (string.Equals(invitation.Status, "failed", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    <span class="sales-meeting-status__error">@invitation.LastErrorSummary</span>
+                                    @if (IsCalendarConnected(invitation.CalendarConnectionId))
+                                    {
+                                        <span class="sales-meeting-status__recovered">Calendar is connected now. Retry this failed delivery.</span>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(invitation.LastErrorSummary))
+                                    {
+                                        <span class="sales-meeting-status__error">@invitation.LastErrorSummary</span>
+                                    }
+                                    <button type="button" class="sales-meeting-status__retry" disabled="@isBusy" @onclick="() => RetryMeetingInvitationAsync(invitation.Id)">Retry delivery</button>
                                 }
                             </div>
+                            @if (ResolvedCompanyId is Guid invitationCompanyId)
+                            {
+                                <SalesMeetingInvitationPresentationStatus
+                                    CompanyId="@invitationCompanyId"
+                                    InvitationId="@invitation.Id" />
+                            }
                             @if (LatestMeetingChange(invitation.Id) is { } change)
                             {
                                 <div class="sales-meeting-change-state">
@@ -424,6 +438,19 @@
     @if (lead is not null)
     {
         <aside class="sales-lead-assessment" aria-label="Alex's lead assessment">
+            @if (ResolvedCompanyId is Guid demoCompanyId && (MeetingSessionId.HasValue || meetingInvitations.Count > 0))
+            {
+                <SalesMeetingDemoControlPanel CompanyId="@demoCompanyId"
+                                              MeetingSessionId="@MeetingSessionId"
+                                              InvitationId="@meetingInvitations.FirstOrDefault()?.Id" />
+                @if (MeetingSessionId is Guid presenterSessionId)
+                {
+                    <a class="btn btn-outline-primary w-100 mt-2"
+                       href="@($"/teams/meetings/{presenterSessionId:D}/side-panel?companyId={demoCompanyId:D}")">
+                        Open private Teams presenter controls
+                    </a>
+                }
+            }
             <div class="sales-lead-assessment__identity">
                 <div class="sales-agent-panel__avatar">A</div>
                 <div><strong>Alex's assessment</strong><span>Sales Manager</span></div>
@@ -487,6 +514,7 @@
 @code {
     [Parameter] public Guid LeadId { get; set; }
     [SupplyParameterFromQuery(Name = "schedule")] public bool OpenMeetingScheduler { get; set; }
+    [SupplyParameterFromQuery(Name = "meetingSessionId")] public Guid? MeetingSessionId { get; set; }
     private SalesLeadDetailResponse? lead;
     private IReadOnlyList<SalesLeadSourceEmailResponse> sourceEmails = [];
     private IReadOnlyList<SalesCalendarConnectionResponse> calendarConnections = [];
@@ -769,6 +797,27 @@
         actionMessage = null;
     }
 
+    private async Task RetryMeetingInvitationAsync(Guid invitationId)
+    {
+        if (ResolvedCompanyId is not Guid companyId) return;
+        isBusy = true;
+        actionMessage = null;
+        try
+        {
+            var invitation = await SalesApiClient.RetryMeetingInvitationDeliveryAsync(companyId, invitationId);
+            meetingInvitations = [invitation, .. meetingInvitations.Where(x => x.Id != invitation.Id)];
+            actionMessage = "Meeting invitation delivery queued. The current calendar connection will be used.";
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
     private void ShowCancellationConfirmation(SalesMeetingInvitationResponse invitation)
     {
         if (HasOpenMeetingChange(invitation.Id))
@@ -954,6 +1003,13 @@
         "cancelled" => "Meeting cancelled",
         _ => Plain(status, "Draft")
     };
+
+    private bool IsCalendarConnected(Guid calendarConnectionId) =>
+        calendarConnections.Any(x =>
+            x.Id == calendarConnectionId &&
+            x.HasCalendarPermission &&
+            !x.RequiresReconnect &&
+            string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase));
 
     private static string MeetingStatusIcon(string status) => status.ToLowerInvariant() switch
     {

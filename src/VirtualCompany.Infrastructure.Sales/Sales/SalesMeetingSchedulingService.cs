@@ -13,21 +13,25 @@ namespace VirtualCompany.Infrastructure.Sales;
 
 public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedulingService
 {
+    private const string AiMeetingDisclosure = "AI meeting assistant notice: Alex is an AI sales assistant. If the organizer enables Alex during the meeting, Alex may present the approved deck and, only after explicit consent, process meeting audio. Alex cannot make commitments for the company. The organizer can pause or remove Alex at any time.";
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IApprovalRequestService _approvalService;
     private readonly ICalendarOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICalendarProviderRegistry _providerRegistry;
+    private readonly ICompanyOutboxEnqueuer _outbox;
 
     public SalesMeetingSchedulingService(
         VirtualCompanyDbContext dbContext,
         IApprovalRequestService approvalService,
         ICalendarOAuthAccessTokenLeaseService tokenLeaseService,
-        ICalendarProviderRegistry providerRegistry)
+        ICalendarProviderRegistry providerRegistry,
+        ICompanyOutboxEnqueuer outbox)
     {
         _dbContext = dbContext;
         _approvalService = approvalService;
         _tokenLeaseService = tokenLeaseService;
         _providerRegistry = providerRegistry;
+        _outbox = outbox;
     }
 
     public async Task<IReadOnlyList<SalesCalendarConnectionResponse>> ListCalendarConnectionsAsync(
@@ -76,6 +80,36 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
         return invitation is null ? null : ToResponse(invitation);
     }
 
+    public async Task<SalesMeetingInvitationResponse> RetryDeliveryAsync(
+        Guid companyId, Guid invitationId, CancellationToken cancellationToken)
+    {
+        var invitation = await _dbContext.SalesMeetingInvitations
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == invitationId, cancellationToken)
+            ?? throw new KeyNotFoundException("Meeting invitation not found.");
+        if (invitation.Status != SalesMeetingInvitationStatus.Failed)
+            throw new InvalidOperationException("Only a failed meeting invitation can be retried.");
+        if (invitation.EndsUtc <= DateTime.UtcNow)
+            throw new InvalidOperationException("This meeting time has passed. Prepare a new invitation with a future time.");
+
+        var provider = _providerRegistry.Resolve(invitation.Provider);
+        await _tokenLeaseService.AcquireAsync(
+            companyId, invitation.CalendarConnectionId, provider.RequiredScopes, cancellationToken);
+
+        var retryNumber = invitation.ExecutionAttemptCount + 1;
+        var correlationId = $"sales-meeting-retry:{invitation.Id:N}:{retryNumber}";
+        invitation.QueueDeliveryRetry(DateTime.UtcNow);
+        _outbox.Enqueue(
+            companyId,
+            CompanyOutboxTopics.SalesMeetingInvitationDeliveryRequested,
+            new SalesMeetingInvitationDeliveryRequestedMessage(
+                companyId, invitation.Id, invitation.IdempotencyKey, correlationId),
+            correlationId: correlationId,
+            idempotencyKey: $"sales-meeting-delivery:{companyId:N}:{invitation.Id:N}:retry:{retryNumber}",
+            causationId: invitation.ApprovalRequestId?.ToString("D"));
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return ToResponse(invitation);
+    }
+
     public async Task<SalesMeetingInvitationResponse> CreateForLeadAsync(
         Guid companyId, Guid userId, Guid leadId,
         CreateSalesMeetingInvitationRequest request, CancellationToken cancellationToken)
@@ -111,7 +145,7 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
             attendeeEmail,
             lead.PrimaryContact?.FullName,
             request.Title,
-            request.Description,
+            request.CreateOnlineMeeting ? $"{request.Description.Trim()}\n\n{AiMeetingDisclosure}" : request.Description,
             request.StartsUtc,
             request.EndsUtc,
             request.TimeZoneId,
@@ -256,7 +290,9 @@ public sealed partial class SalesMeetingSchedulingService : ISalesMeetingSchedul
         if (request.EndsUtc - request.StartsUtc > TimeSpan.FromHours(8)) errors[nameof(request.EndsUtc)] = ["A sales meeting cannot be longer than eight hours."];
         if (string.IsNullOrWhiteSpace(request.TimeZoneId)) errors[nameof(request.TimeZoneId)] = ["Choose a time zone."];
         if (string.IsNullOrWhiteSpace(request.Title) || request.Title.Trim().Length > 200) errors[nameof(request.Title)] = ["Enter a title of 200 characters or fewer."];
-        if (string.IsNullOrWhiteSpace(request.Description) || request.Description.Trim().Length > 4000) errors[nameof(request.Description)] = ["Enter an agenda of 4,000 characters or fewer."];
+        var descriptionLength = request.Description?.Trim().Length ?? 0;
+        if (descriptionLength == 0 || descriptionLength + (request.CreateOnlineMeeting ? AiMeetingDisclosure.Length + 2 : 0) > 4000)
+            errors[nameof(request.Description)] = ["Enter an agenda that leaves room for the required AI meeting-assistant notice (4,000 characters total)."];
         if (request.Location?.Trim().Length > 500) errors[nameof(request.Location)] = ["Location must be 500 characters or fewer."];
         if (errors.Count > 0) throw new SalesValidationException(errors);
     }
@@ -344,6 +380,7 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
             invitation.MarkScheduled(
                 result.ExternalEventId, result.ExternalICalUid,
                 result.ProviderWebUrl, result.OnlineMeetingUrl, DateTime.UtcNow);
+            await UpdateProposalAsync(invitation, SalesMeetingChangeProposalStatus.Executed, result.ExternalEventId, null, null, cancellationToken);
             invitation.QueueConfirmation();
             _outbox.Enqueue(
                 invitation.CompanyId,
@@ -372,6 +409,7 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
                 invitation.MarkReconciliationRequired(ex.Code, ex.Message);
             else
                 invitation.MarkFailed(ex.Code, ex.Message);
+            await UpdateProposalAsync(invitation, ex.Kind == CalendarProviderFailureKind.Ambiguous ? SalesMeetingChangeProposalStatus.ReconciliationRequired : SalesMeetingChangeProposalStatus.Failed, null, ex.Code, ex.Message, cancellationToken);
             AddDeliveryAudit(
                 invitation,
                 message.CorrelationId,
@@ -388,6 +426,7 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
         catch (InvalidOperationException ex)
         {
             invitation.MarkFailed("calendar_connection_unavailable", ex.Message);
+            await UpdateProposalAsync(invitation, SalesMeetingChangeProposalStatus.Failed, null, "calendar_connection_unavailable", ex.Message, cancellationToken);
             AddDeliveryAudit(
                 invitation,
                 message.CorrelationId,
@@ -396,6 +435,24 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
                 ex.Message);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
+    }
+
+    private async Task UpdateProposalAsync(SalesMeetingInvitation invitation, SalesMeetingChangeProposalStatus status,
+        string? providerReference, string? code, string? summary, CancellationToken cancellationToken)
+    {
+        var proposal = await _dbContext.SalesMeetingChangeProposals.SingleOrDefaultAsync(x =>
+            x.CompanyId == invitation.CompanyId && x.ProviderReference == invitation.Id.ToString("D") &&
+            x.Action == SalesMeetingChangeAction.ScheduleNextMeeting && x.Status != SalesMeetingChangeProposalStatus.Executed,
+            cancellationToken);
+        if (proposal is null) return;
+        if (status == SalesMeetingChangeProposalStatus.Executed)
+            proposal.MarkExecuted(proposal.ExecutedBeforeValueJson ?? proposal.BeforeValueJson,
+                System.Text.Json.JsonSerializer.Serialize(new { invitationId = invitation.Id, status = "scheduled", externalEventId = providerReference }), providerReference, DateTime.UtcNow);
+        else if (status == SalesMeetingChangeProposalStatus.ReconciliationRequired)
+            proposal.MarkReconciliationRequired(code ?? "calendar_outcome_unknown", summary ?? "The calendar outcome requires reconciliation.");
+        else
+            proposal.MarkFailed(code ?? "calendar_delivery_failed", summary ?? "Calendar delivery failed.");
+        SalesMeetingChangeTelemetry.RecordDelivery("next_meeting", status.ToStorageValue());
     }
 
     private void AddDeliveryAudit(

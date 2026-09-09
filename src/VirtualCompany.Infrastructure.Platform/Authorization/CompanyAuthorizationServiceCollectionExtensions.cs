@@ -39,6 +39,13 @@ public static class CompanyAuthorizationServiceCollectionExtensions
                         CompanyMembershipRole.Admin,
                         CompanyMembershipRole.Manager)));
 
+            options.AddPolicy(CompanyPolicies.DemoScenarioControl, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyMembershipRoleRequirement(
+                        CompanyMembershipRole.Owner,
+                        CompanyMembershipRole.Admin,
+                        CompanyMembershipRole.Manager)));
+
             options.AddPolicy(CompanyPolicies.AuditReview, policy =>
                 policy.RequireAuthenticatedUser()
                     .AddRequirements(new CompanyMembershipRoleRequirement(

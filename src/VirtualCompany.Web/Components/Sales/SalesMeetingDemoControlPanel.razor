@@ -1,0 +1,207 @@
+@inject DemoScenarioApiClient DemoScenarios
+@inject SalesMeetingSessionApiClient MeetingSessions
+
+@if (isVisible && status is not null && meeting is not null)
+{
+    <section class="demo-control" aria-labelledby="demo-control-title" data-testid="demo-control-panel">
+        <header class="demo-control__header">
+            <span class="demo-control__avatar" aria-hidden="true">A</span>
+            <div>
+                <h2 id="demo-control-title">Alex · Sales sidekick</h2>
+                <span class="demo-control__sync"><i aria-hidden="true"></i> Synced to meeting</span>
+            </div>
+            <strong>DEMO · SYNTHETIC DATA</strong>
+        </header>
+
+        <div class="demo-control__scenario">
+            <div>
+                <span>APPROVED SCENARIO</span>
+                <h3>Northstar sales walkthrough</h3>
+                <small>Version @status.ScenarioVersion</small>
+            </div>
+            <dl>
+                <div><dt>Exact tenant</dt><dd>@status.CompanyName</dd></div>
+                <div><dt>Meeting</dt><dd>@(status.MeetingSessionId == meeting.Id ? "Linked to this meeting" : "Not linked")</dd></div>
+                <div><dt>Delivery</dt><dd><span class="demo-control__blocked">External integrations blocked</span></dd></div>
+            </dl>
+        </div>
+
+        <div class="demo-control__progress">
+            <strong>@StatusLabel</strong>
+            <ol aria-label="Demo steps">
+                @foreach (var action in status.Actions)
+                {
+                    var state = StepState(action.StepNumber);
+                    <li class="demo-control__step demo-control__step--@state" data-testid="demo-step">
+                        <span aria-hidden="true">@(state == "complete" ? "✓" : action.StepNumber)</span>
+                        <div><strong>@action.DisplayName</strong><small>@StepDetail(action, state)</small></div>
+                    </li>
+                }
+            </ol>
+            <div class="demo-control__typed"><span class="bi bi-shield-lock" aria-hidden="true"></span>Typed command · no cursor automation</div>
+        </div>
+
+        <div class="demo-control__validation" aria-label="Demo safety status">
+            @foreach (var check in status.Validations)
+            {
+                <span class="@(check.Passed ? "is-valid" : "is-invalid")"><i aria-hidden="true">@(check.Passed ? "✓" : "!")</i>@check.Message</span>
+            }
+        </div>
+
+        @if (preview is not null)
+        {
+            <section class="demo-control__reset" aria-labelledby="demo-reset-title" data-testid="demo-reset-preview">
+                <div><span>RESET PREVIEW</span><h3 id="demo-reset-title">@preview.CompanyName · Version @preview.ScenarioVersion</h3></div>
+                <p>@AffectedLabel</p>
+                <p><span class="bi bi-archive" aria-hidden="true"></span> Audit history is preserved</p>
+                <p><span class="bi bi-ban" aria-hidden="true"></span> Email, Teams, calendar, payments, accounting providers: blocked</p>
+                <ul>
+                    @foreach (var invariant in preview.ExpectedPostResetInvariants)
+                    {
+                        <li>@invariant</li>
+                    }
+                </ul>
+                <label>
+                    <input type="checkbox" @bind="resetConfirmed" />
+                    <span>Reset @preview.CompanyName only</span>
+                </label>
+                <button type="button" class="demo-control__button demo-control__button--danger"
+                        disabled="@(!resetConfirmed || isBusy || !preview.CanReset)" @onclick="ResetAsync">
+                    @(isBusy ? "Resetting…" : "Reset demo")
+                </button>
+            </section>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(message))
+        {
+            <p class="demo-control__message" role="status">@message</p>
+        }
+        @if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <p class="demo-control__error" role="alert">@errorMessage</p>
+        }
+
+        <footer class="demo-control__actions">
+            @if (status.MeetingSessionId != meeting.Id)
+            {
+                <button type="button" class="demo-control__button demo-control__button--primary" disabled="@isBusy" @onclick="LinkAsync">Link this meeting</button>
+            }
+            else if (string.Equals(status.Status, "ready", StringComparison.OrdinalIgnoreCase))
+            {
+                <button type="button" class="demo-control__button demo-control__button--primary" disabled="@isBusy" @onclick="StartAsync">@(isBusy ? "Starting…" : "Start demo")</button>
+            }
+            else if (status.NextAction is not null)
+            {
+                <button type="button" class="demo-control__button demo-control__button--primary" disabled="@isBusy" @onclick="RunNextAsync">@(isBusy ? "Running…" : "Run next step")</button>
+            }
+            else
+            {
+                <button type="button" class="demo-control__button" disabled>Demo complete</button>
+            }
+            <button type="button" class="demo-control__button" disabled="@isBusy" @onclick="PreviewResetAsync">Preview reset</button>
+        </footer>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public Guid? MeetingSessionId { get; set; }
+    [Parameter] public Guid? InvitationId { get; set; }
+
+    private SalesMeetingSessionViewModel? meeting;
+    private DemoScenarioStatusViewModel? status;
+    private DemoScenarioResetPreviewViewModel? preview;
+    private bool isVisible;
+    private bool isBusy;
+    private bool resetConfirmed;
+    private string? message;
+    private string? errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isVisible = false;
+        meeting = null;
+        status = null;
+        if (CompanyId == Guid.Empty || (MeetingSessionId is null && InvitationId is null)) return;
+
+        try
+        {
+            meeting = MeetingSessionId is Guid sessionId
+                ? await MeetingSessions.GetAsync(CompanyId, sessionId)
+                : await MeetingSessions.GetByInvitationAsync(CompanyId, InvitationId!.Value);
+            if (meeting is null) return;
+            status = await DemoScenarios.GetCurrentAsync(CompanyId);
+            isVisible = status is not null;
+        }
+        catch (Exception exception) when (exception is DemoScenarioApiException or SalesMeetingSessionApiException)
+        {
+            errorMessage = exception.Message;
+        }
+    }
+
+    private string StatusLabel => string.Equals(status!.Status, "completed", StringComparison.OrdinalIgnoreCase)
+        ? $"Completed · {status.StepCount} of {status.StepCount}"
+        : $"{char.ToUpperInvariant(status.Status[0])}{status.Status[1..]} · Step {Math.Min(status.CurrentStep + 1, status.StepCount)} of {status.StepCount}";
+
+    private string AffectedLabel => string.Join(" · ", preview!.AffectedRecords.Select(x =>
+        $"{x.ExistingCount} {x.RecordClass.Replace('_', ' ')}{(x.ExistingCount == 1 ? string.Empty : "s")}"));
+
+    private string StepState(int step) => step <= status!.CurrentStep ? "complete" : step == status.CurrentStep + 1 ? "current" : "locked";
+
+    private static string StepDetail(DemoScenarioActionViewModel action, string state) => state switch
+    {
+        "complete" => "Completed in the real Sales workspace",
+        "current" => action.ExpectedVisibleOutcome,
+        _ => "Available after the previous step"
+    };
+
+    private Task LinkAsync() => MutateAsync(async () => status = await DemoScenarios.LinkMeetingAsync(
+        CompanyId, new(meeting!.Id, status!.ScenarioKey, status.ScenarioVersion)), "Meeting linked to the approved scenario.");
+
+    private Task StartAsync() => MutateAsync(async () => status = await DemoScenarios.StartAsync(CompanyId), "Demo started. The first typed step is ready.");
+
+    private Task RunNextAsync() => MutateAsync(async () =>
+    {
+        var next = status!.NextAction!;
+        var key = $"{status.RunId:N}:{status.ResetGeneration}:{next.StepNumber}";
+        var result = await DemoScenarios.ExecuteAsync(CompanyId, new(next.CommandName, key));
+        status = result!.Status;
+        message = result.ExpectedVisibleOutcome;
+    });
+
+    private Task PreviewResetAsync() => MutateAsync(async () =>
+    {
+        preview = await DemoScenarios.PreviewResetAsync(CompanyId, status!.ScenarioKey, status.ScenarioVersion);
+        resetConfirmed = false;
+    }, "Reset preview refreshed. Review the exact scope before confirming.");
+
+    private Task ResetAsync() => MutateAsync(async () =>
+    {
+        var exact = preview!;
+        status = await DemoScenarios.ResetAsync(CompanyId,
+            new(exact.ScenarioKey, exact.ScenarioVersion, exact.CompanyName, exact.PreviewToken));
+        preview = null;
+        resetConfirmed = false;
+    }, "Demo restored to its deterministic starting state.");
+
+    private async Task MutateAsync(Func<Task> action, string? success = null)
+    {
+        if (isBusy) return;
+        isBusy = true;
+        message = null;
+        errorMessage = null;
+        try
+        {
+            await action();
+            message ??= success;
+        }
+        catch (DemoScenarioApiException exception)
+        {
+            errorMessage = exception.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+}

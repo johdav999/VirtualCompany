@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "scenarioKey": "northstar-sales",
+  "scenarioVersion": 1,
+  "title": "Northstar sales walkthrough",
+  "companyName": "Northstar Demo Company",
+  "initialState": {
+    "customerCompanyName": "Aurora Kitchens AB",
+    "customerIndustry": "Hospitality technology",
+    "contactName": "Mira Lind",
+    "contactEmail": "mira.lind@example.invalid",
+    "contactTitle": "Operations Director",
+    "leadTitle": "Aurora Kitchens operating platform",
+    "estimatedValue": 240000,
+    "currency": "SEK",
+    "seedTimestampUtc": "2026-01-15T09:00:00Z"
+  },
+  "seededEntities": [
+    { "entityType": "customer_company", "logicalKey": "aurora-kitchens", "count": 1 },
+    { "entityType": "contact", "logicalKey": "mira-lind", "count": 1 },
+    { "entityType": "lead", "logicalKey": "aurora-platform", "count": 1 }
+  ],
+  "allowedRoles": [ "owner", "admin", "manager" ],
+  "actions": [
+    {
+      "stepNumber": 1,
+      "commandName": "demo.sales.qualify_lead",
+      "displayName": "Qualify lead",
+      "expectedVisibleOutcome": "The Aurora Kitchens lead appears as qualified in the real Sales workspace."
+    },
+    {
+      "stepNumber": 2,
+      "commandName": "demo.sales.convert_lead",
+      "displayName": "Convert to deal",
+      "expectedVisibleOutcome": "A SEK 240,000 Aurora Kitchens deal appears in the real pipeline."
+    },
+    {
+      "stepNumber": 3,
+      "commandName": "demo.sales.move_deal_to_proposal",
+      "displayName": "Move deal to proposal",
+      "expectedVisibleOutcome": "The Aurora Kitchens deal moves to Proposal in the real pipeline."
+    }
+  ],
+  "resetRules": [
+    "Replace only deterministic records owned by this scenario and company.",
+    "Preserve business audit history and prior command evidence.",
+    "Increment the reset generation so idempotency keys can be reused safely."
+  ],
+  "validationChecks": [
+    "The exact company is marked as a demo tenant for this scenario version.",
+    "Every existing deterministic scenario record belongs to the exact company.",
+    "Any linked sales meeting belongs to the exact company.",
+    "External integrations are blocked for the demo tenant."
+  ],
+  "disabledIntegrations": [
+    "Email delivery",
+    "Microsoft Teams",
+    "Calendar providers",
+    "Payments",
+    "Accounting providers",
+    "CRM providers",
+    "Marketing publishers"
+  ]
+}
+
