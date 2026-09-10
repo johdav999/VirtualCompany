@@ -126,7 +126,7 @@ internal sealed class SalesMeetingPresentationConductor(
     ISalesPresentationRuntimeService runtime,
     ISalesPresentationStagePresenceService stage,
     ISalesPresentationNarrationPreemption preemption,
-    IOptions<TeamsPresenterOptions> configured) : ISalesMeetingPresentationConductor
+    IOptions<SalesPresentationConductorOptions> configured) : ISalesMeetingPresentationConductor
 {
     private readonly ConcurrentDictionary<(Guid CompanyId, Guid SessionId), TransitionWindow> _windows = new();
 
@@ -161,7 +161,8 @@ internal sealed class SalesMeetingPresentationConductor(
             var result = await runtime.ExecuteAsync(request.CompanyId, request.OrganizerUserId, request.SessionId, tool,
                 new SalesPresentationCommandRequest(Guid.NewGuid(), snapshot.Stage.Sequence + 1, snapshot.Stage.Version,
                     request.SlideNumber, request.TalkingPointIndex, request.ResumeMarker,
-                    SalesPresentationCommandActorTypes.Agent, snapshot.Stage.DeckId, request.AgentId), request.CorrelationId, cancellationToken);
+                    SalesPresentationCommandActorTypes.Agent, snapshot.Stage.DeckId, request.AgentId,
+                    snapshot.Stage.DeckVersion), request.CorrelationId, cancellationToken);
             if (result is null) return null;
             snapshot = result.Snapshot;
         }
@@ -170,7 +171,7 @@ internal sealed class SalesMeetingPresentationConductor(
             snapshot.Stage.DeckVersion, cancellationToken);
         if (!connected)
             return Plan("degraded", "stage_disconnected", mode, snapshot, new(false, "stage_disconnected"), false);
-        var timeout = TimeSpan.FromMilliseconds(Math.Clamp(configured.Value.StageRenderTimeoutMilliseconds, 250, 10_000));
+        var timeout = TimeSpan.FromMilliseconds(Math.Clamp(configured.Value.RenderTimeoutMilliseconds, 250, 10_000));
         var rendered = await stage.WaitForRenderAsync(snapshot.Stage, timeout, cancellationToken);
         return Plan(rendered.Acknowledged ? "ready" : "degraded",
             rendered.Acknowledged ? null : rendered.Status, mode, snapshot, rendered, rendered.Acknowledged);

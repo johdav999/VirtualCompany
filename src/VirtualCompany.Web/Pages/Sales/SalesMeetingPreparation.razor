@@ -75,7 +75,7 @@
 
         @if(preparation.Invitation.Conferencing=="browser")
         {
-            <section class="meeting-preparation-state"><div><strong>Browser meeting</strong><p>The invitation link admits one guest to the lobby. The organizer controls admission and AI participation.</p><SalesBrowserInvitationLink CompanyId="preparation.CompanyId" InvitationId="InvitationId" /></div></section>
+            <section class="meeting-preparation-state"><div><strong>Browser meeting</strong><p>The invitation link admits one guest to the lobby. The organizer controls admission and AI participation.</p><SalesBrowserInvitationLink CompanyId="preparation.CompanyId" InvitationId="InvitationId" RoomId="preparation.Invitation.BrowserRoomId" /></div></section>
         }
         <section class="meeting-readiness" aria-labelledby="meeting-readiness-title">
             <div class="meeting-readiness__heading">
@@ -302,6 +302,7 @@
                 AllowedActions="@preparation.AllowedActions"
                 RefreshRequested="RefreshPreparationAsync" />
 
+            <SalesNarrationPreparation CompanyId="@preparation.CompanyId" SessionId="@(preparation.Session?.Id ?? Guid.Empty)" />
             <section class="meeting-final-review" aria-labelledby="meeting-final-review-title">
                 <div class="meeting-final-review__heading">
                     <span class="meeting-step-number">3</span>

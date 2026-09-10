@@ -1,0 +1,10 @@
+@page "/app/sales/rooms/{RoomId:guid}/review"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inherits SalesPageBase
+<PageTitle>Review browser meeting</PageTitle>
+@if (ResolvedCompanyId is Guid company) { <SalesRoomClosingReview CompanyId="company" RoomId="RoomId" /> }
+else { <p role="status">@(ShellErrorMessage ?? "Checking your account…")</p> }
+@code {
+    [Parameter] public Guid RoomId { get; set; }
+    protected override async Task OnInitializedAsync() => await ResolveCompanyAsync();
+}

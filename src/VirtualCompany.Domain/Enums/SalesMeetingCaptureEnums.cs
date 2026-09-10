@@ -1,7 +1,7 @@
 namespace VirtualCompany.Domain.Enums;
 
 public enum SalesMeetingSpeakerType { Host, Customer, Agent, Unknown }
-public enum SalesMeetingInputSource { Typed, HostMediated, TranscriptAdapter, Voice }
+public enum SalesMeetingInputSource { Typed, HostMediated, TranscriptAdapter, Voice, BrowserRoom }
 public enum SalesMeetingReviewState { Unreviewed, Reviewed, Rejected }
 public enum SalesMeetingQuestionStatus { Pending, Answering, Completed, Unverified, Failed, Cancelled }
 public enum SalesMeetingAnswerVisibility { Private, ApprovedForStage }
@@ -45,6 +45,7 @@ public static class SalesMeetingCaptureEnumValues
         SalesMeetingInputSource.HostMediated => "host_mediated",
         SalesMeetingInputSource.TranscriptAdapter => "transcript_adapter",
         SalesMeetingInputSource.Voice => "voice",
+        SalesMeetingInputSource.BrowserRoom => "browser_room",
         _ => throw Unsupported(value)
     };
 
@@ -54,6 +55,7 @@ public static class SalesMeetingCaptureEnumValues
         "host_mediated" => SalesMeetingInputSource.HostMediated,
         "transcript_adapter" => SalesMeetingInputSource.TranscriptAdapter,
         "voice" => SalesMeetingInputSource.Voice,
+        "browser_room" => SalesMeetingInputSource.BrowserRoom,
         _ => throw Unsupported(value)
     };
 

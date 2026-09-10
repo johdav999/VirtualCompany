@@ -79,6 +79,12 @@ public sealed class SalesMeetingQuestion : ICompanyOwnedEntity
         ReviewState = SalesMeetingReviewState.Reviewed; StageApprovedByUserId = actorUserId;
         StageApprovedUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); Touch(nowUtc);
     }
+    public void ExpireBrowserContent(DateTime nowUtc)
+    {
+        if (InputSource != SalesMeetingInputSource.BrowserRoom) throw new InvalidOperationException("Only browser evidence may be expired by this workflow.");
+        QuestionText = "[Expired meeting evidence]"; AnswerText = null; AskerLabel = null; FailureSummary = null;
+        Visibility = SalesMeetingAnswerVisibility.Private; Evidence.Clear(); Touch(nowUtc);
+    }
     private void Touch(DateTime nowUtc) { UpdatedUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); ConcurrencyVersion++; }
 }
 

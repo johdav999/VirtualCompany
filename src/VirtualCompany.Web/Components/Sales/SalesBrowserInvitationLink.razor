@@ -1,10 +1,12 @@
 @inject SalesBrowserMeetingApiClient BrowserMeetings
 @inject Microsoft.JSInterop.IJSRuntime JS
 <button type="button" class="sales-button" disabled="@busy" @onclick="Copy">@(busy?"Copying…":"Copy invitation link")</button>
+@if(RoomId is Guid room){<a class="sales-button" href="@($"/app/sales/rooms/{room:D}?companyId={CompanyId:D}")">Open host room</a>}
 @if(message!=null){<span role="status">@message</span>}
 @code {
     [Parameter] public Guid CompanyId {get;set;}
     [Parameter] public Guid InvitationId {get;set;}
+    [Parameter] public Guid? RoomId {get;set;}
     private bool busy;private string? message;
     private async Task Copy()
     {

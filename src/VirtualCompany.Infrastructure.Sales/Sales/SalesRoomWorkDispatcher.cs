@@ -8,11 +8,12 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 public sealed class SalesRoomWorkDispatcher(VirtualCompanyDbContext db, ICompanyOutboxEnqueuer outbox,
-    ISalesRoomMediaTransport media, ISalesRoomProviderInspection inspection, IOptions<SalesRoomLifecycleOptions> options, TimeProvider clock) : ISalesRoomWorkDispatcher
+    ISalesRoomMediaTransport media, ISalesRoomProviderInspection inspection, IOptionsMonitor<SalesRoomLifecycleOptions> options, TimeProvider clock) : ISalesRoomWorkDispatcher
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
     public async Task DispatchAsync(SalesRoomWorkItem work, CancellationToken ct)
     {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         var op = await db.SalesRoomOperations.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == work.CompanyId && x.RoomId == work.RoomId && x.Id == work.OperationId, ct);
         if (op == null || op.State is "completed" or "needs_review") return;
         if (op.LeaseUntilUtc > Now) throw new SalesRoomAccessException("operation_already_running");
@@ -36,11 +37,12 @@ public sealed class SalesRoomWorkDispatcher(VirtualCompanyDbContext db, ICompany
                 { room.End(); await End(room, scope, ct); }
                 else
                 {
-                    if (!options.Value.Enabled || !await db.CompanyMemberships.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == room.CompanyId && x.UserId == room.OrganizerUserId && x.Status == CompanyMembershipStatus.Active, ct))
+                    if (!options.CurrentValue.Enabled || options.CurrentValue.DrainEnabled ||
+                        !await db.CompanyMemberships.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == room.CompanyId && x.UserId == room.OrganizerUserId && x.Status == CompanyMembershipStatus.Active, ct))
                         throw new SalesRoomMediaException("organizer_or_route_unavailable");
                     if(room.InvitationId.HasValue&&!await db.SalesMeetingInvitations.IgnoreQueryFilters().AnyAsync(x=>x.CompanyId==room.CompanyId&&x.Id==room.InvitationId&&x.Status!=SalesMeetingInvitationStatus.Cancelled&&db.ApprovalRequests.IgnoreQueryFilters().Any(a=>a.CompanyId==room.CompanyId&&a.Id==x.ApprovalRequestId&&a.Status==ApprovalRequestStatus.Approved),ct))
                         throw new SalesRoomMediaException("invitation_approval_unavailable");
-                    var result = await media.EnsureRoomAsync(scope, room.ProvisionOperationId, options.Value.MaximumParticipants + 1, ct);
+                    var result = await media.EnsureRoomAsync(scope, room.ProvisionOperationId, options.CurrentValue.MaximumParticipants + 1, ct);
                     // Refresh after the external effect: an organizer may have ended the room meanwhile.
                     await db.Entry(room).ReloadAsync(ct);
                     if (room.State is SalesBrowserRoomStates.Ending or SalesBrowserRoomStates.Ended || room.ExpiresUtc <= Now)
@@ -87,6 +89,9 @@ public sealed class SalesRoomWorkDispatcher(VirtualCompanyDbContext db, ICompany
             db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), room.CompanyId, "system", (Guid?)null, "sales.browser_room.provider_" + op.Action,
                 "sales_room_operation", op.Id.ToString("D"), "succeeded", metadata: new Dictionary<string, string?> { { "initiatingActorId", op.ActorId?.ToString("D") } }, occurredUtc: Now));
             await db.SaveChangesAsync(ct);
+            SalesRoomBenchmarkTelemetry.RecordLifecycle(op.Action + "_completed");
+            SalesRoomBenchmarkTelemetry.RecordLatency("lifecycle_" + op.Action,
+                System.Diagnostics.Stopwatch.GetElapsedTime(started));
         }
         catch (DbUpdateConcurrencyException) { throw; }
         catch (OperationCanceledException) when (dispatchToken.IsCancellationRequested) { throw; }
@@ -96,6 +101,7 @@ public sealed class SalesRoomWorkDispatcher(VirtualCompanyDbContext db, ICompany
             // Safe codes only; never persist raw SDK exceptions, signed payloads or tokens.
             await db.Entry(room).ReloadAsync(ct);
             op.Retry(error is SalesRoomMediaException mediaError ? mediaError.Code : "provider_operation_failed"); room.Reconcile();
+            SalesRoomBenchmarkTelemetry.RecordLifecycle(op.State == "needs_review" ? "ambiguity_needs_review" : "retry_scheduled");
             if (op.State != "needs_review") outbox.Enqueue(room.CompanyId, SalesBrowserRoomService.Topic, work,
                 availableAtUtc: Now.AddSeconds(Math.Min(120, 15 * Math.Pow(2, op.Attempts))), idempotencyKey: $"room:{op.Id:N}:{op.Attempts}");
             await db.SaveChangesAsync(ct);
@@ -103,6 +109,11 @@ public sealed class SalesRoomWorkDispatcher(VirtualCompanyDbContext db, ICompany
     }
     private async Task End(SalesBrowserRoom room, SalesRoomMediaScope scope, CancellationToken ct)
     {
+        if (room.MeetingSessionId is Guid meetingId)
+        {
+            var meeting = await db.SalesMeetingSessions.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == room.CompanyId && x.Id == meetingId, ct);
+            meeting.BeginBrowserClosing(room.OrganizerUserId, Now);
+        }
         if (room.State == SalesBrowserRoomStates.Ended)
         {
             // A delayed provision can leave an orphan after termination; inspect and remove it.

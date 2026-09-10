@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.CustomerMemory;
 using VirtualCompany.Application.Sales;
@@ -18,6 +19,29 @@ public static class SalesModuleRegistration
         IConfiguration configuration)
     {
         services.AddSalesRoomMedia(configuration);
+        services.AddOptions<SalesNarrationOptions>().Bind(configuration.GetSection("SalesNarration"));
+        services.AddScoped<SalesNarrationService>();
+        services.AddScoped<ISalesNarrationService>(p => p.GetRequiredService<SalesNarrationService>());
+        services.AddScoped<SalesNarrationWorker>();
+        services.AddHostedService<SalesNarrationBackgroundService>();
+        services.AddOptions<SalesRoomAgentOptions>().Bind(configuration.GetSection(SalesRoomAgentOptions.SectionName))
+            .Validate(x => x.LeaseSeconds is >= 15 and <= 120 && x.RenewalSeconds is >= 5 and <= 60 &&
+                x.RenewalSeconds < x.LeaseSeconds && x.PreRollMilliseconds is >= 200 and <= 300 &&
+                x.TrailingSilenceMilliseconds is >= 500 and <= 800 && x.MinimumSpeechMilliseconds is >= 40 and <= 300 &&
+                x.MaximumUtteranceSeconds is >= 5 and <= 60 && x.MaximumInputAudioSeconds is >= 60 and <= 7200 &&
+                x.MaximumOutputAudioSeconds is >= 60 and <= 7200 && x.MaximumSessionMinutes is >= 1 and <= 120 &&
+                x.PlaybackStopAcknowledgementTimeoutMilliseconds is >= 100 and <= 5000 &&
+                x.OrganizerDisconnectGraceSeconds is >= 0 and <= 60 &&
+                x.ReconciliationIntervalSeconds is >= 2 and <= 60 &&
+                x.SpeechRmsThreshold is >= 50 and <= 5000 && x.SpeechPeakThreshold is >= 100 and <= 10000 &&
+                SalesRoomOperationsPolicy.ConfigurationProblem(x, DateTime.UtcNow) is null,
+                "Browser room agent limits are outside supported safety boundaries.").ValidateOnStart();
+        services.AddScoped<SalesRoomAgentWorker>();
+        services.AddScoped<ISalesRoomAgentService, SalesRoomAgentService>();
+        services.AddSingleton<SalesRoomAgentCoordinator>();
+        services.AddSingleton<ISalesRoomAgentCommandSink>(p => p.GetRequiredService<SalesRoomAgentCoordinator>());
+        services.AddHostedService(p => p.GetRequiredService<SalesRoomAgentCoordinator>());
+        services.AddHealthChecks().AddCheck<SalesBrowserRoomHealthCheck>("sales-browser-room", tags: ["ready"]);
         services.AddOptions<SequenceExecutionWorkerOptions>()
             .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
         services.AddOptions<CampaignSchedulingWorkerOptions>()
@@ -86,6 +110,22 @@ public static class SalesModuleRegistration
         services.AddScoped<ISalesPresentationDeckService, SalesPresentationDeckService>();
         services.AddScoped<ISalesPresentationDeckProcessor, SalesPresentationDeckProcessor>();
         services.AddScoped<ISalesPresentationRuntimeService, SalesPresentationRuntimeService>();
+        services.AddScoped<ISalesBrowserPresentationService, SalesBrowserPresentationService>();
+        var conductorSection = configuration.GetSection(SalesPresentationConductorOptions.SectionName);
+        var conductorOptions = services.AddOptions<SalesPresentationConductorOptions>()
+            .Bind(conductorSection)
+            .Validate(options => options.RenderTimeoutMilliseconds is >= 100 and <= 30_000 &&
+                                 options.MaximumConsecutiveSlideTransitions is >= 1 and <= 20 &&
+                                 options.MinimumSlideDwellSeconds is >= 0 and <= 300,
+                "Sales presentation conductor limits are outside supported safety boundaries.")
+            .ValidateOnStart();
+        if (!conductorSection.Exists())
+            conductorOptions.Configure<IOptions<TeamsPresenterOptions>>((options, teams) =>
+            {
+                options.RenderTimeoutMilliseconds = teams.Value.StageRenderTimeoutMilliseconds;
+                options.MaximumConsecutiveSlideTransitions = teams.Value.MaximumConsecutiveSlideTransitions;
+                options.MinimumSlideDwellSeconds = teams.Value.MinimumSlideDwellSeconds;
+            });
         services.AddSingleton<ISalesPresentationNarrationPreemption, SalesPresentationNarrationPreemption>();
         services.AddSingleton<ISalesPresentationStagePresenceService, SalesPresentationStagePresenceService>();
         services.AddScoped<ISalesMeetingPresentationConductor, SalesMeetingPresentationConductor>();
@@ -302,6 +342,8 @@ public static class SalesModuleRegistration
         services.AddScoped<ITodayWorkspaceContributor, MarketingTodayWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceContributor, SalesMonthlyWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceContributor, MarketingMonthlyWorkspaceContributor>();
+        services.AddScoped<ISalesRoomCaptureService, SalesRoomCaptureService>();
+        services.AddHostedService<SalesRoomCaptureRetentionWorker>();
         return services;
     }
 }

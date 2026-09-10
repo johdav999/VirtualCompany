@@ -254,9 +254,11 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
 
             RealtimeAgentEvent Event(string type, string? text = null, string? speakerId = null, string? toolCallId = null,
                 string? toolName = null, string? toolArguments = null, string? responseId = null,
-                int inputTokens = 0, int outputTokens = 0, string? errorCode = null, string? errorSummary = null) =>
+                int inputTokens = 0, int outputTokens = 0, int audioDurationMilliseconds = 0,
+                string? errorCode = null, string? errorSummary = null) =>
                 new(providerEvent.EventId, providerEvent.Sequence, type, Bounded(text, 8000), speakerId, null,
-                    toolCallId, toolName, Bounded(toolArguments, 64_000), responseId, 0, inputTokens, outputTokens, errorCode, errorSummary);
+                    toolCallId, toolName, Bounded(toolArguments, 64_000), responseId, audioDurationMilliseconds,
+                    inputTokens, outputTokens, errorCode, errorSummary);
 
             RealtimeAgentEvent NormalizeResponseDone()
             {
@@ -264,7 +266,9 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 if (status == "cancelled") return Event(RealtimeAgentEventTypes.ResponseCancelled, responseId: NestedString(root, "response", "id"));
                 var input = NestedInt(root, "response", "usage", "input_tokens");
                 var output = NestedInt(root, "response", "usage", "output_tokens");
-                return Event(RealtimeAgentEventTypes.UsageUpdated, responseId: NestedString(root, "response", "id"), inputTokens: input, outputTokens: output);
+                var billedAudio = NestedInt(root, "response", "usage", "input_audio_duration_ms");
+                return Event(RealtimeAgentEventTypes.UsageUpdated, responseId: NestedString(root, "response", "id"),
+                    inputTokens: input, outputTokens: output, audioDurationMilliseconds: billedAudio);
             }
         }
         catch (RealtimeAgentEventException) { throw; }
@@ -342,6 +346,15 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             type = "function", name = x.Name, description = x.Description,
             parameters = JsonNode.Parse(x.ParametersJsonSchema)
         }).ToArray();
+        var input = new JsonObject
+        {
+            ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24_000 },
+            ["transcription"] = new JsonObject { ["model"] = options.TranscriptionModel }
+        };
+        if (request.ManualInputCommit)
+            input["turn_detection"] = null;
+        else
+            input["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = true, ["interrupt_response"] = true };
         return new JsonObject
         {
             ["type"] = "realtime",
@@ -349,12 +362,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             ["instructions"] = request.Instructions,
             ["audio"] = new JsonObject
             {
-                ["input"] = new JsonObject
-                {
-                    ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24_000 },
-                    ["transcription"] = new JsonObject { ["model"] = options.TranscriptionModel },
-                    ["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = true, ["interrupt_response"] = true }
-                },
+                ["input"] = input,
                 ["output"] = new JsonObject
                 {
                     ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24_000 },

@@ -1,5 +1,10 @@
 using System.Net;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using VirtualCompany.Api.Hubs;
 using VirtualCompany.Application.Sales;
@@ -77,6 +82,95 @@ public sealed class SalesPresentationSignalRIntegrationTests : IDisposable
         Assert.Equal(HubConnectionState.Disconnected, connection.State);
     }
 
+    [Fact]
+    public async Task Browser_room_stage_is_room_scoped_durable_and_revocation_aware()
+    {
+        var seed = await SeedAsync();
+        await using var guest = BrowserConnection(seed.RoomId, seed.GuestCredential);
+        var changed = new TaskCompletionSource<SalesPresentationStageSnapshotDto>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        guest.On<SalesPresentationStageSnapshotDto>("StageStateChanged", value => changed.TrySetResult(value));
+        await guest.StartAsync();
+        var initial = await guest.InvokeAsync<SalesBrowserPresentationPublicDto>("JoinBrowserStage", seed.RoomId);
+        Assert.DoesNotContain("speakerNotes", JsonSerializer.Serialize(initial), StringComparison.OrdinalIgnoreCase);
+        await Assert.ThrowsAsync<HubException>(() => guest.InvokeAsync<SalesPresentationPrivateSnapshotDto>(
+            "JoinPrivate", seed.SessionId));
+        await Assert.ThrowsAsync<HubException>(() => guest.InvokeAsync<SalesPresentationCommandResultDto>(
+            "ExecutePresentationCommand", seed.SessionId, SalesPresentationToolNames.Next,
+            new SalesPresentationCommandRequest(Guid.NewGuid(), initial.Stage.Sequence + 1, initial.Stage.Version,
+                DeckId: initial.Stage.DeckId, ActorId: initial.ParticipantId,
+                DeckVersion: initial.Stage.DeckVersion, ActorGeneration: initial.ActorGeneration)));
+        await guest.InvokeAsync("AcknowledgeStageRender", seed.SessionId, initial.Stage.DeckId,
+            initial.Stage.DeckVersion, initial.Stage.SlideNumber, initial.Stage.Sequence,
+            initial.Stage.Version, DateTime.UtcNow);
+
+        using var host = AuthenticatedClient(seed.CompanyId);
+        var hostState = await host.GetFromJsonAsync<SalesBrowserPresentationHostDto>(
+            $"/api/sales/browser-rooms/{seed.RoomId:D}/presentation");
+        Assert.NotNull(hostState);
+        var command = new SalesPresentationCommandRequest(
+            Guid.NewGuid(), hostState.Presentation.Stage.Sequence + 1, hostState.Presentation.Stage.Version,
+            DeckId: hostState.Presentation.Stage.DeckId,
+            ActorId: hostState.ParticipantId, DeckVersion: hostState.Presentation.Stage.DeckVersion,
+            ActorGeneration: hostState.ActorGeneration);
+        using var staleActorResponse = await host.PostAsJsonAsync(
+            $"/api/sales/browser-rooms/{seed.RoomId:D}/presentation/commands/{SalesPresentationToolNames.Next}",
+            command with { CommandId = Guid.NewGuid(), ActorGeneration = hostState.ActorGeneration + 1 });
+        Assert.Equal(HttpStatusCode.Forbidden, staleActorResponse.StatusCode);
+        using var commandResponse = await host.PostAsJsonAsync(
+            $"/api/sales/browser-rooms/{seed.RoomId:D}/presentation/commands/{SalesPresentationToolNames.Next}",
+            command);
+        commandResponse.EnsureSuccessStatusCode();
+        var delivered = await WaitAsync(changed.Task);
+        Assert.True(delivered.Version > initial.Stage.Version);
+        await guest.InvokeAsync("AcknowledgeStageRender", seed.SessionId, delivered.DeckId,
+            delivered.DeckVersion, delivered.SlideNumber, delivered.Sequence, delivered.Version, DateTime.UtcNow);
+
+        var persisted = await host.GetFromJsonAsync<SalesBrowserPresentationHostDto>(
+            $"/api/sales/browser-rooms/{seed.RoomId:D}/presentation");
+        Assert.Contains(persisted!.Readiness.Audience,
+            x => x.ParticipantId == seed.GuestParticipantId && x.State == "rendered");
+
+        using var overrideResponse = await host.PostAsJsonAsync(
+            $"/api/sales/browser-rooms/{seed.RoomId:D}/presentation/render-override/{delivered.Version}", new { });
+        overrideResponse.EnsureSuccessStatusCode();
+        var overridden = await overrideResponse.Content.ReadFromJsonAsync<SalesBrowserPresentationReadinessDto>();
+        Assert.True(overridden!.Ready);
+        Assert.True(overridden.OverrideApplied);
+
+        using var guestAssetClient = _factory.CreateClient();
+        guestAssetClient.DefaultRequestHeaders.Add("X-Sales-Room-Session", seed.GuestCredential);
+        using var wrongDeckAsset = await guestAssetClient.GetAsync(
+            $"/api/sales/browser-room-guests/{seed.RoomId:D}/presentation/decks/{Guid.NewGuid():D}/versions/{delivered.DeckVersion}/slides/{delivered.SlideNumber}/image");
+        Assert.Equal(HttpStatusCode.Forbidden, wrongDeckAsset.StatusCode);
+
+        await guest.StopAsync();
+        await using var reconnected = BrowserConnection(seed.RoomId, seed.GuestCredential);
+        await reconnected.StartAsync();
+        var restored = await reconnected.InvokeAsync<SalesBrowserPresentationPublicDto>(
+            "JoinBrowserStage", seed.RoomId);
+        Assert.Equal(delivered.Version, restored.Stage.Version);
+
+        await using var wrongRoom = BrowserConnection(Guid.NewGuid(), seed.GuestCredential);
+        try { await wrongRoom.StartAsync(); await Task.Delay(100); }
+        catch { }
+        Assert.Equal(HubConnectionState.Disconnected, wrongRoom.State);
+
+        await _factory.SeedAsync(async db =>
+        {
+            var participant = await db.SalesRoomParticipants.IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == seed.GuestParticipantId);
+            participant.Revoke();
+        });
+        await Assert.ThrowsAsync<HubException>(() => reconnected.InvokeAsync(
+            "AcknowledgeStageRender", seed.SessionId, delivered.DeckId, delivered.DeckVersion,
+            delivered.SlideNumber, delivered.Sequence, delivered.Version, DateTime.UtcNow));
+        await using var revoked = BrowserConnection(seed.RoomId, seed.GuestCredential);
+        try { await revoked.StartAsync(); await Task.Delay(100); }
+        catch { }
+        Assert.Equal(HubConnectionState.Disconnected, revoked.State);
+    }
+
     private async Task<Seed> SeedAsync()
     {
         var companyId = Guid.NewGuid();
@@ -90,6 +184,9 @@ public sealed class SalesPresentationSignalRIntegrationTests : IDisposable
         var agentId = Guid.NewGuid();
         var deckId = Guid.NewGuid();
         var connectionId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        var guestCredential = Convert.ToBase64String(RandomNumberGenerator.GetBytes(64));
+        var guestParticipantId = Guid.Empty;
         var now = DateTime.UtcNow;
         await _factory.SeedAsync(db =>
         {
@@ -135,9 +232,19 @@ public sealed class SalesPresentationSignalRIntegrationTests : IDisposable
                 Guid.NewGuid(), companyId, deckId, 1, 1, "Opening", "Welcome",
                 "private presenter note", "safe/1.svg", null, 1600, 900, 12192000, 6858000,
                 new string('b', 64), "Open", 60, "Continue", now));
+            var room = new SalesBrowserRoom(companyId, sessionId, userId, now.AddHours(2), now);
+            roomId = room.Id;
+            room.Provisioned("test-room-" + roomId.ToString("N"));
+            var organizer = new SalesRoomParticipant(companyId, roomId, "Organizer", null, now.AddHours(2), userId);
+            var guest = new SalesRoomParticipant(companyId, roomId, "Buyer",
+                Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(guestCredential))), now.AddHours(2));
+            guest.Admit();
+            guestParticipantId = guest.Id;
+            db.SalesBrowserRooms.Add(room);
+            db.SalesRoomParticipants.AddRange(organizer, guest);
             return Task.CompletedTask;
         });
-        return new Seed(companyId, otherCompanyId, sessionId);
+        return new Seed(companyId, otherCompanyId, sessionId, roomId, guestParticipantId, guestCredential);
     }
 
     private HubConnection Connection(Guid companyId) => new HubConnectionBuilder()
@@ -150,6 +257,24 @@ public sealed class SalesPresentationSignalRIntegrationTests : IDisposable
         })
         .Build();
 
+    private HubConnection BrowserConnection(Guid roomId, string credential) => new HubConnectionBuilder()
+        .WithUrl(new Uri(_factory.Server.BaseAddress, $"{SalesMeetingHub.Route}?roomId={roomId:D}"), options =>
+        {
+            options.HttpMessageHandlerFactory = _ => _factory.Server.CreateHandler();
+            options.Headers.Add("X-Sales-Room-Session", credential);
+        })
+        .Build();
+
+    private HttpClient AuthenticatedClient(Guid companyId)
+    {
+        var client = _factory.CreateClient();
+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "presentation-owner");
+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "presentation-owner@example.com");
+        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Presentation Owner");
+        client.DefaultRequestHeaders.Add(CompanyContextResolutionMiddleware.CompanyHeaderName, companyId.ToString("D"));
+        return client;
+    }
+
     private static async Task<T> WaitAsync<T>(Task<T> task)
     {
         var completed = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(3)));
@@ -159,5 +284,11 @@ public sealed class SalesPresentationSignalRIntegrationTests : IDisposable
 
     public void Dispose() => _factory.Dispose();
 
-    private sealed record Seed(Guid CompanyId, Guid OtherCompanyId, Guid SessionId);
+    private sealed record Seed(
+        Guid CompanyId,
+        Guid OtherCompanyId,
+        Guid SessionId,
+        Guid RoomId,
+        Guid GuestParticipantId,
+        string GuestCredential);
 }

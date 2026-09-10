@@ -22,10 +22,21 @@ public sealed partial class SalesBrowserRoomService
             throw new SalesRoomAccessException("room_unavailable", 410);
         return (room, participant);
     }
-    private static SalesRoomGuestView GuestView(SalesBrowserRoom room, SalesRoomParticipant p) => new(room.Id, p.Id, room.State, p.State, p.Version,
-        room.ExpiresUtc < p.ExpiresUtc ? room.ExpiresUtc : p.ExpiresUtc, p.AiProcessingAllowed, p.TranscriptRetentionAllowed);
+    private SalesRoomGuestView GuestView(SalesBrowserRoom room, SalesRoomParticipant p) => new(room.Id, p.Id, room.State, p.State, p.Version,
+        room.ExpiresUtc < p.ExpiresUtc ? room.ExpiresUtc : p.ExpiresUtc, p.AiProcessingAllowed, p.TranscriptRetentionAllowed)
+        { ConsentNoticeVersion = Options.NoticeVersion };
     public async Task<SalesRoomGuestView> GuestStatusAsync(string credential, Guid room, CancellationToken ct)
-    { var result = await Guest(credential, room, ct); return GuestView(result.Room, result.Participant); }
+    {
+        var result = await Guest(credential, room, ct);
+        var view = GuestView(result.Room, result.Participant);
+        // Lobby access does not grant audience access. Never return host operations or member IDs.
+        if (result.Participant.State != SalesRoomParticipantStates.Admitted) return view;
+        var participants = await db.SalesRoomParticipants.IgnoreQueryFilters()
+            .Where(x => x.CompanyId == result.Room.CompanyId && x.RoomId == room && x.State == SalesRoomParticipantStates.Admitted)
+            .OrderBy(x => x.Id).ToListAsync(ct);
+        return view with { Participants = participants.Select(x => new SalesRoomPublicParticipantView(x.Id, x.DisplayName,
+            LiveKitSalesRoomMediaTransport.Identity(new(x.Id, false, x.Generation)))).ToArray() };
+    }
     public async Task<SalesRoomGuestSession> RedeemAsync(RedeemSalesRoomInvitation request, CancellationToken ct)
     {
         Enabled();
@@ -51,6 +62,7 @@ public sealed partial class SalesBrowserRoomService
     }
     private async Task<SalesRoomMediaToken> Token(SalesBrowserRoom room, SalesRoomParticipant participant, CancellationToken ct)
     {
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         Enabled(); Open(room);
         if(room.InvitationId.HasValue)
         {
@@ -69,6 +81,8 @@ public sealed partial class SalesBrowserRoomService
         participant.TokenIssued(token.ExpiresAt.UtcDateTime); room.Touch();
         db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), room.CompanyId, participant.MemberUserId.HasValue ? "user" : "guest",
             participant.MemberUserId ?? participant.Id, "sales.browser_room.media_token_issued", "sales_room_participant", participant.Id.ToString("D"), "succeeded", occurredUtc: Now));
+        SalesRoomBenchmarkTelemetry.RecordAdmission(participant.MemberUserId.HasValue ? "host_token_issued" : "guest_token_issued");
+        SalesRoomBenchmarkTelemetry.RecordLatency("media_token", System.Diagnostics.Stopwatch.GetElapsedTime(started));
         return token;
     }
     public Task<SalesRoomMediaToken> GuestTokenAsync(string credential, Guid room, CancellationToken ct) => Transaction(async () =>
@@ -100,9 +114,11 @@ public sealed partial class SalesBrowserRoomService
         participant.Consent(request.Purpose, request.Granted); room.Touch();
         db.SalesRoomConsents.Add(new SalesRoomConsent(participant, request.Purpose, request.Granted, request.NoticeVersion, Now));
         Record(room, request.CommandId, "consent", participant.Id, actor, request, actorType: actorType);
-        // No room agent can be started by Prompt 2. This receipt fences any already-connected
-        // adapter participant while the future coordinator consumes the persisted consent version.
-        if (!request.Granted) Record(room, Guid.NewGuid(), "stop_agents", null, actor, new { request.Purpose }, true, actorType);
+        if (!request.Granted && request.Purpose == "ai_processing")
+        {
+            room.StopAgent("consent_withdrawn", "AI stopped immediately because a participant withdrew processing consent.", Now);
+            Record(room, Guid.NewGuid(), "stop_agents", null, actor, new { request.Purpose }, true, actorType);
+        }
         return GuestView(room, participant);
     }
     public async Task LeaveAsync(string credential, Guid roomId, CancellationToken ct) => await Transaction(async () =>

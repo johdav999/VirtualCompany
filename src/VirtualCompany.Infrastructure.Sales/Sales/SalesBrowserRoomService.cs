@@ -12,18 +12,26 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 public sealed partial class SalesBrowserRoomService(VirtualCompanyDbContext db, ICompanyOutboxEnqueuer outbox,
-    ISalesRoomMediaTransport media, ISalesRoomWebhookVerifier webhooks, IOptions<SalesRoomLifecycleOptions> configured,
-    IOptions<SalesRoomMediaOptions> mediaOptions, TimeProvider clock) : ISalesBrowserRoomService
+    ISalesRoomMediaTransport media, ISalesRoomWebhookVerifier webhooks, IOptionsMonitor<SalesRoomLifecycleOptions> configured,
+    IOptions<SalesRoomMediaOptions> mediaOptions, TimeProvider clock, ISalesRoomAgentCommandSink? agentCommands = null) : ISalesBrowserRoomService
 {
     internal const string Topic = CompanyOutboxTopics.SalesBrowserRoomWorkRequested;
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
-    private SalesRoomLifecycleOptions Options => configured.Value;
+    private SalesRoomLifecycleOptions Options => configured.CurrentValue;
     private void Enabled()
     {
+        if (Options.DrainEnabled)
+        {
+            SalesRoomBenchmarkTelemetry.RecordAdmission("draining");
+            throw new SalesRoomAccessException("room_draining", 503);
+        }
         if (!Options.Enabled || Options.MaximumParticipants is < 2 or > 6 || Options.MaximumRoomsPerCompany is < 1 or > 1000 ||
             Options.MaximumLiveRoomsPerCompany is < 1 or > 100 || Options.MaximumInvitationsPerRoom is < 1 or > 100 ||
             string.IsNullOrWhiteSpace(Options.NoticeVersion) || Options.NoticeVersion.Length > 80)
+        {
+            SalesRoomBenchmarkTelemetry.RecordAdmission("disabled");
             throw new SalesRoomAccessException("room_feature_unavailable", 503);
+        }
         // Initial guest release relies on LiveKit Cloud's token revocation semantics.
         if (!Uri.TryCreate(mediaOptions.Value.Url, UriKind.Absolute, out var url) || !url.Host.EndsWith(".livekit.cloud", StringComparison.OrdinalIgnoreCase))
             throw new SalesRoomAccessException("cloud_revocation_required", 503);
@@ -88,9 +96,12 @@ public sealed partial class SalesBrowserRoomService(VirtualCompanyDbContext db, 
     }
     private async Task<SalesBrowserRoomView> View(SalesBrowserRoom room, CancellationToken ct) => new(room.Id, room.MeetingSessionId, room.State, room.AgentHealth, room.Version, room.ExpiresUtc,
         await db.SalesRoomParticipants.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id).OrderBy(x => x.Id)
-            .Select(x => new SalesRoomParticipantView(x.Id, x.DisplayName, x.State, x.Version, x.Connected)).ToListAsync(ct),
+            .Select(x => new SalesRoomParticipantView(x.Id, x.DisplayName, x.State, x.Version, x.Connected,
+                "human-" + x.Id.ToString("N") + "-" + x.Generation, x.MemberUserId == room.OrganizerUserId,
+                x.AiProcessingAllowed, x.TranscriptRetentionAllowed)).ToListAsync(ct),
         await db.SalesRoomOperations.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.State != "completed").OrderByDescending(x => x.CreatedUtc).Take(20)
-            .Select(x => new SalesRoomOperationView(x.Id, x.Action, x.State, x.Attempts, x.ProblemCode)).ToListAsync(ct));
+            .Select(x => new SalesRoomOperationView(x.Id, x.Action, x.State, x.Attempts, x.ProblemCode)).ToListAsync(ct))
+        { InvitationId = room.InvitationId, ConsentNoticeVersion = Options.NoticeVersion };
     public async Task<SalesBrowserRoomView> GetAsync(Guid company, Guid actor, Guid room, CancellationToken ct) => await View(await Host(company, actor, room, ct), ct);
     public async Task<SalesBrowserRoomView> CreateAsync(Guid company, Guid actor, Guid meeting, CreateSalesBrowserRoom request, CancellationToken ct)
     {
@@ -116,6 +127,7 @@ public sealed partial class SalesBrowserRoomService(VirtualCompanyDbContext db, 
             db.SalesRoomParticipants.Add(new SalesRoomParticipant(company, created.Id, "Organizer", null, created.ExpiresUtc, actor));
             Expiry(created); return created;
         }, ct);
+        SalesRoomBenchmarkTelemetry.RecordAdmission("room_created");
         return await View(room, ct);
     }
     public async Task<SalesBrowserRoomView> RetryAsync(Guid company, Guid actor, Guid roomId, Guid operationId, SalesRoomCommand request, CancellationToken ct)
@@ -168,8 +180,21 @@ public sealed partial class SalesBrowserRoomService(VirtualCompanyDbContext db, 
                 if (await db.SalesRoomParticipants.IgnoreQueryFilters().CountAsync(x => x.CompanyId == company && x.RoomId == roomId && x.State == SalesRoomParticipantStates.Admitted, ct) >= Options.MaximumParticipants)
                     throw new SalesRoomAccessException("participant_capacity_reached", 429);
                 participant.Admit();
+                if (room.AgentLeaseOwnerId.HasValue)
+                {
+                    room.StopAgent("consent_required", "AI paused until the newly admitted participant consents.", Now);
+                    Record(room, Guid.NewGuid(), "stop_agents", null, actor, new { participantId, reason = "new_participant" }, true);
+                }
             }
-            else participant.Revoke(decision == "deny");
+            else
+            {
+                participant.Revoke(decision == "deny");
+                if (room.AgentLeaseOwnerId.HasValue)
+                {
+                    room.StopAgent("participant_removed", "AI stopped because the admitted audience changed.", Now);
+                    Record(room, Guid.NewGuid(), "stop_agents", null, actor, new { participantId, reason = decision }, true);
+                }
+            }
             room.Touch(); Record(room, request.CommandId, decision, participantId, actor, new { request, participantId }, decision != "admit"); return room;
         }, ct); return await View(room, ct);
     }
@@ -179,9 +204,20 @@ public sealed partial class SalesBrowserRoomService(VirtualCompanyDbContext db, 
         {
             var room = await Host(company, actor, roomId, ct);
             if (await Replay(company, roomId, actor, request.CommandId, "end", request, ct)) return room;
-            Version(room, request.ExpectedVersion); room.End();
-            Record(room, request.CommandId, "end", null, actor, request, true); return room;
-        }, ct); return await View(room, ct);
+            if (room.State is not (SalesBrowserRoomStates.Ending or SalesBrowserRoomStates.Ended))
+            { Version(room, request.ExpectedVersion); room.End(); }
+            if (room.MeetingSessionId is Guid meetingId)
+            {
+                var meeting = await db.SalesMeetingSessions.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == company && x.Id == meetingId, ct);
+                meeting.BeginBrowserClosing(actor, Now);
+            }
+            if (!await db.SalesRoomOperations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == company && x.RoomId == roomId && x.Action == "end", ct))
+                Record(room, request.CommandId, "end", null, actor, request, true);
+            return room;
+        }, ct);
+        if (agentCommands is not null)
+            await agentCommands.SignalAsync(new(company, roomId, Guid.Empty, room.AgentGeneration, "stop"), ct);
+        return await View(room, ct);
     }
     public async Task<SalesBrowserRoomView> RevokeInvitationAsync(Guid company, Guid actor, Guid roomId, Guid invitation, SalesRoomCommand request, CancellationToken ct)
     {

@@ -474,7 +474,16 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesRoomConsent> SalesRoomConsents => Set<SalesRoomConsent>();
     public DbSet<SalesRoomOperation> SalesRoomOperations => Set<SalesRoomOperation>();
     public DbSet<SalesRoomProviderEvent> SalesRoomProviderEvents => Set<SalesRoomProviderEvent>();
+    public DbSet<SalesRoomPresentationAudience> SalesRoomPresentationAudience => Set<SalesRoomPresentationAudience>();
+    public DbSet<SalesRoomAgentSpeech> SalesRoomAgentSpeech => Set<SalesRoomAgentSpeech>();
+    public DbSet<SalesRoomAgentTranscript> SalesRoomAgentTranscripts => Set<SalesRoomAgentTranscript>();
+    public DbSet<SalesRoomFloor> SalesRoomFloors => Set<SalesRoomFloor>();
+    public DbSet<SalesRoomPlaybackStopAcknowledgement> SalesRoomPlaybackStopAcknowledgements => Set<SalesRoomPlaybackStopAcknowledgement>();
     public DbSet<SalesMeetingSession> SalesMeetingSessions => Set<SalesMeetingSession>();
+    public DbSet<SalesNarrationRevision> SalesNarrationRevisions => Set<SalesNarrationRevision>();
+    public DbSet<SalesNarrationAsset> SalesNarrationAssets => Set<SalesNarrationAsset>();
+    public DbSet<SalesNarrationSegment> SalesNarrationSegments => Set<SalesNarrationSegment>();
+    public DbSet<SalesNarrationAttempt> SalesNarrationAttempts => Set<SalesNarrationAttempt>();
     public DbSet<SalesPresentationDeck> SalesPresentationDecks => Set<SalesPresentationDeck>();
     public DbSet<SalesPresentationSlide> SalesPresentationSlides => Set<SalesPresentationSlide>();
     public DbSet<SalesMeetingArtifact> SalesMeetingArtifacts => Set<SalesMeetingArtifact>();
@@ -1104,6 +1113,8 @@ public sealed class VirtualCompanyDbContext : DbContext
 
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
         modelBuilder.Entity<SalesBrowserRoom>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomFloor>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesRoomPlaybackStopAcknowledgement>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesRoomInvitationGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesRoomParticipant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesRoomConsent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -1203,6 +1214,10 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SalesMeetingSession>()
             .HasQueryFilter(session =>
                 CurrentCompanyId != null && session.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesNarrationRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesNarrationAsset>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesNarrationSegment>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesNarrationAttempt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesPresentationDeck>()
             .HasQueryFilter(deck => CurrentCompanyId != null && deck.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesPresentationSlide>()
@@ -2204,4 +2219,3 @@ public sealed class VirtualCompanyDbContext : DbContext
 
     }
 }
-

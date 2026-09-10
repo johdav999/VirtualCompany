@@ -1,0 +1,176 @@
+@inject SalesBrowserRoomApiClient Rooms
+@inject SalesMeetingCaptureApiClient Capture
+@inject SalesMeetingClosingApiClient Closing
+@inject SalesMeetingChangeProposalApiClient Changes
+
+<main class="closing-review">
+    <a href="@($"/app/sales/rooms/{RoomId}")">Back to meeting</a>
+    <h1>Review this meeting</h1>
+    <p>Only consented evidence is available. Ending the call does not authorize a message or a sales-record change.</p>
+    @if (error is not null) { <p class="review-alert" role="alert">@error</p> }
+    @if (busy) { <p role="status">Saving or loading meeting review…</p> }
+    @if (review is null)
+    {
+        <button disabled="@busy" @onclick="Load">@(error is null ? "Load review" : "Retry loading review")</button>
+    }
+    else
+    {
+        <p class="review-alert" role="status">@(review.Coverage == "expired" ? "The evidence retention period has expired." :
+            "Partial capture — review gaps before preparing minutes. Speech without retention consent and unfinished speech at call end are excluded.")</p>
+        @if (review.State is not ("ended" or "ending")) { <p role="status">End the call before preparing its closing review.</p> }
+        <div class="review-columns">
+            <section class="review-card">
+                <h2>Retained discussion</h2>
+                <p>Select only accurate excerpts suitable for the customer summary.</p>
+                @if (review.Segments.Count == 0) { <p class="review-empty">No retained discussion. No missing speech will be reconstructed.</p> }
+                @foreach (var segment in review.Segments)
+                {
+                    <article id="@segment.Id.ToString("N")" class="review-excerpt">
+                        <strong>@(segment.SpeakerLabel ?? "Participant")</strong>
+                        <time>@segment.StartedUtc.ToLocalTime().ToString("HH:mm:ss")</time>
+                        <p>@segment.Content</p>
+                        <label><input type="checkbox" checked="@selected.Contains(segment.Id)" disabled="@(busy || !CanReview)"
+                            @onchange="e => Select(segment.Id, e.Value is true)" /> Reviewed for customer summary</label>
+                    </article>
+                }
+                @if (review.Segments.Count > 0) { <button disabled="@(busy || !CanReview)" @onclick="SaveEvidence">Save excerpt review</button> }
+            </section>
+            <section class="review-card">
+                <h2>Next steps</h2>
+                <p>Review customer minutes, internal notes and proposed actions before approval.</p>
+                <button class="review-primary" disabled="@(busy || !CanReview || review.AgentId is null || review.MeetingStatus == "completed")" @onclick="Prepare">@(review.Closing is null ? "Prepare closing draft" : "Prepare a new draft")</button>
+                @if (review.AgentId is null) { <p>Select the Sales presenter in meeting preparation before generating a draft.</p> }
+                <p>Only saved excerpt selections enter the customer draft. Generated actions remain proposals.</p>
+                @if (review.Closing is { } completeDraft)
+                {
+                    <button disabled="@(busy || !CanReview || review.MeetingStatus == "completed" || completeDraft.CustomerMinutes.Status != "approved")" @onclick="CompleteMeeting">Complete meeting record</button>
+                    @if (review.MeetingStatus == "completed") { <p role="status">Meeting record completed.</p> }
+                }
+                <button disabled="@busy" @onclick="Load">Refresh review</button>
+            </section>
+        </div>
+        @if (review.Closing is { } closing)
+        {
+            <section class="review-card">
+                <h2>Customer minutes</h2>
+                <p>@Status(closing.CustomerMinutes.Status) · Version @closing.CustomerMinutes.ArtifactVersion</p>
+                @if (closing.CustomerMinutes.EvidenceCaptureVersion != review.CaptureVersion) { <p class="review-alert">The evidence changed. Prepare a new draft before delivery.</p> }
+                @if (closing.CustomerMinutes.Items.Count == 0) { <p>No supported customer statements or actions were found. Review the evidence before proceeding.</p> }
+                @foreach (var item in closing.CustomerMinutes.Items)
+                {
+                    <label class="review-item">@Label(item.Type)
+                        <textarea aria-label="@($"{Label(item.Type)} {item.Order + 1}") maxlength="4000" value="@Text(item.Id, item.Content)"
+                            disabled="@(busy || closing.CustomerMinutes.Status == "approved")" @onchange="e => edits[item.Id] = e.Value?.ToString() ?? string.Empty">@Text(item.Id, item.Content)</textarea>
+                    </label>
+                    <p class="review-source">@if (item.SourceId.StartsWith("transcript:")) { <a href="@("#" + item.SourceId["transcript:".Length..])">Review source excerpt</a> } else { <span>Source: meeting evidence</span> }</p>
+                }
+                <div class="review-actions">
+                    <button disabled="@(busy || !CanReview || closing.CustomerMinutes.Status == "approved")" @onclick="SaveMinutes">Save reviewed minutes</button>
+                    <button disabled="@(busy || !CanReview || closing.CustomerMinutes.Status != "draft")" @onclick="SubmitMinutes">Submit minutes for review</button>
+                    <button disabled="@(busy || !CanReview || closing.CustomerMinutes.Status != "in_review" || closing.CustomerMinutes.Items.Any(i => i.RequiresReview))" @onclick="ApproveMinutes">Approve customer minutes</button>
+                </div>
+                <p>Saving confirms that you reviewed each statement. Approval alone does not send an email.</p>
+            </section>
+            <details class="review-card">
+                <summary>Internal notes — private to your company</summary>
+                @if (closing.InternalIntelligence.Items.Count == 0) { <p>No internal notes were generated from the available evidence.</p> }
+                @foreach (var item in closing.InternalIntelligence.Items)
+                {
+                    <label class="review-item">@Label(item.Type)<textarea aria-label="@($"Internal note {item.Order + 1}") maxlength="4000"
+                        value="@Text(item.Id, item.Content)" disabled="@(busy || closing.InternalIntelligence.Status == "approved")"
+                        @onchange="e => edits[item.Id] = e.Value?.ToString() ?? string.Empty">@Text(item.Id, item.Content)</textarea></label>
+                }
+                <button disabled="@(busy || !CanReview || closing.InternalIntelligence.Status == "approved")" @onclick="SaveInternal">Save reviewed internal notes</button>
+                <p>These notes are excluded from customer minutes and email.</p>
+            </details>
+            <section class="review-card">
+                <h2>Reviewed follow-up</h2>
+                <label class="review-item">Recipient email<input type="email" @bind="recipient" disabled="@busy" /></label>
+                <button disabled="@(busy || !CanReview || closing.CustomerMinutes.Status != "approved" || closing.CustomerMinutes.Items.Count == 0 ||
+                    closing.CustomerMinutes.EvidenceCaptureVersion != review.CaptureVersion || review.EvidenceArtifactId is null || string.IsNullOrWhiteSpace(recipient))" @onclick="ProposeDelivery">Create delivery proposal</button>
+                @if (review.EvidenceArtifactId is null) { <p>Prepare the meeting presentation evidence before proposing customer delivery.</p> }
+                <p>Confirm the exact recipient and approved minutes. An owner must approve delivery in Work.</p>
+                @foreach (var proposal in proposals)
+                {
+                    <article class="review-excerpt">
+                        <strong>@proposal.AfterDisplayValue</strong><p>@Status(proposal.Status)</p>
+                        @if (proposal.LastErrorSummary is not null) { <p role="alert">@proposal.LastErrorSummary</p> }
+                        <button disabled="@(busy || proposal.Status is not ("draft" or "waiting_for_approval"))" @onclick="() => RequestApproval(proposal)">@(proposal.Status == "draft" ? "Request owner approval" : "Check owner approval")</button>
+                        @if (proposal.Status == "waiting_for_approval") { <a href="/approvals">Open approvals</a> }
+                        <button disabled="@(busy || proposal.Status != "approved")" @onclick="() => QueueDelivery(proposal)">Queue approved delivery</button>
+                    </article>
+                }
+            </section>
+        }
+        <footer class="review-card">Withdrawal stops future capture. Earlier evidence follows the meeting retention policy until @review.RetentionUntilUtc.ToLocalTime().ToString("d"). Audio and video are not recorded.</footer>
+    }
+</main>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid RoomId { get; set; }
+    private BrowserRoomCaptureReview? review;
+    private readonly HashSet<Guid> selected = [];
+    private readonly Dictionary<Guid, string> edits = [];
+    private IReadOnlyList<SalesMeetingChangeProposalViewModel> proposals = [];
+    private bool busy; private string? error; private string recipient = "";
+    private Guid? generation;
+    private bool CanReview => review is { Coverage: not "expired", State: "ended" or "ending" };
+    protected override async Task OnParametersSetAsync() => await Load();
+    private void Select(Guid id, bool value) { if (value) selected.Add(id); else selected.Remove(id); }
+    private string Text(Guid id, string fallback) => edits.GetValueOrDefault(id, fallback);
+    private static string Label(string value) => value.Replace('_', ' ');
+    private static string Status(string value) => value switch { "draft" => "Draft", "in_review" => "In review", "approved" => "Approved",
+        "waiting_for_approval" => "Waiting for owner approval", "queued" => "Queued for delivery", "executed" => "Delivered", "reconciliation_required" => "Delivery outcome needs reconciliation", _ => Label(value) };
+    private async Task Reload()
+    {
+        review = await Rooms.CaptureReviewAsync(CompanyId, RoomId);
+        proposals = (await Changes.ListAsync(CompanyId, review.SessionId)).Where(x => x.Action == "send_customer_minutes").ToArray();
+        selected.Clear(); foreach (var x in review.Segments.Where(x => x.ReviewState == "reviewed")) selected.Add(x.Id);
+        edits.Clear();
+    }
+    private Task Load() => Run(Reload, false);
+    private async Task Run(Func<Task> action, bool reload = true)
+    {
+        if (busy) return; busy = true; error = null;
+        try { await action(); if (reload) await Reload(); }
+        catch (Exception e) when (e is BrowserRoomRequestException or SalesMeetingCaptureApiException or SalesMeetingClosingApiException or SalesMeetingChangeProposalApiException)
+        { error = e.Message; }
+        finally { busy = false; }
+    }
+    private Task SaveEvidence() => Run(async () => {
+        var r = review!;
+        await Capture.AutosaveAsync(CompanyId, r.SessionId, new(Guid.NewGuid(), r.CaptureVersion,
+            r.Segments.Select(x => new SalesMeetingTranscriptSegmentDraftViewModel(x.ClientItemId, x.Sequence, x.SpeakerType, x.SpeakerLabel,
+                x.InputSource, x.Content, x.StartedUtc, x.EndedUtc, x.Confidence, selected.Contains(x.Id) ? "reviewed" : "unreviewed", x.Version)).ToArray()));
+    });
+    private Task Prepare() => Run(async () => {
+        var r = review!; generation ??= r.Closing is null ? RoomId : Guid.NewGuid();
+        await Closing.PrepareAsync(CompanyId, r.SessionId, new(generation.Value, r.AgentId!.Value, r.SessionVersion, r.CaptureVersion, r.CaptureCheckpointId));
+        generation = null;
+    });
+    private Task SaveMinutes() => Run(async () => {
+        var r = review!; var m = r.Closing!.CustomerMinutes;
+        await Closing.EditMinutesAsync(CompanyId, r.SessionId, m.Id, new(m.Version, m.Items.Select(x =>
+            new EditSalesMeetingMinutesItemViewModel(x.Order, x.Type, Text(x.Id,x.Content), x.OwnerLabel, x.DueUtc, x.SourceId, x.SourceArtifactId, false)).ToArray()));
+    });
+    private Task SubmitMinutes() => Run(async () => { var r=review!; var m=r.Closing!.CustomerMinutes; await Closing.SubmitMinutesAsync(CompanyId,r.SessionId,m.Id,m.Version); });
+    private Task ApproveMinutes() => Run(async () => { var r=review!; var m=r.Closing!.CustomerMinutes; await Closing.ApproveMinutesAsync(CompanyId,r.SessionId,m.Id,m.Version); });
+    private Task SaveInternal() => Run(async () => {
+        var r=review!; var m=r.Closing!.InternalIntelligence;
+        await Closing.EditInternalAsync(CompanyId,r.SessionId,m.Id,new(m.Version,m.Items.Select(x =>
+            new EditSalesMeetingInternalItemViewModel(x.Order,x.Type,Text(x.Id,x.Content),x.Confidence,x.SourceId,x.SourceArtifactId,false)).ToArray()));
+    });
+    private Task CompleteMeeting() => Run(async () => {
+        var r=review!; var m=r.Closing!;
+        await Closing.CompleteAsync(CompanyId,r.SessionId,new(r.SessionVersion,r.CaptureVersion,r.CaptureCheckpointId,
+            m.CustomerMinutes.Id,m.CustomerMinutes.ArtifactVersion,m.InternalIntelligence.Id,m.InternalIntelligence.ArtifactVersion));
+    });
+    private Task ProposeDelivery() => Run(async () => {
+        var r=review!;var m=r.Closing!.CustomerMinutes;
+        await Changes.GenerateAsync(CompanyId,r.SessionId,new([new("customer_minutes",m.Id,"send_customer_minutes","customer_minutes_recipient",
+            new("email",recipient),r.EvidenceArtifactId!.Value,[$"minutes:{m.Id:N}"],1m,"Deliver the reviewed customer minutes to the confirmed recipient.")]));
+    });
+    private Task RequestApproval(SalesMeetingChangeProposalViewModel p) => Run(async () => { await Changes.ApproveAsync(CompanyId,review!.SessionId,p.Id,p.Version); });
+    private Task QueueDelivery(SalesMeetingChangeProposalViewModel p) => Run(async () => { await Changes.ExecuteAsync(CompanyId,review!.SessionId,p.Id,p.Version); });
+}

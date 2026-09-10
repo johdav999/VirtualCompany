@@ -164,3 +164,159 @@ The scheduling/preparation UI follows the [generated reference](../design/refere
 Live connected-calendar writes, customer email delivery, authenticated end-to-end browser operation, LiveKit media and Azure runtime checks were **NOT RUN**. No connected test account, authorized recipient or provider runtime target was supplied. Isolated provider tests and rendered-component screenshots do not establish live delivery or production readiness.
 
 Final Prompt 3 verification passed **95/95 API tests** and **34/34 Web tests**, with no skips, in Release. These runs compile the latest API/Web changes and include affected Teams regressions and actual local SQL Server migration tests. Existing compiler/analyzer warnings remain. The preservation baseline contains 256 files: 233 unchanged, 23 shared scheduling/test/model files changed, none missing, and no Teams-specific file changed. Patch whitespace validation passed.
+
+## Prompt 4 — Human browser meeting experience (2026-09-09)
+
+Implemented separate guest `/sales/rooms/{roomId}` and organizer `/app/sales/rooms/{roomId}?companyId={companyId}` pages using the minimal public layout. Sales lead and meeting-preparation entry points now open the organizer room. The host surface manages the lobby, admit/deny/remove, individual one-use guest links and end-for-everyone through the existing versioned durable room APIs. Guests never receive company navigation or the organizer projection.
+
+The prejoin flow supports display names, local microphone/camera preview and selection, speaker testing, microphone/camera-off participation and explicit sound unlock. The room uses the real pinned LiveKit browser SDK through a bounded JS module for direct WebRTC, screen sharing, participant tiles and cleanup. No audio/video is passed through Blazor or SignalR, and no room agent, AI processing or retained capture is started. Permission failure, missing devices, unavailable media, reconnecting, expired/removed access and lost controls have separate safe UI messages.
+
+### Access and lifecycle
+
+The invitation fragment is removed before framework/application scripts, both on initial navigation and same-page links. A successful exchange saves only the scoped credential in per-tab session storage; reload reuses the server-issued identity. Explicit leave clears it and requests durable revocation after stopping local tracks; leave requires a new guest link to return. A network reconnect or page reload retains valid admission. Browsers that reject session storage receive explicit guidance to keep the tab open. A new link can recover an expired saved session.
+
+Host requests use `CompanyApiTransport`; guest requests use a separate HttpClient without company/authentication forwarding. Admitted guest status includes only admitted participant IDs, safe display names and media identities; lobby guests receive no audience. Member IDs, room operations, provider references and private workspace content remain absent. Server names are rendered as text; SDK metadata does not establish authority.
+
+Successful status reads occur every three seconds. Unauthorized/expired status immediately stops local media on receipt. An independent JS watchdog stops preview/publication after 15 seconds without a successful control heartbeat, including circuit loss. Provider removal/end still uses Prompt 2's durable operation path and visibly retains pending/recovery state. Immediate provider disconnection is not claimed from local tests. Read-only status has a separate 1,200-request/minute IP budget so polling does not consume the existing 120/minute mutation/redemption budget. Both remain bounded; tune aggregate Web-host egress capacity only with the later load evidence.
+
+Fresh authorized media tokens are obtained for join and explicit reconnect. Established connections use the SDK's provider token-refresh/reconnect behavior while application admission continues to be rechecked. No internal SDK engine mutation is used. Web Locks, where available, prevent two same-origin tabs from connecting the same identity simultaneously; the provider identity remains stable. Disposal fences late connection/device completions, removes listeners/elements, stops local tracks and releases the tab lock.
+
+### Dependencies, verification and preservation
+
+Vendored `livekit-client` **2.22.3**, Apache-2.0, under `src/VirtualCompany.Web/wwwroot/lib/livekit/`, with its license. Bundle SHA-256: `23E6B0966C20CCABA8D39343035FCC49E64AA46C93E772CA0A3F1B5A6D30B573`. The production page makes no floating CDN request. Sources checked during implementation: [package/version](https://www.npmjs.com/package/livekit-client/v/2.22.3), [Room API](https://docs.livekit.io/reference/client-sdk-js/classes/Room.html), [room events](https://docs.livekit.io/reference/client-sdk-js/enums/RoomEvent.html).
+
+See the [UAT record](browser-sales-room/prompt4-uat.md), [generated reference](../design/references/browser-human-room-reference.png), [check results](browser-sales-room/prompt4-check-results.json), [preservation baseline](browser-sales-room/prompt4-baseline.json) and [comparison](browser-sales-room/prompt4-preservation-comparison.json). The Web build and focused tests compile the API/Web projects on Windows. Existing compiler/analyzer warnings remain. No schema change or migration was needed; all historical migrations and the snapshot are retained.
+
+Chrome and Edge passed actual local guest-page checks with synthetic devices. Component fixtures cover organizer/admission and connected layouts; JS lifecycle tests cover cleanup/races. These are not live LiveKit acceptance. Host-plus-two-guests, actual screen sharing, remote revocation, Safari/iOS, TURN/corporate networks, Azure runtime and the preceding media soak remain NOT RUN. Browser/Teams flags, infrastructure, real invitations and mailbox delivery were not changed. Keep existing browser release gates in force until those external checks pass.
+
+## Prompt 5 — Synchronized slides and private host controls (2026-09-09)
+
+Browser rooms now reuse the approved presentation deck, runtime, SignalR groups and conductor contracts. Every admitted participant receives a room-scoped public snapshot and the exact current slide asset. The guest contract contains no private snapshot type, speaker notes, objective, transition plan or workspace storage key. The organizer receives a separate private snapshot with notes, objective, expected duration, transition cue, deck-preparation link, slide navigation, pause/resume and manual/assisted/autonomous modes.
+
+Host presentation commands carry command ID, expected presentation version, sequence, deck ID/version and the persisted organizer participant ID/generation. The backend resolves company, user, room, meeting session and participant authority. Stale actor generations, stale versions and wrong decks fail before mutation. Guest hub connections validate the room-scoped capability on connect and again through durable acknowledgement work; wrong-room, removed and revoked sessions cannot join. Existing Teams stage grants and member-only private groups keep their original authorization paths.
+
+Migration `20260909182543_AddBrowserRoomPresentationAudience` adds one company/room/participant row for each exact committed presentation version. It records deck/version, slide, sequence, participant generation, deadline, render, disconnect and audited override state. Capturing the admitted audience at the transition prevents late joins or a SignalR backplane from redefining which acknowledgements release that revision. Separate request/hub scopes read the same persisted state, providing replica-safe coordination without treating the process-local presence dictionary as distributed state. Exact browser acknowledgements refresh route-neutral in-memory presence after a live deck change so existing connections continue without a forced reconnect.
+
+Audience readiness exposes pending, slow, disconnected, rendered, revoked and overridden states. The host sees counts and can explicitly continue after review; the override is persisted and audited. Reconnect rejoins the current authoritative revision. The render deadline and autonomous transition limits moved to validated `SalesPresentationConductor` options. When the neutral section is absent, explicit Teams timeout, transition and dwell values are retained through a tested compatibility fallback.
+
+See the [Prompt 5 UAT record](browser-sales-room/prompt5-uat.md), [generated design reference](../design/references/browser-sales-room-prompt-5-reference.png) and [check results](browser-sales-room/prompt5-check-results.json). The final affected suites passed 34/34 API tests and 26/26 Web tests, including Teams stage/conductor/Web regressions. Chrome and Edge passed two-context desktop/mobile rendering checks. API and Web Release builds passed, and EF reports no pending model changes. SQL Server-only tests were skipped because no authorized test connection was configured; no application database was migrated. Live provider/Azure and remote-device acceptance remains subject to the existing browser-room release gates.
+## Prompt 6 — Approved reusable narration (2026-09-10)
+
+Implemented a company- and organizer-authorized narration workflow in meeting preparation. Draft scripts are extracted only from customer-visible slide text; private speaker notes, objectives and internal artifacts are excluded. The organizer reviews the source evidence and exact saved script, approves disclosure to the meeting's customer, and queues generation. Editing creates another immutable manifest rather than overwriting an approved script. English and Swedish are supported; the shared speech configuration supplies the model and voice.
+
+### Persistence, reuse and release
+
+Migration `20260910121327_AddApprovedSalesNarration` adds `sales_narration_revisions`, `sales_narration_segments`, `sales_narration_assets` and `sales_narration_attempts`. It preserves existing schema/history. The manifest retains the deck/version, source slide IDs/hashes/text, script/hash, audience, language, voice, model/configuration version and approval/revocation actors/timestamps. Audio is WAV PCM16 mono 24 kHz in the existing `ICompanyDocumentStorage` boundary; no audio frames enter SQL.
+
+Assets use a company-scoped content key combining the source slide content revision, approved script hash, language, voice, speech configuration and audience-context hash. Deck IDs and versions remain in the manifest; unchanged content segments can be reused across new deck/meeting manifests for the same eligible audience without regenerating other slides. The audience hash includes customer, lead, contact and intended audience. Different companies, audiences, languages, voices or configurations cannot collide.
+
+Only active company members who organized the meeting can prepare, decide or preview. Release checks validate the active processed deck, its source content, current audience, approval, revocation and expiry. Preview rechecks release after object I/O, verifies object size/hash, and refuses missing, corrupt or unapproved audio. Readiness also checks object existence/size without changing business state. Script/audio validation preserves word boundaries and numeric distinctions; mismatched or incomplete speech remains rejected. There is no live-speech fallback.
+
+The cancellation-aware playback contract returns asset, slide, talking point, offset and turn generation with bounded PCM. Prompt 7 must connect it to the room-owned voice track and enforce live consent, audience acknowledgements and cancellation throughout publication. This prompt does not start a room agent.
+
+### Durable work and configuration
+
+Generation uses SQL-backed pending assets and attempt receipts as the durable work queue. Serializable claim/budget transactions and optimistic concurrency protect duplicate/concurrent claims. A receipt and reservation commit before the provider call. Each segment has at most three attempts; synthesis is bounded to 100 seconds, 1,200 output tokens and two minutes of PCM. Draft preparation is bounded to 100 talking points of 3,000 characters each. Provider/session work stays behind shared `IApprovedSpeechGateway` and the existing PCM gateway; Teams session behavior is unchanged.
+
+No uncertain call is automatically repeated. Provider/worker ambiguity becomes `needs_review`; known usage remains attributed and unknown usage retains its conservative reservation. An explicit organizer retry requires acknowledgement of another possible generation charge. Retries add receipts instead of replacing them. Invalid sources/approvals are removed from active queue consideration; unapproved drafts cannot starve approved work.
+
+Configure these server settings before generation:
+
+- Existing `SharedRealtimeAgent` enablement, credentials, model and voice.
+- `SalesNarration:Enabled` (default false).
+- `SalesNarration:InputUsdPerMillion`, `OutputUsdPerMillion`: dated conservative maximum rates across relevant token modalities, not package prices.
+- `SalesNarration:RateVersion`: rate date, currency/provider/model/region assumptions.
+- `SalesNarration:MaximumCompanyDailyUsd`: configurable daily generation budget, default 5 USD.
+- Existing private `CompanyDocuments:Storage` configuration. Production replicas must share durable private storage; no public storage URL is returned.
+
+Budget admission reserves 20,000 input and 1,200 output tokens at configured maximum rates, including unresolved attempts. Returned token totals produce conservative generation estimates; retained modality usage supports later exact pricing/billing reconciliation. These estimates are deliberately labelled and must not be presented as invoices. A missing rate configuration disables generation with actionable feedback. Storage, transport and hosting costs are not included in generation estimates.
+
+Synthetic audio releases expire 90 days after preparation. Cleanup deletes old unreferenced objects, including attempt paths, while keeping unexpired authorized references. Revocation immediately denies new previews; already downloaded audio cannot be recalled. Cleanup serializes reference checks and fences new preparation while deletion is in progress. Relational script/approval/usage manifests remain audit evidence under company data lifecycle controls; synthetic narration is distinct from recorded human calls.
+
+### Routes and UI
+
+Company-authorized API base: `/api/sales/narration`.
+
+- `GET sessions/{sessionId}`: readiness and private revision history.
+- `POST sessions/{sessionId}/prepare`: language plus optional reviewed slide/talking-point scripts.
+- `POST revisions/{revisionId}/{approve|revoke|retry}`: expected version and retry-cost acknowledgement.
+- `GET sessions/{sessionId}/revisions/{revisionId}/segments/{segmentId}/preview?audienceId=...`: authorized binary preview.
+
+The Web audio proxy forwards authenticated company context; audio travels over HTTP, not a Blazor circuit. Responses are no-store/no-referrer and do not expose object keys, provider sessions or credentials. The existing meeting preparation page contains source/script review, save-as-new-revision, explicit approval, preview, retry/revoke, budget/failure feedback and separate generation/preview-delivery metering. Preview minutes measure bytes served, not time actually heard.
+
+### Verification and preservation
+
+- API build: passed; Web build: passed. Existing compiler/analyzer warnings remain.
+- Initial affected API suite: **29 passed**, including narration, shared speech comparison, deck/runtime/conductor and fresh/upgrade SQL Server tests.
+- Final focused backend suite after readiness/queue/retention fixes: **17 passed** (overlaps the previous suite).
+- Existing human-room/Teams Web suite: **15 passed**; existing preparation-page/client suite: **15 passed**; final new narration component suite: **4 passed**.
+- Four real shared-speech generations: **passed**, two English and two Swedish segments, no retry, no microphone/customer data. Both language manifests reached ready; repeated preparation and authorized preview added no provider requests.
+- English generated 5.55 seconds; Swedish generated 7.10 seconds. Conservative generation estimates from returned usage total **0.01018 USD**, not invoice-reconciled or a full-call cost. Current model/rate documentation: [Realtime model](https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini), [pricing](https://developers.openai.com/api/docs/pricing), [conversation events](https://developers.openai.com/api/docs/guides/realtime-conversations).
+- Chrome desktop/mobile captures pass overflow and script-visibility checks and decode/play real generated audio. Interaction assertions run against the actual Blazor component with isolated HTTP responses. Full authenticated deployed-app UAT and independent human listening assessment are not claimed.
+
+See [UAT record](browser-sales-room/prompt6-uat.md), [live generation](browser-sales-room/prompt6-live-generation.json), [browser checks](browser-sales-room/prompt6-browser-checks.json), [preservation baseline](browser-sales-room/prompt6-baseline.json) and [comparison](browser-sales-room/prompt6-preservation-comparison.json). All 787 baseline paths remain; 784 have identical hashes. Three baseline paths have additive integrations: meeting preparation, Sales registration and the EF snapshot. No Teams-specific implementation or historical migration was changed. Additional shared integrations are Operations gateway registration, DbContext tenant sets/filters, Web client/proxy registration and isolated test wiring.
+
+No application database, live Teams flag/resource, invitation or customer delivery was changed. Local SQL tests create and delete validated GUID-named disposable databases on SQL Server Express; the same migration path applies to Docker SQL Server. Existing LiveKit/Azure/device/soak release gates remain in force. Implementation of narration preparation does not assert room rollout readiness.
+
+Final checks: the existing browser-room upgrade regression also passed with the expanded migration chain, retaining all original Teams/tenant/concurrency assertions. EF reports no pending model changes. The upgrade fixture gained only the parent tables needed by the additive narration foreign keys. No application database was migrated.
+
+## Prompt 7 — One consent-aware speaking agent (2026-09-10)
+
+The browser room now has one durable, room-owned agent lifecycle. Organizer-only commands start and stop a renewable lease, invoke an approved narration segment, ask a typed grounded question, and release an approved answer to speech. Serializable start and command receipts prevent duplicate ownership; lease owner, agent generation, and turn generation fence stale workers and late output. Restart recovery stops old sessions and requires an explicit organizer restart.
+
+The scoped room worker creates one LiveKit agent media connection and one manually committed shared Realtime transcription session. Per-track .NET speech detection runs before external forwarding with bounded 240-ms pre-roll, 600-ms trailing silence, track/generation/timestamp provenance and overlap metadata. Only admitted human microphone tracks enter the allowed set; agent, system, and screen-share audio remain excluded by the existing transport. Raw audio stays in bounded memory and is cleared on revocation, removal, end, failure, or worker shutdown.
+
+All admitted humans must grant transient AI-processing consent. A new admission or withdrawal stops and fences AI while the human call and manual presentation remain available. Transcript retention is a separate participant choice; a completed transcript is stored only when that participant's retained-transcript consent and consent version still match. Typed questions remain available during AI fallback.
+
+Both output paths use the same published track. Narration reopens Prompt 6's approved asset and rechecks revision, audience, customer, current slide/talking point, render acknowledgements and turn. Answers use the existing question-answering service and selected Sales presenter, require evidence and explicit customer-stage release before synthesis, then recheck release and turn before the first output frame. Unexpected provider audio is blocked. Human speech cancels output at local detection and advances the durable turn fence.
+
+Migration `20260910132423_AddConsentAwareSalesRoomAgent` adds the room lease/health/usage fields plus `sales_room_agent_speech` and consent-versioned `sales_room_agent_transcripts`. It is additive, tenant-keyed, and has no raw-audio column. Existing rooms receive `not_connected` voice health and turn generation 1.
+
+The host room UI follows the [generated reference](../design/references/browser-sales-room-agent-reference.png): it shows consent readiness, independent voice health, duration and estimated spend, explicit start/present/stop actions, typed questions, private evidence, paused fallback, and received/detected/forwarded/provider-billed metrics. Provider duration is shown only when reported; the UI explicitly withholds savings claims without billing evidence.
+
+Verification: focused backend tests passed (23), browser component tests passed (11), Teams/shared media regressions passed (61), SQL Server fresh/upgrade migration checks passed, EF reports no pending model changes, and API/Web builds pass with existing warnings. Chrome desktop/mobile captures pass semantic assertions and overflow checks. See the [Prompt 7 UAT record](browser-sales-room/prompt7-uat.md), [browser checks](browser-sales-room/prompt7-browser-checks.json), [desktop capture](browser-sales-room/prompt7-host-agent-1440.png), and [mobile capture](browser-sales-room/prompt7-host-agent-390.png).
+
+No LiveKit credentials were available, so a real multi-human call and customer-audible end-to-end latency remain unrun and are not claimed. The preserved live-room gate from Prompt 1 still applies. No Teams-specific source, test, deployment script, setting, or historical migration changed; the focused Teams/shared media suite passed without enabling or invoking Teams.
+
+## Prompt 8 — Dialogue, interruption and human takeover (2026-09-10)
+
+Implemented a durable Sales-owned floor controller with host/preauthorized-co-host authority, human/agent/pending/overlap states, manual/assisted/autonomous policy, turn and response generations, exact presentation binding, resume offset, and per-client playback-stop receipts. Address detection proposes a turn; the backend authorizes it. Human-to-human speech remains human-owned, overlap waits, and only evidence-backed released answers can enter the shared agent track.
+
+Speech start now cancels live generation and approved playback directly in the input loop before utterance completion or transcription. It also flushes adapter output, preempts narration, persists the new generation and publishes a client-detach request. Takeover restores manual presentation control, fences queued and late work, and persists across reconnect. Resume rechecks controller authority, consent, presentation version and required render acknowledgements, then continues the current approved narration from its saved PCM offset. Autonomous mode advances only through the bounded existing conductor and pauses on missing new-slide readiness or release.
+
+Migration `20260910150531_AddSalesRoomFloorControl` is additive and EF reports no pending model changes. Focused floor/VAD/lease/conductor tests passed 23/23; affected Teams interruption/conductor/shared-media tests passed 37/37; Web component tests passed 11/11; browser JavaScript tests passed 11/11. API and Web builds pass. Chrome desktop/mobile semantic and overflow checks passed. See the [UAT record](browser-sales-room/prompt8-uat.md), [check results](browser-sales-room/prompt8-check-results.json), [browser checks](browser-sales-room/prompt8-browser-checks.json), [desktop capture](browser-sales-room/prompt8-host-floor-1440.png), and [mobile capture](browser-sales-room/prompt8-host-floor-390.png).
+
+No LiveKit credentials or SQL Server test connection were configured. The real three-human English/Swedish call, physical echo/device and organizer-loss scenarios, customer-audible p95 latency, and SQL Server fresh/upgrade execution remain unrun and are not claimed. No application database or live Teams resource was changed.
+
+
+## Prompt 9 — consented capture and reviewed closing
+
+Implemented browser provenance, consent/lease-fenced capture, idempotent end/closing, reviewed reasoning, customer/private review UI, canonical approval delivery revalidation and retention cleanup. See [implementation, UAT and live limits](browser-sales-room/prompt9-uat.md), [browser checks](browser-sales-room/prompt9-browser-checks.json) and [Teams preservation comparison](browser-sales-room/prompt9-preservation-comparison.json). Backend regressions: 67 passed including both SQL Server tests; Teams/expanded retention: 57 passed; Web: 16 passed. Live full-call/provider and actual mailbox send verification remain unrun.
+
+## Prompt 10 — complete-call cost and Azure capacity benchmark
+
+Implemented the frozen 30-minute three-arm benchmark, speech-policy matrix, fail-closed load/spend gates, cost/resource analyzer, production OpenTelemetry measurements and disposable Sweden Central App Service template. The analyzer covers all-attempt provider/LiveKit cost, incremental and fixed Azure cost, 1/10/40/80 cache views, billed-audio VAD savings, p95 quality targets, baseline-subtracted CPU/memory and bounded 1/5/10/25/50 capacity with stop/drain rules.
+
+The live run is blocked because no named authorized isolated Azure target/separate load generator, LiveKit credentials, permitted synthetic participant credentials, or explicit spend/concurrency envelope was supplied. All full-call cost, resource, latency and capacity fields remain null; no microbenchmark estimate was relabelled. See the [Prompt 10 benchmark report](browser-sales-room/prompt10-benchmark.md) and [machine-readable result](../../artifacts/sales-room-full-call-benchmark/2026-09-10-blocked-v3/report.json).
+
+Seven offline accounting/protocol tests pass, the Bicep template compiles, and the focused API/agent/narration/VAD/telemetry plus shared Teams selection passes 63 tests with one credential-gated live narration test skipped. No deployment, provider call, load, send, database change or Teams traffic occurred. No production concurrency, quota or budget default changed because measured evidence is unavailable.
+
+## Prompt 11 — operations hardening and Teams reactivation evidence
+
+Added a disabled-by-default production browser deployment template with a dedicated two-or-more-instance App Service topology, managed identity, versionless Key Vault secret references, `/health/ready`, Application Insights, Log Analytics, diagnostics and an availability check. Capacity, duration, current provider rates and spend budgets are required deployment inputs because Prompt 10 has no authorized measured load result. The companion script compiles and runs Azure what-if before an explicitly requested apply.
+
+Browser lifecycle and agent options now support live drain and emergency disable. Admission rejects disabled/draining work. Active workers cancel media, stop the durable lease and mark queued/processing speech interrupted. Per-call duration/audio/spend, company monthly spend and company/global active-agent limits use SQL state and provider-reported billed audio/tokens. Rate evidence must include a current UTC review date and reference; stale or absent evidence fails enabled agent readiness.
+
+The coordinator no longer stops all active agents at process startup. It preserves unexpired leases owned by other instances, reaps only expired leases during periodic reconciliation, handles SQL concurrency losers as fenced, and releases locally owned work during graceful shutdown. Generation/owner/turn checks remain on renewal, transcript handling and output publication, so abandoned speech is never replayed after replacement.
+
+The `sales-browser-room` readiness check reports admission/drain, media/provider/speech health, lifecycle ambiguity, active/stale ownership, unhealthy voice, limits and rate evidence without tenant identifiers. New low-cardinality meter series cover admissions, lifecycle, latency, ownership, quota and estimated spend; existing series cover audio stages, tokens, frame drops, reconnects, failures, sessions and queue depth.
+
+Verification results:
+
+- API build passed with existing warnings. Focused Prompt 11 policy/telemetry/fencing/configuration tests passed **23/23**.
+- Broader browser, narration, closing, presentation and Teams API regression selection passed **184**, with six environment-gated tests skipped in that run. The same five SQL fresh/upgrade/data-preservation tests then passed against disposable LocalDB databases: browser room **2/2**, narration/Teams **3/3**.
+- EF reported no pending model changes. Browser Bicep and all three preserved Teams Bicep templates compiled.
+- Teams SDK `Microsoft.Graph.Communications.Calls.Media` **1.2.0.17950** passed its reviewed 92-day gate at 70 days. Disabled package generation passed with synthetic identifiers and produced a three-entry local artifact with SHA-256 `97453722844DFB9516E017C880ED350A9ADFCDB3B3D3950401BCC318A8259094`.
+- The focused browser/Teams/localization Web selection passed **57/57**. The initial broad Web run passed 648/650 and exposed a missing Swedish presenter-count placeholder plus an unrelated Dashboard fixture failure. After fixing and verifying the Teams-facing localization defect, the broad rerun passed **649/650**; `DashboardPageTests.Dashboard_renders_required_section_order_for_action_first_layout` remains failed because its fixture does not register `IMonthlyWorkspaceApiClient`, outside the browser/Teams path.
+
+See the [operations runbook](../browser-sales-room-operations.md), [UAT record](browser-sales-room/prompt11-uat.md), [machine-readable checks](browser-sales-room/prompt11-check-results.json), [baseline](browser-sales-room/prompt11-baseline.json) and [comparison](browser-sales-room/prompt11-preservation-comparison.json). The authorized full browser journey, real decks/devices/networks, provider/app loss, long call, load/soak and measured p95 remain blocked by the exact prerequisites in the UAT record. No deployment, live provider/Teams call, external invitation/follow-up or application database change occurred.

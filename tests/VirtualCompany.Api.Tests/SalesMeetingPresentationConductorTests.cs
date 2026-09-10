@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Infrastructure.Sales;
@@ -7,6 +9,24 @@ namespace VirtualCompany.Api.Tests;
 public sealed class SalesMeetingPresentationConductorTests
 {
     [Fact]
+    public void Route_neutral_options_inherit_explicit_teams_values_when_the_new_section_is_absent()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            [$"{TeamsPresenterOptions.SectionName}:StageRenderTimeoutMilliseconds"] = "1700",
+            [$"{TeamsPresenterOptions.SectionName}:MaximumConsecutiveSlideTransitions"] = "6",
+            [$"{TeamsPresenterOptions.SectionName}:MinimumSlideDwellSeconds"] = "4"
+        }).Build();
+        using var provider = new ServiceCollection().AddSalesInfrastructure(configuration).BuildServiceProvider();
+
+        var options = provider.GetRequiredService<IOptions<SalesPresentationConductorOptions>>().Value;
+
+        Assert.Equal(1700, options.RenderTimeoutMilliseconds);
+        Assert.Equal(6, options.MaximumConsecutiveSlideTransitions);
+        Assert.Equal(4, options.MinimumSlideDwellSeconds);
+    }
+
+    [Fact]
     public async Task Autonomous_transition_waits_for_exact_authoritative_render_before_narration()
     {
         var ids = new Ids();
@@ -14,7 +34,7 @@ public sealed class SalesMeetingPresentationConductorTests
         var stage = new SalesPresentationStagePresenceService();
         var preemption = new SalesPresentationNarrationPreemption();
         var conductor = new SalesMeetingPresentationConductor(runtime, stage, preemption,
-            Options.Create(new TeamsPresenterOptions { StageRenderTimeoutMilliseconds = 500,
+            Options.Create(new SalesPresentationConductorOptions { RenderTimeoutMilliseconds = 500,
                 MaximumConsecutiveSlideTransitions = 8, MinimumSlideDwellSeconds = 0 }));
         await stage.RegisterAsync(new SalesPresentationStagePresence(ids.Company, ids.Session, ids.Deck, 3,
             "connection", true, DateTime.UtcNow), default);
@@ -42,7 +62,7 @@ public sealed class SalesMeetingPresentationConductorTests
         {
             var runtime = new Runtime(ids, mode);
             var conductor = new SalesMeetingPresentationConductor(runtime, stage, preemption,
-                Options.Create(new TeamsPresenterOptions { StageRenderTimeoutMilliseconds = 250,
+                Options.Create(new SalesPresentationConductorOptions { RenderTimeoutMilliseconds = 250,
                     MaximumConsecutiveSlideTransitions = 8, MinimumSlideDwellSeconds = 0 }));
             var plan = await conductor.PrepareAsync(new SalesPresentationNarrationRequest(ids.Company, ids.User,
                 ids.Session, SalesPresentationToolNames.Next, null, null, null, null, null), default);

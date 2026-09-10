@@ -1,0 +1,106 @@
+@using VirtualCompany.Web.Services
+@inject SalesNarrationApiClient Client
+
+<section class="narration" aria-labelledby="narration-heading">
+    <header><div><span class="vc-kicker">Sales · Presentation</span><h2 id="narration-heading">Presentation narration</h2>
+        <p>Review once. Reuse approved speech.</p></div><button type="button" class="sales-button" disabled="@busy" @onclick="Load">Refresh</button></header>
+    @if (SessionId == Guid.Empty) { <p>Save the meeting and activate a processed deck to prepare narration.</p> }
+    else if (loading) { <p role="status">Loading narration…</p> }
+    else
+    {
+        @if (error is not null) { <p class="narration-error" role="alert">@error</p> }
+        <div class="narration-controls">
+            <label>Language<select @bind="language"><option value="en">English</option><option value="sv">Swedish</option></select></label>
+            <label>Voice<input readonly value="@(workspace?.Speech.Voice ?? "Unavailable")" /></label>
+            <label>Audience<input readonly value="This meeting’s customer" /></label>
+            <button type="button" class="sales-button sales-button--primary" disabled="@busy" @onclick="Prepare">Prepare script</button>
+        </div>
+        @if (workspace is not null && !workspace.Speech.Available) { <p role="status">Speech is unavailable. You can prepare and review a script; generation requires configured shared speech.</p> }
+        @if (workspace?.Revisions.Count == 0) { <p>No narration yet. Prepare a draft from the active slides, then review its wording and sources before approving generation.</p> }
+        @if (workspace is not null)
+        {
+            <div class="narration-workspace"><div class="narration-main">
+            @foreach (var revision in workspace.Revisions)
+            {
+                <article class="narration-revision" @key="@(revision.Id.ToString() + revision.Version + revision.Status)">
+                    <header><div><h3>Deck revision @revision.DeckVersion · @(revision.Language == "sv" ? "Swedish" : "English")</h3>
+                        <small>@revision.CreatedUtc.ToLocalTime().ToString("g") · @revision.Voice</small></div><strong class="narration-status">@Label(revision.Status)</strong></header>
+                    <div class="narration-usage">
+                        <span>Generated <strong>@revision.GeneratedMinutes.ToString("0.00") min</strong></span>
+                        <span>Preview delivery <strong>@revision.ReusedMinutes.ToString("0.00") min</strong></span>
+                        <span>Usage <strong>@revision.InputTokens in / @revision.OutputTokens out</strong></span>
+                        <span>Generation estimate <strong>@(revision.EstimatedCostUsd is decimal cost ? cost.ToString("0.0000") + " USD" : "Not priced")</strong></span>
+                    </div>
+                    @if (revision.UnresolvedAttempts > 0) { <p class="narration-error">@revision.UnresolvedAttempts attempt(s) have unresolved usage. A retry may incur another charge.</p> }
+                    @foreach (var segment in revision.Segments)
+                    {
+                        <div class="narration-segment">
+                            <h4>Slide @segment.SlideNumber · Talking point @segment.TalkingPoint</h4>
+                            <div class="narration-script-grid"><details open><summary>Source evidence</summary><p>@segment.SourceText</p></details>
+                            <label>Customer-safe script<textarea rows="3" maxlength="3000" @onchange="e => edits[segment.Id] = e.Value?.ToString() ?? string.Empty">@Text(segment)</textarea></label></div>
+                            <p><strong>@Label(segment.Status)</strong> · @segment.Attempts attempt(s) @(segment.Reused ? "· Reused audio" : "")</p>
+                            @if (segment.FailureCode is not null) { <p role="status">@Failure(segment.FailureCode)</p> }
+                            @if (revision.ApprovedUtc.HasValue && revision.Status is "ready" or "not_ready" && segment.Status == "ready")
+                            {
+                                <audio controls preload="none" src="@SalesNarrationApiClient.PreviewUrl(CompanyId, SessionId, revision, segment)" @onerror="PreviewError">Your browser cannot play this audio.</audio>
+                            }
+                        </div>
+                    }
+                    <h4>Review</h4><div class="narration-actions">
+                        <button type="button" class="sales-button" disabled="@busy" @onclick="() => SaveRevision(revision)">Save as new revision</button>
+                        @if (revision.Status == "draft")
+                        {
+                            <label><input type="checkbox" checked="@approved.Contains(revision.Id)" @onchange="e => SetApproved(revision.Id, e)" /> I reviewed every source and script and approve disclosure to this meeting’s customer.</label>
+                            <button type="button" class="sales-button sales-button--primary" disabled="@(busy || !approved.Contains(revision.Id) || workspace.Speech.Available == false)" @onclick='() => Decide(revision, "approve")'>Approve and generate</button>
+                        }
+                        @if (revision.ApprovedUtc.HasValue && revision.Status is "ready" or "not_ready")
+                        {
+                            <button type="button" class="sales-button" disabled="@busy" @onclick='() => Decide(revision, "revoke")'>Revoke approval</button>
+                            @if (revision.Segments.Any(s => s.Status is "rejected" or "needs_review" or "deleted"))
+                            {
+                                <label><input type="checkbox" @bind="retryCost" /> I acknowledge an additional generation charge.</label>
+                                <button type="button" class="sales-button" disabled="@(busy || !retryCost)" @onclick='() => Decide(revision, "retry")'>Retry incomplete segments</button>
+                            }
+                        }
+                    </div>
+                    <p class="narration-note">Saving edits creates a separate draft. Approval always applies to the saved script shown above. Audio is available only after validation. Preview delivery measures bytes served, not listening time.</p>
+                </article>
+            }
+            </div><aside class="narration-next"><h3>Next action</h3><p>@(workspace.Revisions.FirstOrDefault()?.Status == "ready" ? "Preview the approved audio and check pronunciation before your meeting." : "Review the source evidence and approve the saved script for this customer.")</p>
+                @if (workspace.Revisions.FirstOrDefault() is { } latest && latest.Status != "ready")
+                { <div class="narration-incomplete"><strong>Audio incomplete</strong><p>Every talking point needs validated audio before the presentation is ready.</p></div> }
+                <h4>Before approving</h4><p>Keep the script concise. Check claims and pronunciation. Save any edits as a new revision.</p>
+            </aside></div>
+        }
+    }
+</section>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid SessionId { get; set; }
+    private NarrationWorkspace? workspace;
+    private bool loading, busy, retryCost;
+    private string language = "en";
+    private string? error;
+    private Guid loadedSession;
+    private readonly Dictionary<Guid, string> edits = new();
+    private readonly HashSet<Guid> approved = new();
+    protected override async Task OnParametersSetAsync() { if (SessionId != loadedSession) { loadedSession = SessionId; await Load(); } }
+    private async Task Load() { if (SessionId == Guid.Empty) return; loading = true; try { workspace = await Client.GetAsync(CompanyId, SessionId); } catch (Exception) { error = "Narration could not load. Check your access and try Refresh."; } finally { loading = false; } }
+    private async Task Run(Func<Task> action) { busy = true; error = null; try { await action(); edits.Clear(); approved.Clear(); await Load(); } catch (Exception ex) { error = ex is InvalidOperationException ? ex.Message : "Narration could not be updated. Refresh and try again."; } finally { busy = false; } }
+    private Task Prepare() => Run(() => Client.PrepareAsync(CompanyId, SessionId, language));
+    private Task SaveRevision(NarrationRevision r) => Run(() => Client.PrepareAsync(CompanyId, SessionId, language, r.Segments.Select(s => new NarrationScript(s.SlideNumber, s.TalkingPoint, Text(s))).ToArray()));
+    private Task Decide(NarrationRevision r, string action)
+    {
+        if (action == "approve" && r.Segments.Any(s => Text(s) != s.Script)) { error = "Save your edits as a new revision before approving."; return Task.CompletedTask; }
+        return Run(() => Client.DecideAsync(CompanyId, r, action, retryCost));
+    }
+    private string Text(NarrationSegment s) => edits.GetValueOrDefault(s.Id, s.Script);
+    private void SetApproved(Guid id, ChangeEventArgs e) { if (e.Value is true) approved.Add(id); else approved.Remove(id); }
+    private void PreviewError() => error = "Audio preview could not load. Refresh to check approval and asset readiness, then retry.";
+    private static string Label(string status) => status switch { "not_ready" => "Not fully ready", "needs_review" => "Needs review", "pending" => "Waiting for generation", _ => System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(status.Replace('_', ' ')) };
+    private static string Failure(string code) => code switch { "daily_cost_limit" => "The daily generation budget is reached. Generation resumes when budget is available.", "script_audio_mismatch" => "Generated speech did not match the script. Review the text and retry.", "asset_missing_or_corrupt" => "Stored audio is unavailable. Retry generation.", _ => "Generation needs review. Usage may be unresolved; retry only after acknowledging the additional cost." };
+}
+
+
+

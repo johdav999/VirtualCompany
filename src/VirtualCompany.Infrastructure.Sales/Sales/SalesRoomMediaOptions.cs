@@ -32,13 +32,24 @@ public static class SalesRoomMediaRegistration
 {
     public static IServiceCollection AddSalesRoomMedia(this IServiceCollection services, IConfiguration configuration)
     {
-        // Optional provider settings never validate-on-start or load native libraries during DI.
-        services.AddOptions<SalesRoomMediaOptions>().Bind(configuration.GetSection(SalesRoomMediaOptions.SectionName));
+        // Disabled optional routes remain startup-safe; enabled routes validate configuration without loading native libraries.
+        services.AddOptions<SalesRoomMediaOptions>().Bind(configuration.GetSection(SalesRoomMediaOptions.SectionName))
+            .Validate(x => !x.Enabled || x.ConfigurationProblem is null,
+                "Browser-room media settings are invalid when the route is enabled.")
+            .ValidateOnStart();
         services.AddHttpClient("SalesBrowserRoom.LiveKit", client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddSingleton<LiveKitSalesRoomMediaTransport>();
         services.AddSingleton<ISalesRoomMediaTransport>(p=>p.GetRequiredService<LiveKitSalesRoomMediaTransport>());
         services.AddSingleton<ISalesRoomProviderInspection>(p=>p.GetRequiredService<LiveKitSalesRoomMediaTransport>());
-        services.AddOptions<SalesRoomLifecycleOptions>().Bind(configuration.GetSection(SalesRoomLifecycleOptions.SectionName));
+        services.AddOptions<SalesRoomLifecycleOptions>().Bind(configuration.GetSection(SalesRoomLifecycleOptions.SectionName))
+            .Validate(x => !x.Enabled ||
+                x.MaximumRoomsPerCompany is >= 1 and <= 1000 &&
+                x.MaximumLiveRoomsPerCompany is >= 1 and <= 100 &&
+                x.MaximumParticipants is >= 2 and <= 6 &&
+                x.MaximumInvitationsPerRoom is >= 1 and <= 100 &&
+                !string.IsNullOrWhiteSpace(x.NoticeVersion) && x.NoticeVersion.Length <= 80,
+                "Browser-room lifecycle limits are invalid when admission is enabled.")
+            .ValidateOnStart();
         services.AddScoped<ISalesBrowserRoomService, SalesBrowserRoomService>();
         services.AddScoped<ISalesBrowserMeetingScheduling, SalesBrowserMeetingScheduling>();
         services.AddScoped<ISalesRoomWorkDispatcher, SalesRoomWorkDispatcher>();

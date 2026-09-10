@@ -1,0 +1,702 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject SalesBrowserRoomApiClient Hosts
+@inject SalesBrowserGuestApiClient Guests
+@inject SalesPresentationRuntimeClient Presentation
+@inject NavigationManager Navigation
+
+<div class="human-room" @ref="root">
+    <header class="room-header"><strong>Virtual Company</strong><span>Browser meeting</span></header>
+    <main class="room-layout @(HostCompanyId.HasValue ? "room-layout--host" : "")">
+        <section class="room-card room-main" aria-labelledby="room-title">
+            <h1 id="room-title">@(joined ? "Browser meeting" : "Join your meeting")</h1>
+            <p class="room-subtitle">@(joined ? "Real people. Real conversations." : "Check your devices before you ask to join.")</p>
+            <p class="room-status" role="status" aria-live="polite">@StatusText</p>
+            @if (HostCompanyId.HasValue && finished)
+            { <a class="room-primary" href="@($"/app/sales/rooms/{RoomId}/review")">Review capture and closing</a> }
+            @if ((error ?? mediaError) is string message) { <p class="room-alert" role="alert">@message</p> }
+            <div hidden="@(joined || finished)" class="room-prejoin">
+                <div class="room-preview"><span class="room-preview-avatar" hidden="@media.Camera">You</span><span class="room-preview-label">@(media.Camera ? "Your camera preview" : "Camera off")</span><video data-preview autoplay muted playsinline aria-label="Your camera preview"></video></div>
+                @if (!HostCompanyId.HasValue)
+                {
+                    <label class="room-field">Display name<input maxlength="80" autocomplete="name" @bind="displayName" disabled="@(credential is not null)" /></label>
+                }
+                <div class="room-actions"><button type="button" data-room-action="preview">Check devices</button><button type="button" data-room-action="sound">Test speaker</button></div>
+                <p class="room-hint">Device checks stay on this device. Use headphones to avoid echo. You can join with your microphone and camera off.</p>
+                <button type="button" class="room-primary room-join" disabled="@(busy || !initialized || !canJoin || finished)" @onclick="Join">@(HostCompanyId.HasValue || credential is not null ? "Join meeting" : "Ask to join")</button>
+            </div>
+            @if (joined && presentationStage is not null)
+            {
+                <section class="room-presentation" aria-label="Shared presentation">
+                    <div class="room-presentation__heading">
+                        <div><span class="room-eyebrow">Shared presentation</span><h2>@(presentationStage.SlideTitle ?? $"Slide {presentationStage.SlideNumber}")</h2></div>
+                        <span class="room-slide-count">@presentationStage.SlideNumber / @presentationStage.SlideCount</span>
+                    </div>
+                    <div class="room-presentation__stage" style="@PresentationAspect">
+                        @if (presentationImage is not null)
+                        {
+                            <img @key="presentationImageKey" src="@presentationImage" alt="@PresentationAlt" @onload="PresentationRendered" @onerror="PresentationImageFailed" />
+                        }
+                        else
+                        {
+                            <div class="room-presentation__empty" role="status"><strong>@(presentationLoading ? "Loading shared slide…" : "Shared slide unavailable")</strong><span>@presentationError</span></div>
+                        }
+                    </div>
+                    <div class="room-presentation__status" role="status" aria-live="polite">
+                        <span class="room-status-dot" aria-hidden="true"></span>@PresentationStatus
+                    </div>
+                </section>
+                @if (!HostCompanyId.HasValue && guest?.AiProcessingAllowed == true)
+                {
+                    <section class="room-address-agent" aria-labelledby="room-address-agent-title">
+                        <div><span class="room-eyebrow">Address the room agent</span><h2 id="room-address-agent-title">Ask Alex</h2></div>
+                        <p>Use Alex’s name and ask one clear question. The host’s floor mode decides whether an answer is proposed, confirmed, or spoken.</p>
+                        <label class="room-field">Question<textarea rows="2" maxlength="2000" @bind="guestAgentQuestion" placeholder="Alex, how does…?"></textarea></label>
+                        <button type="button" disabled="@(busy || string.IsNullOrWhiteSpace(guestAgentQuestion))" @onclick="AddressAgent">Address Alex</button>
+                    </section>
+                }
+            }
+            <div data-participants class="room-participants" hidden="@(!joined)"></div>
+            <div class="room-toolbar" aria-label="Meeting controls" hidden="@finished">
+                <button type="button" data-room-action="microphone" aria-pressed="@media.Microphone">@(media.Microphone ? "Mute" : "Unmute")</button>
+                <button type="button" data-room-action="camera" aria-pressed="@media.Camera">@(media.Camera ? "Stop camera" : "Start camera")</button>
+                <button type="button" data-room-action="share" disabled="@(!joined || !media.CanShare)" aria-pressed="@media.Sharing">@(media.Sharing ? "Stop sharing" : "Share screen")</button>
+                <button type="button" data-room-action="sound">Enable sound</button>
+                @if (joined || credential is not null || HostCompanyId.HasValue) { <button type="button" class="room-danger" disabled="@busy" @onclick="Leave">Leave</button> }
+            </div>
+            <details class="room-device-settings" hidden="@finished" open="@(!joined)">
+                <summary>Microphone, camera and speaker</summary>
+                <label class="room-field">Microphone<select data-device="audioinput" aria-label="Microphone"></select></label>
+                <label class="room-field">Camera<select data-device="videoinput" aria-label="Camera"></select></label>
+                <label class="room-field">Speaker<select data-device="audiooutput" aria-label="Speaker"></select></label>
+                <button type="button" data-room-action="devices">Apply devices</button>
+                <p class="room-hint">If your browser cannot change the speaker, use your device's sound settings.</p>
+            </details>
+            @if (joined && media.Status is "disconnected" or "provider_unavailable" or "control_lost")
+            { <button type="button" class="room-primary" disabled="@busy" @onclick="Reconnect">Reconnect to meeting</button> }
+            @if (joined)
+            {
+                var aiAllowed = HostCompanyId.HasValue ? HostParticipant?.AiProcessingAllowed == true : guest?.AiProcessingAllowed == true;
+                var transcriptAllowed = HostCompanyId.HasValue ? HostParticipant?.TranscriptRetentionAllowed == true : guest?.TranscriptRetentionAllowed == true;
+                <section class="room-consent" aria-labelledby="room-consent-title">
+                    <div><span class="room-eyebrow">Your choice</span><h2 id="room-consent-title">AI audio processing</h2></div>
+                    <p>AI listens only after every admitted person agrees. Human audio keeps flowing through the meeting. You can withdraw at any time and AI stops.</p>
+                    <div class="room-consent__actions">
+                        <button type="button" class="@(aiAllowed ? "room-consent__active" : null)" disabled="@busy" @onclick='() => SetConsent("ai_processing", !aiAllowed)'>@(aiAllowed ? "Withdraw AI consent" : "Allow AI for this meeting")</button>
+                        <button type="button" class="@(transcriptAllowed ? "room-consent__active" : null)" disabled="@busy" @onclick='() => SetConsent("retained_transcript", !transcriptAllowed)'>@(transcriptAllowed ? "Do not retain my transcript" : "Allow my transcript to be retained")</button>
+                    </div>
+                    <small>Transcript retention is a separate choice. Microphone audio is never stored.</small>
+                </section>
+            }
+            <div class="room-notice"><strong>@(agent?.State is "ready" or "speaking" ? $"{agent.AgentName} is in the meeting" : "Human call and manual slides stay available")</strong><p>@AgentPublicStatus</p></div>
+            <div class="room-notice"><strong>Audio and video are not recorded.</strong><p>Raw microphone audio is never retained. A transcript is kept only for a participant who separately allows it.</p></div>
+        </section>
+        @if (HostCompanyId.HasValue && host is not null)
+        {
+            <aside class="room-card room-host" aria-label="Private host controls">
+                <h2>Private host controls</h2><p class="room-hint">Only the organizer can manage meeting access.</p>
+                <section class="room-agent" aria-labelledby="room-agent-title">
+                    <div class="room-private-label"><span aria-hidden="true">●</span><strong>Only you can see this</strong></div>
+                    <div class="room-agent__heading">
+                        <div><span class="room-eyebrow">Agent</span><h3 id="room-agent-title">@((agent?.AgentName ?? "Alex") + " · Sales agent")</h3><p>@AgentStateLabel</p></div>
+                        <span class="room-agent__state room-agent__state--@(agent?.State ?? "not-started")">@AgentStateLabel</span>
+                    </div>
+                    @if (agent?.Floor is { } floor)
+                    {
+                        <div class="room-floor" role="status" aria-live="polite">
+                            <div class="room-floor__owner"><span aria-hidden="true">●</span><div><small>Floor and status</small><strong>Floor: @floor.OwnerLabel</strong><span>@FloorStatus(floor)</span></div></div>
+                            <fieldset class="room-floor__modes">
+                                <legend>Agent mode</legend>
+                                @foreach (var mode in new[] { "manual", "assisted", "autonomous" })
+                                {
+                                    <button type="button" class="@(floor.ControlMode == mode ? "is-selected" : null)"
+                                        aria-pressed="@(floor.ControlMode == mode)" disabled="@(presentationBusy || presentationStage is null)"
+                                        @onclick="() => ChangePresentationMode(mode)">@ModeLabel(mode)</button>
+                                }
+                            </fieldset>
+                            <div class="room-floor__actions">
+                                <button type="button" class="room-primary" disabled="@(!CanResumeFloor)" @onclick="ResumeFloor">Resume from current point</button>
+                                <button type="button" class="room-danger" disabled="@(!CanTakeOver)" @onclick="TakeOver">Take over</button>
+                            </div>
+                            <small>Manual slides and human audio continue if the agent is unavailable.</small>
+                        </div>
+                        @if (floor.PendingTurnId.HasValue)
+                        {
+                            <section class="room-pending-turn" aria-label="Pending agent turn">
+                                <div><strong>@(floor.Overlap ? "Overlapping speech" : "Customer asked Alex")</strong><span>@PendingTurnLabel(floor.PendingTurnState)</span></div>
+                                <p><b>@(floor.PendingParticipantLabel ?? "Participant")</b> · @(floor.PendingQuestionId.HasValue ? "A grounded answer is ready for host review." : "No transcript text was retained; use the typed question control if an answer is needed.")</p>
+                                @if (floor.PendingTurnState is "confirmation_required" or "host_invocation_required")
+                                {
+                                    <div class="room-floor__actions"><button type="button" class="room-primary" disabled="@agentBusy" @onclick="ConfirmPendingTurn">Approve answer</button><button type="button" disabled="@agentBusy" @onclick="DismissPendingTurn">Dismiss</button></div>
+                                }
+                            </section>
+                        }
+                        @if (floor.PlaybackStop.StopId.HasValue)
+                        {
+                            <div class="room-stop-receipt">
+                                <div><strong>Playback stop · @floor.PlaybackStop.State.Replace('_', ' ')</strong><b>@(floor.PlaybackStop.ElapsedMilliseconds?.ToString() ?? "—") ms</b></div>
+                                <small>@floor.PlaybackStop.AcknowledgedCount of @floor.PlaybackStop.RequiredCount clients acknowledged</small>
+                            </div>
+                        }
+                    }
+                    <div class="room-agent__checks">
+                        <div><strong>@(agent?.ConsentedParticipants ?? 0) of @(agent?.RequiredParticipants ?? 0) consented</strong><small>@(agent?.AllParticipantsConsented == true ? "Ready for AI" : "Waiting for every person")</small></div>
+                        <div><strong>@VoiceHealthLabel</strong><small>Independent voice track</small></div>
+                        <div><strong>@AgentDuration</strong><small>Agent audio duration</small></div>
+                        <div><strong>@("$" + (agent?.EstimatedSpendUsd ?? 0).ToString("0.0000"))</strong><small>Estimated spend</small></div>
+                    </div>
+                    <button type="button" class="room-primary room-agent__wide" disabled="@(!CanStartAgent)" @onclick="StartAgent">Start agent</button>
+                    <button type="button" class="room-agent__wide" disabled="@(!CanNarrate)" @onclick="Narrate">Present this point</button>
+                    <button type="button" class="room-danger room-agent__wide" disabled="@(!CanStopAgent)" @onclick="StopAgent">Stop AI</button>
+                    @if (agent?.State == "paused" || agent?.LastErrorSummary is not null)
+                    {
+                        <div class="room-agent__paused" role="status"><strong>AI paused</strong><p>@(agent.LastErrorSummary ?? "Review consent and start the agent when ready.")</p><small>Human call and manual slides stay available.</small></div>
+                    }
+                    <label class="room-field" for="room-agent-question">Ask a typed question
+                        <textarea id="room-agent-question" rows="3" maxlength="2000" @bind="agentQuestion" placeholder="Type your customer question…"></textarea>
+                    </label>
+                    <button type="button" class="room-agent__wide" disabled="@(agentBusy || agent?.AgentId is null || string.IsNullOrWhiteSpace(agentQuestion))" @onclick="AskAgent">Check approved sources</button>
+                    @if (agent?.LatestAnswer is { } answer)
+                    {
+                        <details class="room-agent__evidence" open>
+                            <summary>Private evidence</summary>
+                            <strong>@answer.Question</strong>
+                            <p>@(answer.Answer ?? "Alex is checking approved sources…")</p>
+                            @foreach (var source in answer.Evidence)
+                            { <div class="room-agent__source"><span>@source.SourceTitle</span><small>@SourceLabel(source.SourceType)</small></div> }
+                            <button type="button" class="room-primary room-agent__wide"
+                                disabled="@(!CanSpeakAnswer(answer))" @onclick="() => SpeakAnswer(answer)">
+                                @(answer.Visibility == "approved_for_stage" ? "Speak approved answer" : "Approve and speak")
+                            </button>
+                        </details>
+                    }
+                    @if (agentError is not null) { <p class="room-alert" role="alert">@agentError</p> }
+                    @if (agent is not null)
+                    {
+                        <details class="room-agent__metrics">
+                            <summary>Audio and billing evidence</summary>
+                            <dl><div><dt>Received</dt><dd>@FormatDuration(agent.ReceivedAudioMilliseconds)</dd></div>
+                                <div><dt>Detected speech</dt><dd>@FormatDuration(agent.DetectedSpeechMilliseconds)</dd></div>
+                                <div><dt>Forwarded</dt><dd>@FormatDuration(agent.ForwardedAudioMilliseconds)</dd></div>
+                                <div><dt>Provider billed</dt><dd>@(agent.ProviderBilledAudioMilliseconds is long billed ? FormatDuration(billed) : "Not reported")</dd></div></dl>
+                            <p>No savings claim is made without provider billing evidence.</p>
+                        </details>
+                    }
+                </section>
+                @if (presentationPrivate is not null && presentationStage is not null)
+                {
+                    <section class="room-presenter" aria-label="Private presentation controls">
+                        <div class="room-private-label"><span aria-hidden="true">●</span><strong>Only you can see this</strong></div>
+                        <div class="room-deck-ready"><strong>Deck ready</strong><span>@presentationStage.SlideCount slides · version @presentationStage.DeckVersion</span>
+                            @if (host?.InvitationId is Guid invitationId)
+                            { <a href="@($"/app/sales/meeting-invitations/{invitationId:D}/prepare")">Review or select deck</a> }
+                        </div>
+                        <fieldset class="room-mode">
+                            <legend>Slide control mode</legend>
+                            @foreach (var mode in new[] { "manual", "assisted", "autonomous" })
+                            {
+                                <button type="button" class="@(presentationPrivate.ControlMode == mode ? "is-selected" : null)"
+                                    aria-pressed="@(presentationPrivate.ControlMode == mode)" disabled="@presentationBusy"
+                                    @onclick="() => ChangePresentationMode(mode)">@ModeLabel(mode)</button>
+                            }
+                        </fieldset>
+                        <div class="room-presenter__actions">
+                            <button type="button" disabled="@(presentationBusy || presentationStage.SlideNumber <= 1)" @onclick='() => PresentationCommand("presentation.previous")'>← Previous</button>
+                            <button type="button" class="room-primary" disabled="@(presentationBusy || presentationStage.SlideNumber >= presentationStage.SlideCount)" @onclick='() => PresentationCommand("presentation.next")'>Next →</button>
+                            <button type="button" disabled="@presentationBusy" @onclick='() => PresentationCommand("presentation.pause")'>Pause</button>
+                            <button type="button" disabled="@presentationBusy" @onclick='() => PresentationCommand("presentation.resume")'>Resume</button>
+                        </div>
+                        <div class="room-slide-picker" aria-label="Choose slide">
+                            @foreach (var slide in Enumerable.Range(1, presentationStage.SlideCount))
+                            {
+                                <button type="button" class="@(slide == presentationStage.SlideNumber ? "is-current" : null)"
+                                    aria-label="@($"Go to slide {slide}")" aria-current="@(slide == presentationStage.SlideNumber ? "page" : null)"
+                                    disabled="@presentationBusy" @onclick='() => PresentationCommand("presentation.goto", slide)'>@slide</button>
+                            }
+                        </div>
+                        <div class="room-notes"><strong>Speaker notes</strong><p>@(presentationPrivate.SpeakerNotes ?? "No speaker notes for this slide.")</p></div>
+                        <dl class="room-presenter__facts">
+                            <div><dt>Objective</dt><dd>@presentationPrivate.Objective</dd></div>
+                            <div><dt>Duration</dt><dd>About @presentationPrivate.ExpectedDurationSeconds seconds</dd></div>
+                            <div><dt>Next slide cue</dt><dd>@presentationPrivate.TransitionText</dd></div>
+                        </dl>
+                        @if (readiness is not null)
+                        {
+                            <div class="room-readiness">
+                                <strong>Audience readiness</strong>
+                                <p><b>@readiness.RenderedCount of @readiness.RequiredCount rendered</b></p>
+                                @foreach (var audience in readiness.Audience.Where(x => x.State is not ("rendered" or "overridden")))
+                                {
+                                    <div class="room-readiness__person"><span>@audience.DisplayName</span><small>@ReadinessLabel(audience.State)</small></div>
+                                }
+                                @if (!readiness.Ready)
+                                {
+                                    <button type="button" disabled="@presentationBusy" @onclick="OverridePresentation">Continue anyway</button>
+                                }
+                            </div>
+                        }
+                        @if (presentationError is not null) { <p class="room-alert" role="alert">@presentationError</p> }
+                    </section>
+                }
+                <h3>Waiting to join (@host!.Participants.Count(x => x.State == "lobby"))</h3>
+                @if (!host.Participants.Any(x => x.State == "lobby")) { <p>No one is waiting.</p> }
+                @foreach (var participant in host.Participants.Where(x => x.State == "lobby"))
+                {
+                    <div class="room-person" @key="participant.Id"><strong>@participant.DisplayName</strong><small>Display name supplied by guest</small><div class="room-actions"><button type="button" class="room-primary" disabled="@(busy || finished)" @onclick='() => Decide(participant.Id, "admit")'>Admit</button><button type="button" class="room-danger" disabled="@(busy || finished)" @onclick='() => Decide(participant.Id, "deny")'>Deny</button></div></div>
+                }
+                <h3>Admitted participants</h3>
+                @foreach (var participant in host.Participants.Where(x => x.State is "admitted" or "removal_pending"))
+                {
+                    <div class="room-person" @key="participant.Id"><strong>@participant.DisplayName</strong>
+                    @if (participant.IsOrganizer) { <small>Organizer · @(participant.AiProcessingAllowed ? "AI consented" : "AI consent needed")</small> }
+                    else if (participant.State == "removal_pending") { <small>Removal pending</small> }
+                    else { <small>@(participant.AiProcessingAllowed ? "AI consented" : "AI consent needed")</small><button type="button" class="room-danger" disabled="@(busy || finished)" @onclick='() => Decide(participant.Id, "remove")'>Remove</button> }</div>
+                }
+                @if (!finished)
+                {
+                    <h3>Invite another guest</h3><p class="room-hint">Each link lets one guest ask to join. The host must admit them.</p>
+                    <button type="button" disabled="@busy" @onclick="Invite">Create guest link</button>
+                    @if (invitationUrl is not null) { <label class="room-field">Guest link<input readonly value="@invitationUrl" aria-label="Guest invitation link" /></label><p class="room-hint">Select and copy this link. Treat it as private.</p> }
+                    <hr />
+                    @if (confirmEnd) { <p>End this meeting for everyone?</p><div class="room-actions"><button type="button" class="room-danger" disabled="@busy" @onclick="End">End for everyone</button><button type="button" @onclick="() => confirmEnd = false">Keep meeting</button></div> }
+                    else { <button type="button" class="room-danger" disabled="@busy" @onclick="() => confirmEnd = true">End meeting</button> }
+                }
+                @if (host.Operations.Any(x => x.State == "needs_review")) { <p class="room-alert" role="status">A meeting operation needs organizer recovery. Access restrictions remain in effect. Contact your administrator.</p> }
+                @if (host.State == "ending") { <p role="status">Entry is closed. Media termination is pending confirmation.</p> }
+            </aside>
+        }
+    </main>
+</div>
+
+@code {
+    [Parameter] public Guid RoomId { get; set; }
+    [Parameter] public Guid? HostCompanyId { get; set; }
+    private ElementReference root;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<SalesHumanRoom>? reference;
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly SemaphoreSlim commandGate = new(1, 1);
+    private Task? polling;
+    private BrowserRoomSnapshot? host;
+    private BrowserGuestSnapshot? guest;
+    private SalesPresentationStageSnapshotViewModel? presentationStage, pendingPresentationAck;
+    private SalesPresentationPrivateSnapshotViewModel? presentationPrivate;
+    private SalesBrowserPresentationReadinessViewModel? readiness;
+    private BrowserRoomAgentStatus? agent;
+    private string? presentationImage, presentationImageKey, presentationError, agentError, agentQuestion, guestAgentQuestion;
+    private bool presentationBusy, presentationLoading, agentBusy;
+    private string? credential, secret, error, mediaError, invitationUrl;
+    private string displayName = "";
+    private bool initialized, busy, joined, finished, canJoin, confirmEnd, disposed;
+    private RoomMediaState media = new("prejoin", "", false, false, false, true);
+    private BrowserRoomParticipant? HostParticipant => host?.Participants.SingleOrDefault(x => x.IsOrganizer);
+    private string AgentPublicStatus => agent?.State switch
+    {
+        "ready" => "The host may invoke approved narration or a released grounded answer.",
+        "speaking" => "The room agent is speaking from approved content. Start speaking to interrupt it.",
+        "paused" => "AI is paused. The meeting continues without AI audio processing.",
+        _ => "AI audio processing starts only after everyone consents and the host starts the room agent."
+    };
+    private string AgentStateLabel => agent?.State switch
+    { "ready" => "Ready to speak", "speaking" => "Speaking", "starting" => "Connecting", "paused" => "Paused", "unavailable" => "Unavailable", "stopped" => "Stopped", _ => "Waiting for host" };
+    private string VoiceHealthLabel => agent?.VoiceHealth switch
+    { "healthy" => "Voice healthy", "connecting" => "Voice connecting", "degraded" => "Voice unavailable", "stopped" => "Voice stopped", _ => "Voice not connected" };
+    private string AgentDuration => FormatDuration((agent?.ForwardedAudioMilliseconds ?? 0) + (agent?.OutputAudioMilliseconds ?? 0));
+    private bool CanStartAgent => !agentBusy && joined && agent?.AllParticipantsConsented == true && agent.State is not ("starting" or "ready" or "speaking" or "unavailable");
+    private bool CanStopAgent => !agentBusy && agent?.State is "starting" or "ready" or "speaking" or "paused";
+    private bool CanNarrate => !agentBusy && agent?.State is "ready" or "paused" && agent.NarrationState == "ready" &&
+        agent.NarrationRevisionId.HasValue && agent.NarrationSegmentId.HasValue;
+    private bool CanTakeOver => !agentBusy && agent?.Floor is not null && agent.State is "starting" or "ready" or "speaking" or "paused";
+    private bool CanResumeFloor => !agentBusy && agent?.Floor is { } floor && presentationStage is not null &&
+        floor.State is "host" or "human" or "paused" or "pending" &&
+        floor.PresentationVersion == presentationStage.Version && readiness?.Ready == true && agent.NarrationState == "ready";
+    private string PresentationAspect => presentationStage is null ? "" : $"aspect-ratio:{Math.Max(1, presentationStage.ImageWidthPixels)}/{Math.Max(1, presentationStage.ImageHeightPixels)}";
+    private string PresentationAlt => presentationStage is null ? "Shared presentation slide" : $"Slide {presentationStage.SlideNumber}: {presentationStage.SlideTitle ?? "Untitled slide"}";
+    private string PresentationStatus => Presentation.State switch
+    {
+        SalesPresentationConnectionState.Connected when pendingPresentationAck is null => "Everyone receives the same authoritative slide",
+        SalesPresentationConnectionState.Connected => "Confirming this slide was rendered",
+        SalesPresentationConnectionState.Reconnecting => "Reconnecting · the last confirmed slide stays visible",
+        SalesPresentationConnectionState.Degraded => "Presentation connection interrupted · reconnect to restore live updates",
+        _ => presentationLoading ? "Loading presentation" : "Presentation is waiting to connect"
+    };
+    public sealed record RoomMediaState(string Status, string Problem, bool Microphone, bool Camera, bool Sharing, bool CanShare);
+    public sealed record Entry(string Secret, string Credential);
+    private string StatusText => !finished && host?.State is "provisioning" or "reconciliation_required" ? "The host room is being prepared. Admission is unavailable until preparation is confirmed." : finished ? "You have left, or the meeting has ended." : guest?.AdmissionState == "lobby" ? "Waiting for the host to admit you. Nothing is published." : media.Status switch
+    {
+        "connecting" => "Connecting your audio and video…", "connected" => "Connected", "reconnecting" => "The media connection was interrupted. Reconnecting…",
+        "disconnected" => "Media disconnected. Reconnect to check admission and restore your place.", "provider_unavailable" => "The audio/video service could not be reached. Check your network and retry.",
+        "control_lost" => "Meeting controls lost connection. Your media has stopped. Reconnect to continue.",
+        _ => initialized ? "Microphone and camera remain private until you join." : "Loading meeting access…"
+    };
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (!first) return;
+        try
+        {
+            Presentation.AgentPlaybackStopRequested += StopAgentPlayback;
+            Presentation.AgentPlaybackStarted += StartAgentPlayback;
+            module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/sales-human-room.mjs");
+            reference = DotNetObjectReference.Create(this);
+            await module.InvokeVoidAsync("initialize", root, reference);
+            if (!HostCompanyId.HasValue)
+            {
+                var entry = await module.InvokeAsync<Entry>("entry", RoomId.ToString("D"));
+                secret = string.IsNullOrEmpty(entry.Secret) ? null : entry.Secret;
+                credential = string.IsNullOrEmpty(entry.Credential) ? null : entry.Credential;
+                if (credential is null && secret is null) error = "Open the invitation link from the host to join this room.";
+            }
+            initialized = true; await Refresh();
+            polling = Poll();
+        }
+        catch (Exception ex) when (Recoverable(ex)) { error = Friendly(ex); }
+        await InvokeAsync(StateHasChanged);
+    }
+    private async Task Poll()
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(lifetime.Token))
+            {
+                if (finished) continue;
+                await InvokeAsync(async () => { if (!await commandGate.WaitAsync(0)) return; try { await Refresh(); } finally { commandGate.Release(); } StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+    }
+    private async Task Refresh()
+    {
+        if (finished || module is null) return;
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); deadline.CancelAfter(TimeSpan.FromSeconds(10));
+            if (HostCompanyId is Guid company)
+            {
+                host = await Hosts.StatusAsync(company, RoomId, deadline.Token);
+                try { agent = await Hosts.AgentAsync(company, RoomId, deadline.Token); agentError = null; }
+                catch (BrowserRoomRequestException ex) { agentError = ex.Message; }
+                if (host.State is "ending" or "ended" || host.ExpiresUtc <= DateTime.UtcNow) { await Finish(); return; }
+                canJoin = host.State is "lobby" or "live";
+                await module.InvokeVoidAsync("heartbeat", host.Participants.Where(x => x.State == "admitted").Select(x => new BrowserRoomAudience(x.Id, x.DisplayName, x.MediaIdentity)).ToArray());
+            }
+            else if (credential is not null)
+            {
+                guest = await Guests.StatusAsync(RoomId, credential, deadline.Token);
+                canJoin = guest.AdmissionState == "admitted";
+                await module.InvokeVoidAsync("heartbeat", guest.Participants);
+            }
+            else { canJoin = secret is not null; await module.InvokeVoidAsync("heartbeat", Array.Empty<BrowserRoomAudience>()); }
+        }
+        catch (BrowserRoomRequestException ex)
+        {
+            error = ex.Message;
+            if (ex.Status is 401 or 403 or 404 or 410)
+            {
+                if (!HostCompanyId.HasValue && secret is not null && credential is not null)
+                {
+                    await module.InvokeVoidAsync("disconnect"); await module.InvokeVoidAsync("forgetSession", RoomId.ToString("D"));
+                    credential = null; guest = null; joined = false; canJoin = true;
+                    error = "Your previous session ended. Enter your name to use the new invitation.";
+                }
+                else await Finish();
+            }
+        }
+        catch (Exception ex) when (Recoverable(ex)) { error = Friendly(ex); }
+    }
+    private async Task Run(Func<Task> action)
+    {
+        if (disposed || busy || !await commandGate.WaitAsync(0)) return;
+        busy = true; error = null;
+        try { await action(); }
+        catch (Exception ex) when (Recoverable(ex)) { error = Friendly(ex); if (ex is BrowserRoomRequestException { Status: 401 or 403 or 404 or 410 }) await Finish(); }
+        finally { busy = false; commandGate.Release(); if (!finished) await Refresh(); }
+    }
+    private Task Join() => Run(async () =>
+    {
+        if (!HostCompanyId.HasValue && credential is null)
+        {
+            if (secret is null || string.IsNullOrWhiteSpace(displayName) || displayName.Any(char.IsControl)) { error = "Enter a display name and open a valid invitation."; return; }
+            var session = await Guests.RedeemAsync(secret, displayName.Trim(), lifetime.Token);
+            if (session.Participant.RoomId != RoomId) throw new BrowserRoomRequestException(403, "wrong_room");
+            credential = session.Credential; guest = session.Participant; secret = null;
+            var stored = await module!.InvokeAsync<bool>("saveSession", RoomId.ToString("D"), credential);
+            if (!stored) error = "Your browser cannot save this session. Keep this tab open; a reload will require a new invitation.";
+            return;
+        }
+        await Connect();
+    });
+    private Task Reconnect() => Run(Connect);
+    private async Task Connect()
+    {
+        await Refresh(); if (!canJoin || finished) return;
+        var token = HostCompanyId is Guid company ? await Hosts.TokenAsync(company, RoomId, lifetime.Token) : await Guests.TokenAsync(RoomId, credential!, lifetime.Token);
+        joined = true; await InvokeAsync(StateHasChanged);
+        await module!.InvokeVoidAsync("disconnect");
+        await module!.InvokeVoidAsync("connect", token);
+        await ConnectPresentation();
+    }
+    private async Task ConnectPresentation()
+    {
+        presentationError = null;
+        try
+        {
+            if (HostCompanyId is Guid company)
+            {
+                var current = await Hosts.PresentationAsync(company, RoomId, lifetime.Token);
+                if (current?.Presentation?.Stage is null)
+                    throw new SalesPresentationRuntimeClientException("The room presentation response was incomplete.");
+                hostPresentationParticipantId = current.ParticipantId;
+                hostPresentationGeneration = current.ActorGeneration;
+                presentationPrivate = current.Presentation.Private;
+                readiness = current.Readiness;
+                await RenderPresentation(current.Presentation.Stage);
+                await Presentation.ConnectBrowserAsync(company, RoomId, current.Presentation.Stage.SessionId, null,
+                    RenderPresentation, UpdatePrivate, UpdateReadiness, lifetime.Token);
+            }
+            else
+            {
+                var current = await Guests.PresentationAsync(RoomId, credential!, lifetime.Token);
+                if (current?.Stage is null)
+                    throw new SalesPresentationRuntimeClientException("The room presentation response was incomplete.");
+                await RenderPresentation(current.Stage);
+                await Presentation.ConnectBrowserAsync(Guid.Empty, RoomId, current.Stage.SessionId, credential,
+                    RenderPresentation, cancellationToken: lifetime.Token);
+            }
+        }
+        catch (Exception ex) when (RecoverablePresentation(ex))
+        {
+            presentationError = "The shared presentation could not connect. Your meeting audio and video remain available.";
+        }
+    }
+    private async Task RenderPresentation(SalesPresentationStageSnapshotViewModel snapshot)
+    {
+        if (presentationStage?.Version == snapshot.Version && presentationImage is not null) return;
+        presentationLoading = true;
+        presentationError = null;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var image = HostCompanyId is Guid company
+                ? await Hosts.PresentationImageAsync(company, RoomId, snapshot, lifetime.Token)
+                : await Guests.PresentationImageAsync(RoomId, credential!, snapshot, lifetime.Token);
+            presentationStage = snapshot;
+            pendingPresentationAck = snapshot;
+            presentationImage = image.DataUrl;
+            presentationImageKey = $"{snapshot.DeckId:N}:{snapshot.DeckVersion}:{snapshot.SlideNumber}:{snapshot.Version}";
+        }
+        catch (Exception ex) when (RecoverablePresentation(ex))
+        {
+            presentationError = "The shared slide could not be loaded. The last confirmed slide remains visible.";
+        }
+        finally { presentationLoading = false; await InvokeAsync(StateHasChanged); }
+    }
+    private Task UpdatePrivate(SalesPresentationPrivateSnapshotViewModel snapshot)
+    { presentationPrivate = snapshot; return InvokeAsync(StateHasChanged); }
+    private Task UpdateReadiness(SalesBrowserPresentationReadinessViewModel value)
+    { readiness = value; return InvokeAsync(StateHasChanged); }
+    private async Task PresentationRendered()
+    {
+        var snapshot = pendingPresentationAck;
+        if (snapshot is null || presentationStage?.Version != snapshot.Version) return;
+        try
+        {
+            await Presentation.AcknowledgeStageRenderAsync(snapshot, DateTime.UtcNow, lifetime.Token);
+            pendingPresentationAck = null;
+        }
+        catch (Exception ex) when (RecoverablePresentation(ex))
+        {
+            presentationError = "The slide is visible, but its render confirmation could not be sent.";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+    private void PresentationImageFailed()
+    { pendingPresentationAck = null; presentationError = "The shared slide image could not be displayed."; }
+    private async Task PresentationCommand(string toolName, int? slideNumber = null)
+    {
+        if (HostCompanyId is not Guid company || presentationStage is null || presentationPrivate is null || presentationBusy) return;
+        presentationBusy = true; presentationError = null;
+        try
+        {
+            var command = new SalesPresentationCommandViewModel(Guid.NewGuid(), presentationStage.Sequence + 1,
+                presentationStage.Version, slideNumber, presentationPrivate.TalkingPointIndex,
+                presentationPrivate.ResumeMarker, "human", presentationStage.DeckId,
+                hostPresentationParticipantId, presentationStage.DeckVersion, hostPresentationGeneration);
+            var result = await Hosts.PresentationCommandAsync(company, RoomId, toolName, command, lifetime.Token);
+            presentationPrivate = result.Snapshot.Private;
+            await RenderPresentation(result.Snapshot.Stage);
+        }
+        catch (Exception ex) when (RecoverablePresentation(ex))
+        { presentationError = "The presentation changed before this command completed. The current slide has been restored."; await ReloadPresentation(); }
+        finally { presentationBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+    private Guid hostPresentationParticipantId;
+    private long hostPresentationGeneration;
+    private async Task ChangePresentationMode(string mode)
+    {
+        if (HostCompanyId is not Guid company || presentationStage is null || presentationBusy) return;
+        presentationBusy = true;
+        try
+        {
+            await Hosts.PresentationModeAsync(company, RoomId, mode, presentationStage.Version,
+                hostPresentationParticipantId, hostPresentationGeneration, lifetime.Token);
+            await ReloadPresentation();
+        }
+        catch (Exception ex) when (RecoverablePresentation(ex))
+        { presentationError = "The presentation mode could not be changed. Review the current state and retry."; }
+        finally { presentationBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+    private async Task OverridePresentation()
+    {
+        if (HostCompanyId is not Guid company || presentationStage is null || presentationBusy) return;
+        presentationBusy = true;
+        try { readiness = await Hosts.OverridePresentationAsync(company, RoomId, presentationStage.Version, lifetime.Token); }
+        catch (Exception ex) when (RecoverablePresentation(ex)) { presentationError = "Audience readiness changed. Review it before continuing."; }
+        finally { presentationBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+    private async Task ReloadPresentation()
+    {
+        if (HostCompanyId is not Guid company) return;
+        var current = await Hosts.PresentationAsync(company, RoomId, lifetime.Token);
+        hostPresentationParticipantId = current.ParticipantId;
+        hostPresentationGeneration = current.ActorGeneration;
+        presentationPrivate = current.Presentation.Private;
+        readiness = current.Readiness;
+        await RenderPresentation(current.Presentation.Stage);
+    }
+    private static string ModeLabel(string mode) => char.ToUpperInvariant(mode[0]) + mode[1..];
+    private static string ReadinessLabel(string state) => state switch
+    { "slow" => "Still rendering", "disconnected" => "Disconnected", "revoked" => "Access revoked", _ => "Rendering" };
+    private static bool RecoverablePresentation(Exception ex) => Recoverable(ex) || ex is SalesPresentationRuntimeClientException;
+    private Task SetConsent(string purpose, bool granted) => Run(async () =>
+    {
+        if (HostCompanyId is Guid company && HostParticipant is { } participant)
+            await Hosts.ConsentAsync(company, RoomId, participant.Version, purpose, granted, host!.ConsentNoticeVersion, lifetime.Token);
+        else if (credential is not null && guest is not null)
+            guest = await Guests.ConsentAsync(RoomId, credential, guest.Version, purpose, granted, guest.ConsentNoticeVersion, lifetime.Token);
+    });
+    private async Task AgentCommand(Func<Guid, BrowserRoomAgentStatus, CancellationToken, Task<BrowserRoomAgentStatus>> action)
+    {
+        if (HostCompanyId is not Guid company || agent is null || agentBusy) return;
+        agentBusy = true; agentError = null;
+        try { agent = await action(company, agent, lifetime.Token); }
+        catch (BrowserRoomRequestException ex) { agentError = ex.Message; }
+        finally { agentBusy = false; await Refresh(); await InvokeAsync(StateHasChanged); }
+    }
+    private Task StartAgent() => AgentCommand((company, state, ct) => Hosts.StartAgentAsync(company, RoomId, state.RoomVersion, ct));
+    private Task StopAgent() => AgentCommand((company, state, ct) => Hosts.StopAgentAsync(company, RoomId, state.RoomVersion, ct));
+    private Task Narrate() => AgentCommand((company, state, ct) => Hosts.InvokeNarrationAsync(company, RoomId, state.RoomVersion,
+        state.NarrationRevisionId!.Value, state.NarrationSegmentId!.Value, ct));
+    private async Task AskAgent()
+    {
+        var question = agentQuestion?.Trim();
+        if (string.IsNullOrWhiteSpace(question)) return;
+        await AgentCommand((company, state, ct) => Hosts.AskAgentAsync(company, RoomId, state.RoomVersion, question, ct));
+        if (agent?.LatestAnswer?.Question == question) agentQuestion = string.Empty;
+    }
+    private Task SpeakAnswer(BrowserRoomAgentAnswer answer) => AgentCommand((company, state, ct) =>
+        Hosts.SpeakAnswerAsync(company, RoomId, state.RoomVersion, answer.QuestionId, answer.Version, ct));
+    private Task TakeOver() => AgentCommand((company, state, ct) => Hosts.TakeOverAsync(company, RoomId,
+        state.RoomVersion, state.Floor!.Version, ct));
+    private Task ResumeFloor() => AgentCommand((company, state, ct) => Hosts.ResumeAgentAsync(company, RoomId,
+        state.RoomVersion, state.Floor!.Version, state.Floor.PresentationVersion, ct));
+    private Task ConfirmPendingTurn() => AgentCommand((company, state, ct) => Hosts.ConfirmPendingTurnAsync(company,
+        RoomId, state.RoomVersion, state.Floor!.Version, ct));
+    private Task DismissPendingTurn() => AgentCommand((company, state, ct) => Hosts.DismissPendingTurnAsync(company,
+        RoomId, state.RoomVersion, state.Floor!.Version, ct));
+    private Task AddressAgent() => Run(async () =>
+    {
+        var question = guestAgentQuestion?.Trim();
+        if (credential is null || guest is null || string.IsNullOrWhiteSpace(question)) return;
+        await Guests.AddressAgentAsync(RoomId, credential, guest.Version, question, lifetime.Token);
+        guestAgentQuestion = null;
+    });
+    private Task StopAgentPlayback(SalesRoomPlaybackStopRequestViewModel request) =>
+        module is null ? Task.CompletedTask : module.InvokeVoidAsync("stopAgentPlayback", request.ResponseGeneration).AsTask();
+    private Task StartAgentPlayback(SalesRoomPlaybackStartRequestViewModel request) =>
+        module is null ? Task.CompletedTask : module.InvokeVoidAsync("allowAgentPlayback", request.ResponseGeneration).AsTask();
+    private static string FloorStatus(BrowserRoomFloor floor) => floor.State switch
+    {
+        "agent" => $"Agent speaking from slide {floor.SlideNumber} · point {Math.Max(1, floor.TalkingPointIndex)}",
+        "overlap" => "Waiting for a clear human floor",
+        "pending" => $"Agent paused at slide {floor.SlideNumber} · point {Math.Max(1, floor.TalkingPointIndex)}",
+        "paused" => $"AI paused at slide {floor.SlideNumber} · point {Math.Max(1, floor.TalkingPointIndex)}",
+        _ => $"Human-owned · slide {floor.SlideNumber} · point {Math.Max(1, floor.TalkingPointIndex)}"
+    };
+    private static string PendingTurnLabel(string state) => state switch
+    {
+        "confirmation_required" => "Needs host confirmation", "authorized" => "Authorized",
+        "overlap_waiting" => "Waiting for clear floor", "host_invocation_required" => "Manual mode",
+        _ => state.Replace('_', ' ')
+    };
+    private bool CanSpeakAnswer(BrowserRoomAgentAnswer answer) => !agentBusy && agent?.State is "ready" or "paused" &&
+        answer.Status == "completed" && answer.Evidence.Count > 0;
+    private static string SourceLabel(string value) => value.Replace('_', ' ');
+    private static string FormatDuration(long milliseconds) => TimeSpan.FromMilliseconds(Math.Max(0, milliseconds)).ToString(@"mm\:ss");
+    private Task Decide(Guid participant, string decision) => Run(async () =>
+    { host = await Hosts.DecideAsync(HostCompanyId!.Value, RoomId, participant, decision, host!.Version, Guid.NewGuid(), lifetime.Token); });
+    private Task Invite() => Run(async () =>
+    {
+        var invite = await Hosts.InviteAsync(HostCompanyId!.Value, RoomId, host!.Version, host.ExpiresUtc, Guid.NewGuid(), lifetime.Token);
+        invitationUrl = new Uri(new Uri(Navigation.BaseUri), $"sales/rooms/{RoomId:D}#invite={invite.Secret}").AbsoluteUri;
+    });
+    private Task Leave() => Run(async () =>
+    {
+        await module!.InvokeVoidAsync("disconnect");
+        // Local tracks stop first, even if the control service is down.
+        try { if (credential is not null) await Guests.LeaveAsync(RoomId, credential, lifetime.Token); }
+        finally { await Finish(); }
+    });
+    private Task End() => Run(async () =>
+    { host = await Hosts.EndAsync(HostCompanyId!.Value, RoomId, host!.Version, Guid.NewGuid(), lifetime.Token); await Finish(); });
+    private async Task Finish()
+    {
+        finished = true; joined = false; canJoin = false; invitationUrl = null; secret = null;
+        await Presentation.DisconnectAsync();
+        if (module is not null) { await module.InvokeVoidAsync("disconnect"); await module.InvokeVoidAsync("forgetSession", RoomId.ToString("D")); }
+        credential = null;
+    }
+    [JSInvokable] public async Task InvitationChanged()
+    {
+        if (disposed || HostCompanyId.HasValue || module is null) return;
+        var entry = await module.InvokeAsync<Entry>("entry", RoomId.ToString("D"));
+        if (string.IsNullOrEmpty(entry.Secret)) return;
+        secret = entry.Secret;
+        if (credential is null) { finished = false; joined = false; guest = null; error = null; canJoin = true; }
+        await InvokeAsync(StateHasChanged);
+    }
+    [JSInvokable] public Task MediaChanged(RoomMediaState value)
+    {
+        media = value;
+        mediaError = string.IsNullOrEmpty(value.Problem) ? null : value.Problem switch
+        {
+            "permission_denied" => "Microphone or camera permission was denied. Allow access in your browser's site settings, then check devices again. You can still join with devices off.",
+            "disconnect_unconfirmed" => "Your local devices have stopped, but the connection close was not confirmed. Leave the room or ask the host to remove your session.",
+            "device_missing" => "The selected device is unavailable. Connect it or choose another device.",
+            "device_unavailable" => "The device could not start. Close other apps using it and check devices again.",
+            "other_tab" => "This meeting is already open in another tab. Leave that tab before reconnecting here.",
+            "unsupported" => "Device access requires HTTPS and a supported browser. Check the address and browser permissions.",
+            "sound_blocked" => "Your browser paused playback. Select Enable sound to hear and see the meeting.",
+            "share_unavailable" => "Screen sharing was cancelled or is unavailable in this browser. Try again on a supported desktop browser.",
+            _ => "The media action could not be completed. Check your devices and try again."
+        };
+        return disposed ? Task.CompletedTask : InvokeAsync(StateHasChanged);
+    }
+    private static bool Recoverable(Exception ex) => ex is BrowserRoomRequestException or HttpRequestException or JSException or OperationCanceledException or System.Text.Json.JsonException;
+    private static string Friendly(Exception ex) => ex is BrowserRoomRequestException request ? request.Message : "The meeting connection could not complete. Check your connection and try again.";
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true; await lifetime.CancelAsync();
+        Presentation.AgentPlaybackStopRequested -= StopAgentPlayback;
+        Presentation.AgentPlaybackStarted -= StartAgentPlayback;
+        if (module is not null) { try { await module.InvokeVoidAsync("dispose"); await module.DisposeAsync(); } catch (JSDisconnectedException) { } }
+        await Presentation.DisposeAsync();
+        reference?.Dispose();
+        // Do not await the polling loop on the circuit renderer; cancellation ends its bounded request.
+    }
+}
+
+
+
+
+

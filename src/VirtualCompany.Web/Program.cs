@@ -114,6 +114,7 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode(options => options.ContentSecurityFrameAncestorsPolicy =
         "'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft");
 
+app.MapSalesNarrationPreview();
 app.Run();
 
 static Uri ResolveApiBaseAddress(string? configuredValue, bool useOfflineMode, HttpContext? httpContext)

@@ -50,7 +50,9 @@ public sealed record SalesPresentationCommandRequest(
     string? ResumeMarker = null,
     string ActorType = SalesPresentationCommandActorTypes.Human,
     Guid? DeckId = null,
-    Guid? ActorId = null);
+    Guid? ActorId = null,
+    int? DeckVersion = null,
+    long? ActorGeneration = null);
 
 public sealed record SetSalesPresentationControlModeRequest(string Mode, long ExpectedVersion);
 
@@ -250,4 +252,70 @@ public interface ISalesPresentationNarrationPreemption
 public interface ISalesPresentationEventPublisher
 {
     Task PublishAsync(Guid companyId, Guid sessionId, SalesPresentationAuthoritativeSnapshotDto snapshot, CancellationToken cancellationToken);
+}
+
+public sealed record SalesBrowserPresentationAudienceMemberDto(
+    Guid ParticipantId,
+    string DisplayName,
+    bool Connected,
+    string State,
+    DateTime? RenderedUtc);
+
+public sealed record SalesBrowserPresentationReadinessDto(
+    Guid RoomId,
+    Guid DeckId,
+    int DeckVersion,
+    int SlideNumber,
+    long PresentationSequence,
+    long PresentationVersion,
+    DateTime DeadlineUtc,
+    bool OverrideApplied,
+    IReadOnlyList<SalesBrowserPresentationAudienceMemberDto> Audience)
+{
+    public int RequiredCount => Audience.Count;
+    public int RenderedCount => Audience.Count(x => x.State is "rendered" or "overridden");
+    public bool Ready => RequiredCount == RenderedCount;
+}
+
+public sealed record SalesBrowserPresentationPublicDto(
+    Guid RoomId,
+    Guid ParticipantId,
+    long ActorGeneration,
+    SalesPresentationStageSnapshotDto Stage);
+
+public sealed record SalesBrowserPresentationHostDto(
+    Guid RoomId,
+    Guid ParticipantId,
+    long ActorGeneration,
+    SalesPresentationAuthoritativeSnapshotDto Presentation,
+    SalesBrowserPresentationReadinessDto Readiness);
+
+public sealed record SetSalesBrowserPresentationControlModeRequest(
+    string Mode,
+    long ExpectedVersion,
+    Guid ActorId,
+    long ActorGeneration);
+
+public sealed record SalesBrowserPresentationAccessContext(
+    Guid CompanyId,
+    Guid RoomId,
+    Guid SessionId,
+    Guid ParticipantId,
+    long ParticipantGeneration,
+    bool IsOrganizer);
+
+public interface ISalesBrowserPresentationService
+{
+    Task<SalesBrowserPresentationHostDto> GetHostAsync(Guid companyId, Guid userId, Guid roomId, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationPublicDto> GetGuestAsync(string credential, Guid roomId, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationAccessContext> ValidateHostAsync(Guid companyId, Guid userId, Guid roomId, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationAccessContext> ValidateGuestAsync(string credential, Guid roomId, CancellationToken cancellationToken);
+    Task<SalesPresentationSlideAsset> OpenHostSlideAsync(Guid companyId, Guid userId, Guid roomId, Guid deckId, int deckVersion, int slideNumber, CancellationToken cancellationToken);
+    Task<SalesPresentationSlideAsset> OpenGuestSlideAsync(string credential, Guid roomId, Guid deckId, int deckVersion, int slideNumber, CancellationToken cancellationToken);
+    Task<SalesPresentationCommandResultDto> ExecuteHostAsync(Guid companyId, Guid userId, Guid roomId, string toolName, SalesPresentationCommandRequest request, string? correlationId, CancellationToken cancellationToken);
+    Task<SalesPresentationControlModeDto> SetControlModeAsync(Guid companyId, Guid userId, Guid roomId, SetSalesBrowserPresentationControlModeRequest request, string? correlationId, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationReadinessDto> ConnectAsync(SalesBrowserPresentationAccessContext access, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationReadinessDto> AcknowledgeAsync(SalesBrowserPresentationAccessContext access, SalesPresentationRenderAcknowledgement acknowledgement, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationReadinessDto> DisconnectAsync(SalesBrowserPresentationAccessContext access, CancellationToken cancellationToken);
+    Task<SalesBrowserPresentationReadinessDto> OverrideAsync(Guid companyId, Guid userId, Guid roomId, long expectedPresentationVersion, CancellationToken cancellationToken);
 }

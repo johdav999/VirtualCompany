@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0",
+  "name": "browser-sales-room-30-minute",
+  "duration_seconds": 1800,
+  "category_seconds": {
+    "approved_presentation": 1080,
+    "human_discussion": 360,
+    "live_answers": 180,
+    "host_activity_and_pauses": 180
+  },
+  "arms": {
+    "live_generated": "The approved fixed script is generated per segment during every call.",
+    "cached": "The identical approved script, voice, model, sources and release is read through the production narration cache.",
+    "live_composed": "A separately labelled exploratory arm composes narration live, then applies the same customer-release controls."
+  },
+  "languages": ["en", "sv"],
+  "voice": "marin",
+  "participants": ["organizer", "buyer"],
+  "events": [
+    {"second": 0, "type": "join"},
+    {"second": 240, "type": "slide_render_delay", "duration_ms": 350},
+    {"second": 420, "type": "barge_in"},
+    {"second": 600, "type": "grounded_question"},
+    {"second": 900, "type": "human_takeover"},
+    {"second": 960, "type": "resume"},
+    {"second": 1260, "type": "reconnect"},
+    {"second": 1740, "type": "closing"},
+    {"second": 1800, "type": "drain"}
+  ],
+  "speech_detection_scenarios": [
+    {"duty_cycle_percent": 10, "seed": 1010, "features": ["quiet_speech", "short_words", "overlap", "background_noise", "output_echo"]},
+    {"duty_cycle_percent": 30, "seed": 1030, "features": ["quiet_speech", "short_words", "overlap", "background_noise", "output_echo"]},
+    {"duty_cycle_percent": 60, "seed": 1060, "features": ["quiet_speech", "short_words", "overlap", "background_noise", "output_echo"]}
+  ],
+  "utterances": {
+    "en": ["Yes.", "No.", "Alex, what is the supported rollout sequence?", "Please stop; we need to discuss security."],
+    "sv": ["Ja.", "Nej.", "Alex, vilken lanseringsordning stöds?", "Vänta, vi behöver diskutera säkerhet."]
+  },
+  "quality": {
+    "required": ["script_accuracy", "grounded_qa", "customer_private_isolation", "barge_in", "takeover", "resume", "slide_sync", "complete_drain"],
+    "latency_targets_ms": {"join": 5000, "takeover_to_silence": 300, "answer_start": 3000, "slide_sync": 500}
+  },
+  "audio": {
+    "format": "pcm_s16le",
+    "sample_rate_hz": 24000,
+    "frame_ms": 20,
+    "generation": "The production-path driver generates deterministic synthetic speech/noise from this manifest and records exact asset SHA-256 hashes before a live run. Agent output echo must stay on an excluded agent track."
+  }
+}

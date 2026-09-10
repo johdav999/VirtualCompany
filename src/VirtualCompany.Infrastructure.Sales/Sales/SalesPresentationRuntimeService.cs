@@ -83,6 +83,9 @@ public sealed class SalesPresentationRuntimeService(
         if (request.DeckId.HasValue && request.DeckId.Value != deck.Id)
             await RejectAsync(session, userId, toolName, request, SalesPresentationRuntimeProblemCodes.Conflict,
                 "The command targets a deck that is no longer active.", before, correlationId, cancellationToken);
+        if (request.DeckVersion.HasValue && request.DeckVersion.Value != deck.Version)
+            await RejectAsync(session, userId, toolName, request, SalesPresentationRuntimeProblemCodes.Conflict,
+                "The command targets a deck version that is no longer active.", before, correlationId, cancellationToken);
         if (actorType == SalesPresentationCommandActorTypes.Agent &&
             session.PresentationControlMode != SalesPresentationControlModes.Autonomous)
             await RejectAsync(session, userId, toolName, request, SalesPresentationRuntimeProblemCodes.InvalidCommand,
@@ -311,6 +314,8 @@ public sealed class SalesPresentationRuntimeService(
                 ["commandId"] = request.CommandId.ToString("D"),
                 ["sequence"] = request.Sequence.ToString(),
                 ["expectedVersion"] = request.ExpectedVersion.ToString(),
+                ["deckVersion"] = request.DeckVersion?.ToString(),
+                ["actorGeneration"] = request.ActorGeneration?.ToString(),
                 ["authoritativeVersion"] = session.ConcurrencyVersion.ToString(),
                 ["authorizedByUserId"] = agentActor ? userId.ToString("D") : null,
                 ["rejectionCode"] = rejectionCode
@@ -336,8 +341,8 @@ public sealed class SalesPresentationRuntimeService(
         SalesPresentationCommandType.Previous => throw new InvalidOperationException("The presentation is already on its first slide."),
         SalesPresentationCommandType.Goto when requested is >= 1 && requested <= count => requested,
         SalesPresentationCommandType.Goto => throw new InvalidOperationException("The requested slide is outside the active deck."),
-        SalesPresentationCommandType.Pause when current >= 1 => current,
-        SalesPresentationCommandType.Pause => throw new InvalidOperationException("A current slide is required before pausing."),
+        SalesPresentationCommandType.Pause when current < 1 => 1,
+        SalesPresentationCommandType.Pause => current,
         _ => null
     };
 

@@ -14,6 +14,8 @@ public sealed class SalesRoomApiFilter : IActionFilter, IExceptionFilter
         var (status, code) = context.Exception switch
         {
             SalesRoomAccessException e => (e.Status, e.Code),
+            SalesRoomAgentException e => (e.StatusCode, e.Code),
+            SalesPresentationRuntimeConflictException e => (409, e.Code),
             SalesRoomMediaException e => (503, e.Code),
             CalendarProviderException e => (503,e.Code),
             KeyNotFoundException => (404,"invitation_not_found"),

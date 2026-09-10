@@ -35,6 +35,18 @@ public sealed class SalesBrowserRoomSqlServerTests
                   ('40000000-0000-0000-0000-000000000003','10000000-0000-0000-0000-000000000001','microsoft365',0,NULL);
                 CREATE TABLE sales_meeting_sessions (id uniqueidentifier NOT NULL PRIMARY KEY, company_id uniqueidentifier NOT NULL,
                     CONSTRAINT AK_sales_meeting_sessions_company_id_id UNIQUE(company_id,id));
+                CREATE TABLE companies (Id uniqueidentifier NOT NULL PRIMARY KEY);
+                CREATE TABLE agents (Id uniqueidentifier NOT NULL PRIMARY KEY, CompanyId uniqueidentifier NOT NULL,
+                    CONSTRAINT AK_browser_upgrade_agents UNIQUE(CompanyId,Id));
+                CREATE TABLE sales_meeting_transcript_segments (id uniqueidentifier NOT NULL PRIMARY KEY, company_id uniqueidentifier NOT NULL,
+                    input_source nvarchar(32) NOT NULL, content nvarchar(max) NOT NULL,
+                    CONSTRAINT AK_capture_upgrade_transcripts UNIQUE(company_id,id));
+                INSERT sales_meeting_transcript_segments VALUES ('50000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001','transcript_adapter',N'Preserved Graph transcript');
+                CREATE TABLE sales_meeting_questions (id uniqueidentifier NOT NULL PRIMARY KEY, company_id uniqueidentifier NOT NULL,
+                    CONSTRAINT AK_browser_upgrade_questions UNIQUE(company_id,id));
+                CREATE TABLE sales_presentation_decks (id uniqueidentifier NOT NULL PRIMARY KEY, company_id uniqueidentifier NOT NULL, CONSTRAINT AK_narration_upgrade_decks UNIQUE(company_id,id));
+                CREATE TABLE sales_meeting_minutes (id uniqueidentifier PRIMARY KEY, content nvarchar(max) NOT NULL);
+                INSERT sales_meeting_minutes VALUES ('60000000-0000-0000-0000-000000000001',N'Preserved Teams minutes');
                 CREATE TABLE teams_meeting_calls (id uniqueidentifier NOT NULL PRIMARY KEY, company_id uniqueidentifier NOT NULL, evidence nvarchar(100) NOT NULL);
                 INSERT sales_meeting_sessions VALUES ('20000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001');
                 INSERT teams_meeting_calls VALUES ('30000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001',N'preserve-call-state');
@@ -72,6 +84,10 @@ public sealed class SalesBrowserRoomSqlServerTests
             Assert.Equal(1, Convert.ToInt32(await check.ExecuteScalarAsync()));
             check.CommandText="SELECT COUNT(*) FROM sales_meeting_invitations WHERE (conferencing='teams' AND online_meeting_url='https://teams.microsoft.com/preserved') OR (conferencing='google_meet' AND online_meeting_url='https://meet.google.com/preserved') OR (conferencing='none' AND create_online_meeting=0 AND online_meeting_url IS NULL)";
             Assert.Equal(3,Convert.ToInt32(await check.ExecuteScalarAsync()));
+            check.CommandText = "SELECT COUNT(*) FROM sales_meeting_minutes WHERE content=N'Preserved Teams minutes'";
+            Assert.Equal(1, Convert.ToInt32(await check.ExecuteScalarAsync()));
+            check.CommandText = "SELECT COUNT(*) FROM sales_meeting_transcript_segments WHERE input_source='transcript_adapter' AND content=N'Preserved Graph transcript'";
+            Assert.Equal(1, Convert.ToInt32(await check.ExecuteScalarAsync()));
         });
     }
     private static DbContextOptions<VirtualCompanyDbContext> Options(string connection) => new DbContextOptionsBuilder<VirtualCompanyDbContext>()

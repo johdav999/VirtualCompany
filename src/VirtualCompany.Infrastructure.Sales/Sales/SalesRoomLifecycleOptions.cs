@@ -4,6 +4,7 @@ public sealed class SalesRoomLifecycleOptions
     public const string SectionName = "SalesBrowserRoom:Lifecycle";
     public string PublicOrigin {get;set;}="";
     public bool Enabled { get; set; }
+    public bool DrainEnabled { get; set; }
     public int MaximumRoomsPerCompany { get; set; } = 20;
     public int MaximumLiveRoomsPerCompany { get; set; } = 2;
     public int MaximumParticipants { get; set; } = 6;

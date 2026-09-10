@@ -91,6 +91,12 @@ public sealed class SalesMeetingClosingServiceTests
                 second.CustomerMinutes.ArtifactVersion, second.InternalIntelligence.Id, second.InternalIntelligence.ArtifactVersion), null, default);
 
         Assert.Equal("completed", completed!.Status);
+        var version = fixture.Session.ConcurrencyVersion;
+        var replay = await fixture.Service.CompleteAsync(fixture.CompanyId, fixture.UserId, fixture.SessionId,
+            new(version - 1, fixture.Session.CaptureVersion, batchId, second.CustomerMinutes.Id,
+                second.CustomerMinutes.ArtifactVersion, second.InternalIntelligence.Id, second.InternalIntelligence.ArtifactVersion), null, default);
+        Assert.Equal("completed", replay!.Status);
+        Assert.Equal(version, fixture.Session.ConcurrencyVersion);
     }
 
     [Fact]
@@ -129,6 +135,40 @@ public sealed class SalesMeetingClosingServiceTests
         var error = await Assert.ThrowsAsync<SalesMeetingClosingConflictException>(() => fixture.Service.GetInternalAsync(
             fixture.CompanyId, accountantId, fixture.SessionId, closing.InternalIntelligence.Id, default));
         Assert.Equal(SalesMeetingClosingProblemCodes.InternalAccessDenied, error.Code);
+    }
+
+    [Fact]
+    public async Task Browser_drafts_use_only_reviewed_excerpts_and_deduplicate_action_candidates()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var now = DateTime.UtcNow;
+        var room = new SalesBrowserRoom(f.CompanyId, f.SessionId, f.UserId, now.AddHours(1), now);
+        room.Ended(); f.Db.SalesBrowserRooms.Add(room);
+        var reviewed = new SalesMeetingTranscriptSegment(Guid.NewGuid(), f.CompanyId, f.SessionId, Guid.NewGuid(), 1,
+            SalesMeetingSpeakerType.Customer, "Buyer", SalesMeetingInputSource.BrowserRoom, "Send the rollout guide.",
+            now, now.AddSeconds(2), null, SalesMeetingReviewState.Reviewed, f.UserId, Guid.NewGuid(), now);
+        var unreviewed = new SalesMeetingTranscriptSegment(Guid.NewGuid(), f.CompanyId, f.SessionId, Guid.NewGuid(), 2,
+            SalesMeetingSpeakerType.Customer, "Buyer", SalesMeetingInputSource.BrowserRoom, "UNREVIEWED SECRET",
+            now, now.AddSeconds(2), null, SalesMeetingReviewState.Unreviewed, f.UserId, Guid.NewGuid(), now);
+        f.Db.SalesMeetingTranscriptSegments.AddRange(reviewed, unreviewed); await f.Db.SaveChangesAsync();
+        var extracted = 0;
+        f.Reasoning.ResultFactory = request => {
+            Assert.DoesNotContain(request.Sources, s => s.Snippet.Contains("UNREVIEWED SECRET"));
+            var source = request.Sources.FirstOrDefault(s => s.Type == "reviewed_browser_transcript");
+            if (source is not null) extracted++;
+            return new(Guid.NewGuid(), AgentAiRunStatuses.Completed, "v1", "Grounded",
+                source is null ? [] : [new("Send the rollout guide.", "action", .9m, [source.Id])],
+                .9m, [], [], [], request.Sources.Select(x => x.Id).ToArray());
+        };
+        var request = f.Request();
+        var first = await f.Service.PrepareAsync(f.CompanyId,f.UserId,f.SessionId,request,null,default);
+        var retry = await f.Service.PrepareAsync(f.CompanyId,f.UserId,f.SessionId,request,null,default);
+        Assert.Equal(first!.CustomerMinutes.Id,retry!.CustomerMinutes.Id);
+        Assert.Contains(first.CustomerMinutes.Items,i=>i.Content=="Send the rollout guide." && i.RequiresReview);
+        await f.Service.PrepareAsync(f.CompanyId,f.UserId,f.SessionId,f.Request(),null,default);
+        Assert.Equal(2,extracted);
+        Assert.Single(await f.Db.SalesMeetingActionItems.Where(x=>x.ClientItemId==reviewed.Id).ToListAsync());
+        Assert.Equal("sales-browser-room-closing-v1", first.CustomerMinutes.PromptVersion);
     }
 
     private sealed class Fixture : IAsyncDisposable

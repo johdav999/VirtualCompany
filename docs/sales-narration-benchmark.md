@@ -1,6 +1,6 @@
 # Sales narration benchmark
 
-Run date: 9 September 2026. Status: provider component benchmark completed; full 30-minute browser-call and Azure concurrency benchmark blocked by missing implementation/test target.
+Run date: 9 September 2026, updated 10 September 2026. Status: provider component benchmark completed; the Prompt 10 full-call harness and instrumentation are implemented, while live 30-minute/Azure measurement remains blocked by missing authorized runtime prerequisites.
 
 ## What ran
 
@@ -46,12 +46,14 @@ A separate potentially large cost is transcription. The current repository defau
 
 ## What prevents the requested full measurement
 
-- No LiveKit integration was found in production/test code during the targeted scan; the browser feature remains a prompt pack.
-- No cached/approved-speech production path was found. The local artifact reuse is not a completed application feature.
-- `OPENAI_API_KEY` is available; LiveKit URL/key/secret are not present in this process environment. Other secret stores were not enumerated, so this is not a claim that no project exists anywhere.
-- Azure CLI has an enabled account. A read-only host inventory exposed one App Service in Sweden Central, but no identified isolated browser-room benchmark target. No load was sent to it and no infrastructure was created/changed.
+- Prompts 1–9 now provide production LiveKit, narration-cache, speaking-agent, floor-control and closing paths, and Prompt 10 adds the production metrics, frozen full-call harness and disposable deployment template.
+- `OPENAI_API_KEY` is available; LiveKit URL/key/secret and permitted synthetic participant credentials are not present in this process environment.
+- Azure CLI is signed in, but no named, explicitly authorized isolated browser-room target or separate load generator has been supplied. No existing App Service was treated as authorized, and no load or deployment occurred.
+- No named authorization owner, maximum spend or reviewed concurrency ceiling has been supplied.
 
 Therefore `full_30_minute_call_cost` and `azure_capacity_per_concurrent_call` are explicitly null in evidence. Local Python CPU timings are diagnostic only and cannot be used to size the .NET Azure worker.
+
+The current machine-readable blocked result and reproduction instructions are in [the Prompt 10 benchmark report](verification/browser-sales-room/prompt10-benchmark.md).
 
 ## Full-call benchmark protocol
 
@@ -61,7 +63,7 @@ Compare matched 30-minute calls:
 
 - A: approved narration generated live per segment, grounded questions answered live.
 - B: the same approved narration from cache; the identical questions answered live using the same model, policy, voice and knowledge.
-- Report cache construction/cold miss separately. Evaluate reuse counts 1/10/40/173 and per-segment invalidation.
+- Report cache construction/cold miss separately. Evaluate reuse counts 1/10/40/80 and per-segment invalidation.
 - Add a separate exploratory A2 arm for genuinely improvised live narration only if desired; do not confuse changing content/reasoning with the isolated caching effect measured by A versus B.
 
 Use the 18/6/3/3 minute schedule above, two human participants and one agent. Freeze fixture hashes, deck content, language, question script, models/version, region, audio rates, video settings and grounding results. Include fixed-time barge-in, human takeover, resume, slide render delay and reconnect in both arms. Replay consented synthetic human audio with stable track identities. Do not replay agent audio into its own input. Run English and Swedish separately. Verify script accuracy, grounded Q&A, public/private isolation and interruption/resume quality; cheaper incorrect output fails.

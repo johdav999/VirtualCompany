@@ -199,6 +199,7 @@ public static class OperationsModuleRegistration
         services.AddHttpClient(SharedAgentReasoningGateway.ClientName);
         services.AddHttpClient(OpenAiRealtimeAgentSessionGateway.ClientName);
         services.AddSingleton<OpenAiRealtimeAgentSessionGateway>();
+        services.AddSingleton<IApprovedSpeechGateway, ApprovedSpeechGateway>();
         services.AddSingleton<IRealtimeAgentSessionGateway>(provider =>
             provider.GetRequiredService<OpenAiRealtimeAgentSessionGateway>());
         services.AddSingleton<IRealtimeAgentPcmSessionGateway>(provider =>
@@ -486,4 +487,3 @@ public static class OperationsModuleRegistration
     }
 
 }
-

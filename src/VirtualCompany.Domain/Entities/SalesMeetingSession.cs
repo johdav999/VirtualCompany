@@ -340,6 +340,14 @@ public sealed class SalesMeetingSession : ICompanyOwnedEntity
         ConcurrencyVersion++;
     }
 
+    public void BeginBrowserClosing(Guid actor, DateTime now)
+    {
+        EnsureId(actor, nameof(actor));
+        if (Status is SalesMeetingSessionStatus.Closing or SalesMeetingSessionStatus.Completed or SalesMeetingSessionStatus.Cancelled or SalesMeetingSessionStatus.Failed) return;
+        // Human browser calls can finish even if no presentation was prepared.
+        TransitionTo(SalesMeetingSessionStatus.Closing, null, null, null, null, actor, now);
+    }
+
     public void ApplyCaptureBatch(Guid batchId, long expectedCaptureVersion, Guid actorUserId, DateTime occurredUtc)
     {
         EnsureId(batchId, nameof(batchId));

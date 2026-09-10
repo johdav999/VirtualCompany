@@ -58,6 +58,12 @@ public sealed class SalesMeetingQuestionAnsweringService(
 
         var session = await db.SalesMeetingSessions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == sessionId, cancellationToken);
         if (session is null) return null;
+        if (ParseInput(request.InputSource) == SalesMeetingInputSource.BrowserRoom &&
+            (session.RetentionUntilUtc <= timeProvider.GetUtcNow().UtcDateTime ||
+             !await db.SalesMeetingTranscriptSegments.AsNoTracking().AnyAsync(x => x.CompanyId == companyId &&
+                 x.SessionId == sessionId && x.Id == request.ClientQuestionId &&
+                 x.InputSource == SalesMeetingInputSource.BrowserRoom && x.Content == request.Question.Trim(), cancellationToken)))
+            throw Validation(nameof(request.InputSource), "A browser question requires retained meeting evidence.");
         var membership = await db.CompanyMemberships.AsNoTracking().SingleAsync(x => x.CompanyId == companyId && x.UserId == userId && x.Status == CompanyMembershipStatus.Active, cancellationToken);
         var agent = await db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == request.AgentId, cancellationToken)
             ?? throw new KeyNotFoundException("The sales agent is unavailable in this company.");

@@ -33,12 +33,18 @@ public sealed class SalesPresentationRuntimeClient(
     private SalesPresentationSurface _surface;
     private Func<SalesPresentationStageSnapshotViewModel, Task>? _onStage;
     private Func<SalesPresentationPrivateSnapshotViewModel, Task>? _onPrivate;
+    private Func<SalesBrowserPresentationReadinessViewModel, Task>? _onReadiness;
+    private Guid _roomId;
+    private string? _browserCredential;
+    private bool _browserHost;
 
     public SalesPresentationConnectionState State { get; private set; } =
         useOfflineMode ? SalesPresentationConnectionState.Offline : SalesPresentationConnectionState.Disconnected;
 
     public event Action<SalesPresentationConnectionState>? StateChanged;
     public event Action<SalesPresentationRenderAcknowledgementViewModel>? StageRenderAcknowledged;
+    public event Func<SalesRoomPlaybackStopRequestViewModel, Task>? AgentPlaybackStopRequested;
+    public event Func<SalesRoomPlaybackStartRequestViewModel, Task>? AgentPlaybackStarted;
 
     public async Task<SalesPresentationAuthoritativeSnapshotViewModel?> GetCurrentAsync(
         Guid companyId, Guid sessionId, CancellationToken cancellationToken = default)
@@ -204,6 +210,44 @@ public sealed class SalesPresentationRuntimeClient(
         }
     }
 
+    public async Task ConnectBrowserAsync(
+        Guid companyId,
+        Guid roomId,
+        Guid sessionId,
+        string? guestCredential,
+        Func<SalesPresentationStageSnapshotViewModel, Task> onStage,
+        Func<SalesPresentationPrivateSnapshotViewModel, Task>? onPrivate = null,
+        Func<SalesBrowserPresentationReadinessViewModel, Task>? onReadiness = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (useOfflineMode)
+            throw new SalesPresentationRuntimeClientException("The browser presentation is unavailable offline.");
+        await DisconnectAsync();
+        _companyId = companyId;
+        _roomId = roomId;
+        _sessionId = sessionId;
+        _surface = SalesPresentationSurface.Stage;
+        _browserCredential = guestCredential;
+        _browserHost = companyId != Guid.Empty;
+        _onStage = onStage;
+        _onPrivate = onPrivate;
+        _onReadiness = onReadiness;
+        SetState(SalesPresentationConnectionState.Connecting);
+        _connection = BuildConnection(HubUriForBrowser(companyId, roomId), guestCredential);
+        RegisterConnectionHandlers();
+        try
+        {
+            await _connection.StartAsync(cancellationToken);
+            await JoinAndDispatchAsync(cancellationToken);
+            SetState(SalesPresentationConnectionState.Connected);
+        }
+        catch
+        {
+            SetState(SalesPresentationConnectionState.Degraded);
+            throw;
+        }
+    }
+
     public async Task AcknowledgeStageRenderAsync(
         SalesPresentationStageSnapshotViewModel snapshot,
         DateTime renderedUtc,
@@ -216,11 +260,13 @@ public sealed class SalesPresentationRuntimeClient(
             snapshot.DeckVersion, snapshot.SlideNumber, snapshot.Sequence, snapshot.Version, renderedUtc, cancellationToken);
     }
 
-    private HubConnection BuildConnection(Uri uri) => new HubConnectionBuilder()
+    private HubConnection BuildConnection(Uri uri, string? browserCredential = null) => new HubConnectionBuilder()
         .WithUrl(uri, options =>
         {
             foreach (var header in httpClient.DefaultRequestHeaders)
                 options.Headers[header.Key] = string.Join(",", header.Value);
+            if (!string.IsNullOrWhiteSpace(browserCredential))
+                options.Headers["X-Sales-Room-Session"] = browserCredential;
         })
         .WithAutomaticReconnect([TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(10)])
         .Build();
@@ -236,6 +282,19 @@ public sealed class SalesPresentationRuntimeClient(
         {
             StageRenderAcknowledged?.Invoke(acknowledgement);
         });
+        _connection.On<SalesBrowserPresentationReadinessViewModel>("BrowserAudienceChanged", readiness =>
+            _onReadiness?.Invoke(readiness) ?? Task.CompletedTask);
+        _connection.On<SalesRoomPlaybackStopRequestViewModel>("AgentPlaybackStopRequested", async request =>
+        {
+            if (_roomId == Guid.Empty || request.RoomId != _roomId || AgentPlaybackStopRequested is null) return;
+            await AgentPlaybackStopRequested(request);
+            if (_connection is { State: HubConnectionState.Connected })
+                await _connection.InvokeAsync("AcknowledgeAgentPlaybackStopped", request.StopId,
+                    request.ResponseGeneration, CancellationToken.None);
+        });
+        _connection.On<SalesRoomPlaybackStartRequestViewModel>("AgentPlaybackStarted", request =>
+            _roomId != Guid.Empty && request.RoomId == _roomId && AgentPlaybackStarted is not null
+                ? AgentPlaybackStarted(request) : Task.CompletedTask);
         _connection.Reconnecting += _ => { SetState(SalesPresentationConnectionState.Reconnecting); return Task.CompletedTask; };
         _connection.Closed += _ => { SetState(SalesPresentationConnectionState.Degraded); return Task.CompletedTask; };
         _connection.Reconnected += async _ =>
@@ -259,6 +318,10 @@ public sealed class SalesPresentationRuntimeClient(
             await _connection.DisposeAsync();
             _connection = null;
         }
+        _roomId = Guid.Empty;
+        _browserCredential = null;
+        _browserHost = false;
+        _onReadiness = null;
         SetState(useOfflineMode ? SalesPresentationConnectionState.Offline : SalesPresentationConnectionState.Disconnected);
     }
 
@@ -267,6 +330,19 @@ public sealed class SalesPresentationRuntimeClient(
     private async Task JoinAndDispatchAsync(CancellationToken cancellationToken)
     {
         if (_connection is null) return;
+        if (_roomId != Guid.Empty)
+        {
+            if (_browserHost && _onPrivate is not null)
+            {
+                var privateSnapshot = await _connection.InvokeAsync<SalesPresentationPrivateSnapshotViewModel>(
+                    "JoinPrivate", _sessionId, cancellationToken);
+                await _onPrivate(privateSnapshot);
+            }
+            var browserSnapshot = await _connection.InvokeAsync<SalesBrowserPresentationPublicViewModel>(
+                "JoinBrowserStage", _roomId, cancellationToken);
+            if (_onStage is not null) await _onStage(browserSnapshot.Stage);
+            return;
+        }
         if (_surface == SalesPresentationSurface.Stage)
         {
             var snapshot = await _connection.InvokeAsync<SalesPresentationStageSnapshotViewModel>("JoinStage", _sessionId, cancellationToken);
@@ -329,6 +405,12 @@ public sealed class SalesPresentationRuntimeClient(
         transport.BaseAddress ?? httpClient.BaseAddress ?? new Uri("http://localhost:5301/"),
         $"hubs/sales-meeting?sessionId={sessionId:D}&stageToken={Uri.EscapeDataString(stageToken)}");
 
+    private Uri HubUriForBrowser(Guid companyId, Guid roomId) => new(
+        transport.BaseAddress ?? httpClient.BaseAddress ?? new Uri("http://localhost:5301/"),
+        companyId == Guid.Empty
+            ? $"hubs/sales-meeting?roomId={roomId:D}"
+            : $"hubs/sales-meeting?companyId={companyId:D}&roomId={roomId:D}");
+
     private static string BasePath(Guid sessionId) =>
         $"api/sales/meeting-sessions/{sessionId:D}/presentation";
 
@@ -349,7 +431,8 @@ public sealed class SalesPresentationRuntimeClientException(
 public sealed record SalesPresentationCommandViewModel(
     Guid CommandId, long Sequence, long ExpectedVersion,
     int? SlideNumber = null, int? TalkingPointIndex = null, string? ResumeMarker = null,
-    string ActorType = "human", Guid? DeckId = null, Guid? ActorId = null);
+    string ActorType = "human", Guid? DeckId = null, Guid? ActorId = null,
+    int? DeckVersion = null, long? ActorGeneration = null);
 
 public sealed record SalesPresentationStageSnapshotViewModel(
     Guid SessionId, string SessionStatus, long Sequence, long Version,
@@ -382,3 +465,23 @@ public sealed record SalesPresentationControlModeViewModel(
 public sealed record SalesPresentationRenderAcknowledgementViewModel(
     Guid CompanyId, Guid SessionId, Guid DeckId, int DeckVersion, int SlideNumber,
     long PresentationSequence, long PresentationVersion, string ConnectionId, DateTime RenderedUtc);
+
+public sealed record SalesBrowserPresentationAudienceMemberViewModel(
+    Guid ParticipantId, string DisplayName, bool Connected, string State, DateTime? RenderedUtc);
+public sealed record SalesBrowserPresentationReadinessViewModel(
+    Guid RoomId, Guid DeckId, int DeckVersion, int SlideNumber, long PresentationSequence,
+    long PresentationVersion, DateTime DeadlineUtc, bool OverrideApplied,
+    IReadOnlyList<SalesBrowserPresentationAudienceMemberViewModel> Audience)
+{
+    public int RequiredCount => Audience.Count;
+    public int RenderedCount => Audience.Count(x => x.State is "rendered" or "overridden");
+    public bool Ready => RequiredCount == RenderedCount;
+}
+public sealed record SalesBrowserPresentationPublicViewModel(
+    Guid RoomId, Guid ParticipantId, long ActorGeneration, SalesPresentationStageSnapshotViewModel Stage);
+public sealed record SalesBrowserPresentationHostViewModel(
+    Guid RoomId, Guid ParticipantId, long ActorGeneration,
+    SalesPresentationAuthoritativeSnapshotViewModel Presentation,
+    SalesBrowserPresentationReadinessViewModel Readiness);
+public sealed record SalesRoomPlaybackStopRequestViewModel(Guid RoomId, Guid StopId, long ResponseGeneration, DateTime DeadlineUtc);
+public sealed record SalesRoomPlaybackStartRequestViewModel(Guid RoomId, long ResponseGeneration);

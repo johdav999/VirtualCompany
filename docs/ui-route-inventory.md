@@ -102,3 +102,18 @@ Public routes remain separate from the authenticated application information arc
 - Work selection uses `tab`, `taskId`, or `itemId`.
 - Sales Prospects uses `view=leads` for inbound lead state.
 - Legacy routes use the same underlying authorized page or a replace-navigation redirect; they do not bypass target authorization.
+
+## Browser meeting routes
+
+- `/sales/rooms/{RoomId}` is the guest surface. It uses a room-scoped credential and the minimal public layout; it never grants company membership. Initial and same-page invitation fragments are consumed and removed before media is enabled.
+- `/app/sales/rooms/{RoomId}?companyId={CompanyId}` is the organizer surface linked from Sales lead scheduling and meeting preparation. Server-side company membership and organizer authorization protect every host projection and command. Private host controls are separate from the customer surface.
+- Existing Teams and single-user browser voice routes remain unchanged.
+
+
+### Browser room closing review (Prompt 9)
+
+- Route: `/app/sales/rooms/{RoomId:guid}/review`, company organizer only; entered from the finished host room.
+- Page/component: `Pages/Sales/SalesBrowserClosing.razor` / `Components/Sales/SalesRoomClosingReview.razor`.
+- Typed API: `SalesBrowserRoomApiClient.CaptureReviewAsync`, plus existing capture, closing and change-proposal clients. Guest endpoints expose no closing/private content.
+- States: loading/retry, forbidden, live/partial/expired, explicit excerpt review, customer draft/review/approval, private notes, delivery approval/queued/error, completed.
+- Design and UAT evidence: `docs/verification/browser-sales-room/prompt9-uat.md`.

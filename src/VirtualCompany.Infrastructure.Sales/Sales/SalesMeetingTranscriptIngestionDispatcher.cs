@@ -119,7 +119,7 @@ public sealed class SalesMeetingTranscriptIngestionDispatcher(
         foreach (var providerSegment in document.Segments.Where(x => !prior.Contains(x.SegmentId)))
         {
             var contentHash = Hash(NormalizeText(providerSegment.Content));
-            var match = live.FirstOrDefault(x => Equivalent(x, providerSegment));
+            var match = live.FirstOrDefault(x => x.InputSource != SalesMeetingInputSource.BrowserRoom && Equivalent(x, providerSegment));
             SalesMeetingTranscriptMatchKind kind;
             string? conflict = null;
             string? beforeContent = match?.Content;
@@ -150,7 +150,7 @@ public sealed class SalesMeetingTranscriptIngestionDispatcher(
             }
             else
             {
-                var overlap = live.FirstOrDefault(x => TimeOverlaps(x.StartedUtc, x.EndedUtc, providerSegment.StartedUtc, providerSegment.EndedUtc));
+                var overlap = live.FirstOrDefault(x => x.InputSource != SalesMeetingInputSource.BrowserRoom && TimeOverlaps(x.StartedUtc, x.EndedUtc, providerSegment.StartedUtc, providerSegment.EndedUtc));
                 if (overlap is not null && overlap.ReviewState == SalesMeetingReviewState.Reviewed)
                 {
                     match = overlap;

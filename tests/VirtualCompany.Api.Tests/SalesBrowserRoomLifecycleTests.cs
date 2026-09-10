@@ -100,6 +100,44 @@ public sealed class SalesBrowserRoomLifecycleTests
         Assert.Contains(await f.Db.SalesRoomOperations.IgnoreQueryFilters().ToListAsync(), x => x.Action == "stop_agents");
     }
     [Fact]
+    public async Task Admitted_participant_withdrawal_fences_agent_but_preserves_separate_transcript_choice()
+    {
+        await using var f = await RoomFixture.Create(); await f.Ready();
+        await f.Service.HostTokenAsync(f.Company, f.Actor, f.Room, default);
+        var guest = await f.Guest();
+        await f.Service.DecideAsync(f.Company, f.Actor, f.Room, guest.Participant.ParticipantId, "admit",
+            new(Guid.NewGuid(), (await f.View()).Version), default);
+        var host = (await f.View()).Participants.Single(x => x.IsOrganizer);
+        await f.Service.HostConsentAsync(f.Company, f.Actor, f.Room,
+            new(Guid.NewGuid(), host.Version, "ai_processing", true, "browser-room-v1"), default);
+        var guestView = await f.Service.ConsentAsync(guest.Credential, f.Room,
+            new(Guid.NewGuid(), (await f.Service.GuestStatusAsync(guest.Credential, f.Room, default)).Version,
+                "retained_transcript", true, "browser-room-v1"), default);
+        guestView = await f.Service.ConsentAsync(guest.Credential, f.Room,
+            new(Guid.NewGuid(), guestView.Version, "ai_processing", true, "browser-room-v1"), default);
+
+        f.Db.ChangeTracker.Clear();
+        var room = await f.Db.SalesBrowserRooms.IgnoreQueryFilters().SingleAsync(x => x.Id == f.Room);
+        var agentId = Guid.NewGuid();
+        f.Db.Agents.Add(new Agent(agentId, f.Company, "sales-test", "Nora", "Sales presenter", "Sales", null,
+            AgentSeniority.Senior, AgentStatus.Active));
+        room.StartAgent(agentId, f.Actor, Guid.NewGuid(), f.Clock.Now.AddSeconds(30), f.Clock.Now);
+        var runningTurn = room.AgentTurnGeneration;
+        await f.Db.SaveChangesAsync();
+
+        var withdrawn = await f.Service.ConsentAsync(guest.Credential, f.Room,
+            new(Guid.NewGuid(), guestView.Version, "ai_processing", false, "browser-room-v1"), default);
+        f.Db.ChangeTracker.Clear();
+        room = await f.Db.SalesBrowserRooms.IgnoreQueryFilters().SingleAsync(x => x.Id == f.Room);
+
+        Assert.False(withdrawn.AiProcessingAllowed);
+        Assert.True(withdrawn.TranscriptRetentionAllowed);
+        Assert.Equal(SalesRoomAgentHealthStates.Stopped, room.AgentHealth);
+        Assert.True(room.AgentTurnGeneration > runningTurn);
+        Assert.Null(room.AgentLeaseOwnerId);
+        Assert.Contains(await f.Db.SalesRoomOperations.IgnoreQueryFilters().ToListAsync(), x => x.Action == "stop_agents");
+    }
+    [Fact]
     public async Task End_retries_are_one_lifecycle_and_late_webhooks_cannot_reopen_it()
     {
         await using var f = await RoomFixture.Create(); await f.Ready(); var guest = await f.Guest();
@@ -165,8 +203,9 @@ internal sealed class RoomFixture : IAsyncDisposable
         var meeting = new SalesMeetingSession(Guid.NewGuid(), f.Company, invitation.Id, lead, null, contact, customer, "Goal", "Audience", 30, null, "test-calendar-event", SalesMeetingConsentStatus.Pending, SalesMeetingRetentionPolicy.Standard, 365, f.Clock.Now, f.Actor, f.Clock.Now);
         f.Meeting = meeting.Id; f.Db.SalesMeetingSessions.Add(meeting); await f.Db.SaveChangesAsync();
         var outbox = new RoomOutbox(f.Db); var mediaOptions = Options.Create(new SalesRoomMediaOptions { Url = "wss://test.livekit.cloud", Enabled = true });
-        f.Service = new(f.Db, outbox, f.Media, f.Webhook, Options.Create(f.Limits), mediaOptions, f.Clock);
-        f.Worker = new(f.Db, outbox, f.Media, f.Media, Options.Create(f.Limits), f.Clock); return f;
+        var monitoredLimits = Options.Create(f.Limits).ToMonitor();
+        f.Service = new(f.Db, outbox, f.Media, f.Webhook, monitoredLimits, mediaOptions, f.Clock);
+        f.Worker = new(f.Db, outbox, f.Media, f.Media, monitoredLimits, f.Clock); return f;
     }
     public async Task CreateRoom() => Room = (await Service.CreateAsync(Company, Actor, Meeting, new(Guid.NewGuid(), Clock.Now.AddHours(1)), default)).Id;
     public async Task Ready() { await CreateRoom(); await Dispatch("provision"); }

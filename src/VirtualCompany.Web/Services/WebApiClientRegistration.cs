@@ -9,6 +9,9 @@ public static class WebApiClientRegistration
         IConfiguration configuration)
     {
         services.AddScoped<ICompanyApiTransport, CompanyApiTransport>();
+        services.AddScoped(sp => new SalesBrowserRoomApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new SalesBrowserGuestApiClient(new HttpClient
+        { BaseAddress = sp.GetRequiredService<ICompanyApiTransport>().BaseAddress, Timeout = TimeSpan.FromSeconds(10) }));
         services.AddScoped(sp => new OnboardingApiClient(
             sp.GetRequiredService<HttpClient>(),
             IsOffline(sp),
@@ -73,6 +76,7 @@ public static class WebApiClientRegistration
             IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped<SalesPresentationPreparationTelemetry>();
+        services.AddScoped<SalesNarrationApiClient>();
         services.AddScoped(sp => new SalesPresentationRuntimeClient(
             sp.GetRequiredService<ICompanyApiTransport>(),
             sp.GetRequiredService<HttpClient>(),

@@ -84,6 +84,24 @@ public sealed class SalesPresentationRuntimeServiceTests
         Assert.DoesNotContain("private", JsonSerializer.Serialize(result), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Command_rejects_a_stale_deck_version_before_mutating()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var current = await fixture.Service.GetCurrentAsync(
+            fixture.CompanyId, fixture.UserId, fixture.SessionId, CancellationToken.None);
+
+        var conflict = await Assert.ThrowsAsync<SalesPresentationRuntimeConflictException>(() =>
+            fixture.Service.ExecuteAsync(
+                fixture.CompanyId, fixture.UserId, fixture.SessionId, SalesPresentationToolNames.Next,
+                new(Guid.NewGuid(), 1, current!.Stage.Version, DeckId: current.Stage.DeckId,
+                    DeckVersion: current.Stage.DeckVersion + 1), null, CancellationToken.None));
+
+        Assert.Equal(SalesPresentationRuntimeProblemCodes.Conflict, conflict.Code);
+        Assert.Equal(0, conflict.Snapshot.Stage.Sequence);
+        Assert.Equal(0, fixture.Publisher.PublishCount);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private Fixture(

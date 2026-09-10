@@ -72,6 +72,7 @@ public sealed class AgentOrchestrationRun : ICompanyOwnedEntity
         Version++;
     }
 
+    public void ExpireContent() { Summary = null; ResultJson = null; FailureMessage = null; Version++; }
     private void EnsureRunning() { if (Status != "running") throw new InvalidOperationException("The run is already terminal."); }
     internal static string Required(string? value, int max) => string.IsNullOrWhiteSpace(value) ? throw new ArgumentException("A required value is missing.") : value.Trim()[..Math.Min(value.Trim().Length, max)];
     internal static string? Optional(string? value, int max) => string.IsNullOrWhiteSpace(value) ? null : value.Trim()[..Math.Min(value.Trim().Length, max)];

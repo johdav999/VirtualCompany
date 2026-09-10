@@ -1,0 +1,9 @@
+# Browser sales room — synchronized presentation reference
+
+Create a high-fidelity desktop product UI reference for Virtual Company’s browser sales room. Show one 1440×1000 canvas split into two labeled views: HOST and GUEST.
+
+The host view uses a calm, professional Nordic B2B style: off-white background, charcoal text, deep green primary actions, pale green status accents, warm gray borders, 10–12px corner radii, restrained shadows, generous whitespace, and readable 16px body type. Preserve the existing video meeting context with a compact horizontal participant strip. Make the shared presentation the dominant surface: a large 16:9 slide stage on the left. On the right, show a clearly private host panel with deck readiness, a manual/assisted/autonomous segmented control, previous and next controls, a compact slide navigator, pause/resume, speaker notes, objective, duration, transition cue, and audience readiness. Show a current slide titled “A simpler close for growing teams”. Audience readiness should show “2 of 3 rendered”, identify one slow attendee, and include an explicit “Continue anyway” override. Mark the private panel “Only you can see this”.
+
+The guest view shows the same current slide and the compact participant strip plus ordinary microphone, camera, share, sound, and leave controls. It must contain no speaker notes, presentation plan, objective, duration, transition cue, control mode, command controls, or host-only readiness details. Include a small public status such as “Host paused the presentation” only where appropriate.
+
+The reference must feel implementation-ready, accessible, and plausible in a real browser meeting. Use clear hierarchy, visible focus states, no gradients, no glassmorphism, no decorative illustration, no marketing dashboard charts, and no fake browser chrome.

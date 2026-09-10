@@ -29,6 +29,16 @@ internal static class WebTestContextServiceRegistration
         context.Services.AddSingleton(new GuidedWorkApiClient(
             new CompanyApiTransport(new HttpClient { BaseAddress = new Uri("http://localhost/") }),
             offline: true));
+        var presentationHttp = new HttpClient { BaseAddress = new Uri("http://localhost/") };
+        context.Services.AddSingleton(new SalesPresentationRuntimeClient(
+            new CompanyApiTransport(presentationHttp), presentationHttp, useOfflineMode: true));
+        context.Services.AddSingleton(new SalesNarrationApiClient(new CompanyApiTransport(new HttpClient(new NarrationUnavailableHandler()) { BaseAddress = new Uri("http://localhost/") })));
         return context;
+    }
+    private sealed class NarrationUnavailableHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) {
+                Content = System.Net.Http.Json.JsonContent.Create(new { detail = "Narration is unavailable in this isolated page fixture." }) });
     }
 }

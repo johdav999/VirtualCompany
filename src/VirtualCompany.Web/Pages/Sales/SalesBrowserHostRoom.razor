@@ -1,0 +1,11 @@
+@page "/app/sales/rooms/{RoomId:guid}"
+@layout PublicLayout
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inherits SalesPageBase
+<PageTitle>Host browser meeting</PageTitle>
+@if (ResolvedCompanyId is Guid company) { <SalesHumanRoom RoomId="RoomId" HostCompanyId="company" /> }
+else { <main class="container p-4"><h1>Host browser meeting</h1><p role="status">@(ShellErrorMessage ?? "Checking your account…")</p></main> }
+@code {
+    [Parameter] public Guid RoomId { get; set; }
+    protected override async Task OnInitializedAsync() => await ResolveCompanyAsync();
+}

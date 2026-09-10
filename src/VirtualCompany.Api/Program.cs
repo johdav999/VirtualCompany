@@ -15,6 +15,7 @@ using VirtualCompany.Infrastructure.Tenancy;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Api.Hubs;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Infrastructure.Sales;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Host.UseWindowsService(options => options.ServiceName = "VirtualCompanyTeamsMedia");
@@ -49,7 +50,8 @@ if (!string.IsNullOrWhiteSpace(monitoringConnection))
         "VirtualCompany.Sales.TeamsPresenter",
         "VirtualCompany.Teams.CallControl",
         "VirtualCompany.Sales.TeamsMedia",
-        "VirtualCompany.Sales.TeamsMediaHost"));
+        "VirtualCompany.Sales.TeamsMediaHost",
+        SalesRoomBenchmarkTelemetry.MeterName));
 }
 
 var dataProtectionKeyRing = DataProtectionKeyRingConfiguration.Configure(
@@ -82,6 +84,7 @@ builder.Services.AddSignalR();
 builder.Services.AddSingleton<IActivityEventPublisher, SignalRActivityEventPublisher>();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<ISalesPresentationEventPublisher, SignalRSalesPresentationEventPublisher>();
+builder.Services.AddSingleton<ISalesRoomFloorEventPublisher, SignalRSalesRoomFloorEventPublisher>();
 builder.Services.AddCompanyAuthorization(builder.Environment);
 builder.Services.AddVirtualCompanyRateLimiting(builder.Configuration);
 builder.Services.AddSalesRoomApi();

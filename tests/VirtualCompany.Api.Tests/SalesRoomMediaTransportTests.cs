@@ -27,6 +27,9 @@ public sealed class SalesRoomMediaTransportTests
         var values = new Dictionary<string, string?>
         {
             ["SalesBrowserRoom:Enabled"] = browserEnabled.ToString(),
+            ["SalesBrowserRoom:Url"] = "wss://isolated.example.test",
+            ["SalesBrowserRoom:ApiKey"] = "test-key",
+            ["SalesBrowserRoom:ApiSecret"] = new string('x', 32),
             ["SalesMeetingVoice:Enabled"] = legacyEnabled.ToString(),
             ["SalesMeetingVoice:PilotApproved"] = "true",
             ["TeamsPresenter:Enabled"] = legacyEnabled.ToString()
@@ -37,7 +40,8 @@ public sealed class SalesRoomMediaTransportTests
         using var provider = services.BuildServiceProvider();
         var browser = provider.GetRequiredService<ISalesRoomMediaTransport>().GetReadiness();
         Assert.Equal(browserEnabled, browser.Enabled);
-        Assert.Equal(browserEnabled ? "invalid_endpoint" : "disabled", browser.ReasonCode);
+        Assert.Equal(browserEnabled ? "configured_unverified" : "unavailable", browser.State);
+        Assert.Equal(browserEnabled ? "native_not_probed" : "disabled", browser.ReasonCode);
         Assert.Equal(legacyEnabled, provider.GetRequiredService<IOptions<TeamsPresenterOptions>>().Value.Enabled);
         Assert.Equal(legacyEnabled, provider.GetRequiredService<IOptions<SalesMeetingVoiceOptions>>().Value.Enabled);
         Assert.Equal("browser_webrtc", provider.GetRequiredService<IOptions<SalesMeetingVoiceOptions>>().Value.MediaRoute);

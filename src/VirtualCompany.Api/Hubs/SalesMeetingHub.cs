@@ -12,6 +12,9 @@ public interface ISalesMeetingHubClient
     Task StageStateChanged(SalesPresentationStageSnapshotDto snapshot);
     Task PrivateStateChanged(SalesPresentationPrivateSnapshotDto snapshot);
     Task StageRenderAcknowledged(SalesPresentationRenderAcknowledgement acknowledgement);
+    Task BrowserAudienceChanged(SalesBrowserPresentationReadinessDto readiness);
+    Task AgentPlaybackStopRequested(SalesRoomPlaybackStopRequest request);
+    Task AgentPlaybackStarted(SalesRoomPlaybackStartRequest request);
 }
 
 public sealed class SalesMeetingHub(
@@ -19,14 +22,34 @@ public sealed class SalesMeetingHub(
     ICompanyContextAccessor companyContext,
     ISalesPresentationRuntimeService runtime,
     ISalesPresentationStageAccessService stageAccess,
-    ISalesPresentationStagePresenceService stagePresence) : Hub<ISalesMeetingHubClient>
+    ISalesPresentationStagePresenceService stagePresence,
+    ISalesBrowserPresentationService browserPresentations,
+    ISalesRoomAgentService roomAgents) : Hub<ISalesMeetingHubClient>
 {
     public const string Route = "/hubs/sales-meeting";
     private const string StageAccessItem = "sales.presentation.stage-access";
     private const string StageBindingItem = "sales.presentation.stage-binding";
+    private const string BrowserAccessItem = "sales.presentation.browser-access";
 
     public override async Task OnConnectedAsync()
     {
+        if (TryReadBrowserRoom(out var browserRoomId, out var browserCredential) &&
+            !string.IsNullOrWhiteSpace(browserCredential))
+        {
+            try
+            {
+                Context.Items[BrowserAccessItem] = await browserPresentations.ValidateGuestAsync(
+                    browserCredential, browserRoomId, Context.ConnectionAborted);
+                await base.OnConnectedAsync();
+                return;
+            }
+            catch (SalesRoomAccessException)
+            {
+                Context.Abort();
+                return;
+            }
+        }
+
         if (TryReadStageAccess(out var stageSessionId, out var stageToken))
         {
             try
@@ -58,6 +81,44 @@ public sealed class SalesMeetingHub(
         await base.OnConnectedAsync();
     }
 
+    public async Task<SalesBrowserPresentationPublicDto> JoinBrowserStage(Guid roomId)
+    {
+        SalesBrowserPresentationAccessContext access;
+        SalesBrowserPresentationPublicDto snapshot;
+        if (Context.Items.TryGetValue(BrowserAccessItem, out var item) &&
+            item is SalesBrowserPresentationAccessContext guestAccess)
+        {
+            if (guestAccess.RoomId != roomId) throw new HubException("The browser-room grant does not match this room.");
+            access = guestAccess;
+            var stage = await browserPresentations.ConnectAsync(access, Context.ConnectionAborted);
+            var current = await browserPresentations.GetGuestAsync(
+                ReadBrowserCredential(), roomId, Context.ConnectionAborted);
+            snapshot = current;
+            await Clients.Group(PrivateGroup(access.CompanyId, access.SessionId)).BrowserAudienceChanged(stage);
+        }
+        else
+        {
+            var identity = await ContextIdentityAsync();
+            access = await browserPresentations.ValidateHostAsync(
+                identity.CompanyId, identity.UserId, roomId, Context.ConnectionAborted);
+            var current = await browserPresentations.GetHostAsync(
+                identity.CompanyId, identity.UserId, roomId, Context.ConnectionAborted);
+            snapshot = new(roomId, current.ParticipantId, current.ActorGeneration, current.Presentation.Stage);
+            var readiness = await browserPresentations.ConnectAsync(access, Context.ConnectionAborted);
+            await Clients.Group(PrivateGroup(access.CompanyId, access.SessionId)).BrowserAudienceChanged(readiness);
+        }
+
+        await Groups.AddToGroupAsync(Context.ConnectionId,
+            StageGroup(access.CompanyId, access.SessionId), Context.ConnectionAborted);
+        Context.Items[BrowserAccessItem] = access;
+        Context.Items[StageBindingItem] = new StageConnectionBinding(
+            access.CompanyId, access.SessionId, snapshot.Stage.DeckId, snapshot.Stage.DeckVersion, access);
+        await stagePresence.RegisterAsync(new SalesPresentationStagePresence(
+            access.CompanyId, access.SessionId, snapshot.Stage.DeckId, snapshot.Stage.DeckVersion,
+            Context.ConnectionId, true, DateTime.UtcNow), Context.ConnectionAborted);
+        return snapshot;
+    }
+
     public async Task<SalesPresentationStageSnapshotDto> JoinStage(Guid sessionId)
     {
         Guid companyId;
@@ -77,7 +138,7 @@ public sealed class SalesMeetingHub(
             await runtime.RecordReconnectAsync(companyId, identity.UserId, sessionId, "stage", Context.ConnectionAborted);
         }
         await Groups.AddToGroupAsync(Context.ConnectionId, StageGroup(companyId, sessionId), Context.ConnectionAborted);
-        var binding = new StageConnectionBinding(companyId, sessionId, snapshot.DeckId, snapshot.DeckVersion);
+        var binding = new StageConnectionBinding(companyId, sessionId, snapshot.DeckId, snapshot.DeckVersion, null);
         Context.Items[StageBindingItem] = binding;
         await stagePresence.RegisterAsync(new SalesPresentationStagePresence(companyId, sessionId,
             snapshot.DeckId, snapshot.DeckVersion, Context.ConnectionId, true, DateTime.UtcNow), Context.ConnectionAborted);
@@ -129,8 +190,37 @@ public sealed class SalesMeetingHub(
         int slideNumber, long presentationSequence, long presentationVersion, DateTime renderedUtc)
     {
         if (!Context.Items.TryGetValue(StageBindingItem, out var item) || item is not StageConnectionBinding binding ||
-            binding.SessionId != sessionId || binding.DeckId != deckId || binding.DeckVersion != deckVersion)
+            binding.SessionId != sessionId ||
+            (binding.BrowserAccess is null && (binding.DeckId != deckId || binding.DeckVersion != deckVersion)))
             throw new HubException("An active authorized stage connection is required.");
+
+        var acknowledgement = new SalesPresentationRenderAcknowledgement(binding.CompanyId,
+            sessionId, deckId, deckVersion, slideNumber, presentationSequence, presentationVersion,
+            Context.ConnectionId, renderedUtc.Kind == DateTimeKind.Utc ? renderedUtc : renderedUtc.ToUniversalTime());
+
+        if (binding.BrowserAccess is { } browserAccess)
+        {
+            browserAccess = browserAccess.IsOrganizer
+                ? await browserPresentations.ValidateHostAsync(
+                    browserAccess.CompanyId, (await ContextIdentityAsync()).UserId,
+                    browserAccess.RoomId, Context.ConnectionAborted)
+                : await browserPresentations.ValidateGuestAsync(
+                    ReadBrowserCredential(), browserAccess.RoomId, Context.ConnectionAborted);
+            var readiness = await browserPresentations.AcknowledgeAsync(
+                browserAccess, acknowledgement, Context.ConnectionAborted);
+            // Browser-room deck selection can change while the connection stays open.
+            // The durable browser service has already validated this exact snapshot,
+            // so refresh the route-neutral in-memory presence before acknowledging it.
+            binding = binding with { DeckId = deckId, DeckVersion = deckVersion };
+            Context.Items[StageBindingItem] = binding;
+            await stagePresence.RegisterAsync(new SalesPresentationStagePresence(
+                binding.CompanyId, binding.SessionId, deckId, deckVersion,
+                Context.ConnectionId, true, DateTime.UtcNow), Context.ConnectionAborted);
+            await stagePresence.AcknowledgeAsync(acknowledgement, Context.ConnectionAborted);
+            await Clients.Group(PrivateGroup(binding.CompanyId, sessionId))
+                .BrowserAudienceChanged(readiness);
+            return;
+        }
 
         SalesPresentationStageSnapshotDto current;
         if (Context.Items.TryGetValue(StageAccessItem, out var accessItem) && accessItem is StageConnectionAccess stage)
@@ -146,18 +236,45 @@ public sealed class SalesMeetingHub(
             current.Sequence != presentationSequence || current.Version != presentationVersion)
             throw new HubException("The render acknowledgement is stale; reload the authoritative stage state.");
 
-        var acknowledgement = new SalesPresentationRenderAcknowledgement(binding.CompanyId,
-            sessionId, deckId, deckVersion, slideNumber, presentationSequence, presentationVersion,
-            Context.ConnectionId, renderedUtc.Kind == DateTimeKind.Utc ? renderedUtc : renderedUtc.ToUniversalTime());
         await stagePresence.AcknowledgeAsync(acknowledgement, Context.ConnectionAborted);
         await Clients.Group(PrivateGroup(binding.CompanyId, sessionId)).StageRenderAcknowledged(acknowledgement);
+    }
+
+    public async Task AcknowledgeAgentPlaybackStopped(Guid stopId, long responseGeneration)
+    {
+        if (!Context.Items.TryGetValue(BrowserAccessItem, out var item) ||
+            item is not SalesBrowserPresentationAccessContext access)
+            throw new HubException("An active authorized browser-room connection is required.");
+        access = access.IsOrganizer
+            ? await browserPresentations.ValidateHostAsync(access.CompanyId, (await ContextIdentityAsync()).UserId,
+                access.RoomId, Context.ConnectionAborted)
+            : await browserPresentations.ValidateGuestAsync(ReadBrowserCredential(), access.RoomId, Context.ConnectionAborted);
+        Context.Items[BrowserAccessItem] = access;
+        try
+        {
+            await roomAgents.AcknowledgePlaybackStopAsync(access,
+                new(stopId, responseGeneration, Context.ConnectionId), Context.ConnectionAborted);
+        }
+        catch (SalesRoomAgentException exception) { throw new HubException(exception.Code + ": " + exception.Message); }
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         if (Context.Items.TryGetValue(StageBindingItem, out var item) && item is StageConnectionBinding binding)
+        {
             await stagePresence.DisconnectAsync(binding.CompanyId, binding.SessionId, Context.ConnectionId,
                 CancellationToken.None);
+            if (binding.BrowserAccess is { } browserAccess)
+            {
+                try
+                {
+                    var readiness = await browserPresentations.DisconnectAsync(browserAccess, CancellationToken.None);
+                    await Clients.Group(PrivateGroup(binding.CompanyId, binding.SessionId))
+                        .BrowserAudienceChanged(readiness);
+                }
+                catch (SalesRoomAccessException) { }
+            }
+        }
         await base.OnDisconnectedAsync(exception);
     }
 
@@ -192,8 +309,28 @@ public sealed class SalesMeetingHub(
                sessionId != Guid.Empty && token.Length is > 0 and <= 8192;
     }
 
+    private bool TryReadBrowserRoom(out Guid roomId, out string credential)
+    {
+        var request = Context.GetHttpContext()?.Request;
+        credential = request?.Headers["X-Sales-Room-Session"].Count == 1
+            ? request.Headers["X-Sales-Room-Session"].ToString()
+            : string.Empty;
+        return Guid.TryParse(request?.Query["roomId"].FirstOrDefault(), out roomId) &&
+               roomId != Guid.Empty && credential.Length <= 100;
+    }
+
+    private string ReadBrowserCredential()
+    {
+        var credential = Context.GetHttpContext()?.Request.Headers["X-Sales-Room-Session"].ToString();
+        return string.IsNullOrWhiteSpace(credential)
+            ? throw new HubException("The browser-room session is missing.")
+            : credential;
+    }
+
     private sealed record StageConnectionAccess(SalesPresentationStageAccessContext Context, string Token);
-    private sealed record StageConnectionBinding(Guid CompanyId, Guid SessionId, Guid DeckId, int DeckVersion);
+    private sealed record StageConnectionBinding(
+        Guid CompanyId, Guid SessionId, Guid DeckId, int DeckVersion,
+        SalesBrowserPresentationAccessContext? BrowserAccess);
 }
 
 public sealed class SignalRSalesPresentationEventPublisher(
@@ -208,4 +345,16 @@ public sealed class SignalRSalesPresentationEventPublisher(
         await hubContext.Clients.Group(SalesMeetingHub.PrivateGroup(companyId, sessionId))
             .PrivateStateChanged(snapshot.Private);
     }
+}
+
+public sealed class SignalRSalesRoomFloorEventPublisher(
+    IHubContext<SalesMeetingHub, ISalesMeetingHubClient> hubContext) : ISalesRoomFloorEventPublisher
+{
+    public Task RequestPlaybackStopAsync(Guid companyId, Guid sessionId,
+        SalesRoomPlaybackStopRequest request, CancellationToken ct) =>
+        hubContext.Clients.Group(SalesMeetingHub.StageGroup(companyId, sessionId)).AgentPlaybackStopRequested(request);
+
+    public Task AllowPlaybackAsync(Guid companyId, Guid sessionId,
+        SalesRoomPlaybackStartRequest request, CancellationToken ct) =>
+        hubContext.Clients.Group(SalesMeetingHub.StageGroup(companyId, sessionId)).AgentPlaybackStarted(request);
 }

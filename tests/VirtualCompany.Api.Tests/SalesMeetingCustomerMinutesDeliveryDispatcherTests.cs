@@ -64,6 +64,27 @@ public sealed class SalesMeetingCustomerMinutesDeliveryDispatcherTests
         Assert.Equal("recipient_rejected", fixture.Proposal.LastErrorCode);
     }
 
+    [Fact]
+    public async Task Revoked_approval_after_queueing_blocks_delivery()
+    {
+        await using var f = await Fixture.CreateAsync(SenderOutcome.Success);
+        (await f.Db.ApprovalRequests.SingleAsync()).MarkRevoked("Withdrawn");
+        await f.Db.SaveChangesAsync();
+        await f.Dispatcher.DispatchAsync(f.Message, default);
+        Assert.Equal(0, f.Sender.Calls);
+        Assert.Equal(SalesMeetingChangeProposalStatus.Conflict, f.Proposal.Status);
+    }
+    [Fact]
+    public async Task Changed_capture_after_queueing_blocks_delivery()
+    {
+        await using var f = await Fixture.CreateAsync(SenderOutcome.Success);
+        var session = await f.Db.SalesMeetingSessions.SingleAsync();
+        session.ApplyCaptureBatch(Guid.NewGuid(), session.CaptureVersion, session.CreatedByUserId, DateTime.UtcNow);
+        await f.Db.SaveChangesAsync();
+        await f.Dispatcher.DispatchAsync(f.Message, default);
+        Assert.Equal(0, f.Sender.Calls);
+    }
+
     private enum SenderOutcome { Success, RetryableThenSuccess, Ambiguous, Permanent }
 
     private sealed class Sender(SenderOutcome outcome) : IOutboundEmailSender
@@ -123,7 +144,15 @@ public sealed class SalesMeetingCustomerMinutesDeliveryDispatcherTests
                 JsonSerializer.Serialize("buyer@example.com"), JsonSerializer.Serialize("not_sent"),
                 minutes.ConcurrencyVersion.ToString(), .98m, "Send the approved customer minutes.", "[]", "evidence-hash",
                 SalesMeetingChangeRiskClass.AlwaysGated, true, SalesMeetingChangePolicy.CurrentVersion, userId, now);
-            proposal.Approve(proposal.ConcurrencyVersion, "exact-binding", userId, now);
+            var binding = SalesMeetingChangeProposalService.Binding(proposal, SalesMeetingChangePolicy.CurrentVersion);
+            var approval = ApprovalRequest.CreateForTarget(Guid.NewGuid(), companyId, ApprovalTargetEntityType.SalesMeetingChangeProposal,
+                proposal.Id, "user", userId, SalesMeetingChangeApprovalTypes.CustomerMinutesDelivery,
+                new Dictionary<string, System.Text.Json.Nodes.JsonNode?> { ["bindingHash"] = binding }, "owner", null, []);
+            approval.ApproveCurrentStep(approval.CurrentActionableStep!.Id, userId, "Approved");
+            db.ApprovalRequests.Add(approval);
+            proposal.RequestApproval(proposal.ConcurrencyVersion, approval.Id, binding, userId, now);
+            proposal.Approve(proposal.ConcurrencyVersion, binding, userId, now);
+            session.ApplyCaptureBatch(Guid.NewGuid(), 0, userId, now);
             proposal.BeginExecution();
             proposal.MarkQueued(JsonSerializer.Serialize("not_sent"), JsonSerializer.Serialize("delivery_queued"), now);
             db.SalesMeetingSessions.Add(session);

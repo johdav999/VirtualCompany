@@ -9,7 +9,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class SalesMeetingClosingService(
+public sealed partial class SalesMeetingClosingService(
     VirtualCompanyDbContext db,
     IAgentReasoningGateway reasoning,
     IAgentEffectiveAuthorityResolver authorityResolver,
@@ -35,6 +35,10 @@ public sealed class SalesMeetingClosingService(
 
         var session = await db.SalesMeetingSessions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == sessionId, cancellationToken);
         if (session is null) return null;
+        if (session.RetentionUntilUtc <= timeProvider.GetUtcNow().UtcDateTime) throw Conflict("The meeting retention period has expired.");
+        if (await db.SalesBrowserRooms.AnyAsync(x => x.CompanyId == companyId && x.MeetingSessionId == sessionId &&
+            x.State != SalesBrowserRoomStates.Ended && x.State != SalesBrowserRoomStates.Ending, cancellationToken))
+            throw Conflict("End the browser call before preparing or completing its closing review.");
         EnsureClosingCheckpoint(session, request.ExpectedSessionVersion, request.ExpectedCaptureVersion, request.CaptureCheckpointId);
         if (session.Status != SalesMeetingSessionStatus.Closing)
             throw Conflict("The meeting must be in closing before its closing snapshot is prepared.");
@@ -45,6 +49,8 @@ public sealed class SalesMeetingClosingService(
         RequireAuthority(authority, SalesMeetingClosingToolNames.ReadEvidence, ToolActionType.Read);
         RequireAuthority(authority, SalesMeetingClosingToolNames.GenerateSummary, ToolActionType.Recommend);
 
+        var browserRoom = await db.SalesBrowserRooms.AnyAsync(x => x.CompanyId == companyId && x.MeetingSessionId == sessionId, cancellationToken);
+        var closingPrompt = browserRoom ? "sales-browser-room-closing-v1" : PromptVersion;
         var now = timeProvider.GetUtcNow().UtcDateTime;
         var latest = await db.SalesMeetingMinutes.Include(x => x.Items)
             .Where(x => x.CompanyId == companyId && x.SessionId == sessionId)
@@ -55,21 +61,23 @@ public sealed class SalesMeetingClosingService(
         if (latestInternal is not null && latestInternal.Status != SalesMeetingClosingArtifactStatus.Approved) latestInternal.Supersede(latestInternal.ConcurrencyVersion, now);
         var version = (latest?.ArtifactVersion ?? 0) + 1;
 
+        var browserSeeds = await BuildBrowserSeedsAsync(companyId, userId, session, agent.Id, authority, request.GenerationRequestId, cancellationToken);
         var customerSeeds = await BuildCustomerSeedsAsync(companyId, sessionId, request, cancellationToken);
+        customerSeeds.AddRange(browserSeeds);
         var internalSeeds = await BuildInternalSeedsAsync(companyId, sessionId, request, cancellationToken);
         var customerGeneration = await PolishAsync(companyId, userId, agent.Id, authority, customerSeeds.Select(ToSource).ToArray(),
-            "Rewrite only the supplied customer-safe meeting facts as concise Minutes of Meeting statements. Return claims whose type is decision, action, outstanding_question, proposed_next_meeting, or approved_product_statement and cite the supplied source ID for every claim. Do not add objections, buying signals, competitive strategy, confidence, private notes, deal recommendations, promises, pricing, or terms.", cancellationToken);
+            "Rewrite only the supplied customer-safe meeting facts as concise Minutes of Meeting statements. Return claims whose type is decision, action, outstanding_question, proposed_next_meeting, or approved_product_statement and cite the supplied source ID for every claim. Do not add objections, buying signals, competitive strategy, confidence, private notes, deal recommendations, promises, pricing, or terms.", cancellationToken, browserRoom ? $"browser-closing:{sessionId:N}" : null);
         var internalGeneration = await PolishAsync(companyId, userId, agent.Id, authority, internalSeeds.Select(ToSource).ToArray(),
-            "Rewrite the supplied internal sales evidence as concise internal intelligence. Return claims whose type is objection, buying_signal, competitive_information, risk, recommendation, or proposed_deal_change and cite supplied source IDs. Do not claim that proposed sales-record changes were executed.", cancellationToken);
+            "Rewrite the supplied internal sales evidence as concise internal intelligence. Return claims whose type is objection, buying_signal, competitive_information, risk, recommendation, or proposed_deal_change and cite supplied source IDs. Do not claim that proposed sales-record changes were executed.", cancellationToken, browserRoom ? $"browser-closing:{sessionId:N}" : null);
         ApplyCustomerWording(customerSeeds, customerGeneration);
         ApplyInternalWording(internalSeeds, internalGeneration);
 
         var minutes = new SalesMeetingMinutes(Guid.NewGuid(), companyId, sessionId, request.GenerationRequestId,
             latest?.Id, version, session.CaptureVersion, now, agent.Id, customerGeneration?.RunId,
-            customerGeneration?.ResultVersion ?? "deterministic-v1", PromptVersion, session.RetentionUntilUtc, userId, now);
+            customerGeneration?.ResultVersion ?? "deterministic-v1", closingPrompt, session.RetentionUntilUtc, userId, now);
         var intelligence = new SalesMeetingInternalIntelligence(Guid.NewGuid(), companyId, sessionId, minutes.Id,
             version, session.CaptureVersion, now, agent.Id, internalGeneration?.RunId,
-            internalGeneration?.ResultVersion ?? "deterministic-v1", PromptVersion, session.RetentionUntilUtc, userId, now);
+            internalGeneration?.ResultVersion ?? "deterministic-v1", closingPrompt, session.RetentionUntilUtc, userId, now);
         AddCustomerItems(minutes, customerSeeds, now); AddInternalItems(intelligence, internalSeeds, now);
         db.SalesMeetingMinutes.Add(minutes); db.SalesMeetingInternalIntelligence.Add(intelligence);
         AddAudit(companyId, userId, AuditEventActions.SalesMeetingClosingPrepared, sessionId,
@@ -158,11 +166,17 @@ public sealed class SalesMeetingClosingService(
         await EnsureMemberAsync(companyId, userId, false, cancellationToken);
         var session = await db.SalesMeetingSessions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == sessionId, cancellationToken);
         if (session is null) return null;
-        EnsureClosingCheckpoint(session, request.ExpectedSessionVersion, request.ExpectedCaptureVersion, request.CaptureCheckpointId);
+        if (session.RetentionUntilUtc <= timeProvider.GetUtcNow().UtcDateTime) throw Conflict("The meeting retention period has expired.");
+        if (await db.SalesBrowserRooms.AnyAsync(x => x.CompanyId == companyId && x.MeetingSessionId == sessionId &&
+            x.State != SalesBrowserRoomStates.Ended && x.State != SalesBrowserRoomStates.Ending, cancellationToken))
+            throw Conflict("End the browser call before preparing or completing its closing review.");
+        if (session.Status != SalesMeetingSessionStatus.Completed)
+            EnsureClosingCheckpoint(session, request.ExpectedSessionVersion, request.ExpectedCaptureVersion, request.CaptureCheckpointId);
         var minutes = await db.SalesMeetingMinutes.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.SessionId == sessionId && x.Id == request.MinutesId && x.ArtifactVersion == request.MinutesArtifactVersion, cancellationToken);
         var intelligence = await db.SalesMeetingInternalIntelligence.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.SessionId == sessionId && x.Id == request.InternalIntelligenceId && x.MinutesId == request.MinutesId && x.ArtifactVersion == request.InternalArtifactVersion, cancellationToken);
         if (minutes is null || intelligence is null || minutes.EvidenceCaptureVersion != session.CaptureVersion || intelligence.EvidenceCaptureVersion != session.CaptureVersion)
             throw new SalesMeetingClosingConflictException(SalesMeetingClosingProblemCodes.CaptureNotFlushed, "Persist a closing snapshot from the current capture version before completing the meeting.");
+        if (session.Status == SalesMeetingSessionStatus.Completed) return SalesMeetingSessionService.ToResponse(session);
         try { session.TransitionTo(SalesMeetingSessionStatus.Completed, null, null, null, null, userId, timeProvider.GetUtcNow().UtcDateTime); }
         catch (InvalidOperationException e) { throw Conflict(e.Message); }
         AddAudit(companyId, userId, AuditEventActions.SalesMeetingClosingCompleted, sessionId, "The meeting completed after its current capture checkpoint and separated closing artifacts were persisted.", correlationId,
@@ -217,10 +231,10 @@ public sealed class SalesMeetingClosingService(
         return result;
     }
 
-    private async Task<AgentReasoningResult?> PolishAsync(Guid companyId, Guid userId, Guid agentId, AgentEffectiveAuthorityDto authority, IReadOnlyList<AgentAiSource> sources, string instruction, CancellationToken ct)
+    private async Task<AgentReasoningResult?> PolishAsync(Guid companyId, Guid userId, Guid agentId, AgentEffectiveAuthorityDto authority, IReadOnlyList<AgentAiSource> sources, string instruction, CancellationToken ct, string? correlation = null)
     {
         if (sources.Count == 0) return null;
-        try { return await reasoning.ReasonAsync(new AgentReasoningRequest(companyId, agentId, AgentCapabilityIds.SalesMeetingClosingSummary, "1.0.0", PromptVersion, "1.0.0", instruction, sources, ["recommend"], [SalesMeetingClosingToolNames.ReadEvidence, SalesMeetingClosingToolNames.GenerateSummary], userId, CorrelationId: null, IncludeClaims: true, EffectiveAuthorityVersion: authority.AuthorityVersion, EffectiveAuthorityHash: authority.AuthorityHash), ct); }
+        try { return await reasoning.ReasonAsync(new AgentReasoningRequest(companyId, agentId, AgentCapabilityIds.SalesMeetingClosingSummary, "1.0.0", PromptVersion, "1.0.0", instruction, sources, ["recommend"], [SalesMeetingClosingToolNames.ReadEvidence, SalesMeetingClosingToolNames.GenerateSummary], userId, CorrelationId: correlation, IncludeClaims: true, EffectiveAuthorityVersion: authority.AuthorityVersion, EffectiveAuthorityHash: authority.AuthorityHash), ct); }
         catch (OperationCanceledException) { throw; }
         catch (Exception e) { logger.LogWarning(e, "Meeting closing wording generation failed safely for company {CompanyId}.", companyId); return null; }
     }

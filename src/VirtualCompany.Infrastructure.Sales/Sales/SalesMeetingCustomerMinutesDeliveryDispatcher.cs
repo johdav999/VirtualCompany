@@ -21,8 +21,27 @@ public sealed class SalesMeetingCustomerMinutesDeliveryDispatcher(VirtualCompany
         var minutes = await db.SalesMeetingMinutes.AsNoTracking().Include(m => m.Items).SingleAsync(m => m.CompanyId == message.CompanyId && m.SessionId == x.SessionId && m.Id == x.TargetId, ct);
         if (minutes.Status != SalesMeetingClosingArtifactStatus.Approved || minutes.ConcurrencyVersion.ToString() != x.TargetVersion)
         { x.MarkConflict(SalesMeetingChangeProposalProblemCodes.TargetChanged, "The approved customer minutes changed before delivery. Review and approve the current version."); await db.SaveChangesAsync(ct); SalesMeetingChangeTelemetry.RecordDelivery("customer_minutes", "conflict"); return; }
+        var binding = SalesMeetingChangeProposalService.Binding(x, SalesMeetingChangePolicy.CurrentVersion);
+        var approval = x.ApprovalRequestId.HasValue ? await db.ApprovalRequests.AsNoTracking().SingleOrDefaultAsync(a =>
+            a.CompanyId == message.CompanyId && a.Id == x.ApprovalRequestId, ct) : null;
+        if (approval is null || approval.Status != ApprovalRequestStatus.Approved ||
+            approval.TargetEntityType != ApprovalTargetEntityType.SalesMeetingChangeProposal.ToStorageValue() ||
+            approval.TargetEntityId != x.Id || x.ApprovalBindingHash != binding ||
+            !approval.ThresholdContext.TryGetValue("bindingHash", out var approvedBinding) ||
+            approvedBinding?.GetValue<string>() != binding)
+        {
+            x.MarkConflict(SalesMeetingChangeProposalProblemCodes.ApprovalRequired, "The exact delivery approval is no longer valid.");
+            await db.SaveChangesAsync(ct); return;
+        }
         var proposed = System.Text.Json.JsonSerializer.Deserialize<string>(x.ProposedValueJson) ?? throw new InvalidOperationException("Customer-minutes recipient is missing.");
         var session = await db.SalesMeetingSessions.AsNoTracking().SingleAsync(s => s.CompanyId == message.CompanyId && s.Id == x.SessionId, ct);
+        if (minutes.RetentionUntilUtc <= DateTime.UtcNow || session.RetentionUntilUtc <= DateTime.UtcNow ||
+            minutes.IsEvidenceStale || minutes.EvidenceCaptureVersion != session.CaptureVersion ||
+            minutes.Items.Any(i => i.RequiresReview))
+        {
+            x.MarkConflict(SalesMeetingChangeProposalProblemCodes.TargetChanged, "The meeting evidence expired or changed. Review the current minutes before delivery.");
+            await db.SaveChangesAsync(ct); return;
+        }
         try
         {
             var result = await sender.SendSequenceEmailAsync(new OutboundEmailSendRequest(message.CompanyId, x.SessionId, x.Id, x.Id,

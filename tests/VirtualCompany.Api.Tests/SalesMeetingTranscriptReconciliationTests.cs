@@ -95,6 +95,24 @@ public sealed class SalesMeetingTranscriptReconciliationTests
         Assert.Equal(1, ingestion.AttemptCount);
     }
 
+    [Fact]
+    public async Task Graph_reconciliation_never_rewrites_or_claims_browser_evidence()
+    {
+        await using var f = await Fixture.CreateAsync();
+        var browser = new SalesMeetingTranscriptSegment(Guid.NewGuid(), f.CompanyId, f.SessionId, Guid.NewGuid(), 4,
+            SalesMeetingSpeakerType.Customer, "Browser participant", SalesMeetingInputSource.BrowserRoom, "Browser-only evidence.",
+            f.Now.AddSeconds(30), f.Now.AddSeconds(32), null, SalesMeetingReviewState.Unreviewed, Guid.NewGuid(), Guid.NewGuid(), f.Now);
+        f.Db.SalesMeetingTranscriptSegments.Add(browser);
+        await f.Db.SaveChangesAsync();
+        f.Provider.Document = new(new("transcript-1", "provider-browser-overlap", f.Now, null, "{}"), new string('d', 64),
+            [new("browser-overlap", "Browser-only evidence.", "Graph speaker", f.Now.AddSeconds(30), f.Now.AddSeconds(32))]);
+        await f.Dispatcher.DispatchAsync(new(f.CompanyId, f.IngestionId, "ingestion-key", null), default);
+        Assert.Equal("Browser participant", browser.SpeakerLabel);
+        Assert.Equal(SalesMeetingInputSource.BrowserRoom, browser.InputSource);
+        Assert.DoesNotContain(await f.Db.SalesMeetingTranscriptProvenance.ToListAsync(), p => p.TranscriptSegmentId == browser.Id);
+        Assert.Equal(2, await f.Db.SalesMeetingTranscriptSegments.CountAsync(s => s.Content == "Browser-only evidence."));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private Fixture(VirtualCompanyDbContext db, Guid companyId, Guid sessionId, Guid subscriptionId,

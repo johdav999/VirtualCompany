@@ -15,7 +15,7 @@ public sealed partial class SalesMeetingSchedulingServiceTests
         var media = new RoomMedia(); var limits = Options.Create(new SalesRoomLifecycleOptions { Enabled = true, PublicOrigin = "https://rooms.example.test" });
         var options = Options.Create(new SalesRoomMediaOptions { Enabled = true, Url = "wss://test.livekit.cloud", ApiKey = "test", ApiSecret = new string('x', 32) });
         var outbox = new RoomOutbox(f.Db);
-        return (new(f.Db, outbox, new EphemeralDataProtectionProvider(), limits, options, TimeProvider.System), new(f.Db, outbox, media, media, limits, TimeProvider.System), media);
+        return (new(f.Db, outbox, new EphemeralDataProtectionProvider(), limits, options, TimeProvider.System), new(f.Db, outbox, media, media, limits.ToMonitor(), TimeProvider.System), media);
     }
     private static async Task ReadyBrowser(Fixture f, SalesMeetingInvitation invitation, (SalesBrowserMeetingScheduling Service, SalesRoomWorkDispatcher Worker, RoomMedia Media) browser)
     {

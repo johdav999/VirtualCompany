@@ -51,6 +51,8 @@ public sealed class SalesMeetingCaptureService(VirtualCompanyDbContext db, TimeP
             {
                 var speaker = SalesMeetingCaptureEnumValues.ParseSpeakerType(item.SpeakerType);
                 var source = SalesMeetingCaptureEnumValues.ParseInputSource(item.InputSource);
+                if (source == SalesMeetingInputSource.BrowserRoom && !existingTranscripts.ContainsKey(item.ClientItemId))
+                    throw Validation(nameof(item.InputSource), "Browser evidence can only be created by the consent-aware room capture worker.");
                 var review = SalesMeetingCaptureEnumValues.ParseReviewState(item.ReviewState);
                 if (existingTranscripts.TryGetValue(item.ClientItemId, out var existing))
                 {

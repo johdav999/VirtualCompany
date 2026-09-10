@@ -1,5 +1,7 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
@@ -40,6 +42,33 @@ public sealed class OpenAiRealtimeAgentSessionGatewayTests
         Assert.Equal("What is the price?", transcript.Text);
         Assert.Equal(RealtimeAgentEventTypes.ToolInvocation, tool.Type);
         Assert.Equal("ask_grounded_question", tool.ToolName);
+    }
+
+    [Fact]
+    public async Task Provider_usage_keeps_reported_billed_audio_separate_from_local_forwarded_audio()
+    {
+        var gateway = Create(new RecordingHandler());
+        var usage = await gateway.NormalizeEventAsync(new("call_test_123", "evt-3", 3,
+            "{\"type\":\"response.done\",\"response\":{\"id\":\"response-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":42,\"output_tokens\":7,\"input_audio_duration_ms\":1560}}}"), CancellationToken.None);
+
+        Assert.Equal(RealtimeAgentEventTypes.UsageUpdated, usage.Type);
+        Assert.Equal(1560, usage.AudioDurationMilliseconds);
+        Assert.Equal(42, usage.InputTokens);
+        Assert.Equal(7, usage.OutputTokens);
+    }
+
+    [Fact]
+    public void Browser_pcm_session_disables_provider_turn_detection_for_explicit_local_VAD_commits()
+    {
+        var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "BuildSession" && x.GetParameters()[1].ParameterType == typeof(RealtimeAgentPcmSessionCreateRequest));
+        var request = new RealtimeAgentPcmSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "segmented_transcription", "Transcribe committed utterances only.", [], TimeSpan.FromMinutes(5), ManualInputCommit: true);
+        var session = Assert.IsType<JsonObject>(method.Invoke(null, [new SharedRealtimeAgentOptions(), request]));
+        var input = Assert.IsType<JsonObject>(Assert.IsType<JsonObject>(session["audio"])["input"]);
+
+        Assert.True(input.ContainsKey("turn_detection"));
+        Assert.Null(input["turn_detection"]);
     }
 
     private static OpenAiRealtimeAgentSessionGateway Create(HttpMessageHandler handler)

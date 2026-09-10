@@ -1,0 +1,12 @@
+# Browser sales room agent reference prompt
+
+Use case: ui-mockup
+Asset type: desktop SaaS meeting-room reference screenshot for a Blazor implementation
+Primary request: Show the Virtual Company browser sales room while the host supervises one consent-aware speaking sales agent. The central workspace contains a live shared product slide above a compact participant strip and familiar meeting controls. A private host panel on the right adds a clear Agent section with status, consent readiness, voice health, elapsed duration and spend, plus actions for Start agent, Present this point, Speak approved answer, and a prominent Stop AI button. Include a typed customer-question field and a small private evidence drawer showing released answer text with two source citations. Show the safe ready state: all three admitted people consented, the approved narration for slide 3 is ready, and the agent is waiting for the host. Also show an inline paused-state treatment explaining that AI stops if consent changes while the human call and manual slides continue.
+Scene/backdrop: Virtual Company executive control-center browser application, light mode, no global marketing chrome
+Style/medium: polished high-fidelity SaaS product UI screenshot, realistic implementable component structure, restrained and professional
+Composition/framing: 1440 by 900 landscape; white header; broad central meeting card; 340-pixel private host sidebar; generous 20-24 pixel gaps; responsive card hierarchy; no decorative illustration
+Color palette: #F7F9FC page background, white cards, #2563EB primary actions, deep slate text, #16A34A healthy states, #F59E0B paused warnings, #DC2626 stop control
+Text (verbatim): "Virtual Company", "Browser meeting", "Alex · Sales agent", "Ready to speak", "3 of 3 consented", "Voice healthy", "Start agent", "Present this point", "Speak approved answer", "Stop AI", "Ask a typed question", "Private evidence", "Human call and manual slides stay available"
+Constraints: Inter typography; 12-pixel card radii; subtle borders and shadows; accessible contrast; host-only labels; clear busy, disabled, ready and paused states; compact participant and source rows; controls must look feasible in Blazor and CSS; preserve the existing meeting and presentation experience
+Avoid: dark mode, gradients, glassmorphism, floating chat bubbles, generic analytics charts, decorative avatars, raw provider names, code, implementation jargon, recording indicators, autonomous-agent claims, fake brand logos, watermarks
