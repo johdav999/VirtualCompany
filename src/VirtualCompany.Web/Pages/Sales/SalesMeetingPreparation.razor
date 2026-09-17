@@ -1,4 +1,4 @@
-@page "/app/sales/meeting-invitations/{InvitationId:guid}/prepare"
+@page "/app/sales/meeting-invitations/{InvitationId:guid}/legacy-prepare"
 @rendermode InteractiveServer
 @inherits SalesPageBase
 @using System.ComponentModel.DataAnnotations
@@ -73,6 +73,10 @@
             </dl>
         </section>
 
+        <PresentationRunWorkflow CompanyId="preparation.CompanyId" InvitationId="InvitationId"
+            SessionId="@(preparation.Session?.Id ?? Guid.Empty)" Agents="preparation.EligibleAgents"
+            LegacyDeckId="preparation.ActiveDeckId" PresenterPath="BrowserPresenterPath" OnRunChanged="PresetAppliedAsync" />
+
         @if(preparation.Invitation.Conferencing=="browser")
         {
             <section class="meeting-preparation-state"><div><strong>Browser meeting</strong><p>The invitation link admits one guest to the lobby. The organizer controls admission and AI participation.</p><SalesBrowserInvitationLink CompanyId="preparation.CompanyId" InvitationId="InvitationId" RoomId="preparation.Invitation.BrowserRoomId" /></div></section>
@@ -142,6 +146,43 @@
         {
             <VirtualCompany.Web.Components.Sales.TeamsMeetingPresenterPicker CompanyId="@preparation.CompanyId" SessionId="@preparation.Session.Id" OnSaved="RefreshPreparationAsync" />
         }
+
+        @if(preparation.Session is not null)
+        {
+            <details class="meeting-secondary-panel">
+                <summary>Meeting consent and retention</summary>
+                <p>These apply to this customer meeting only. A reusable preset never grants attendee consent.</p>
+                <EditForm Model="form" OnValidSubmit="SaveAsync" class="meeting-policy-form">
+                    <DataAnnotationsValidator />
+                    <div class="meeting-form-grid">
+                        <div class="meeting-form-field"><label for="preset-meeting-consent">Attendee consent</label>
+                            <InputSelect id="preset-meeting-consent" class="sales-input" @bind-Value="form.ConsentStatus">
+                                <option value="not_requested">Not requested</option><option value="pending">Pending</option>
+                                <option value="granted">Granted</option><option value="denied">Denied</option><option value="revoked">Revoked</option>
+                            </InputSelect>
+                        </div>
+                        <div class="meeting-form-field"><label for="preset-meeting-retention">Retention policy</label>
+                            <InputSelect id="preset-meeting-retention" class="sales-input" @bind-Value="form.RetentionPolicy" @bind-Value:after="RetentionPolicyChanged">
+                                <option value="standard">Standard (365 days)</option><option value="custom">Custom</option>
+                            </InputSelect>
+                            @if(form.RetentionPolicy=="custom"){<label for="preset-retention-days">Retention days</label><InputNumber id="preset-retention-days" class="sales-input" min="1" max="3650" @bind-Value="form.RetentionDays" />}
+                        </div>
+                    </div>
+                    <ValidationSummary />
+                    @if(saveError is not null){<p role="alert">@saveError</p>}
+                    @if(saveMessage is not null){<p role="status">@saveMessage</p>}
+                    <button type="submit" class="sales-button" disabled="@(!CanSave || isSaving)">@(isSaving?"Saving…":"Save meeting policy")</button>
+                </EditForm>
+            </details>
+            <details class="meeting-secondary-panel">
+                <summary>Customer-specific narration and disclosure review</summary>
+                <p>Reusable slides and speaker notes come from the preset. Review any customer-specific script and approve disclosure here; this approval is not reusable.</p>
+                <SalesNarrationPreparation CompanyId="@preparation.CompanyId" SessionId="@preparation.Session.Id" />
+            </details>
+        }
+        <details class="meeting-secondary-panel meeting-legacy-panel">
+            <summary>Legacy preparation · direct upload</summary>
+            <p>For older meetings without a preset. Manage reusable presenter settings and slides in the presentation preset library above.</p>
         <div class="meeting-preparation-layout">
             <section class="meeting-session-card" aria-labelledby="session-details-title">
                 <div class="meeting-session-card__heading">
@@ -302,7 +343,7 @@
                 AllowedActions="@preparation.AllowedActions"
                 RefreshRequested="RefreshPreparationAsync" />
 
-            <SalesNarrationPreparation CompanyId="@preparation.CompanyId" SessionId="@(preparation.Session?.Id ?? Guid.Empty)" />
+
             <section class="meeting-final-review" aria-labelledby="meeting-final-review-title">
                 <div class="meeting-final-review__heading">
                     <span class="meeting-step-number">3</span>
@@ -360,6 +401,7 @@
                 </div>
             </section>
         </div>
+        </details>
     }
 </main>
 
@@ -505,6 +547,13 @@
         {
             isSaving = false;
         }
+    }
+
+    private async Task PresetAppliedAsync(SalesPresentationRunViewModel? run)
+    {
+        if(run is null)return;
+        form.PresenterId=run.PresenterAgentId;
+        await RefreshPreparationAsync();
     }
 
     private const string SessionConflictCode = "sales.meeting_session.conflict";

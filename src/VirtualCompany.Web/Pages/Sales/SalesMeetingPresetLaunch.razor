@@ -1,0 +1,35 @@
+@page "/app/sales/meeting-invitations/{InvitationId:guid}/prepare"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using VirtualCompany.Web.Components.Sales
+@inject SalesPresentationPreparationApiClient PreparationClient
+
+<PageTitle>Meeting presentation</PageTitle>
+<main class="meeting-launch">
+ <header><a href="@LeadPath">Back to lead</a><span>SALES</span><h1>Meeting presentation</h1><p>Select a prepared preset, then open the meeting. All presentation editing happens in the preset library.</p></header>
+ @if(loading){<p role="status">Loading meeting…</p>}
+ else if(error is not null){<section role="alert"><p>@error</p><button class="sales-button" @onclick="LoadAsync">Reload</button></section>}
+ else if(preparation is not null)
+ {
+  <section class="launch-invitation"><div><span>INVITATION</span><h2>@preparation.Invitation.Title</h2><p>@preparation.Invitation.StartsUtc.ToLocalTime().ToString("g")</p></div><div><span>Customer</span><strong>@preparation.CustomerCompanyName</strong></div></section>
+  <SalesMeetingPresetSelector CompanyId="preparation.CompanyId" InvitationId="InvitationId" SessionId="preparation.Session?.Id" SessionStatus="@preparation.Session?.Status" CanChangePreset="@(preparation.AllowedActions.Contains("change_preset"))" OnApplied="RefreshAsync" />
+  @if(preparation.BlockingReasons.Count>0){<section class="launch-notice"><h2>Before the meeting</h2>@foreach(var blocker in preparation.BlockingReasons){<p>@blocker.Explanation</p>}</section>}
+  <section class="launch-actions"><div><h2>Open the meeting</h2><p>Attendee consent and live participation are confirmed in the meeting room.</p></div>
+   @if(preparation.Invitation.Conferencing=="browser")
+   {<SalesBrowserInvitationLink CompanyId="preparation.CompanyId" InvitationId="InvitationId" RoomId="preparation.Invitation.BrowserRoomId" />}
+   else if(preparation.Session is{}session && preparation.CanOpenPresenter)
+   {<a class="sales-button sales-button--primary" href="@($"/teams/meetings/{session.Id:D}/side-panel?companyId={preparation.CompanyId:D}")">Open meeting</a>}
+   else{<p>Select a preset and resolve any invitation blockers to continue.</p>}
+  </section>
+ }
+</main>
+
+@code {
+ [Parameter]public Guid InvitationId{get;set;}
+ private SalesPresentationPreparationViewModel? preparation;
+ private bool loading=true;private string? error;
+ private string LeadPath=>preparation is null?$"/app/sales?companyId={ResolvedCompanyId}":$"/app/sales/leads/{preparation.LeadId:D}?companyId={preparation.CompanyId:D}";
+ protected override Task OnParametersSetAsync()=>LoadAsync();
+ private async Task LoadAsync(){loading=true;error=null;try{if(await ResolveCompanyAsync())await RefreshAsync();else error=ShellErrorMessage;}catch(SalesPresentationPreparationApiException ex){error=ex.Message;}finally{loading=false;}}
+ private async Task RefreshAsync(){if(ResolvedCompanyId is Guid company){preparation=await PreparationClient.GetAsync(company,InvitationId);if(preparation is null)error="This meeting was not found.";}}
+}

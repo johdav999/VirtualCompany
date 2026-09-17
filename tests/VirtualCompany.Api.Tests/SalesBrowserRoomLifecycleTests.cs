@@ -51,6 +51,32 @@ public sealed class SalesBrowserRoomLifecycleTests
         await f.Dispatch("provision"); Assert.Equal("lobby", (await f.View()).State);
     }
     [Fact]
+    public async Task Scheduled_invitation_status_exposes_the_same_connection_window_as_media_tokens()
+    {
+        await using var f = await RoomFixture.Create();
+        var invitation = await f.Db.SalesMeetingInvitations.IgnoreQueryFilters().SingleAsync();
+        invitation.SelectConferencing(SalesMeetingConferencing.Browser);
+        invitation.MarkScheduled("calendar-event", null, null, null, f.Clock.Now);
+        var startsUtc = invitation.StartsUtc;
+        f.Clock.Now = startsUtc.AddHours(-2);
+        var room = SalesBrowserRoom.ForInvitation(f.Company, invitation.Id, f.Actor, invitation.EndsUtc.AddHours(1), f.Clock.Now);
+        room.Provisioned("provider-room");
+        f.Db.SalesBrowserRooms.Add(room);
+        f.Db.SalesRoomParticipants.Add(new SalesRoomParticipant(f.Company, room.Id, "Host", null, room.ExpiresUtc, f.Actor));
+        await f.Db.SaveChangesAsync();
+        f.Room = room.Id;
+
+        var before = await f.View();
+        Assert.False(before.ConnectionAllowed);
+        Assert.Equal(startsUtc.AddMinutes(-15), before.OpensUtc);
+        Assert.Equal("meeting_not_open", (await Assert.ThrowsAsync<SalesRoomAccessException>(
+            () => f.Service.HostTokenAsync(f.Company, f.Actor, f.Room, default))).Code);
+
+        f.Clock.Now = startsUtc.AddMinutes(-15);
+        Assert.True((await f.View()).ConnectionAllowed);
+        Assert.NotNull(await f.Service.HostTokenAsync(f.Company, f.Actor, f.Room, default));
+    }
+    [Fact]
     public async Task One_use_guest_invitation_has_no_media_until_admission_and_no_stored_secret()
     {
         await using var f = await RoomFixture.Create(); await f.Ready();

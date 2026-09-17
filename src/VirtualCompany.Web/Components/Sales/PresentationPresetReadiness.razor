@@ -1,0 +1,16 @@
+@using VirtualCompany.Web.Services
+<section class="preset-readiness" aria-labelledby="readiness-title">
+ <div class="preset-readiness-icon" aria-hidden="true">@(Readiness?.IsReady == true ? "✓" : "!")</div><div><h3 id="readiness-title">@(Readiness is null ? "Readiness not evaluated" : Readiness.IsReady ? (IsDraft ? "Ready to publish" : "Published presentation") : "Action required")</h3>
+ @if(Readiness is null){<p>Select a draft or published version to inspect readiness.</p>}
+ else if(Readiness.IsReady){<p>@(IsDraft ? "No blocking issues. This draft can be published." : "This version is available for selection in a meeting. Check Script & audio for narration readiness.")</p>}
+ else {<ul>@foreach(var blocker in Readiness.Blockers){<li><div><strong>@BlockerTitle(blocker.Code)</strong><p>@blocker.Explanation</p>@if(blocker.RequiresReview){<span class="sales-badge sales-badge--waiting-for-approval">Review required</span>}</div>@foreach(var action in blocker.CorrectiveActions){<button class="sales-button sales-button--small" disabled="@IsBusy" @onclick="() => OnCorrect.InvokeAsync(action)">@ActionLabel(action)</button>}</li>}</ul>}
+ </div>
+</section>
+@code {
+ [Parameter] public SalesPresentationPresetReadinessViewModel? Readiness { get; set; }
+ [Parameter] public bool IsDraft { get; set; }
+ [Parameter] public bool IsBusy { get; set; }
+ [Parameter] public EventCallback<string> OnCorrect { get; set; }
+ private string BlockerTitle(string code) => SalesText[code switch { "asset_missing" => "PresetBlockerAssetMissing", "asset_processing" => "PresetBlockerAssetProcessing", "asset_failed" => "PresetBlockerAssetFailed", "slides_missing" => "PresetBlockerSlidesMissing", "presenter_invalid" => "PresetBlockerPresenterInvalid", "duration_invalid" => "PresetBlockerDurationInvalid", "context_unsupported" => "PresetBlockerContextUnsupported", "knowledge_scope_unavailable" => "PresetBlockerKnowledgeUnavailable", _ => "PresetBlockerReview" }];
+ private string ActionLabel(string action) => SalesText[action switch { "upload_asset" => "PresetActionUpload", "retry_processing" => "RetryProcessing", "choose_presenter" => "ChoosePresenter", "update_defaults" => "PresetActionEditDefaults", _ => "PresetActionReview" }];
+}

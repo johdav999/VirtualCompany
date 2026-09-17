@@ -75,6 +75,15 @@ public static class WebApiClientRegistration
             sp.GetRequiredService<ICompanyApiTransport>(),
             IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesPresentationPresetApiClient(
+              sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp),
+              sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesPresentationRunApiClient(
+              sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp),
+              sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SalesPresentationAdHocApiClient(
+              sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp),
+              sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped<SalesPresentationPreparationTelemetry>();
         services.AddScoped<SalesNarrationApiClient>();
         services.AddScoped(sp => new SalesPresentationRuntimeClient(

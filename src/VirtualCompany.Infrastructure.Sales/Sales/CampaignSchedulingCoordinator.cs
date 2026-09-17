@@ -13,7 +13,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class CampaignSchedulingCoordinator : ICampaignSchedulingCoordinator
+public sealed partial class CampaignSchedulingCoordinator : ICampaignSchedulingCoordinator
 {
     private readonly VirtualCompanyDbContext _db;
     private readonly ISequenceExecutionService _sequences;
@@ -62,6 +62,9 @@ public sealed class CampaignSchedulingCoordinator : ICampaignSchedulingCoordinat
                         x.PlannedStartUtc <= utcNow && x.DueUtc <= utcNow &&
                         x.SalesCampaign.LifecycleStatus == CampaignLifecycleStatuses.Running)
             .OrderBy(x => x.DueUtc).Take(batchSize).ToListAsync(cancellationToken);
+        CampaignPresentationTelemetry.ActivitiesScanned.Add(
+            activities.LongCount(x => x.ActivityType == SalesCampaignPresentationValues.ActivityType &&
+                                      x.Channel == SalesCampaignPresentationValues.Channel));
         var advanced = 0;
         var failed = 0;
         foreach (var activity in activities)
@@ -74,7 +77,11 @@ public sealed class CampaignSchedulingCoordinator : ICampaignSchedulingCoordinat
                                        x.Status == CampaignActivityStatuses.Completed, cancellationToken))
                     continue;
                 activity.MarkReady();
-                if (activity.ExecutionMode == CampaignExecutionModes.Approval)
+                if (activity.ActivityType == SalesCampaignPresentationValues.ActivityType && activity.Channel == SalesCampaignPresentationValues.Channel)
+                {
+                    await ExecutePresentationActivityAsync(activity, utcNow, cancellationToken);
+                }
+                else if (activity.ExecutionMode == CampaignExecutionModes.Approval)
                 {
                     if (!await _db.ApprovalRequests.IgnoreQueryFilters().AsNoTracking()
                             .AnyAsync(x => x.CompanyId == activity.CompanyId && x.TargetEntityType == "sales_campaign_activity" &&

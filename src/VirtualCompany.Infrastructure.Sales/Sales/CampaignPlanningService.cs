@@ -7,7 +7,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class CampaignPlanningService : ICampaignPlanningService
+public sealed partial class CampaignPlanningService : ICampaignPlanningService
 {
     private static readonly string[] PositiveConsent = ["granted", "allowed", "opted_in", "subscribed", "active"];
     private readonly VirtualCompanyDbContext _db;
@@ -74,10 +74,21 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
     public async Task<CampaignReadinessResponse?> GetReadinessAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken)
     {
         var campaign = await InitiativeQuery(companyId, tracking: false).SingleOrDefaultAsync(x => x.Id == campaignId, cancellationToken);
-        return campaign is null
-            ? null
-            : new CampaignReadinessResponse(campaign.Id, campaign.LifecycleStatus, campaign.ReadinessGaps().Count == 0,
-                campaign.ConcurrencyVersion, campaign.ReadinessGaps());
+        if (campaign is null) return null;
+        var missing = campaign.ReadinessGaps().ToList();
+        var presentationActivityIds = await _db.SalesCampaignActivities.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.SalesCampaignId == campaignId &&
+                        x.ActivityType == SalesCampaignPresentationValues.ActivityType && x.Channel == SalesCampaignPresentationValues.Channel)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var activityId in presentationActivityIds)
+        {
+            var presentation = await GetPresentationActivityAsync(companyId, campaignId, activityId, cancellationToken);
+            if (presentation is null) missing.Add("Configure every presentation activity with an exact published preset version and execution scope.");
+            else missing.AddRange(presentation.Blockers.Select(x => x.Explanation));
+        }
+        return new CampaignReadinessResponse(campaign.Id, campaign.LifecycleStatus, missing.Count == 0,
+            campaign.ConcurrencyVersion, missing);
     }
 
     public async Task<CampaignInitiativeResponse?> RequestReadinessAsync(
@@ -87,6 +98,9 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
         if (campaign is null) return null;
         if (campaign.ConcurrencyVersion != expectedVersion)
             throw new DbUpdateConcurrencyException("This campaign changed after you opened it. Refresh before continuing.");
+        var readiness = await GetReadinessAsync(companyId, campaignId, cancellationToken);
+        if (readiness is not null && !readiness.IsReady)
+            throw new InvalidOperationException(string.Join(" ", readiness.MissingRequirements));
         campaign.MarkReadyForApproval();
         Audit(companyId, userId, "sales.campaign.readiness_requested", campaign.Id,
             campaign.LifecycleStatus == CampaignLifecycleStatuses.WaitingForApproval

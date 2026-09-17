@@ -28,7 +28,9 @@ public sealed class SalesNarrationTests
         Assert.Equal(2, f.Speech.Calls);
         await f.Generate();
         Assert.Equal(2, f.Speech.Calls);
+        var trackedSession = await f.Db.SalesMeetingSessions.SingleAsync(x => x.Id == f.Session);
         var preview = await f.Service.PreviewAsync(f.Company, f.Actor, f.Request(ready), default);
+        Assert.Equal(EntityState.Unchanged, f.Db.Entry(trackedSession).State);
         Assert.Equal("RIFF", System.Text.Encoding.ASCII.GetString(preview.Audio, 0, 4));
         Assert.Equal(2, f.Speech.Calls);
         Assert.True((await f.Current()).ReusedMinutes > 0);
@@ -208,7 +210,7 @@ public sealed class SalesNarrationTests
         public async Task<SalesNarrationRevisionDto> Prepare() => await Service.PrepareAsync(Company, Actor, Session, new("en"), default);
         public async Task Approve(SalesNarrationRevisionDto r) => await Service.DecideAsync(Company, Actor, r.Id, "approve", new(r.Version), default);
         public async Task<SalesNarrationRevisionDto> Current() => (await Service.GetAsync(Company, Actor, Session, default)).Revisions[0];
-        public SalesNarrationPlaybackRequest Request(SalesNarrationRevisionDto r) => new(r.Id, r.Segments[0].Id, Session, r.AudienceId, 0, 1);
+        public SalesNarrationPlaybackRequest Request(SalesNarrationRevisionDto r) => new(r.Id, r.Segments[0].Id, Session, r.AudienceId!.Value, 0, 1);
         public async Task Generate()
         {
             var ids = await Db.SalesNarrationAssets.Select(x => x.Id).ToListAsync();
@@ -239,10 +241,11 @@ public sealed class SalesNarrationTests
     internal sealed class FakeSpeech : IApprovedSpeechGateway
     {
         public int Calls; public bool Match = true, Fail; public Func<Task>? BeforeReturn;
-        public Task<ApprovedSpeechProfile> GetProfileAsync(CancellationToken ct) => Task.FromResult(new ApprovedSpeechProfile(true,"model","marin","config1"));
+        public string? LastVoice;
+        public Task<ApprovedSpeechProfile> GetProfileAsync(CancellationToken ct) => Task.FromResult(new ApprovedSpeechProfile(true,"model","marin","config1", ["marin", "cedar"]));
         public async Task<ApprovedSpeechResult> GenerateAsync(ApprovedSpeechRequest r, CancellationToken ct)
         {
-            Calls++; if (BeforeReturn is not null) await BeforeReturn();
+            Calls++; LastVoice = r.Voice; if (BeforeReturn is not null) await BeforeReturn();
             if (Fail) throw new IOException("Synthetic ambiguous outcome");
             return new(new byte[4800], r.Text, "model", "response-"+Calls, 10,20,"{\"input_tokens\":10,\"output_tokens\":20}",Match);
         }
@@ -265,6 +268,7 @@ public sealed class SalesNarrationTests
         public void SetCompanyContext(ResolvedCompanyMembershipContext? value) { Membership=value; CompanyId=value?.CompanyId; UserId=value?.UserId; }
     }
 }
+
 
 
 

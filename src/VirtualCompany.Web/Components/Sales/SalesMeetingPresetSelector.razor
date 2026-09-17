@@ -1,0 +1,68 @@
+@using VirtualCompany.Web.Services
+@inject SalesPresentationPresetApiClient Presets
+@inject SalesPresentationRunApiClient Runs
+
+<section class="meeting-preset-selector" aria-labelledby="meeting-preset-title">
+ <header><div><span>PRESENTATION</span><h2 id="meeting-preset-title">Choose a presentation preset</h2><p>PowerPoint, presenter settings, scripts and audio are prepared in the preset library.</p></div><a href="@LibraryPath">Edit presentation presets</a></header>
+ @if(error is not null){<div role="alert" class="selector-error">@error <button class="sales-button" @onclick="LoadAsync">Reload</button></div>}
+ @if(loading){<p role="status">Loading presentation presets…</p>}
+ else
+ {
+  @if(IsLocked){<p class="selector-notice" role="status">@LifecycleMessage</p>}
+  <label for="launch-preset">Published presentation</label>
+  <select id="launch-preset" disabled="@(busy || IsLocked)" @bind="selectedId" @bind:after="SelectAsync">
+   <option value="">Choose a preset</option>
+   @foreach(var item in items.Where(x=>x.CurrentPublishedVersion.HasValue)){<option value="@item.Id">@item.Name · v@(item.CurrentPublishedVersion)</option>}
+  </select>
+  @if(selected?.CurrentPublished is{}version)
+  {
+   <p class="selector-summary">@version.Asset?.OriginalFileName · @version.Asset?.SlideCount slides · @version.DurationMinutes minutes</p>
+   @if(version.DefaultPresenterAgentId is null){<p role="status">Choose a default presenter in the preset Settings, then publish a new version.</p>}
+   else if(!version.AllowedContextTypes.Contains("sales_meeting")){<p role="status">Enable sales meetings in this preset's Settings before using it here.</p>}
+   else if(!IsLocked && run?.PresetVersionId!=version.Id)
+   {
+    @if(run is not null){<p class="selector-notice">Applying this version replaces the meeting's current presentation. The previous version remains in history.</p>}
+    <button class="sales-button sales-button--primary" disabled="@busy" @onclick="ApplyAsync">@(busy?"Applying preset…":run is null?"Use preset":"Replace presentation")</button>
+   }
+  }
+  @if(run is not null){<div class="selector-applied" role="status"><strong>@run.PresetName · v@(run.PresetVersionNumber)</strong><span>Applied to this meeting. Slides and reusable narration follow this version.</span></div>}
+  @if(!items.Any(x=>x.CurrentPublishedVersion.HasValue)){<p>There are no published presets yet. Create and publish a presentation in the preset library.</p>}
+ }
+</section>
+
+@code {
+ [Parameter]public Guid CompanyId{get;set;}
+ [Parameter]public Guid InvitationId{get;set;}
+ [Parameter]public Guid? SessionId{get;set;}
+ [Parameter]public string? SessionStatus{get;set;}
+ [Parameter]public bool? CanChangePreset{get;set;}
+ [Parameter]public EventCallback OnApplied{get;set;}
+ private IReadOnlyList<SalesPresentationPresetListItemViewModel> items=[];
+ private SalesPresentationPresetViewModel? selected;
+ private SalesPresentationRunViewModel? run;
+ private Guid? selectedId;
+ private bool loading=true,busy;
+ private string? error;
+ private bool IsLocked=>CanChangePreset.HasValue ? !CanChangePreset.Value : SessionId.HasValue && SessionStatus is not (null or "ready");
+ private string LifecycleMessage=>SessionStatus is "completed" or "cancelled" or "failed"
+  ? "This meeting has ended. Its presentation history is read-only. Schedule a new meeting to use a preset."
+  : "Leave the meeting room and stop the agent before changing its presentation preset.";
+ private string LibraryPath=>$"/app/sales/presentation-presets?companyId={CompanyId:D}";
+ protected override Task OnParametersSetAsync()=>LoadAsync();
+ private async Task LoadAsync(){
+  loading=true;error=null;
+  try{items=await Presets.ListAsync(CompanyId);run=SessionId is Guid id?await Runs.GetAsync(CompanyId,id):null;
+   if(run is not null){selectedId=run.PresetId;await SelectAsync();}}
+  catch(Exception ex){error=ex.Message;}finally{loading=false;}
+ }
+ private async Task SelectAsync(){selected=null;error=null;if(selectedId is not Guid id)return;try{selected=await Presets.GetAsync(CompanyId,id);}catch(Exception ex){error=ex.Message;}}
+ private async Task ApplyAsync(){
+  if(busy||IsLocked||selected?.CurrentPublished is not{}v)return;
+  busy=true;error=null;
+  try{
+   var request=new ApplySalesPresentationPresetRequest(selected.Id,v.Id,null,null,null,null,null,null,null,run is not null,run?.ConcurrencyVersion);
+   run=await Runs.ApplyToInvitationAsync(CompanyId,InvitationId,request);
+   await OnApplied.InvokeAsync();
+  }catch(Exception ex){error=ex.Message;}finally{busy=false;}
+ }
+}

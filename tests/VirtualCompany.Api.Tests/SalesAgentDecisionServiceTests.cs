@@ -158,6 +158,18 @@ public sealed class SalesAgentDecisionServiceTests
             CancellationToken cancellationToken) =>
             Task.FromResult<CampaignActivityResponse?>(null);
 
+        public Task<CampaignPresentationActivityResponse?> GetPresentationActivityAsync(Guid companyId, Guid campaignId, Guid activityId, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignPresentationActivityResponse?>(null);
+
+        public Task<CampaignPresentationActivityResponse?> SavePresentationActivityAsync(Guid companyId, Guid userId, Guid campaignId, Guid activityId, SaveCampaignPresentationActivityRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignPresentationActivityResponse?>(null);
+
+        public Task<bool> RemovePresentationActivityAsync(Guid companyId, Guid userId, Guid campaignId, Guid activityId, int expectedVersion, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
+
+        public Task<CampaignPresentationActivityResponse?> RetryPresentationActivityAsync(Guid companyId, Guid userId, Guid campaignId, Guid activityId, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignPresentationActivityResponse?>(null);
+
         public Task<CampaignPerformanceResponse?> GetPerformanceAsync(
             Guid companyId, Guid campaignId, CancellationToken cancellationToken) =>
             Task.FromResult<CampaignPerformanceResponse?>(null);

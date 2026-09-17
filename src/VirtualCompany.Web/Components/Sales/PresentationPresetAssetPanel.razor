@@ -1,0 +1,41 @@
+@using Microsoft.AspNetCore.Components.Forms
+@using VirtualCompany.Web.Services
+<section class="preset-asset" aria-labelledby="asset-title">
+ <div class="preset-section-title"><div><span>POWERPOINT SOURCE</span><h3 id="asset-title">PowerPoint source</h3><p>Reusable slides are extracted and rendered safely in the background.</p></div></div>
+ @if (Version?.Lifecycle == "draft")
+ { <div class="preset-upload"><label for="preset-file">Choose PowerPoint</label><InputFile id="preset-file" accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation" disabled="@IsBusy" OnChange="Selected" /><small>PowerPoint .pptx · maximum 27 MB</small></div> }
+ @if (Version?.Asset is { } asset)
+ {
+  <div class="preset-asset-status"><div class="preset-file-icon" aria-hidden="true">P</div><div><strong>@asset.OriginalFileName</strong><span>@FormatBytes(asset.FileSizeBytes) · @asset.SlideCount slides</span></div><span class="@Badge(asset.Status)">@Label(asset.Status)</span><div class="sales-actions">@if(IsBusy){<button class="sales-button sales-button--small" @onclick="OnCancel">Cancel</button>}@if(asset.CanRetry && !IsBusy){<button class="sales-button sales-button--small" @onclick="OnRetry">Retry processing</button>}</div></div>
+  @if(asset.Status is "pending_scan" or "processing"){<div class="preset-progress"><span></span></div><p class="preset-processing">Processing is running. This page will refresh automatically.</p>}
+  @if(!string.IsNullOrWhiteSpace(asset.FailureSummary)){<div class="preset-asset-error" role="alert"><strong>Processing could not finish</strong><p>@asset.FailureSummary</p></div>}
+ }
+ else { <div class="preset-inline-empty"><h4>No PowerPoint source</h4><p>Add a .pptx file to begin reusable slide processing.</p></div> }
+ @if(!string.IsNullOrWhiteSpace(StatusMessage)){<p class="preset-operation-message" role="status">@StatusMessage</p>}
+ <div class="preset-preview-heading"><div><span>SLIDE PREVIEW</span><h3>Processed slides</h3></div><span>@Slides.Count slide@(Slides.Count == 1 ? "" : "s")</span></div>
+ @if(Slides.Count == 0){<div class="preset-slide-empty">Slides appear here after processing succeeds.</div>}
+ else {<div class="preset-slides" aria-label="Processed slide preview">@foreach(var slide in Slides){
+  <PresentationPresetSlideCard @key="slide.Id" CompanyId="CompanyId" PresetId="PresetId" VersionId="@(Version?.Id ?? Guid.Empty)"
+      ExpectedVersion="@(Version?.ConcurrencyVersion ?? 0)" Slide="slide" Editable="@(Version?.Lifecycle == "draft" && !IsBusy)"
+      Narration="Narration" NarrationError="@NarrationError" OnOpenNarration="OnOpenNarration" OnNotesSaved="OnNotesSaved" />
+ }</div>}
+</section>
+@code {
+ [Parameter] public SalesPresentationPresetVersionViewModel? Version { get; set; }
+ [Parameter] public IReadOnlyList<SalesPresentationPresetSlideViewModel> Slides { get; set; } = [];
+ [Parameter] public Guid CompanyId { get; set; }
+ [Parameter] public Guid PresetId { get; set; }
+ [Parameter] public NarrationRevision? Narration { get; set; }
+ [Parameter] public string? NarrationError { get; set; }
+ [Parameter] public EventCallback OnOpenNarration { get; set; }
+ [Parameter] public EventCallback<SalesPresentationPresetViewModel> OnNotesSaved { get; set; }
+ [Parameter] public bool IsBusy { get; set; }
+ [Parameter] public string? StatusMessage { get; set; }
+ [Parameter] public EventCallback<IBrowserFile> OnFileSelected { get; set; }
+ [Parameter] public EventCallback OnCancel { get; set; }
+ [Parameter] public EventCallback OnRetry { get; set; }
+ private Task Selected(InputFileChangeEventArgs e) => OnFileSelected.InvokeAsync(e.File);
+ private static string FormatBytes(long bytes) => bytes >= 1_048_576 ? $"{bytes / 1_048_576d:N1} MB" : $"{Math.Max(1, bytes / 1024d):N0} KB";
+ private static string Label(string s) => s switch { "pending_scan" => "Queued", "processing" => "Processing", "processed" => "Processed", "failed" => "Failed", "blocked" => "Blocked", _ => s.Replace('_',' ') };
+ private static string Badge(string s) => $"sales-badge sales-badge--{s.Replace('_','-')}";
+}

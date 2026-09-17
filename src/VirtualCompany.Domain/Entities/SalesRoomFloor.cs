@@ -64,7 +64,11 @@ public sealed class SalesRoomFloor : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public long Version { get; private set; }
 
-    public void SetMode(string mode, DateTime nowUtc) { ControlMode = Mode(mode); Touch(nowUtc); }
+    public void SetMode(string mode, long presentationVersion, DateTime nowUtc)
+    {
+        if (presentationVersion < 1) throw new ArgumentOutOfRangeException(nameof(presentationVersion));
+        ControlMode = Mode(mode); PresentationVersion = presentationVersion; Touch(nowUtc);
+    }
     public void AuthorizeCoHost(Guid? participantId, DateTime nowUtc)
     { if (participantId == Guid.Empty || participantId == HostParticipantId) throw new ArgumentException("Choose another admitted member."); PreauthorizedCoHostParticipantId = participantId; Touch(nowUtc); }
     public void HumanStarted(Guid participantId, long participantGeneration, bool overlap, long turnGeneration,
@@ -76,7 +80,17 @@ public sealed class SalesRoomFloor : ICompanyOwnedEntity
         PresentationVersion = presentationVersion; SlideNumber = slideNumber; TalkingPointIndex = talkingPointIndex;
         ResumeMarker = Limit(resumeMarker, 1000); ClearPending(); Touch(nowUtc);
     }
-    public void ProposeTurn(Guid participantId, long participantGeneration, bool addressed, bool overlap,
+    public void PresentationMoved(Guid actorParticipantId, long presentationVersion, int slideNumber,
+        int talkingPointIndex, string? resumeMarker, DateTime nowUtc)
+    {
+        RequireController(actorParticipantId);
+        if (presentationVersion < 1 || slideNumber < 1 || talkingPointIndex < 0)
+            throw new ArgumentException("A complete presentation position is required.");
+        State = SalesRoomFloorStates.Host; FloorOwnerParticipantId = actorParticipantId; Overlap = false;
+        PresentationVersion = presentationVersion; SlideNumber = slideNumber; TalkingPointIndex = talkingPointIndex;
+        ResumeMarker = Limit(resumeMarker, 1000); ResumeOffsetMilliseconds = 0; ResponseGeneration++;
+        ClearPending(); Touch(nowUtc);
+    }    public void ProposeTurn(Guid participantId, long participantGeneration, bool addressed, bool overlap,
         Guid? questionId, DateTime nowUtc)
     {
         PendingTurnId = Guid.NewGuid(); PendingParticipantId = participantId; PendingParticipantGeneration = participantGeneration;
@@ -113,14 +127,24 @@ public sealed class SalesRoomFloor : ICompanyOwnedEntity
         TurnGeneration = turnGeneration; ResponseGeneration++; State = SalesRoomFloorStates.Agent;
         FloorOwnerParticipantId = null; Overlap = false; Touch(nowUtc);
     }
-    public void AgentCompleted(Guid returnToParticipantId, DateTime nowUtc)
-    { RequireController(returnToParticipantId); State = SalesRoomFloorStates.Host; FloorOwnerParticipantId = returnToParticipantId; ClearPending(); ResumeOffsetMilliseconds = 0; Touch(nowUtc); }
+    public void AgentCompleted(Guid returnToParticipantId, DateTime nowUtc, int? nextTalkingPointIndex = null)
+    {
+        RequireController(returnToParticipantId);
+        if (nextTalkingPointIndex is < 0) throw new ArgumentOutOfRangeException(nameof(nextTalkingPointIndex));
+        State = SalesRoomFloorStates.Host; FloorOwnerParticipantId = returnToParticipantId;
+        if (nextTalkingPointIndex.HasValue)
+        {
+            TalkingPointIndex = nextTalkingPointIndex.Value;
+            ResumeMarker = $"slide:{SlideNumber}:talking-point:{TalkingPointIndex}";
+        }
+        ClearPending(); ResumeOffsetMilliseconds = 0; Touch(nowUtc);
+    }
     public void AgentAdvanced(long presentationVersion, int slideNumber, int talkingPointIndex,
         string? resumeMarker, long turnGeneration, DateTime nowUtc)
     {
-        if (ControlMode != "autonomous" || State != SalesRoomFloorStates.Agent ||
+        if (ControlMode == "manual" || State != SalesRoomFloorStates.Agent ||
             presentationVersion < 1 || slideNumber < 1 || talkingPointIndex < 0 || turnGeneration < TurnGeneration)
-            throw new InvalidOperationException("The autonomous floor changed before the next slide was ready.");
+            throw new InvalidOperationException("The continuing agent floor changed before the next narration was ready.");
         PresentationVersion = presentationVersion; SlideNumber = slideNumber;
         TalkingPointIndex = talkingPointIndex; ResumeMarker = Limit(resumeMarker, 1000);
         ResumeOffsetMilliseconds = 0; TurnGeneration = turnGeneration; ResponseGeneration++;

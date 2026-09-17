@@ -7,11 +7,20 @@ public sealed record BrowserRoomParticipant(Guid Id, string DisplayName, string 
 public sealed record BrowserRoomOperation(Guid Id, string Action, string State, int Attempts, string? ProblemCode);
 public sealed record BrowserRoomSnapshot(Guid Id, Guid? MeetingSessionId, string State, string AgentHealth, long Version, DateTime ExpiresUtc,
     IReadOnlyList<BrowserRoomParticipant> Participants, IReadOnlyList<BrowserRoomOperation> Operations)
-{ public Guid? InvitationId { get; init; } public string ConsentNoticeVersion { get; init; } = ""; }
+{
+    public Guid? InvitationId { get; init; }
+    public string ConsentNoticeVersion { get; init; } = "";
+    public bool ConnectionAllowed { get; init; } = true;
+    public DateTime? OpensUtc { get; init; }
+}
 public sealed record BrowserRoomAudience(Guid Id, string DisplayName, string MediaIdentity);
 public sealed record BrowserGuestSnapshot(Guid RoomId, Guid ParticipantId, string RoomState, string AdmissionState, long Version, DateTime ExpiresUtc,
     bool AiProcessingAllowed, bool TranscriptRetentionAllowed, IReadOnlyList<BrowserRoomAudience> Participants)
-{ public string ConsentNoticeVersion { get; init; } = ""; }
+{
+    public string ConsentNoticeVersion { get; init; } = "";
+    public bool ConnectionAllowed { get; init; } = true;
+    public DateTime? OpensUtc { get; init; }
+}
 public sealed record BrowserGuestSession(string Credential, BrowserGuestSnapshot Participant)
 { public override string ToString() => "BrowserGuestSession { Credential = [redacted] }"; }
 public sealed record BrowserRoomToken(string Url, string Token, string Identity, DateTimeOffset ExpiresAt)

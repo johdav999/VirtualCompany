@@ -118,7 +118,7 @@
                                 <button type="button" class="room-primary" disabled="@(!CanResumeFloor)" @onclick="ResumeFloor">Resume from current point</button>
                                 <button type="button" class="room-danger" disabled="@(!CanTakeOver)" @onclick="TakeOver">Take over</button>
                             </div>
-                            <small>Manual slides and human audio continue if the agent is unavailable.</small>
+                            <small>@ModeBehavior(floor.ControlMode)</small>
                         </div>
                         @if (floor.PendingTurnId.HasValue)
                         {
@@ -146,7 +146,12 @@
                         <div><strong>@("$" + (agent?.EstimatedSpendUsd ?? 0).ToString("0.0000"))</strong><small>Estimated spend</small></div>
                     </div>
                     <button type="button" class="room-primary room-agent__wide" disabled="@(!CanStartAgent)" @onclick="StartAgent">Start agent</button>
-                    <button type="button" class="room-agent__wide" disabled="@(!CanNarrate)" @onclick="Narrate">Present this point</button>
+                    @if (agentError is not null) { <p class="room-alert" role="alert">@agentError</p> }
+                    <button type="button" class="room-agent__wide" disabled="@(!CanNarrate)" @onclick="Narrate">@NarrationActionLabel</button>
+                    @if (agent?.NarrationState is "not_prepared" or "slide_not_prepared")
+                    {
+                        <p class="room-alert" role="status">This presentation has no approved narration for the current slide. Prepare and approve its audio in the presentation preset library.</p>
+                    }
                     <button type="button" class="room-danger room-agent__wide" disabled="@(!CanStopAgent)" @onclick="StopAgent">Stop AI</button>
                     @if (agent?.State == "paused" || agent?.LastErrorSummary is not null)
                     {
@@ -170,7 +175,6 @@
                             </button>
                         </details>
                     }
-                    @if (agentError is not null) { <p class="room-alert" role="alert">@agentError</p> }
                     @if (agent is not null)
                     {
                         <details class="room-agent__metrics">
@@ -297,8 +301,8 @@
         "paused" => "AI is paused. The meeting continues without AI audio processing.",
         _ => "AI audio processing starts only after everyone consents and the host starts the room agent."
     };
-    private string AgentStateLabel => agent?.State switch
-    { "ready" => "Ready to speak", "speaking" => "Speaking", "starting" => "Connecting", "paused" => "Paused", "unavailable" => "Unavailable", "stopped" => "Stopped", _ => "Waiting for host" };
+    private string AgentStateLabel => !joined ? "Join meeting first" : agent?.State switch
+    { "ready" => "Ready to speak", "speaking" => "Speaking", "starting" => "Connecting", "paused" => "Paused", "unavailable" => "Unavailable", "stopped" => "Stopped", _ => "Ready to start" };
     private string VoiceHealthLabel => agent?.VoiceHealth switch
     { "healthy" => "Voice healthy", "connecting" => "Voice connecting", "degraded" => "Voice unavailable", "stopped" => "Voice stopped", _ => "Voice not connected" };
     private string AgentDuration => FormatDuration((agent?.ForwardedAudioMilliseconds ?? 0) + (agent?.OutputAudioMilliseconds ?? 0));
@@ -322,7 +326,9 @@
     };
     public sealed record RoomMediaState(string Status, string Problem, bool Microphone, bool Camera, bool Sharing, bool CanShare);
     public sealed record Entry(string Secret, string Credential);
-    private string StatusText => !finished && host?.State is "provisioning" or "reconciliation_required" ? "The host room is being prepared. Admission is unavailable until preparation is confirmed." : finished ? "You have left, or the meeting has ended." : guest?.AdmissionState == "lobby" ? "Waiting for the host to admit you. Nothing is published." : media.Status switch
+    private bool ConnectionAllowed => host?.ConnectionAllowed ?? guest?.ConnectionAllowed ?? true;
+    private DateTime? OpensUtc => host?.OpensUtc ?? guest?.OpensUtc;
+    private string StatusText => !finished && host?.State is "provisioning" or "reconciliation_required" ? "The host room is being prepared. Admission is unavailable until preparation is confirmed." : finished ? "You have left, or the meeting has ended." : !ConnectionAllowed && OpensUtc is DateTime opens && opens > DateTime.UtcNow ? $"This meeting opens at {opens.ToLocalTime():HH:mm} local time, 15 minutes before the scheduled start." : !ConnectionAllowed ? "This meeting is not available to join." : guest?.AdmissionState == "lobby" ? "Waiting for the host to admit you. Nothing is published." : media.Status switch
     {
         "connecting" => "Connecting your audio and video…", "connected" => "Connected", "reconnecting" => "The media connection was interrupted. Reconnecting…",
         "disconnected" => "Media disconnected. Reconnect to check admission and restore your place.", "provider_unavailable" => "The audio/video service could not be reached. Check your network and retry.",
@@ -374,16 +380,16 @@
             if (HostCompanyId is Guid company)
             {
                 host = await Hosts.StatusAsync(company, RoomId, deadline.Token);
-                try { agent = await Hosts.AgentAsync(company, RoomId, deadline.Token); agentError = null; }
+                try { agent = await Hosts.AgentAsync(company, RoomId, deadline.Token); }
                 catch (BrowserRoomRequestException ex) { agentError = ex.Message; }
                 if (host.State is "ending" or "ended" || host.ExpiresUtc <= DateTime.UtcNow) { await Finish(); return; }
-                canJoin = host.State is "lobby" or "live";
-                await module.InvokeVoidAsync("heartbeat", host.Participants.Where(x => x.State == "admitted").Select(x => new BrowserRoomAudience(x.Id, x.DisplayName, x.MediaIdentity)).ToArray());
+                canJoin = host.ConnectionAllowed && host.State is ("lobby" or "live");
+                await module.InvokeVoidAsync("heartbeat", (object)host.Participants.Where(x => x.State == "admitted").Select(x => new BrowserRoomAudience(x.Id, x.DisplayName, x.MediaIdentity)).ToArray());
             }
             else if (credential is not null)
             {
                 guest = await Guests.StatusAsync(RoomId, credential, deadline.Token);
-                canJoin = guest.AdmissionState == "admitted";
+                canJoin = guest.ConnectionAllowed && guest.AdmissionState == "admitted";
                 await module.InvokeVoidAsync("heartbeat", guest.Participants);
             }
             else { canJoin = secret is not null; await module.InvokeVoidAsync("heartbeat", Array.Empty<BrowserRoomAudience>()); }
@@ -402,7 +408,7 @@
                 else await Finish();
             }
         }
-        catch (Exception ex) when (Recoverable(ex)) { error = Friendly(ex); }
+        catch (Exception ex) when (Recoverable(ex)) { error ??= Friendly(ex); }
     }
     private async Task Run(Func<Task> action)
     {
@@ -436,9 +442,12 @@
         await module!.InvokeVoidAsync("connect", token);
         await ConnectPresentation();
     }
+    private bool presentationConnected;
+    private bool presentationImageLoaded;
     private async Task ConnectPresentation()
     {
         presentationError = null;
+        presentationConnected = false;
         try
         {
             if (HostCompanyId is Guid company)
@@ -463,6 +472,8 @@
                 await Presentation.ConnectBrowserAsync(Guid.Empty, RoomId, current.Stage.SessionId, credential,
                     RenderPresentation, cancellationToken: lifetime.Token);
             }
+            presentationConnected = true;
+            if (presentationImageLoaded) await PresentationRendered();
         }
         catch (Exception ex) when (RecoverablePresentation(ex))
         {
@@ -482,6 +493,7 @@
                 : await Guests.PresentationImageAsync(RoomId, credential!, snapshot, lifetime.Token);
             presentationStage = snapshot;
             pendingPresentationAck = snapshot;
+            presentationImageLoaded = false;
             presentationImage = image.DataUrl;
             presentationImageKey = $"{snapshot.DeckId:N}:{snapshot.DeckVersion}:{snapshot.SlideNumber}:{snapshot.Version}";
         }
@@ -497,6 +509,8 @@
     { readiness = value; return InvokeAsync(StateHasChanged); }
     private async Task PresentationRendered()
     {
+        presentationImageLoaded = true;
+        if (!presentationConnected) return;
         var snapshot = pendingPresentationAck;
         if (snapshot is null || presentationStage?.Version != snapshot.Version) return;
         try
@@ -541,6 +555,7 @@
             await Hosts.PresentationModeAsync(company, RoomId, mode, presentationStage.Version,
                 hostPresentationParticipantId, hostPresentationGeneration, lifetime.Token);
             await ReloadPresentation();
+            await Refresh();
         }
         catch (Exception ex) when (RecoverablePresentation(ex))
         { presentationError = "The presentation mode could not be changed. Review the current state and retry."; }
@@ -565,6 +580,18 @@
         await RenderPresentation(current.Presentation.Stage);
     }
     private static string ModeLabel(string mode) => char.ToUpperInvariant(mode[0]) + mode[1..];
+    private static string ModeBehavior(string mode) => mode switch
+    {
+        "assisted" => "Speaks the rest of this slide, then returns control to you.",
+        "autonomous" => "Continues through the remaining deck until interrupted.",
+        _ => "Speaks one talking point, then returns control to you."
+    };
+    private string NarrationActionLabel => agent?.Floor?.ControlMode switch
+    {
+        "assisted" => "Present this slide",
+        "autonomous" => "Present full deck from start",
+        _ => "Present this point"
+    };
     private static string ReadinessLabel(string state) => state switch
     { "slow" => "Still rendering", "disconnected" => "Disconnected", "revoked" => "Access revoked", _ => "Rendering" };
     private static bool RecoverablePresentation(Exception ex) => Recoverable(ex) || ex is SalesPresentationRuntimeClientException;
@@ -585,9 +612,23 @@
     }
     private Task StartAgent() => AgentCommand((company, state, ct) => Hosts.StartAgentAsync(company, RoomId, state.RoomVersion, ct));
     private Task StopAgent() => AgentCommand((company, state, ct) => Hosts.StopAgentAsync(company, RoomId, state.RoomVersion, ct));
-    private Task Narrate() => AgentCommand((company, state, ct) => Hosts.InvokeNarrationAsync(company, RoomId, state.RoomVersion,
-        state.NarrationRevisionId!.Value, state.NarrationSegmentId!.Value, ct));
-    private async Task AskAgent()
+    private async Task Narrate()
+    {
+        if (agent?.Floor?.ControlMode == "autonomous" && presentationStage is { SlideNumber: > 1 })
+        {
+            await PresentationCommand("presentation.goto", 1);
+            if (presentationError is not null) return;
+            await Refresh();
+        }
+        if (agent is not { NarrationRevisionId: Guid revisionId, NarrationSegmentId: Guid segmentId })
+        {
+            agentError = "The current presentation has no approved narration for this slide. Prepare and approve its audio in the presentation preset library.";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        await AgentCommand((company, state, ct) => Hosts.InvokeNarrationAsync(company, RoomId, state.RoomVersion,
+            revisionId, segmentId, ct));
+    }    private async Task AskAgent()
     {
         var question = agentQuestion?.Trim();
         if (string.IsNullOrWhiteSpace(question)) return;

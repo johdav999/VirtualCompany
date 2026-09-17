@@ -80,6 +80,20 @@ public sealed class MailboxCalendarOAuthScopeTests
         Assert.DoesNotContain("Mail.Read", calendarQuery);
         Assert.DoesNotContain("Mail.Send", calendarQuery);
     }
+    [Theory]
+    [InlineData("invalid_grant", true)]
+    [InlineData("temporarily_unavailable", false)]
+    public async Task OAuth_refresh_classifies_only_revoked_authorization_as_reconnect(string error, bool reconnect)
+    {
+        var handler = new RecordingHandler(System.Text.Json.JsonSerializer.Serialize(new { error })) { Status = HttpStatusCode.BadRequest };
+        var provider = new GmailMailboxProviderClient(new StaticHttpClientFactory(handler),
+            new StaticOptionsMonitor<MailboxIntegrationOptions>(new() { Gmail = OAuth("https://accounts.google.test/authorize") }),
+            NullLogger<GmailMailboxProviderClient>.Instance);
+        var exception = await Record.ExceptionAsync(() => provider.RefreshTokenAsync(new MailboxRefreshTokenRequest("test-refresh"), default));
+        Assert.NotNull(exception);
+        Assert.Equal(reconnect, exception is OAuthReconnectRequiredException);
+    }
+
     private static MailboxAuthorizationRequest Request(IReadOnlyCollection<string>? scopes = null) =>
         new(Guid.NewGuid(), Guid.NewGuid(), new Uri("https://app.example.test/oauth/callback"), "state-token", RequestedScopes: scopes);
 
@@ -103,13 +117,14 @@ public sealed class MailboxCalendarOAuthScopeTests
     private sealed class RecordingHandler(string json) : HttpMessageHandler
     {
         public Uri? LastRequestUri { get; private set; }
+        public HttpStatusCode Status { get; init; } = HttpStatusCode.OK;
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             LastRequestUri = request.RequestUri;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return Task.FromResult(new HttpResponseMessage(Status)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             });

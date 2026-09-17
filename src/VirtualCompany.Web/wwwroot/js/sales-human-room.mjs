@@ -1,4 +1,6 @@
 // Human room transport only. All admission and participant names come from the application.
+const devicePreferenceKey = 'virtual-company:sales-room:devices:v1';
+const deviceKinds = ['audioinput', 'videoinput', 'audiooutput'];
 export class HumanRoomMedia {
     constructor(root, bridge, sdk, environment = globalThis) {
         this.root = root; this.bridge = bridge; this.sdk = sdk; this.env = environment;
@@ -35,26 +37,39 @@ export class HumanRoomMedia {
         this.audience = new Map((audience || []).slice(0, 6).map(p => [p.mediaIdentity, p.displayName]));
         this.sync();
     }
-    async devices() {
+    savedDevices() {
+        try {
+            const value = JSON.parse(this.env.localStorage?.getItem(devicePreferenceKey) || '{}');
+            return Object.fromEntries(deviceKinds.map(kind => [kind,
+                typeof value[kind] === 'string' && value[kind].length <= 512 ? value[kind] : '']));
+        } catch { return Object.fromEntries(deviceKinds.map(kind => [kind, ''])); }
+    }
+    persistDevices(preferences = Object.fromEntries(deviceKinds.map(kind => [kind, this.deviceValue(kind)]))) {
+        try {
+            this.env.localStorage?.setItem(devicePreferenceKey, JSON.stringify(preferences));
+        } catch { /* Device persistence is optional when browser storage is unavailable. */ }
+    }
+    async devices(preferred = this.savedDevices()) {
         if (!this.env.navigator.mediaDevices?.enumerateDevices) return this.report(this.status, 'unsupported');
         const devices = await this.env.navigator.mediaDevices.enumerateDevices();
-        for (const kind of ['audioinput', 'videoinput', 'audiooutput']) {
+        for (const kind of deviceKinds) {
             const select = this.root.querySelector(`[data-device="${kind}"]`); if (!select) continue;
-            const previous = select.value; select.replaceChildren();
+            const previous = select.value || preferred[kind]; select.replaceChildren();
             const fallback = this.env.document.createElement('option'); fallback.value = ''; fallback.textContent = 'System default'; select.append(fallback);
             for (const [i, device] of devices.filter(d => d.kind === kind).entries()) {
                 const option = this.env.document.createElement('option'); option.value = device.deviceId;
                 option.textContent = device.label || `${kind === 'audioinput' ? 'Microphone' : kind === 'videoinput' ? 'Camera' : 'Speaker'} ${i + 1}`; select.append(option);
             }
-            if ([...select.options].some(o => o.value === previous)) select.value = previous;
+            select.value = [...select.options].some(o => o.value === previous) ? previous : '';
         }
     }
-    selected(kind) { return this.root.querySelector(`[data-device="${kind}"]`)?.value || undefined; }
+    deviceValue(kind) { return this.root.querySelector(`[data-device="${kind}"]`)?.value ?? ''; }
+    selected(kind) { return this.deviceValue(kind) || undefined; }
     stopPreview() {
         this.preview?.getTracks().forEach(t => t.stop()); this.preview = null;
         const video = this.root.querySelector('[data-preview]'); if (video) video.srcObject = null;
     }
-    async previewDevices(checkMicrophone = true) {
+    async previewDevices(checkMicrophone = true, preferredDevices) {
         const generation = ++this.generation; this.stopPreview();
         if (!this.env.navigator.mediaDevices?.getUserMedia) { this.report('prejoin', 'unsupported'); return; }
         // Camera is independently optional; microphone denial still permits a listening-only call.
@@ -75,7 +90,7 @@ export class HumanRoomMedia {
         if (this.disposed || generation !== this.generation) { tracks.forEach(t => t.stop()); return; }
         this.preview = new this.env.MediaStream(tracks);
         const video = this.root.querySelector('[data-preview]'); if (video) { video.srcObject = this.preview; void video.play().catch(() => {}); }
-        await this.devices(); this.report('prejoin');
+        await this.devices(preferredDevices); this.report('prejoin');
     }
     deviceProblem(error) {
         return error?.name === 'NotAllowedError' ? 'permission_denied' : error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError' ? 'device_missing' : 'device_unavailable';
@@ -104,10 +119,12 @@ export class HumanRoomMedia {
                     break;
                 case 'share': if (this.room) await this.room.localParticipant.setScreenShareEnabled(!this.room.localParticipant.isScreenShareEnabled, { audio: false }); break;
                 case 'devices':
-                    if (this.room) for (const kind of ['audioinput', 'videoinput', 'audiooutput']) {
-                        const device = this.selected(kind); if (device) await this.room.switchActiveDevice(kind, device);
+                    const preferences = Object.fromEntries(deviceKinds.map(kind => [kind, this.deviceValue(kind)]));
+                    if (this.room) for (const kind of deviceKinds) {
+                        const device = preferences[kind]; if (device) await this.room.switchActiveDevice(kind, device);
                     }
-                    else await this.previewDevices(false);
+                    else await this.previewDevices(false, preferences);
+                    this.persistDevices(preferences);
                     break;
             }
             this.sync(); this.report(this.status);

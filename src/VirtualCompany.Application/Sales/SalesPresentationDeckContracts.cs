@@ -160,6 +160,8 @@ public sealed record SalesPresentationRenderRequest(
     Guid DeckId,
     int ProcessingVersion,
     ExtractedPresentationSlide Slide,
+    int SlideCount,
+    ReadOnlyMemory<byte> SourceContent,
     int WidthPixels,
     int HeightPixels);
 

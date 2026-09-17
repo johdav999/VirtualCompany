@@ -141,6 +141,102 @@ public sealed class SalesMeetingSessionServiceTests
         Assert.Empty(await fixture.Db.SalesMeetingSessions.ToListAsync());
     }
 
+    [Fact]
+    public async Task Preset_application_inherits_defaults_and_replaces_legacy_deck_atomically()
+    {
+        await using var f=await Fixture.CreateAsync();
+        var session=await f.CreateSessionAsync();
+        var version=await SeedPreset(f);
+        var now=DateTime.UtcNow;
+        var legacy=new SalesPresentationDeck(Guid.NewGuid(),f.CompanyId,session.Id,version.DefaultPresenterAgentId!.Value,1,"Legacy","old.pptx","application/octet-stream",100,new string('c',64),"old/deck.pptx",null,f.UserId,now);
+        legacy.BeginProcessing(now,TimeSpan.Zero);legacy.MarkProcessed(1,"test","1","flattened",1,now);legacy.Activate(now);
+        f.Db.Add(legacy);await f.Db.SaveChangesAsync();
+        var service=new SalesPresentationRunService(f.Db,null!,TimeProvider.System,f.Service);
+        var command=new ApplySalesPresentationPresetCommand(version.PresetId,version.Id,null,null,null,null,null,null,null,false,null);
+        var run=await service.ApplyAsync(f.CompanyId,f.UserId,session.Id,command,null,default);
+        Assert.NotNull(run);
+        Assert.Equal("Reusable goal",run.Goal);Assert.Equal("Business leaders",run.Audience);Assert.Equal(30,run.DurationMinutes);
+        Assert.False(run.GoalOverridden);Assert.False(run.DurationOverridden);
+        var saved=await f.Db.SalesMeetingSessions.SingleAsync(x=>x.Id==session.Id);
+        Assert.Equal(run.Goal,saved.MeetingGoal);Assert.Equal(run.PresenterAgentId,saved.PresenterAgentId);
+        Assert.Equal("assisted",saved.PresentationControlMode);Assert.Equal(SalesMeetingConsentStatus.Pending,saved.ConsentStatus);
+        Assert.Equal(1,await f.Db.SalesPresentationDecks.CountAsync(x=>x.SessionId==session.Id&&x.IsActive));
+        Assert.False(legacy.IsActive);
+        Assert.Contains(await f.Db.SalesMeetingArtifacts.ToListAsync(),x=>x.DeckId==run.CompatibilityDeckId&&x.Content=="Explain the product"&&x.ArtifactType==SalesMeetingArtifactType.SlideTalkingPoint);
+        var repeated=await service.ApplyAsync(f.CompanyId,f.UserId,session.Id,command,null,default);
+        Assert.Equal(run.Id,repeated!.Id);
+        Assert.Equal(1,await f.Db.SalesPresentationRuns.CountAsync());
+    }
+
+    [Fact]
+    public async Task Preset_first_creates_session_without_granting_consent_and_rejects_foreign_version()
+    {
+        await using var f=await Fixture.CreateAsync();
+        var version=await SeedPreset(f);
+        var service=new SalesPresentationRunService(f.Db,null!,TimeProvider.System,f.Service);
+        var bad=new ApplySalesPresentationPresetCommand(null,Guid.NewGuid(),null,null,null,null,null,null,null,false,null);
+        await Assert.ThrowsAsync<SalesPresentationPresetConflictException>(()=>service.ApplyToInvitationAsync(f.CompanyId,f.UserId,f.InvitationId,bad,null,default));
+        Assert.Empty(await f.Db.SalesMeetingSessions.ToListAsync());
+        var command=bad with {PresetId=version.PresetId,PresetVersionId=version.Id};
+        await Assert.ThrowsAsync<SalesPresentationPresetConflictException>(()=>service.ApplyToInvitationAsync(f.CompanyId,f.UserId,f.InvitationId,command with {PresenterAgentId=Guid.NewGuid()},null,default));
+        Assert.Empty(await f.Db.SalesMeetingSessions.ToListAsync());
+        var run=await service.ApplyToInvitationAsync(f.CompanyId,f.UserId,f.InvitationId,command,null,default);
+        var session=await f.Db.SalesMeetingSessions.SingleAsync();
+        Assert.Equal(run!.MeetingSessionId,session.Id);
+        Assert.Equal(SalesMeetingConsentStatus.NotRequested,session.ConsentStatus);
+        Assert.Equal("Reusable goal",session.MeetingGoal);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(()=>service.ApplyToInvitationAsync(Guid.NewGuid(),f.UserId,f.InvitationId,command,null,default));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Started_meeting_allows_pinned_preset_replay_but_rejects_new_attachment(bool attachBeforeStart)
+    {
+        await using var f=await Fixture.CreateAsync();
+        var session=await f.CreateSessionAsync();
+        var version=await SeedPreset(f);
+        var service=new SalesPresentationRunService(f.Db,null!,TimeProvider.System,f.Service);
+        var command=new ApplySalesPresentationPresetCommand(version.PresetId,version.Id,null,null,null,null,null,null,null,false,null);
+        var original=attachBeforeStart?await service.ApplyAsync(f.CompanyId,f.UserId,session.Id,command,null,default):null;
+        var entity=await f.Db.SalesMeetingSessions.SingleAsync(x=>x.Id==session.Id);
+        entity.TransitionTo(SalesMeetingSessionStatus.Presenting,null,null,null,null,f.UserId,DateTime.UtcNow);
+        await f.Db.SaveChangesAsync();
+        var revision=entity.ConcurrencyVersion;
+        if(attachBeforeStart)
+        {
+            var replay=await service.ApplyToInvitationAsync(f.CompanyId,f.UserId,f.InvitationId,command,null,default);
+            Assert.Equal(original!.Id,replay!.Id);
+            Assert.Equal(revision,entity.ConcurrencyVersion);
+            Assert.Equal(1,await f.Db.SalesPresentationRuns.CountAsync());
+            var other=await SeedPreset(f);
+            var failure=await Assert.ThrowsAsync<SalesPresentationPresetConflictException>(()=>service.ApplyAsync(f.CompanyId,f.UserId,session.Id,
+                command with {PresetId=other.PresetId,PresetVersionId=other.Id,ReplaceActive=true,ExpectedActiveRunVersion=replay.ConcurrencyVersion},null,default));
+            Assert.Contains("already started",failure.Message);
+        }
+        else
+        {
+            var failure=await Assert.ThrowsAsync<SalesPresentationPresetConflictException>(()=>service.ApplyAsync(f.CompanyId,f.UserId,session.Id,command,null,default));
+            Assert.Contains("already started",failure.Message);
+            Assert.Empty(await f.Db.SalesPresentationRuns.ToListAsync());
+        }
+        Assert.Equal(SalesMeetingSessionStatus.Presenting,(await f.Db.SalesMeetingSessions.SingleAsync(x=>x.Id==session.Id)).Status);
+    }
+
+    private static async Task<SalesPresentationPresetVersion> SeedPreset(Fixture f)
+    {
+        var now=DateTime.UtcNow;var agent=Guid.NewGuid();
+        var preset=new SalesPresentationPreset(Guid.NewGuid(),f.CompanyId,"Reusable demo",null,f.UserId,now);
+        var version=new SalesPresentationPresetVersion(Guid.NewGuid(),f.CompanyId,preset.Id,1,agent,null,"Reusable goal","Business leaders",30,"Generic demo","assisted","en",true,false,true,null,now);
+        var asset=new SalesPresentationPresetAsset(Guid.NewGuid(),f.CompanyId,version.Id,"preset.pptx","application/octet-stream",100,new string('a',64),"preset/deck.pptx",null,f.UserId,now);
+        asset.BeginProcessing(now,TimeSpan.Zero);asset.MarkProcessed(1,"test","1","flattened",now);
+        var slide=new SalesPresentationPresetSlide(Guid.NewGuid(),f.CompanyId,asset.Id,1,1,"Overview","Product facts",null,"slide.png",null,1600,900,1600,900,new string('b',64),"Introduce","Explain the product",60,"Next",now);
+        f.Db.AddRange(new Agent(agent,f.CompanyId,"sales","Alex","Presenter","Sales",null,AgentSeniority.Senior,AgentStatus.Active),preset,version,asset,slide);
+        await f.Db.SaveChangesAsync();
+        version.Publish(f.UserId,now);preset.Publish(version.Id,now);
+        await f.Db.SaveChangesAsync();return version;
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly SqliteConnection connection;

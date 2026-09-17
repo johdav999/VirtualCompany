@@ -5,11 +5,13 @@ public sealed class SalesNarrationRevision : ICompanyOwnedEntity
 {
     public Guid Id { get; set; }
     public Guid CompanyId { get; set; }
-    public Guid SessionId { get; set; }
-    public Guid DeckId { get; set; }
+    public Guid? SessionId { get; set; }
+    public Guid? DeckId { get; set; }
+    public Guid? PresetVersionId { get; set; }
+    public Guid? SourcePresetRevisionId { get; set; }
     public int DeckVersion { get; set; }
     public int ProcessingVersion { get; set; }
-    public Guid AudienceId { get; set; }
+    public Guid? AudienceId { get; set; }
     public string AudienceHash { get; set; } = "";
     public string ManifestHash { get; set; } = "";
     public string Language { get; set; } = "";

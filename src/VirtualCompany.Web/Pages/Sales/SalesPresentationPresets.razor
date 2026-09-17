@@ -1,0 +1,104 @@
+@page "/app/sales/presentation-presets"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using Microsoft.AspNetCore.Components.Forms
+@using VirtualCompany.Web.Components.Sales
+
+<PageTitle>Presentation presets</PageTitle>
+
+<div class="sales-workspace preset-workspace">
+  <main class="sales-main">
+    <header class="sales-page-header preset-header">
+      <div><span>SALES / PRESENTATION PRESETS</span><h1>Presentation presets</h1><p>Create and manage reusable PowerPoint presentations before a customer meeting exists.</p></div>
+      @if (CanCreate) { <button id="new-preset" class="sales-button sales-button--primary" @onclick="BeginCreate">New preset</button> }
+    </header>
+    <nav class="sales-tabs" aria-label="Sales sections">
+      <a href="@BuildPath("/app/sales")">Overview</a><a href="@BuildPath("/app/sales/prospects")">Prospects</a><a href="@BuildPath("/app/sales/pipeline")">Pipeline</a><a href="@BuildPath("/app/sales/campaigns")">Campaigns</a><a class="active" href="@BuildPath("/app/sales/presentation-presets")">Presentation presets</a>
+    </nav>
+
+    <div class="preset-toolbar" role="search">
+      <label class="preset-search"><span class="visually-hidden">Search presentations</span><input value="@Search" @oninput="SearchChanged" placeholder="Search presentations" /></label>
+      <div class="preset-filters" role="group" aria-label="Filter presentation presets">
+        @foreach (var filter in Filters) { <button class="@FilterClass(filter)" aria-pressed="@(Filter == filter)" @onclick="() => SetFilter(filter)">@FilterLabel(filter) <span>@FilterCount(filter)</span></button> }
+      </div>
+    </div>
+
+    <div class="preset-live" role="status" aria-live="polite">@StatusMessage</div>
+    @if (IsLoading) { <section class="sales-card preset-state"><div class="preset-spinner" aria-hidden="true"></div><h2>Loading presentation presets</h2><p>Getting the latest versions and processing state.</p></section> }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    { <section class="sales-card preset-state preset-state--error" role="alert"><h2>Presentation presets are unavailable</h2><p>@ErrorMessage</p><button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button></section> }
+    else if (Items.Count == 0 && string.IsNullOrWhiteSpace(Search) && Filter == "all")
+    { <section class="sales-card preset-state"><span class="preset-empty-icon" aria-hidden="true">▤</span><h2>Build your reusable presentation library</h2><p>Upload a PowerPoint once, review the processed slides, and publish a version your Sales team can reuse.</p>@if (CanCreate){<button class="sales-button sales-button--primary" @onclick="BeginCreate">Create the first preset</button>}</section> }
+    else
+    {
+      <div class="preset-layout">
+        <section class="sales-card preset-library" aria-label="Presentation preset library">
+          <div class="preset-library-heading"><div><strong>@FilteredItems.Count presentation@(FilteredItems.Count == 1 ? "" : "s")</strong><span>Authoritative lifecycle and processing state</span></div><button class="preset-icon-button" title="Refresh" aria-label="Refresh presentation presets" @onclick="LoadAsync">↻</button></div>
+          @if (FilteredItems.Count == 0) { <div class="preset-inline-empty"><h2>No matching presets</h2><p>Adjust the search or lifecycle filter.</p></div> }
+          else foreach (var item in FilteredItems)
+          {
+            <button class="@RowClass(item)" @onclick="() => SelectAsync(item.Id)" aria-current="@(Selected?.Id == item.Id ? "true" : null)">
+              <div class="preset-row-cover"><PresentationPresetCover CompanyId="@(ResolvedCompanyId ?? Guid.Empty)" PresetId="item.Id" SlideId="item.CoverSlideId" Name="@item.Name" Processing="@(item.AssetStatus is "pending_scan" or "processing")" /></div>
+              <div class="preset-row-main"><strong>@item.Name</strong><span>@(string.IsNullOrWhiteSpace(item.Description) ? "No description" : item.Description)</span><small>Owner @OwnerName(item.OwnerUserId) · updated @item.UpdatedUtc.ToLocalTime().ToString("g")</small></div>
+              <div class="preset-row-facts"><span class="@BadgeClass(ItemState(item))">@StateLabel(ItemState(item))</span><span>v@(item.CurrentDraftVersion ?? item.CurrentPublishedVersion)</span><span>@item.SlideCount slides</span><span>@item.WhereUsedCount uses</span></div>
+            </button>
+          }
+        </section>
+
+        <section class="sales-card preset-detail" aria-label="Selected presentation preset">
+          @if (Selected is null) { <div class="preset-inline-empty"><h2>Select a preset</h2><p>Choose a presentation to review its defaults, slides, and readiness.</p></div> }
+          else
+          {
+            <header class="preset-detail-header"><div><div class="preset-title-line"><h2>@Selected.Name</h2><span class="@BadgeClass(Selected.Lifecycle)">@StateLabel(Selected.Lifecycle)</span>@if(Selected.CurrentDraft is not null){<span class="sales-badge">Draft v@(Selected.CurrentDraft.VersionNumber)</span>}@if(Selected.CurrentPublished is not null){<span class="sales-badge sales-badge--completed">Published v@(Selected.CurrentPublished.VersionNumber)</span>}</div><p>@Selected.Description</p></div><div class="sales-actions">@if(Selected.CurrentPublished?.AllowedContextTypes.Contains("ad_hoc")==true){<button class="sales-button sales-button--primary sales-button--small" disabled="@IsBusy" @onclick="BeginAdHoc">Use preset</button>}<button class="sales-button sales-button--small" disabled="@IsBusy" @onclick="DuplicateAsync">Duplicate</button></div></header>
+            @if (ConflictMessage is not null) { <div class="preset-conflict" role="alert"><div><strong>This preset changed</strong><p>@ConflictMessage</p></div><button class="sales-button sales-button--small" @onclick="ReloadSelectedAsync">Reload latest</button></div> }
+            <nav class="preset-version-tabs" aria-label="Preset versions">@foreach(var version in Selected.Versions){<button class="@(PreviewVersion?.Id == version.Id ? "active" : null)" @onclick="() => PreviewVersionAsync(version)">v@(version.VersionNumber) <span>@StateLabel(version.Lifecycle)</span></button>}</nav>
+            @if(PreviewVersion?.Lifecycle!="draft" && Selected.AllowedActions.Contains("create_draft"))
+            {<div class="preset-immutable"><div><strong>Published version</strong><p>Create a draft to edit settings, PowerPoint or narration. Existing meetings keep their published version.</p></div><button class="sales-button" disabled="@IsBusy" @onclick="CreateNextDraftAsync">Edit as new draft</button></div>}
+            <nav class="preset-authoring-tabs" aria-label="Presentation editor sections">
+              @foreach(var tab in new[]{"overview","powerpoint","audio","settings"})
+              {<button type="button" class="@(EditorTab==tab?"active":null)" aria-pressed="@(EditorTab==tab)" @onclick="()=>ChangeTabAsync(tab)">@(tab switch {"overview"=>"Overview","powerpoint"=>"PowerPoint","audio"=>"Script & audio",_=>"Settings"})</button>}
+            </nav>
+            <div class="preset-authoring-content">
+              @if(EditorTab=="overview")
+              {
+                <PresentationPresetSummary Preset="Selected" Version="PreviewVersion" OwnerName="@OwnerName(Selected.OwnerUserId)" PresenterName="@PresenterName(PreviewVersion?.DefaultPresenterAgentId)" IsBusy="IsBusy" OnEdit="EditSelectedDraft" />
+                <PresentationPresetReadiness Readiness="Readiness" IsDraft="@(PreviewVersion?.Lifecycle=="draft")" IsBusy="IsBusy" OnCorrect="CorrectBlocker" />
+                <p class="preset-authoring-note">Prepare the PowerPoint, scripts and cached audio here. Meetings use this published version without a separate preparation form.</p>
+              }
+              else if(EditorTab=="powerpoint")
+              {<PresentationPresetAssetPanel CompanyId="@(ResolvedCompanyId ?? Guid.Empty)" PresetId="Selected.Id" OnNotesSaved="NotesSavedAsync" Version="PreviewVersion" Slides="Slides" Narration="SlideNarration" NarrationError="@SlideNarrationError" OnOpenNarration='() => ChangeTabAsync("audio")' IsBusy="IsBusy" StatusMessage="@AssetStatusMessage" OnFileSelected="UploadAsync" OnCancel="CancelUpload" OnRetry="RetryAsync" />}
+              else if(EditorTab=="audio" && PreviewVersion is not null && ResolvedCompanyId is Guid narrationCompany)
+              {<SalesNarrationPreparation @key="PreviewVersion.Id" CompanyId="narrationCompany" PresetVersionId="PreviewVersion.Id" DefaultLanguage="@PreviewVersion.Language" Editable="@(PreviewVersion.Lifecycle=="draft")" />}
+              else if(EditorTab=="settings")
+              {
+                @if(PreviewVersion?.Lifecycle=="draft"){<PresentationPresetEditor Model="Form" Agents="SalesAgents" IsBusy="IsBusy" Errors="FieldErrors" OnSave="SaveAsync" />}
+                else {<PresentationPresetSummary Preset="Selected" Version="PreviewVersion" OwnerName="@OwnerName(Selected.OwnerUserId)" PresenterName="@PresenterName(PreviewVersion?.DefaultPresenterAgentId)" />}
+              }
+            </div>
+            <div class="preset-detail-actions">
+              @if(Readiness?.AllowedActions.Contains("publish") == true && PreviewVersion?.Lifecycle == "draft") { <button class="sales-button sales-button--primary" disabled="@IsBusy" @onclick="ConfirmPublish">Publish</button> }
+            </div>
+            @if(Selected.AllowedActions.Contains("archive"))
+            { <section class="preset-danger"><div><strong>Archive preset</strong><p>This preset is used @Selected.WhereUsedCount time@(Selected.WhereUsedCount == 1 ? "" : "s"). Archiving prevents new use while preserving history.</p></div><button class="sales-button" disabled="@IsBusy" @onclick="ConfirmArchive">Archive</button></section> }
+          }
+        </section>
+      </div>
+    }
+  </main>
+</div>
+
+@if (ShowCreate)
+{
+  <div class="preset-modal-backdrop" @onclick="CloseCreate"><section class="preset-modal preset-modal--create" role="dialog" aria-modal="true" aria-labelledby="create-title" @onclick:stopPropagation="true">
+    <header><div><span>NEW PRESET</span><h2 id="create-title">Create presentation preset</h2><p>Define reusable defaults now. Add and process the PowerPoint after the preset is saved.</p></div><button class="preset-icon-button" aria-label="Close create preset" @onclick="CloseCreate">×</button></header>
+    <PresentationPresetEditor Model="Form" Agents="SalesAgents" IsBusy="IsBusy" IsCreation="true" Errors="FieldErrors" OnSave="CreateAsync" OnCancel="CloseCreate" SubmitLabel="Create preset" />
+  </section></div>
+}
+@if(ShowAdHoc&&Selected?.CurrentPublished is{}adHocVersion&&ResolvedCompanyId is Guid adHocCompany)
+{<AdHocPresentationRunDialog CompanyId="adHocCompany" Preset="Selected" Version="adHocVersion" OnClose="CloseAdHoc" />}
+@if (PendingConfirmation is not null)
+{
+  <div class="preset-modal-backdrop" @onclick="CancelConfirmation"><section class="preset-confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" @onclick:stopPropagation="true">
+    <h2 id="confirm-title">@PendingConfirmation.Title</h2><p>@PendingConfirmation.Message</p><div class="sales-actions"><button class="sales-button" disabled="@IsBusy" @onclick="CancelConfirmation">Cancel</button><button class="sales-button sales-button--primary" disabled="@IsBusy" @onclick="RunConfirmationAsync">@PendingConfirmation.ActionLabel</button></div>
+  </section></div>
+}

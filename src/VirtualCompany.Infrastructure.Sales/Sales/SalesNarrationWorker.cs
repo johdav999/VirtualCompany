@@ -76,14 +76,24 @@ public sealed class SalesNarrationWorker(VirtualCompanyDbContext db, ICompanyCon
         var o = configured.Value;
         if (!o.CanGenerate) return;
         var now = clock.GetUtcNow().UtcDateTime;
-        SalesNarrationAsset asset;
-        SalesNarrationRevision revision;
-        SalesNarrationSegment segment;
-        SalesNarrationAttempt attempt;
-        await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct))
+        var attemptId = Guid.NewGuid();
+        var strategy = db.Database.CreateExecutionStrategy();
+        var claim = await strategy.ExecuteAsync(async () =>
         {
-            asset = await db.SalesNarrationAssets.SingleAsync(x => x.CompanyId == company && x.Id == assetId, ct);
-            if (asset.Status != SalesNarrationAsset.Pending || asset.AttemptCount >= 3) return;
+            db.ChangeTracker.Clear();
+            var committedAttempt = await db.SalesNarrationAttempts.AsNoTracking().SingleOrDefaultAsync(
+                x => x.CompanyId == company && x.Id == attemptId, ct);
+            if (committedAttempt is not null)
+            {
+                var committedSegment = await db.SalesNarrationSegments.AsNoTracking().FirstAsync(x =>
+                    x.CompanyId == company && x.AssetId == assetId &&
+                    x.RevisionId == committedAttempt.ApprovalRevisionId, ct);
+                return new NarrationClaim(assetId, committedAttempt.ApprovalRevisionId, committedSegment.Id, attemptId);
+            }
+
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var claimedAsset = await db.SalesNarrationAssets.SingleAsync(x => x.CompanyId == company && x.Id == assetId, ct);
+            if (claimedAsset.Status != SalesNarrationAsset.Pending || claimedAsset.AttemptCount >= 3) return null;
             var candidates = await (from s in db.SalesNarrationSegments join r in db.SalesNarrationRevisions
                 on new { s.CompanyId, Id = s.RevisionId } equals new { r.CompanyId, r.Id }
                 where s.CompanyId == company && s.AssetId == assetId && r.ApprovedUtc != null &&
@@ -101,35 +111,46 @@ public sealed class SalesNarrationWorker(VirtualCompanyDbContext db, ICompanyCon
             }
             if (eligible.Count == 0)
             {
-                asset.Status = SalesNarrationAsset.NeedsReview; asset.FailureCode = "source_or_approval_changed";
-                asset.Version++; asset.UpdatedUtc = now;
-                await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return;
+                claimedAsset.Status = SalesNarrationAsset.NeedsReview; claimedAsset.FailureCode = "source_or_approval_changed";
+                claimedAsset.Version++; claimedAsset.UpdatedUtc = now;
+                await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return null;
             }
-            (segment, revision) = eligible[0];
+            var (segment, revision) = eligible[0];
             var day = now.Date;
             // Reservations are retained for unknown outcomes; retries cannot erase costs.
             var spent = await db.SalesNarrationAttempts.Where(x => x.CompanyId == company && x.StartedUtc >= day)
                 .Select(x => x.EstimatedCostUsd).ToListAsync(ct);
             if (spent.Sum(x => x ?? o.AttemptReservation) + o.AttemptReservation > o.MaximumCompanyDailyUsd)
             {
-                asset.FailureCode = "daily_cost_limit"; asset.UpdatedUtc = now; asset.Version++;
-                await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return;
+                claimedAsset.FailureCode = "daily_cost_limit"; claimedAsset.UpdatedUtc = now; claimedAsset.Version++;
+                await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return null;
             }
-            asset.Status = SalesNarrationAsset.Generating; asset.LeaseUntilUtc = now.AddMinutes(3);
-            asset.AttemptCount++; asset.Version++; asset.UpdatedUtc = now; asset.FailureCode = null;
-            attempt = new() { Id = Guid.NewGuid(), CompanyId = company, AssetId = asset.Id,
-                ApprovalRevisionId = revision.Id, Number = asset.AttemptCount, StartedUtc = now,
+            claimedAsset.Status = SalesNarrationAsset.Generating; claimedAsset.LeaseUntilUtc = now.AddMinutes(3);
+            claimedAsset.AttemptCount++; claimedAsset.Version++; claimedAsset.UpdatedUtc = now; claimedAsset.FailureCode = null;
+            var attempt = new SalesNarrationAttempt { Id = attemptId, CompanyId = company, AssetId = claimedAsset.Id,
+                ApprovalRevisionId = revision.Id, Number = claimedAsset.AttemptCount, StartedUtc = now,
                 ReservedTokens = 21200, RateVersion = o.RateVersion, EstimatedCostUsd = o.AttemptReservation };
             db.SalesNarrationAttempts.Add(attempt);
             await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
-        }
+            return new NarrationClaim(claimedAsset.Id, revision.Id, segment.Id, attempt.Id);
+        });
+        if (claim is null) return;
+
+        db.ChangeTracker.Clear();
+        var asset = await db.SalesNarrationAssets.SingleAsync(x => x.CompanyId == company && x.Id == claim.AssetId, ct);
+        var revision = await db.SalesNarrationRevisions.SingleAsync(x => x.CompanyId == company && x.Id == claim.RevisionId, ct);
+        var segment = await db.SalesNarrationSegments.SingleAsync(x => x.CompanyId == company && x.Id == claim.SegmentId, ct);
+        var attempt = await db.SalesNarrationAttempts.SingleAsync(x => x.CompanyId == company && x.Id == claim.AttemptId, ct);
+
         // The durable generating receipt is committed before any billable provider operation.
         try
         {
             await service.EnsureReleasedAsync(revision, ct);
-            var deck = await db.SalesPresentationDecks.AsNoTracking().SingleAsync(x => x.CompanyId == company && x.Id == revision.DeckId, ct);
-            var result = await speech.GenerateAsync(new(company, revision.ApprovedByUserId!.Value, deck.AgentId,
+            var presenter = revision.PresetVersionId is Guid presetVersion
+                ? await db.SalesPresentationPresetVersions.Where(x=>x.CompanyId==company&&x.Id==presetVersion).Select(x=>x.DefaultPresenterAgentId).SingleAsync(ct)
+                : await db.SalesPresentationDecks.Where(x=>x.CompanyId==company&&x.Id==revision.DeckId).Select(x=>(Guid?)x.AgentId).SingleAsync(ct);
+            var result = await speech.GenerateAsync(new(company, revision.ApprovedByUserId!.Value, presenter ?? throw new VirtualCompany.Application.Sales.SalesNarrationException("Choose a preset presenter before generating audio."),
                 segment.Script, revision.Language, revision.Voice, revision.ConfigurationVersion,
                 $"narration:{company:N}:{asset.Id:N}:{attempt.Number}"), ct);
             attempt.InputTokens = result.InputTokens; attempt.OutputTokens = result.OutputTokens;
@@ -191,28 +212,41 @@ public sealed class SalesNarrationWorker(VirtualCompanyDbContext db, ICompanyCon
 
     private async Task PurgeAsync(Guid company, DateTime now, CancellationToken ct)
     {
-        var old = await db.SalesNarrationAssets.Where(x => x.CompanyId == company && x.Status != SalesNarrationAsset.Deleted &&
-            x.Status != SalesNarrationAsset.Generating && x.UpdatedUtc < now.AddDays(-90)).Take(20).ToListAsync(ct);
-        foreach (var asset in old)
+        var ids = await db.SalesNarrationAssets.AsNoTracking().Where(x => x.CompanyId == company &&
+            x.Status != SalesNarrationAsset.Deleted && x.Status != SalesNarrationAsset.Generating &&
+            x.UpdatedUtc < now.AddDays(-90)).Select(x => x.Id).Take(20).ToListAsync(ct);
+        foreach (var assetId in ids)
         {
-            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-            await db.Entry(asset).ReloadAsync(ct);
-            if (asset.Status == SalesNarrationAsset.Generating || asset.Status == SalesNarrationAsset.Deleted) continue;
-            var activeReference = await (from s in db.SalesNarrationSegments join r in db.SalesNarrationRevisions
-                on new { s.CompanyId, Id = s.RevisionId } equals new { r.CompanyId, r.Id }
-                where s.CompanyId == company && s.AssetId == asset.Id && r.RevokedUtc == null && r.RetainUntilUtc > now select r.Id).AnyAsync(ct);
-            if (activeReference) continue;
-            // Persist invalidation before object deletion; repeat deletion safely after a crash.
-            asset.Status = SalesNarrationAsset.NeedsReview; asset.FailureCode = "retention_deletion"; asset.Version++;
-            await db.SaveChangesAsync(ct);
-            await tx.CommitAsync(ct);
-            for (var i = 1; i <= asset.AttemptCount; i++)
-                await storage.DeleteAsync($"companies/{company:N}/sales/narration/{asset.Id:N}/{i}.wav", ct);
-            asset.Status = SalesNarrationAsset.Deleted; asset.StorageKey = null; asset.Version++; asset.UpdatedUtc = now;
+            var strategy = db.Database.CreateExecutionStrategy();
+            var attemptCount = await strategy.ExecuteAsync(async () =>
+            {
+                db.ChangeTracker.Clear();
+                await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+                var asset = await db.SalesNarrationAssets.SingleAsync(x => x.CompanyId == company && x.Id == assetId, ct);
+                if (asset.Status == SalesNarrationAsset.Generating || asset.Status == SalesNarrationAsset.Deleted)
+                    return (int?)null;
+                var activeReference = await (from s in db.SalesNarrationSegments join r in db.SalesNarrationRevisions
+                    on new { s.CompanyId, Id = s.RevisionId } equals new { r.CompanyId, r.Id }
+                    where s.CompanyId == company && s.AssetId == asset.Id && r.RevokedUtc == null && r.RetainUntilUtc > now select r.Id).AnyAsync(ct);
+                if (activeReference) return null;
+                // Persist invalidation before object deletion; repeat deletion safely after a crash.
+                if (asset.FailureCode != "retention_deletion")
+                {
+                    asset.Status = SalesNarrationAsset.NeedsReview; asset.FailureCode = "retention_deletion"; asset.Version++;
+                    await db.SaveChangesAsync(ct);
+                }
+                await tx.CommitAsync(ct);
+                return asset.AttemptCount;
+            });
+            if (!attemptCount.HasValue) continue;
+            for (var i = 1; i <= attemptCount.Value; i++)
+                await storage.DeleteAsync($"companies/{company:N}/sales/narration/{assetId:N}/{i}.wav", ct);
+            db.ChangeTracker.Clear();
+            var deleted = await db.SalesNarrationAssets.SingleAsync(x => x.CompanyId == company && x.Id == assetId, ct);
+            deleted.Status = SalesNarrationAsset.Deleted; deleted.StorageKey = null; deleted.Version++; deleted.UpdatedUtc = now;
             await db.SaveChangesAsync(ct);
         }
     }
+
+    private sealed record NarrationClaim(Guid AssetId, Guid RevisionId, Guid SegmentId, Guid AttemptId);
 }
-
-
-

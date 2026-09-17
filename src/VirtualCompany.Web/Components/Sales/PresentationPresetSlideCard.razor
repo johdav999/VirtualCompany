@@ -1,0 +1,72 @@
+@using VirtualCompany.Web.Services
+@using Microsoft.AspNetCore.Components.Web
+
+<article class="slide-card" aria-label="@($"Slide {Slide.SlideNumber}")">
+    <div class="slide-image">
+        @if (!imageFailed)
+        {
+            <img src="@SalesPresentationPresetApiClient.SlideImageUrl(CompanyId, PresetId, VersionId, Slide.Id)"
+                 alt="@($"Slide {Slide.SlideNumber}: {Slide.Title ?? "Presentation slide"}")" loading="lazy" decoding="async"
+                 @onerror="() => imageFailed = true" />
+        }
+        else
+        {
+            <div class="slide-image-unavailable"><strong>Slide image unavailable</strong><span>The rendered preview could not load.</span>
+                <button type="button" class="sales-button sales-button--small" @onclick="() => imageFailed = false">Retry image</button></div>
+        }
+    </div>
+    <header class="slide-heading"><h4>Slide @Slide.SlideNumber · @(Slide.Title ?? "Overview")</h4>
+        @if (Slide.AudioNeedsUpdate) { <span class="slide-warning">Audio needs update</span> }
+    </header>
+    <div class="slide-tabs" role="tablist" aria-label="@($"Content for slide {Slide.SlideNumber}")" @onkeydown="TabKey">
+        <button @ref="dialogueTab" type="button" role="tab" id="@Id("dialogue-tab")" aria-controls="@Id("dialogue")"
+                aria-selected="@(!showNotes)" tabindex="@(showNotes ? -1 : 0)" @onclick="() => showNotes = false">Spoken dialogue</button>
+        <button @ref="notesTab" type="button" role="tab" id="@Id("notes-tab")" aria-controls="@Id("notes")"
+                aria-selected="@showNotes" tabindex="@(showNotes ? 0 : -1)" @onclick="() => showNotes = true">Speaker notes</button>
+    </div>
+    <section class="dialogue-panel" id="@Id("dialogue")" role="tabpanel" aria-labelledby="@Id("dialogue-tab")" hidden="@showNotes" tabindex="0">
+        @if (NarrationError is not null) { <p role="status">@NarrationError</p> }
+        else if (Segments.Count == 0) { <p class="slide-empty">No spoken dialogue prepared for this slide yet. Prepare a script in Script &amp; audio.</p> }
+        else
+        {
+            @if (Narration?.Status == "outdated") { <p class="slide-warning" role="status">This dialogue is out of date. Prepare a new revision.</p> }
+            @foreach (var segment in Segments) { <p class="spoken-text">@segment.Script</p> }
+            <small>@(Narration?.ApprovedUtc is null ? "Draft narration" : "Saved narration") · @Narration?.Voice</small>
+        }
+        @if (OnOpenNarration.HasDelegate)
+        { <button type="button" class="slide-text-button" @onclick="OnOpenNarration">@(Editable ? "Edit in Script & audio" : "View Script & audio")</button> }
+    </section>
+    <section class="notes-panel" id="@Id("notes")" role="tabpanel" aria-labelledby="@Id("notes-tab")" hidden="@(!showNotes)">
+        <PresentationPresetSpeakerNotes @key="Slide.Id" CompanyId="CompanyId" PresetId="PresetId" VersionId="VersionId"
+            ExpectedVersion="ExpectedVersion" Slide="Slide" Editable="Editable" OnSaved="OnNotesSaved" />
+    </section>
+</article>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid PresetId { get; set; }
+    [Parameter] public Guid VersionId { get; set; }
+    [Parameter] public long ExpectedVersion { get; set; }
+    [Parameter, EditorRequired] public SalesPresentationPresetSlideViewModel Slide { get; set; } = default!;
+    [Parameter] public bool Editable { get; set; }
+    [Parameter] public NarrationRevision? Narration { get; set; }
+    [Parameter] public string? NarrationError { get; set; }
+    [Parameter] public EventCallback OnOpenNarration { get; set; }
+    [Parameter] public EventCallback<SalesPresentationPresetViewModel> OnNotesSaved { get; set; }
+    private bool showNotes, imageFailed;
+    private (Guid, Guid, Guid, Guid) loaded;
+    private ElementReference dialogueTab, notesTab;
+    private string Id(string suffix) => $"slide-{Slide.Id:N}-{suffix}";
+    private IReadOnlyList<NarrationSegment> Segments => Narration?.Segments.Where(x => x.SlideNumber == Slide.SlideNumber).OrderBy(x => x.TalkingPoint).ToArray() ?? [];
+    protected override void OnParametersSet()
+    {
+        var current = (CompanyId, PresetId, VersionId, Slide.Id);
+        if (loaded != current) { loaded = current; imageFailed = showNotes = false; }
+    }
+    private async Task TabKey(KeyboardEventArgs e)
+    {
+        if (e.Key is not ("ArrowLeft" or "ArrowRight" or "Home" or "End")) return;
+        showNotes = e.Key == "End" || (e.Key != "Home" && !showNotes);
+        await (showNotes ? notesTab : dialogueTab).FocusAsync();
+    }
+}

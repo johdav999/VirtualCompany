@@ -48,7 +48,8 @@ public sealed record RealtimeAgentPcmSessionCreateRequest(
     IReadOnlyList<RealtimeAgentToolDefinition> Tools,
     TimeSpan MaximumDuration,
     string? CorrelationId = null,
-    bool ManualInputCommit = false);
+    bool ManualInputCommit = false,
+    string? Voice = null);
 
 public sealed record RealtimeAgentPcmSessionConnection(
     string Provider,

@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -211,7 +212,15 @@ internal sealed class SalesRoomAgentRunControl
         }
     }
     public void EndResponse(CancellationTokenSource value) { lock (gate) { if (ReferenceEquals(response, value)) response = null; } value.Dispose(); }
-    public void CancelResponse() { lock (gate) response?.Cancel(); }
+    public bool CancelResponse()
+    {
+        lock (gate)
+        {
+            var interrupted = response is { IsCancellationRequested: false };
+            response?.Cancel();
+            return interrupted;
+        }
+    }
     public async Task TakeOverAsync(CancellationToken ct)
     {
         ISalesRoomMediaConnection? current;
@@ -220,9 +229,49 @@ internal sealed class SalesRoomAgentRunControl
     }
 }
 
+internal sealed class SalesRoomTranscriptCorrelation<TContext> where TContext : class
+{
+    private readonly Queue<TContext> pending = new();
+    private readonly Dictionary<string, TContext> committed = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> earlyCompletions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> committedIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> completedIds = new(StringComparer.Ordinal);
+
+    public int PendingCount => pending.Count + committed.Count + earlyCompletions.Count;
+    public int SeenCount => committedIds.Count + completedIds.Count;
+
+    public void Enqueue(TContext context) => pending.Enqueue(context);
+
+    public bool Commit(string itemId, out TContext? context, out string? text)
+    {
+        context = null; text = null;
+        if (string.IsNullOrWhiteSpace(itemId) || !committedIds.Add(itemId) || !pending.TryDequeue(out var submitted))
+            return false;
+        if (earlyCompletions.Remove(itemId, out var completedText))
+        {
+            context = submitted; text = completedText; return true;
+        }
+        committed[itemId] = submitted;
+        return false;
+    }
+
+    public bool Complete(string itemId, string text, out TContext? context, out string? completedText)
+    {
+        context = null; completedText = null;
+        if (string.IsNullOrWhiteSpace(itemId) || string.IsNullOrWhiteSpace(text) || !completedIds.Add(itemId))
+            return false;
+        if (committed.Remove(itemId, out var submitted))
+        {
+            context = submitted; completedText = text; return true;
+        }
+        earlyCompletions[itemId] = text;
+        return false;
+    }
+}
 internal sealed class SalesRoomAgentWorker(
     VirtualCompanyDbContext db,
     IServiceScopeFactory captureScopes,
+    ICompanyExecutionScopeFactory executionScopes,
     ISalesRoomMediaTransport mediaTransport,
     IRealtimeAgentPcmSessionGateway pcm,
     IRealtimeAgentSessionGateway realtime,
@@ -241,6 +290,49 @@ internal sealed class SalesRoomAgentWorker(
 
     public async Task RunAsync(SalesRoomAgentWorkItem work, SalesRoomAgentRunControl control, CancellationToken ct)
     {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                await RunOnceAsync(work, control, ct);
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (DbUpdateConcurrencyException)
+            {
+                SalesRoomBenchmarkTelemetry.RecordOwnership("worker_concurrency_retry");
+                logger.LogInformation(
+                    "Browser room agent is reconnecting after a concurrent room command for room {RoomId}.",
+                    work.RoomId);
+                db.ChangeTracker.Clear();
+                var current = await db.SalesBrowserRooms.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+                    x.CompanyId == work.CompanyId && x.Id == work.RoomId, ct);
+                if (current is null || !current.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) ||
+                    current.State != SalesBrowserRoomStates.Live)
+                    return;
+            }
+            catch (Exception ex)
+            {
+                SalesRoomBenchmarkTelemetry.RecordFailure("agent_worker");
+                var failureCode = ex switch
+                {
+                    SalesRoomVadException vad => vad.Code,
+                    RealtimeAgentUnavailableException provider => provider.Code,
+                    SalesRoomMediaException mediaError => mediaError.Code,
+                    _ => "agent_worker_failed"
+                };
+                logger.LogWarning(
+                    "Browser room agent paused safely for room {RoomId}; exception type {ExceptionType}, code {FailureCode}.",
+                    work.RoomId, ex.GetType().Name, failureCode);
+                await PauseAsync(work, failureCode);
+                return;
+            }
+        }
+    }
+
+    private async Task RunOnceAsync(SalesRoomAgentWorkItem work, SalesRoomAgentRunControl control, CancellationToken ct)
+    {
+        using var companyScope = executionScopes.BeginScope(work.CompanyId);
         ISalesRoomMediaConnection? media = null; string? providerSession = null;
         IDisposable? benchmarkSession = null;
         var events = Channel.CreateBounded<RuntimeEvent>(new BoundedChannelOptions(64)
@@ -251,6 +343,7 @@ internal sealed class SalesRoomAgentWorker(
             if (room.MeetingSessionId is not Guid sessionId || room.AgentId is not Guid agentId ||
                 !room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now)) return;
             var participants = await ConsentedParticipantsAsync(room, ct);
+            var organizerParticipantId = participants.Single(x => x.MemberUserId == room.OrganizerUserId).Id;
             var humans = participants.Select(x => new SalesRoomMediaParticipant(x.Id, false, x.Generation,
                 new DateTimeOffset(DateTime.SpecifyKind(room.ExpiresUtc < x.ExpiresUtc ? room.ExpiresUtc : x.ExpiresUtc, DateTimeKind.Utc)))).ToArray();
             if (AdmissionBlocked())
@@ -259,17 +352,25 @@ internal sealed class SalesRoomAgentWorker(
                 return;
             }
             var connectStarted = Stopwatch.GetTimestamp();
-            media = await mediaTransport.ConnectAgentAsync(new(room.CompanyId, room.Id),
-                new(agentId, true, work.Generation, new DateTimeOffset(DateTime.SpecifyKind(room.ExpiresUtc, DateTimeKind.Utc))), humans, ct);
-            SalesRoomBenchmarkTelemetry.RecordLatency("voice_connect", Stopwatch.GetElapsedTime(connectStarted));
-            control.Attach(media);
-            await AlignOutputGenerationAsync(media, room.AgentTurnGeneration, ct);
-            var provider = await pcm.CreatePcmSessionAsync(new(room.CompanyId, room.OrganizerUserId, agentId,
-                "sales_browser_room_segmented_transcription",
-                "Transcribe each explicitly committed utterance exactly. Do not answer, speak, call tools, or infer speaker identity.",
-                [], TimeSpan.FromMinutes(Math.Min(Options.MaximumSessionMinutes,
-                    Math.Max(1, (room.ExpiresUtc - Now).TotalMinutes))), work.RoomId.ToString("N"), true), ct);
+            var provider = await RunStartupWithLeaseRenewalAsync(work, async startupToken =>
+            {
+                media = await mediaTransport.ConnectAgentAsync(new(room.CompanyId, room.Id),
+                    new(agentId, true, work.Generation, new DateTimeOffset(DateTime.SpecifyKind(room.ExpiresUtc, DateTimeKind.Utc))), humans, startupToken);
+                SalesRoomBenchmarkTelemetry.RecordLatency("voice_connect", Stopwatch.GetElapsedTime(connectStarted));
+                control.Attach(media);
+                await AlignOutputGenerationAsync(media, room.AgentTurnGeneration, startupToken);
+                return await pcm.CreatePcmSessionAsync(new(room.CompanyId, room.OrganizerUserId, agentId,
+                    "sales_browser_room_segmented_transcription",
+                    "Transcribe each explicitly committed utterance exactly and preserve interrogative wording. " +
+                    "Meeting vocabulary can include Virtual Company, Alex, finance agent, sales agent, marketing agent, " +
+                    "support agent, and questions about what those agents can do. Do not answer, speak, call tools, or infer speaker identity.",
+                    [], TimeSpan.FromMinutes(Math.Min(Options.MaximumSessionMinutes,
+                        Math.Max(1, (room.ExpiresUtc - Now).TotalMinutes))), work.RoomId.ToString("N"), true), startupToken);
+            }, ct);
             providerSession = provider.ProviderSessionId;
+            db.ChangeTracker.Clear();
+            room = await RoomAsync(work, ct);
+            if (!room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now)) return;
             room.AgentReady(work.LeaseOwnerId, work.Generation);
             await db.SaveChangesAsync(ct);
             benchmarkSession = SalesRoomBenchmarkTelemetry.BeginSession();
@@ -279,9 +380,8 @@ internal sealed class SalesRoomAgentWorker(
             using var runtimeStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var inputTask = ReadInputAsync(media, segmenter, control, events.Writer, room.CompanyId, sessionId, room.AgentTurnGeneration, runtimeStop.Token);
             var providerTask = ReadProviderAsync(providerSession, events.Writer, runtimeStop.Token);
-            var pendingTranscripts = new Queue<UtteranceContext>();
-            var committedTranscripts = new Dictionary<string, UtteranceContext>(StringComparer.Ordinal);
-            var committedItemIds = new HashSet<string>(StringComparer.Ordinal);
+            var transcriptCorrelation = new SalesRoomTranscriptCorrelation<UtteranceContext>();
+            var participantsInterruptingAgent = new HashSet<Guid>();
             var lastReceived = 0L; var lastDetected = 0L; var lastForwarded = 0L;
             var renewAt = Now.AddSeconds(Options.RenewalSeconds);
             var organizerMissing = false;
@@ -308,9 +408,7 @@ internal sealed class SalesRoomAgentWorker(
                     await db.SaveChangesAsync(CancellationToken.None);
                     break;
                 }
-                var hostConnected = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
-                    x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.MemberUserId == room.OrganizerUserId &&
-                    x.State == SalesRoomParticipantStates.Admitted && x.Connected, ct);
+                var hostConnected = media.IsParticipantConnected(organizerParticipantId);
                 if (!hostConnected && !organizerMissing && room.AgentStartedUtc <= Now.AddSeconds(-Options.OrganizerDisconnectGraceSeconds))
                 {
                     organizerMissing = true; control.CancelResponse();
@@ -336,6 +434,10 @@ internal sealed class SalesRoomAgentWorker(
                 }
                 if (hostConnected) organizerMissing = false;
 
+                foreach (var utterance in segmenter.FlushExpired(DateTimeOffset.UtcNow))
+                    if (!events.Writer.TryWrite(new(RuntimeEventKind.Utterance, utterance)))
+                        throw new SalesRoomAccessException("transcription_backpressure");
+
                 while (events.Reader.TryRead(out var runtime))
                 {
                     if (runtime.Kind is RuntimeEventKind.DetectorFailure or RuntimeEventKind.ProviderFailure)
@@ -360,7 +462,10 @@ internal sealed class SalesRoomAgentWorker(
                     if (runtime.Kind == RuntimeEventKind.SpeechStarted)
                     {
                         control.CancelResponse();
-                        var wasSpeaking = room.AgentHealth == SalesRoomAgentHealthStates.Speaking;
+                        var interruptedAgent = runtime.InterruptedAgent ||
+                            room.AgentHealth == SalesRoomAgentHealthStates.Speaking;
+                        if (interruptedAgent && runtime.ParticipantId is Guid interruptingParticipant)
+                            participantsInterruptingAgent.Add(interruptingParticipant);
                         room.PreemptAgent(work.LeaseOwnerId, work.Generation,
                             "A participant started speaking. Agent audio stopped immediately.");
                         var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
@@ -383,7 +488,7 @@ internal sealed class SalesRoomAgentWorker(
                                 Now.AddMilliseconds(Options.PlaybackStopAcknowledgementTimeoutMilliseconds), Now);
                             stopRequest = new(room.Id, stopId, floor.ResponseGeneration, floor.PlaybackStopDeadlineUtc!.Value);
                         }
-                        if (wasSpeaking)
+                        if (interruptedAgent)
                         {
                             var processing = await db.SalesRoomAgentSpeech.Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
                                 x.Status == SalesRoomAgentSpeechStates.Processing).ToListAsync(ct);
@@ -401,13 +506,14 @@ internal sealed class SalesRoomAgentWorker(
                             x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.Id == utterance.ParticipantId, ct);
                         if (participant is null || participant.State != SalesRoomParticipantStates.Admitted || !participant.AiProcessingAllowed)
                         { segmenter.Clear(utterance.ParticipantId); continue; }
-                        if (pendingTranscripts.Count + committedTranscripts.Count >= 64 || committedItemIds.Count >= 4096)
+                        if (transcriptCorrelation.PendingCount >= 64 || transcriptCorrelation.SeenCount >= 4096)
                             throw new SalesRoomAccessException("transcription_backpressure");
                         foreach (var chunk in PcmChunks(utterance.Samples))
                             await pcm.SendInputAudioAsync(providerSession, chunk, ct);
                         await pcm.SendClientEventAsync(providerSession,
                             JsonSerializer.Serialize(new { event_id = "commit_" + Guid.NewGuid().ToString("N"), type = "input_audio_buffer.commit" }), ct);
-                        pendingTranscripts.Enqueue(new(utterance with { Samples = ReadOnlyMemory<short>.Empty }, participant.Version, participant.TranscriptRetentionAllowed));
+                        transcriptCorrelation.Enqueue(new(utterance with { Samples = ReadOnlyMemory<short>.Empty }, participant.Version,
+                            participant.TranscriptRetentionAllowed, participantsInterruptingAgent.Remove(utterance.ParticipantId)));
                         continue;
                     }
                     if (runtime.ProviderJson is not null)
@@ -418,8 +524,9 @@ internal sealed class SalesRoomAgentWorker(
                             providerPayload.RootElement.TryGetProperty("item_id", out var committedItem))
                         {
                             var committedId = committedItem.GetString();
-                            if (committedId is not null && committedItemIds.Add(committedId) && pendingTranscripts.TryDequeue(out var submitted))
-                                committedTranscripts.Add(committedId, submitted);
+                            if (committedId is not null &&
+                                transcriptCorrelation.Commit(committedId, out var completedContext, out var completedText))
+                                await ProcessTranscriptAsync(completedContext!, completedText!);
                             continue;
                         }
                         RealtimeAgentEvent normalized;
@@ -429,24 +536,11 @@ internal sealed class SalesRoomAgentWorker(
                         {
                             using var payload = JsonDocument.Parse(runtime.ProviderJson);
                             var itemId = payload.RootElement.TryGetProperty("item_id", out var providerItem) ? providerItem.GetString() : runtime.ProviderEventId;
-                            // Completion events may arrive out of order or repeat. Only the server commit binds speech to a participant.
-                            if (itemId is null || !committedTranscripts.Remove(itemId, out var context)) continue;
-                            if (string.IsNullOrWhiteSpace(normalized.Text)) continue;
-                            await using var captureScope = captureScopes.CreateAsyncScope();
-                            var retained = await captureScope.ServiceProvider.GetRequiredService<ISalesRoomCaptureService>().RetainAsync(
-                                new(room.CompanyId, room.Id, context.Value.ParticipantId, context.ConsentVersion, context.Retain,
-                                    work.Generation, work.LeaseOwnerId, context.Value.TrackId, context.Value.TrackGeneration,
-                                    context.Value.StartedAt.UtcDateTime, context.Value.EndedAt.UtcDateTime, context.Value.Overlapped, normalized.Text), ct);
-                            var current = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
-                                x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.Id == context.Value.ParticipantId, ct);
-                            // Persistent question/AI-run content can only derive from committed, permitted evidence.
-                            var fence = await db.SalesBrowserRooms.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
-                                x.CompanyId == room.CompanyId && x.Id == room.Id, ct);
-                            if (retained.HasValue && current is { AiProcessingAllowed: true } &&
-                                current.Version == context.ConsentVersion && fence.State == SalesBrowserRoomStates.Live &&
-                                fence.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now))
-                                await HandleTranscriptAsync(room, current, context.Value, normalized.Text,
-                                    work, floorEvents, questions, ct);
+                            // Completion and commit acknowledgements can arrive in either order. The correlator waits for
+                            // both so only the server-side commit can bind speech to a participant.
+                            if (itemId is not null && !string.IsNullOrWhiteSpace(normalized.Text) &&
+                                transcriptCorrelation.Complete(itemId, normalized.Text, out var completedContext, out var completedText))
+                                await ProcessTranscriptAsync(completedContext!, completedText!);
                         }
                         if (normalized.InputTokens > 0 || normalized.OutputTokens > 0 || normalized.AudioDurationMilliseconds > 0)
                         {
@@ -509,7 +603,7 @@ internal sealed class SalesRoomAgentWorker(
                         x.AgentGeneration == work.Generation && x.Status == SalesRoomAgentSpeechStates.Queued)
                     .OrderBy(x => x.CreatedUtc).FirstOrDefaultAsync(ct);
                 SalesRoomBenchmarkTelemetry.QueueDepth.Record(
-                    pendingTranscripts.Count + committedTranscripts.Count + (queued is null ? 0 : 1));
+                    transcriptCorrelation.PendingCount + (queued is null ? 0 : 1));
                 if (queued is not null)
                 {
                     await SpeakAsync(room, queued, media, work, control, ct);
@@ -522,15 +616,29 @@ internal sealed class SalesRoomAgentWorker(
             runtimeStop.Cancel(); segmenter.ClearAll();
             events.Writer.TryComplete();
             await AwaitQuietly(inputTask, providerTask);
+
+            async Task ProcessTranscriptAsync(UtteranceContext context, string text)
+            {
+                await using var captureScope = captureScopes.CreateAsyncScope();
+                var retained = await captureScope.ServiceProvider.GetRequiredService<ISalesRoomCaptureService>().RetainAsync(
+                    new(room.CompanyId, room.Id, context.Value.ParticipantId, context.ConsentVersion, context.Retain,
+                        work.Generation, work.LeaseOwnerId, context.Value.TrackId, context.Value.TrackGeneration,
+                        context.Value.StartedAt.UtcDateTime, context.Value.EndedAt.UtcDateTime, context.Value.Overlapped, text), ct);
+                var current = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+                    x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.Id == context.Value.ParticipantId, ct);
+                // Persistent question/AI-run content can only derive from committed, permitted evidence.
+                var fence = await db.SalesBrowserRooms.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
+                    x.CompanyId == room.CompanyId && x.Id == room.Id, ct);
+                if (current is { AiProcessingAllowed: true } &&
+                    current.Version == context.ConsentVersion && fence.State == SalesBrowserRoomStates.Live &&
+                    fence.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now))
+                    await HandleTranscriptAsync(room, current, context.Value, text,
+                        context.InterruptedAgent, retained.HasValue, media, work, floorEvents, questions, ct);
+            }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            SalesRoomBenchmarkTelemetry.RecordFailure("agent_worker");
-            logger.LogWarning("Browser room agent paused safely for room {RoomId}; exception type {ExceptionType}.", work.RoomId, ex.GetType().Name);
-            await PauseAsync(work, ex is SalesRoomVadException vad ? vad.Code : ex is RealtimeAgentUnavailableException provider ? provider.Code : "agent_worker_failed");
-        }
+
         finally
+
         {
             benchmarkSession?.Dispose();
             events.Writer.TryComplete();
@@ -556,10 +664,11 @@ internal sealed class SalesRoomAgentWorker(
                 var result = segmenter.Push(frame);
                 if (result.SpeechStarted)
                 {
-                    control.CancelResponse();
+                    var interruptedAgent = control.CancelResponse();
                     await media.CancelSpeechAsync(CancellationToken.None);
                     conductor.Preempt(companyId, sessionId, presentationVersion);
-                    await writer.WriteAsync(new(RuntimeEventKind.SpeechStarted, ParticipantId: frame.ParticipantId), ct);
+                    await writer.WriteAsync(new(RuntimeEventKind.SpeechStarted,
+                        ParticipantId: frame.ParticipantId, InterruptedAgent: interruptedAgent), ct);
                 }
                 if (result.Utterance is not null) await writer.WriteAsync(new(RuntimeEventKind.Utterance, result.Utterance), ct);
             }
@@ -604,11 +713,16 @@ internal sealed class SalesRoomAgentWorker(
             {
                 var plan = await conductor.PrepareAsync(new(room.CompanyId, room.OrganizerUserId, item.SessionId,
                     null, null, null, null, null, item.CommandId.ToString("N"), item.AgentId), responseCt);
-                if (plan is null || !plan.MayNarrate) throw new WithheldSpeech(plan?.ReasonCode ?? "stage_not_ready",
-                    "Narration is paused until the current slide is rendered for the audience.");
+                if (plan is null)
+                {
+                    logger.LogWarning("No active presentation snapshot was available for room {RoomId}, session {SessionId}, company {CompanyId}.",
+                        room.Id, item.SessionId, room.CompanyId);
+                    throw new WithheldSpeech("presentation_not_ready",
+                        "Narration is paused because the active presentation could not be loaded.");
+                }
                 if (!await AudienceReadyAsync(room, plan.Snapshot.Stage.Version, responseCt))
-                    throw new WithheldSpeech("audience_not_ready",
-                        "Narration is paused until every required participant renders the current slide or the host applies the explicit override.");
+                    throw new WithheldSpeech(plan.ReasonCode ?? "audience_not_ready",
+                        $"Narration is paused until every required participant renders presentation version {plan.Snapshot.Stage.Version}; reason: {plan.ReasonCode ?? "audience_not_ready"}.");
                 var session = await db.SalesMeetingSessions.AsNoTracking().SingleAsync(x => x.CompanyId == room.CompanyId && x.Id == item.SessionId, ct);
                 var playback = await narration.OpenPlaybackAsync(room.CompanyId, item.RequestedByUserId,
                     new(item.NarrationRevisionId!.Value, item.NarrationSegmentId!.Value, item.SessionId,
@@ -642,6 +756,7 @@ internal sealed class SalesRoomAgentWorker(
                 throw new WithheldSpeech("invalid_approved_audio", "The approved audio was empty or outside the room limit.");
             var samples = MemoryMarshal.Cast<byte, short>(bytes).ToArray();
             generatedMilliseconds = checked((int)(samples.Length * 1000L / 24_000));
+            await AlignOutputGenerationAsync(media, item.TurnGeneration, responseCt);
             room.AgentSpeaking(work.LeaseOwnerId, work.Generation); await db.SaveChangesAsync(responseCt);
             for (var offset = 0; offset < samples.Length; offset += 480)
             {
@@ -654,7 +769,6 @@ internal sealed class SalesRoomAgentWorker(
                 if (!await media.SendAsync(item.TurnGeneration, 24_000, frame, responseCt))
                     throw new WithheldSpeech("speech_interrupted", "Agent speech was stopped before completion.");
                 published += length;
-                await Task.Delay(20, responseCt);
             }
             if (!await media.CompleteSpeechAsync(item.TurnGeneration, responseCt))
                 throw new WithheldSpeech("speech_interrupted", "Agent speech was stopped before completion.");
@@ -664,11 +778,41 @@ internal sealed class SalesRoomAgentWorker(
             room.AgentSpeechCompleted(work.LeaseOwnerId, work.Generation, duration);
             var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
                 x.CompanyId == room.CompanyId && x.RoomId == room.Id, responseCt);
-            var continueDeck = floor is not null && floor.ResponseGeneration == item.ResponseGeneration &&
+            SalesNarrationSegment? nextSegment = null;
+            if (floor is not null && floor.ResponseGeneration == item.ResponseGeneration &&
                 item.Kind == SalesRoomAgentSpeechKinds.Narration &&
+                item.NarrationRevisionId is Guid revisionId && item.NarrationSegmentId is Guid segmentId)
+            {
+                var completedSegment = await db.SalesNarrationSegments.IgnoreQueryFilters().AsNoTracking()
+                    .SingleAsync(x => x.CompanyId == room.CompanyId && x.RevisionId == revisionId && x.Id == segmentId, responseCt);
+                nextSegment = await db.SalesNarrationSegments.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.CompanyId == room.CompanyId && x.RevisionId == revisionId &&
+                        x.SlideNumber == completedSegment.SlideNumber && x.TalkingPoint > completedSegment.TalkingPoint)
+                    .OrderBy(x => x.TalkingPoint).FirstOrDefaultAsync(responseCt);
+            }
+            var continueCurrentSlide = floor is not null && floor.ResponseGeneration == item.ResponseGeneration &&
+                nextSegment is not null && floor.ControlMode is SalesPresentationControlModes.Assisted or SalesPresentationControlModes.Autonomous;
+            var continueDeck = floor is not null && floor.ResponseGeneration == item.ResponseGeneration &&
+                item.Kind == SalesRoomAgentSpeechKinds.Narration && nextSegment is null &&
                 floor.ControlMode == SalesPresentationControlModes.Autonomous;
-            if (floor is not null && floor.ResponseGeneration == item.ResponseGeneration && !continueDeck)
-                floor.AgentCompleted(floor.HostParticipantId, Now);
+            if (floor is not null && floor.ResponseGeneration == item.ResponseGeneration)
+            {
+                if (continueCurrentSlide)
+                {
+                    floor.AgentAdvanced(floor.PresentationVersion, floor.SlideNumber, nextSegment!.TalkingPoint,
+                        $"slide:{floor.SlideNumber}:talking-point:{nextSegment.TalkingPoint}", room.AgentTurnGeneration, Now);
+                    var commandId = StableTurnId(room.Id, floor.HostParticipantId, "narration-point",
+                        floor.ResponseGeneration, new DateTimeOffset(Now, TimeSpan.Zero));
+                    db.SalesRoomAgentSpeech.Add(new SalesRoomAgentSpeech(Guid.NewGuid(), room.CompanyId, room.Id,
+                        item.SessionId, commandId, item.AgentId, work.Generation, room.AgentTurnGeneration,
+                        SalesRoomAgentSpeechKinds.Narration, item.RequestedByUserId, Now,
+                        item.NarrationRevisionId, nextSegment.Id, responseGeneration: floor.ResponseGeneration));
+                }
+                else if (!continueDeck)
+                {
+                    floor.AgentCompleted(floor.HostParticipantId, Now, nextSegment?.TalkingPoint);
+                }
+            }
             db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), room.CompanyId, AuditActorTypes.User, item.RequestedByUserId,
                 "sales.browser_room.agent_spoke", "sales_room_agent_speech", item.Id.ToString("D"), AuditEventOutcomes.Succeeded,
                 "The room agent published one release-checked speech item to its shared voice track.",
@@ -677,7 +821,10 @@ internal sealed class SalesRoomAgentWorker(
                     ["questionId"] = item.QuestionId?.ToString("D"), ["segmentId"] = item.NarrationSegmentId?.ToString("D") },
                 item.CommandId.ToString("N"), Now));
             await db.SaveChangesAsync(responseCt);
-            if (continueDeck)
+            if (continueCurrentSlide)
+                await floorEvents.AllowPlaybackAsync(room.CompanyId, item.SessionId,
+                    new(room.Id, floor!.ResponseGeneration), responseCt);
+            else if (continueDeck)
                 await ContinueAutonomousDeckAsync(room.CompanyId, room.Id, item, work, responseCt);
         }
         catch (OperationCanceledException) when (responseCt.IsCancellationRequested && !ct.IsCancellationRequested)
@@ -699,8 +846,9 @@ internal sealed class SalesRoomAgentWorker(
                 floor.PauseAt(duration, room.AgentTurnGeneration, Now);
             await db.SaveChangesAsync(CancellationToken.None);
         }
-        catch (WithheldSpeech ex)
+        catch (Exception error) when (error is WithheldSpeech or SalesNarrationException)
         {
+            var ex = error as WithheldSpeech ?? new WithheldSpeech("narration_release_invalid", error.Message);
             var played = checked((int)(published * 1000L / 24_000));
             SalesRoomBenchmarkTelemetry.RecordOutput(item.Kind, generatedMilliseconds, played,
                 Math.Max(0, generatedMilliseconds - played));
@@ -786,9 +934,7 @@ internal sealed class SalesRoomAgentWorker(
         }
 
         await EnsureConsentAsync(room, ct);
-        var revision = await db.SalesNarrationRevisions.IgnoreQueryFilters().AsNoTracking().Where(x =>
-            x.CompanyId == companyId && x.SessionId == completed.SessionId && x.ApprovedUtc != null &&
-            x.RevokedUtc == null && x.RetainUntilUtc > Now).OrderByDescending(x => x.ApprovedUtc).FirstOrDefaultAsync(ct);
+        var revision = await SalesRoomNarrationSelection.Current(db, companyId, completed.SessionId, Now).FirstOrDefaultAsync(ct);
         var segment = revision is null ? null : await db.SalesNarrationSegments.IgnoreQueryFilters().AsNoTracking().Where(x =>
             x.CompanyId == companyId && x.RevisionId == revision.Id &&
             x.SlideNumber == plan.Snapshot.Stage.SlideNumber).OrderBy(x => x.TalkingPoint).FirstOrDefaultAsync(ct);
@@ -812,8 +958,9 @@ internal sealed class SalesRoomAgentWorker(
     }
 
     private async Task HandleTranscriptAsync(SalesBrowserRoom room, SalesRoomParticipant participant,
-        SalesRoomDetectedUtterance utterance, string transcript, SalesRoomAgentWorkItem work,
-        ISalesRoomFloorEventPublisher publisher, ISalesMeetingQuestionAnsweringService answering, CancellationToken ct)
+        SalesRoomDetectedUtterance utterance, string transcript, bool interruptedAgent, bool transcriptRetained,
+        ISalesRoomMediaConnection media, SalesRoomAgentWorkItem work, ISalesRoomFloorEventPublisher publisher,
+        ISalesMeetingQuestionAnsweringService answering, CancellationToken ct)
     {
         var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
             x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
@@ -822,11 +969,41 @@ internal sealed class SalesRoomAgentWorker(
             ? await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == room.CompanyId && x.Id == agentId)
                 .Select(x => x.DisplayName).SingleOrDefaultAsync(ct) ?? "Alex"
             : "Alex";
-        var addressed = IsAddressedQuestion(transcript, agentName);
-        if (!addressed && !utterance.Overlapped) return;
+        var explicitlyAddressed = IsAddressedQuestion(transcript, agentName);
+        var connectedHumans = 0;
+        if (interruptedAgent && !explicitlyAddressed && !utterance.Overlapped)
+        {
+            var admitted = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().Where(x =>
+                    x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
+                    x.State == SalesRoomParticipantStates.Admitted)
+                .Select(x => x.Id).ToListAsync(ct);
+            connectedHumans = CountConnectedHumans(admitted, participant.Id, media.IsParticipantConnected);
+        }
+        var addressed = explicitlyAddressed || ShouldTreatInterruptedSpeechAsAddressedQuestion(
+            transcript, interruptedAgent, connectedHumans, utterance.Overlapped);
+        if (!addressed && !utterance.Overlapped)
+        {
+            logger.LogInformation(
+                "Browser room transcript did not enter question routing. CompanyId={CompanyId} RoomId={RoomId} ParticipantId={ParticipantId} InterruptedAgent={InterruptedAgent} ExplicitlyAddressed={ExplicitlyAddressed} ConnectedHumans={ConnectedHumans}.",
+                room.CompanyId, room.Id, participant.Id, interruptedAgent, explicitlyAddressed, connectedHumans);
+            return;
+        }
+        if (addressed && !transcriptRetained)
+        {
+            logger.LogInformation(
+                "Browser room agent withheld a detected question because transcript retention was not allowed. CompanyId={CompanyId} RoomId={RoomId} ParticipantId={ParticipantId}.",
+                room.CompanyId, room.Id, participant.Id);
+            if (room.AgentLeaseOwnerId is Guid pauseOwner)
+                room.PauseAgent(pauseOwner, work.Generation, "transcript_retention_required",
+                    "The agent heard a question but cannot create a grounded answer because this participant has not allowed transcript retention. Enable Allow my transcript to be retained and ask again, or use the typed question control.",
+                    room.AgentVoiceHealth);
+            floor.PauseAt(0, room.AgentTurnGeneration, Now);
+            await db.SaveChangesAsync(ct);
+            return;
+        }
         Guid? questionId = null;
         var commandId = StableTurnId(room.Id, participant.Id, utterance.TrackId, utterance.TrackGeneration, utterance.StartedAt);
-        if (addressed && !utterance.Overlapped && participant.TranscriptRetentionAllowed && room.AgentId is Guid selectedAgent &&
+        if (addressed && !utterance.Overlapped && transcriptRetained && room.AgentId is Guid selectedAgent &&
             room.MeetingSessionId is Guid sessionId)
         {
             var sequence = (await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking().Where(x =>
@@ -867,11 +1044,39 @@ internal sealed class SalesRoomAgentWorker(
         var addressed = !string.IsNullOrWhiteSpace(firstName) &&
                             Regex.IsMatch(value, $@"\b{Regex.Escape(firstName)}\b", RegexOptions.CultureInvariant) ||
             Regex.IsMatch(value, @"\balex\b|\bsales agent\b|\bsäljagent\b", RegexOptions.CultureInvariant);
-        var question = value.Contains('?') || new[] { " how ", " what ", " when ", " where ", " why ", " can ", " could ",
+        return addressed && IsQuestion(value);
+    }
+
+    internal static bool ShouldTreatInterruptedSpeechAsAddressedQuestion(string text, bool interruptedAgent,
+        int connectedHumanCount, bool overlapped)
+    {
+        if (!interruptedAgent || connectedHumanCount != 1 || overlapped || string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var normalized = " " + text.Trim().ToLowerInvariant() + " ";
+        if (IsQuestion(normalized)) return true;
+
+        // Realtime transcription can preserve the words while losing interrogative grammar
+        // (for example, "What do the finance agents do?" becoming "Find us agent two").
+        // A substantive interruption from the room's only human is still an addressed turn.
+        var words = Regex.Matches(normalized, @"[\p{L}\p{N}']+")
+            .Select(match => match.Value).ToArray();
+        if (words.Length < 3 || words.Sum(word => word.Length) < 10) return false;
+
+        var phrase = string.Join(' ', words);
+        return !Regex.IsMatch(phrase,
+            @"^(thanks?|thank you|okay|ok|yes|no|great|fine|continue|go on|stop|wait|hold on|tack|okej|ja|nej|bra|fortsätt|stopp|vänta)\b",
+            RegexOptions.CultureInvariant);
+    }
+
+    internal static int CountConnectedHumans(IEnumerable<Guid> admittedParticipantIds, Guid activeSpeakerId,
+        Func<Guid, bool> mediaConnected) =>
+        admittedParticipantIds.Distinct().Count(id => id == activeSpeakerId || mediaConnected(id));
+
+    private static bool IsQuestion(string value) =>
+        value.Contains('?') || new[] { " how ", " what ", " when ", " where ", " why ", " can ", " could ",
             " does ", " do ", " is ", " are ", " hur ", " vad ", " när ", " var ", " varför ", " kan ", " är " }
             .Any(value.Contains);
-        return addressed && question;
-    }
 
     private static Guid StableTurnId(Guid roomId, Guid participantId, string trackId, long generation, DateTimeOffset started)
     {
@@ -907,6 +1112,28 @@ internal sealed class SalesRoomAgentWorker(
             .GroupBy(_ => 1).Select(x => new { Total = x.Count(), Consented = x.Count(p => p.AiProcessingAllowed) }).SingleOrDefaultAsync(ct);
         return counts is { Total: > 0 } && counts.Total == counts.Consented;
     }
+    private async Task<T> RunStartupWithLeaseRenewalAsync<T>(SalesRoomAgentWorkItem work,
+        Func<CancellationToken, Task<T>> startup, CancellationToken ct)
+    {
+        var pending = startup(ct);
+        while (!pending.IsCompleted)
+        {
+            var delay = Task.Delay(TimeSpan.FromSeconds(Options.RenewalSeconds), ct);
+            if (await Task.WhenAny(pending, delay) == pending) break;
+
+            await using var scope = captureScopes.CreateAsyncScope();
+            var leaseDb = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+            var now = Now;
+            var room = await leaseDb.SalesBrowserRooms.IgnoreQueryFilters().SingleAsync(x =>
+                x.CompanyId == work.CompanyId && x.Id == work.RoomId, ct);
+            if (!room.RenewAgentLease(work.LeaseOwnerId, work.Generation,
+                    now.AddSeconds(Options.LeaseSeconds), now))
+                throw new InvalidOperationException("The browser-room agent lease was lost during startup.");
+            await leaseDb.SaveChangesAsync(ct);
+        }
+
+        return await pending;
+    }
     private async Task EnsureConsentAsync(SalesBrowserRoom room, CancellationToken ct)
     { if (!await HasAllConsentAsync(room, ct)) throw new WithheldSpeech("consent_required", "AI paused because participant consent changed."); }
     private async Task<bool> AudienceReadyAsync(SalesBrowserRoom room, long presentationVersion, CancellationToken ct)
@@ -914,8 +1141,11 @@ internal sealed class SalesRoomAgentWorker(
         var rows = await db.SalesRoomPresentationAudience.IgnoreQueryFilters().AsNoTracking().Where(x =>
             x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
             x.PresentationVersion == presentationVersion).ToListAsync(ct);
-        return rows.Count > 0 && rows.All(x => x.State is SalesRoomPresentationAudienceStates.Rendered or
+        var ready = rows.Count > 0 && rows.All(x => x.State is SalesRoomPresentationAudienceStates.Rendered or
             SalesRoomPresentationAudienceStates.Overridden);
+        if (!ready) logger.LogWarning("Audience was not ready for room {RoomId}, presentation version {PresentationVersion}. Rows: {Rows}.",
+            room.Id, presentationVersion, JsonSerializer.Serialize(rows.Select(x => new { x.PresentationVersion, x.State, x.ParticipantId })));
+        return ready;
     }
     private async Task PauseAsync(SalesRoomAgentWorkItem work, string code)
     {
@@ -984,7 +1214,8 @@ internal sealed class SalesRoomAgentWorker(
     private enum RuntimeEventKind { SpeechStarted, Utterance, ProviderEvent, DetectorFailure, ProviderFailure, UnexpectedProviderAudio }
     private sealed record RuntimeEvent(RuntimeEventKind Kind, SalesRoomDetectedUtterance? Utterance = null,
         string? ProviderJson = null, string? ProviderEventId = null, long ProviderSequence = 0,
-        Guid? ParticipantId = null);
-    private sealed record UtteranceContext(SalesRoomDetectedUtterance Value, long ConsentVersion, bool Retain);
+        Guid? ParticipantId = null, bool InterruptedAgent = false);
+    private sealed record UtteranceContext(SalesRoomDetectedUtterance Value, long ConsentVersion, bool Retain,
+        bool InterruptedAgent);
     private sealed class WithheldSpeech(string code, string message) : Exception(message) { public string Code { get; } = code; }
 }

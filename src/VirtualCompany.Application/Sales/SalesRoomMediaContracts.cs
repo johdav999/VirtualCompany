@@ -51,6 +51,7 @@ public interface ISalesRoomMediaConnection : IAsyncDisposable
     Task<bool> CompleteSpeechAsync(long turnGeneration, CancellationToken cancellationToken);
     Task<long> CancelSpeechAsync(CancellationToken cancellationToken);
     Task RevokeInputAsync(Guid participantId, CancellationToken cancellationToken);
+    bool IsParticipantConnected(Guid participantId);
     SalesRoomMediaStatistics GetStatistics();
 }
 public sealed class SalesRoomMediaException(string code, bool requiresReconciliation = false)

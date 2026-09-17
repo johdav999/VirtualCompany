@@ -109,6 +109,12 @@ public static class SalesModuleRegistration
             .ValidateOnStart();
         services.AddScoped<ISalesPresentationDeckService, SalesPresentationDeckService>();
         services.AddScoped<ISalesPresentationDeckProcessor, SalesPresentationDeckProcessor>();
+        services.AddScoped<ISalesPresentationPresetService, SalesPresentationPresetService>();
+        services.AddScoped<ISalesPresentationRunService, SalesPresentationRunService>();
+        services.AddScoped<ISalesPresentationRunContextResolver, SalesPresentationRunContextResolver>();
+        services.AddScoped<ISalesPresentationAdHocService, SalesPresentationAdHocService>();
+        services.AddScoped<ISalesPresentationLegacyMigrationService, SalesPresentationLegacyMigrationService>();
+        services.AddScoped<ISalesPresentationPresetAssetProcessor, SalesPresentationPresetAssetProcessor>();
         services.AddScoped<ISalesPresentationRuntimeService, SalesPresentationRuntimeService>();
         services.AddScoped<ISalesBrowserPresentationService, SalesBrowserPresentationService>();
         var conductorSection = configuration.GetSection(SalesPresentationConductorOptions.SectionName);
@@ -251,8 +257,9 @@ public static class SalesModuleRegistration
         services.AddHostedService<SalesMeetingTranscriptSubscriptionBackgroundService>();
         services.AddHealthChecks().AddCheck<SalesMeetingTranscriptHealthCheck>("microsoft-graph-meeting-transcripts", tags: ["ready"]);
         services.AddSingleton<ISalesPresentationDeckExtractor, OpenXmlSalesPresentationDeckExtractor>();
-        services.AddSingleton<ISalesPresentationSlideRenderer, DeterministicSvgSalesPresentationSlideRenderer>();
+        services.AddSingleton<ISalesPresentationSlideRenderer, PowerPointSalesPresentationSlideRenderer>();
         services.AddHostedService<SalesPresentationDeckBackgroundService>();
+        services.AddHostedService<SalesPresentationPresetBackgroundService>();
         services.AddScoped<ISalesMeetingInvitationDeliveryDispatcher, SalesMeetingInvitationDeliveryDispatcher>();
         services.AddScoped<ISalesMeetingChangeDeliveryDispatcher, SalesMeetingChangeDeliveryDispatcher>();
         services.AddScoped<ISalesMeetingConfirmationDeliveryDispatcher, SalesMeetingConfirmationDeliveryDispatcher>();

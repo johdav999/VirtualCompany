@@ -1,0 +1,70 @@
+@using VirtualCompany.Web.Services
+@inject SalesPresentationPresetApiClient PresetApi
+
+<div class="speaker-notes">
+    <div class="notes-heading">
+        <label for="@InputId">Speaker notes</label>
+        @if (Dirty)
+        { <span class="notes-warning" role="status">Unsaved changes</span> }
+        else if (Slide.AudioNeedsUpdate)
+        { <span class="notes-warning" role="status">Audio needs update</span> }
+    </div>
+    <textarea id="@InputId" aria-describedby="@HelpId" rows="5" maxlength="16000"
+              readonly="@(!Editable)" disabled="@Saving" @bind="Text" @bind:event="oninput"
+              placeholder="Add what the presenter should say for this slide."></textarea>
+    <small id="@HelpId">@(Editable ? "Leave blank to use slide text. Changed notes require a new script review and audio approval." : "Published notes are read-only. Create a new draft to edit them.")</small>
+    @if (Editable)
+    {
+        <div class="notes-actions">
+            <button type="button" class="sales-button sales-button--primary sales-button--small" disabled="@(!Dirty || Saving)" @onclick="SaveAsync">@(Saving ? "Saving…" : "Save notes")</button>
+            <button type="button" class="sales-button sales-button--small" disabled="@(!Dirty || Saving)" @onclick="Discard">Discard changes</button>
+        </div>
+    }
+    @if (Slide.AudioNeedsUpdate && !Dirty)
+    { <p class="notes-next">Prepare and approve updated audio in <strong>Script &amp; audio</strong>.</p> }
+    @if (Message is not null) { <p role="status">@Message</p> }
+    @if (Error is not null) { <p class="notes-error" role="alert">@Error</p> }
+</div>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid PresetId { get; set; }
+    [Parameter] public Guid VersionId { get; set; }
+    [Parameter] public long ExpectedVersion { get; set; }
+    [Parameter, EditorRequired] public SalesPresentationPresetSlideViewModel Slide { get; set; } = default!;
+    [Parameter] public bool Editable { get; set; }
+    [Parameter] public EventCallback<SalesPresentationPresetViewModel> OnSaved { get; set; }
+    private Guid LoadedSlide;
+    private string Text = "", Baseline = "";
+    private bool Saving;
+    private string? Error, Message;
+    private bool Dirty => Text.Trim() != Baseline.Trim();
+    private string InputId => $"speaker-notes-{Slide.Id:N}";
+    private string HelpId => $"{InputId}-help";
+
+    protected override void OnParametersSet()
+    {
+        var incoming = Slide.SpeakerNotes ?? "";
+        if (LoadedSlide != Slide.Id)
+        { LoadedSlide = Slide.Id; Text = Baseline = incoming; Error = Message = null; }
+        else if (incoming != Baseline)
+        { if (!Dirty) Text = incoming; Baseline = incoming; }
+    }
+
+    private void Discard() { Text = Baseline; Error = Message = null; }
+
+    private async Task SaveAsync()
+    {
+        if (!Editable || !Dirty || Saving) return;
+        Saving = true; Error = Message = null;
+        try
+        {
+            var updated = await PresetApi.UpdateSpeakerNotesAsync(CompanyId, PresetId, VersionId, Slide.Id, ExpectedVersion, Text);
+            Baseline = Text = Text.Trim();
+            Message = "Speaker notes saved. Prepare a new script in Script & audio to use these notes.";
+            await OnSaved.InvokeAsync(updated);
+        }
+        catch (SalesPresentationPresetApiException ex) { Error = ex.Message; }
+        finally { Saving = false; }
+    }
+}

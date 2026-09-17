@@ -71,6 +71,21 @@ public sealed class OpenAiRealtimeAgentSessionGatewayTests
         Assert.Null(input["turn_detection"]);
     }
 
+    [Theory]
+    [InlineData(null, "marin")]
+    [InlineData("cedar", "cedar")]
+    public void Pcm_session_uses_selected_voice_without_changing_shared_default(string? voice, string expected)
+    {
+        var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "BuildSession" && x.GetParameters()[1].ParameterType == typeof(RealtimeAgentPcmSessionCreateRequest));
+        var options = new SharedRealtimeAgentOptions { Voice = "marin" };
+        var request = new RealtimeAgentPcmSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "approved_sales_narration", "Read the approved script.", [], TimeSpan.FromMinutes(2), Voice: voice);
+        var session = Assert.IsType<JsonObject>(method.Invoke(null, [options, request]));
+        Assert.Equal(expected, session["audio"]!["output"]!["voice"]!.GetValue<string>());
+        Assert.Equal("marin", options.Voice);
+    }
+
     private static OpenAiRealtimeAgentSessionGateway Create(HttpMessageHandler handler)
     {
         var http = new HttpClient(handler);

@@ -13,7 +13,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedSpeechGateway speech,
+public sealed partial class SalesNarrationService(VirtualCompanyDbContext db, IApprovedSpeechGateway speech,
     ICompanyDocumentStorage storage, TimeProvider clock, IOptions<SalesNarrationOptions> options) : ISalesNarrationService
 {
     public static string Hash(string value) => Hash(Encoding.UTF8.GetBytes(value));
@@ -55,97 +55,115 @@ public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedS
             slides.Any(x => !scripts.Any(s => s.SlideNumber == x.SlideNumber)))
             throw new SalesNarrationException("Supply 1–100 talking points, at most 3,000 characters each, covering every slide. Split long source text into shorter talking points.", 400);
         scripts = scripts.OrderBy(x => x.SlideNumber).ThenBy(x => x.TalkingPoint).ToArray();
-        var profile = await speech.GetProfileAsync(ct);
+        var profile = SelectVoice(await speech.GetProfileAsync(ct), command.Voice);
         var audience = Audience(session);
         var manifest = Hash(JsonSerializer.Serialize(new { deck.Id, deck.Version, deck.ProcessingVersion,
             audience, command.Language, profile.Voice, profile.ConfigurationVersion,
             scripts, sources = slides.Select(x => new { x.Id, x.ContentHash }) }));
-        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-        var existing = await db.SalesNarrationRevisions.SingleOrDefaultAsync(x => x.CompanyId == companyId &&
-            x.SessionId == sessionId && x.ManifestHash == manifest, ct);
-        if (existing is not null) return await MapAsync(existing, ct);
-        var now = clock.GetUtcNow().UtcDateTime;
-        var revision = new SalesNarrationRevision {
-            Id = Guid.NewGuid(), CompanyId = companyId, SessionId = sessionId, DeckId = deck.Id,
-            DeckVersion = deck.Version, ProcessingVersion = deck.ProcessingVersion, AudienceId = session.CustomerCompanyId,
-            AudienceHash = audience, ManifestHash = manifest, Language = command.Language, Voice = profile.Voice,
-            Model = profile.Model, ConfigurationVersion = profile.ConfigurationVersion,
-            CreatedByUserId = userId, CreatedUtc = now, RetainUntilUtc = now.AddDays(90)
-        };
-        db.SalesNarrationRevisions.Add(revision);
-        foreach (var script in scripts)
+        var strategy = db.Database.CreateExecutionStrategy();
+        var revisionId = await strategy.ExecuteAsync(async () =>
         {
-            var slide = slides.Single(x => x.SlideNumber == script.SlideNumber);
-            var sourceHash = Hash(slide.ContentHash + "|" + slide.ExtractedText);
-            var scriptHash = Hash(script.Text);
-            var key = AssetKey(companyId, sourceHash, scriptHash, command.Language, profile.Voice, profile.ConfigurationVersion, audience);
-            var asset = db.SalesNarrationAssets.Local.FirstOrDefault(x => x.CompanyId == companyId && x.CacheKey == key)
-                ?? await db.SalesNarrationAssets.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.CacheKey == key, ct);
-            SalesRoomBenchmarkTelemetry.RecordCache(asset?.Status == SalesNarrationAsset.Ready);
-            if (asset?.FailureCode == "retention_deletion") throw new SalesNarrationException("Audio cleanup is in progress. Retry preparation shortly.");
-            if (asset is null)
+            // SQL Server's retrying execution strategy requires the complete explicit
+            // transaction to run inside its delegate. Clear a previous attempt before
+            // rebuilding the idempotent revision and segment graph.
+            db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var existing = await db.SalesNarrationRevisions.SingleOrDefaultAsync(x => x.CompanyId == companyId &&
+                x.SessionId == sessionId && x.ManifestHash == manifest, ct);
+            if (existing is not null) return existing.Id;
+            var now = clock.GetUtcNow().UtcDateTime;
+            var revision = new SalesNarrationRevision {
+                Id = Guid.NewGuid(), CompanyId = companyId, SessionId = sessionId, DeckId = deck.Id,
+                DeckVersion = deck.Version, ProcessingVersion = deck.ProcessingVersion, AudienceId = session.CustomerCompanyId,
+                AudienceHash = audience, ManifestHash = manifest, Language = command.Language, Voice = profile.Voice,
+                Model = profile.Model, ConfigurationVersion = profile.ConfigurationVersion,
+                CreatedByUserId = userId, CreatedUtc = now, RetainUntilUtc = now.AddDays(90)
+            };
+            db.SalesNarrationRevisions.Add(revision);
+            foreach (var script in scripts)
             {
-                asset = new() { Id = Guid.NewGuid(), CompanyId = companyId, CacheKey = key, CreatedUtc = now, UpdatedUtc = now };
-                db.SalesNarrationAssets.Add(asset);
+                var slide = slides.Single(x => x.SlideNumber == script.SlideNumber);
+                var sourceHash = Hash(slide.ContentHash + "|" + slide.ExtractedText);
+                var scriptHash = Hash(script.Text);
+                var key = AssetKey(companyId, sourceHash, scriptHash, command.Language, profile.Voice, profile.ConfigurationVersion, audience);
+                var asset = db.SalesNarrationAssets.Local.FirstOrDefault(x => x.CompanyId == companyId && x.CacheKey == key)
+                    ?? await db.SalesNarrationAssets.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.CacheKey == key, ct);
+                SalesRoomBenchmarkTelemetry.RecordCache(asset?.Status == SalesNarrationAsset.Ready);
+                if (asset?.FailureCode == "retention_deletion") throw new SalesNarrationException("Audio cleanup is in progress. Retry preparation shortly.");
+                if (asset is null)
+                {
+                    asset = new() { Id = Guid.NewGuid(), CompanyId = companyId, CacheKey = key, CreatedUtc = now, UpdatedUtc = now };
+                    db.SalesNarrationAssets.Add(asset);
+                }
+                db.SalesNarrationSegments.Add(new() { Id = Guid.NewGuid(), CompanyId = companyId, RevisionId = revision.Id,
+                    SourceSlideId = slide.Id, SlideNumber = slide.SlideNumber, TalkingPoint = script.TalkingPoint,
+                    SourceHash = sourceHash, SourceText = slide.ExtractedText, Script = script.Text, ScriptHash = scriptHash,
+                    AssetId = asset.Id, Reused = asset.Status == SalesNarrationAsset.Ready });
             }
-            db.SalesNarrationSegments.Add(new() { Id = Guid.NewGuid(), CompanyId = companyId, RevisionId = revision.Id,
-                SourceSlideId = slide.Id, SlideNumber = slide.SlideNumber, TalkingPoint = script.TalkingPoint,
-                SourceHash = sourceHash, SourceText = slide.ExtractedText, Script = script.Text, ScriptHash = scriptHash,
-                AssetId = asset.Id, Reused = asset.Status == SalesNarrationAsset.Ready });
-        }
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
-        return await MapAsync(revision, ct);
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return revision.Id;
+        });
+        db.ChangeTracker.Clear();
+        var prepared = await db.SalesNarrationRevisions.AsNoTracking().SingleAsync(x =>
+            x.CompanyId == companyId && x.Id == revisionId, ct);
+        return await MapAsync(prepared, ct);
     }
 
     public async Task DecideAsync(Guid companyId, Guid userId, Guid revisionId, string action, SalesNarrationDecision command, CancellationToken ct)
     {
-        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-        var revision = await db.SalesNarrationRevisions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == revisionId, ct)
-            ?? throw new KeyNotFoundException();
-        await AuthorizeAsync(companyId, userId, revision.SessionId, ct);
-        if (revision.Version != command.ExpectedVersion) throw new SalesNarrationException("This revision changed. Reload before deciding.");
-        var now = clock.GetUtcNow().UtcDateTime;
-        if (action == "revoke")
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            revision.RevokedByUserId = userId;
-            revision.RevokedUtc ??= now;
-        }
-        else if (action is "approve" or "retry")
-        {
-            if (revision.RevokedUtc.HasValue || revision.RetainUntilUtc <= now)
-                throw new SalesNarrationException("This release is revoked or expired. Prepare a new content revision.");
-            await EnsureCurrentAsync(revision, ct);
-            var profile = await speech.GetProfileAsync(ct);
-            if (!options.Value.CanGenerate) throw new SalesNarrationException("Narration generation is disabled or its dated rate limits are missing. Ask an administrator to configure generation before approval.");
-            if (!profile.Available || profile.ConfigurationVersion != revision.ConfigurationVersion)
-                throw new SalesNarrationException("Speech is unavailable or its configuration changed. Configure speech and prepare a new revision.");
-            if (action == "approve")
+            db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var revision = await db.SalesNarrationRevisions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == revisionId, ct)
+                ?? throw new KeyNotFoundException();
+            if(revision.PresetVersionId is Guid presetVersion) await AuthorizePresetAsync(companyId,userId,presetVersion,ct);
+            else await AuthorizeAsync(companyId, userId, revision.SessionId ?? throw new SalesNarrationException("Narration has no owner."), ct);
+            if (revision.Version != command.ExpectedVersion) throw new SalesNarrationException("This revision changed. Reload before deciding.");
+            var now = clock.GetUtcNow().UtcDateTime;
+            if (action == "revoke")
             {
-                revision.ApprovedByUserId ??= userId;
-                revision.ApprovedUtc ??= now;
+                revision.RevokedByUserId = userId;
+                revision.RevokedUtc ??= now;
             }
-            else
+            else if (action is "approve" or "retry")
             {
-                if (!revision.ApprovedUtc.HasValue || !command.AcknowledgeAdditionalCost)
-                    throw new SalesNarrationException("Approve the script and acknowledge that retrying may incur another generation charge.");
-                var assets = await (from s in db.SalesNarrationSegments
-                    join a in db.SalesNarrationAssets on new { s.CompanyId, Id = s.AssetId } equals new { a.CompanyId, a.Id }
-                    where s.CompanyId == companyId && s.RevisionId == revisionId select a).Distinct().ToListAsync(ct);
-                foreach (var asset in assets)
+                if (revision.RevokedUtc.HasValue || revision.RetainUntilUtc <= now)
+                    throw new SalesNarrationException("This release is revoked or expired. Prepare a new content revision.");
+                await EnsureCurrentAsync(revision, ct);
+                var profile = await speech.GetProfileAsync(ct);
+                if (!options.Value.CanGenerate) throw new SalesNarrationException("Narration generation is disabled or its dated rate limits are missing. Ask an administrator to configure generation before approval.");
+                if (!profile.Available || profile.ConfigurationVersion != revision.ConfigurationVersion || !profile.SupportsVoice(revision.Voice))
+                    throw new SalesNarrationException("Speech is unavailable or its configuration changed. Configure speech and prepare a new revision.");
+                if (action == "approve")
                 {
-                    if (asset.Status is SalesNarrationAsset.Pending or SalesNarrationAsset.Generating) continue;
-                    if (asset.Status == SalesNarrationAsset.Ready && await StoredAsync(asset, ct)) continue;
-                    if (asset.FailureCode == "retention_deletion") throw new SalesNarrationException("Audio cleanup is in progress. Retry shortly.");
-                    if (asset.AttemptCount >= 3) throw new SalesNarrationException("Three attempts have been used. Review the script or speech configuration before creating a new revision.");
-                    asset.Status = SalesNarrationAsset.Pending; asset.FailureCode = null; asset.Version++; asset.UpdatedUtc = now;
+                    revision.ApprovedByUserId ??= userId;
+                    revision.ApprovedUtc ??= now;
+                }
+                else
+                {
+                    if (!revision.ApprovedUtc.HasValue || !command.AcknowledgeAdditionalCost)
+                        throw new SalesNarrationException("Approve the script and acknowledge that retrying may incur another generation charge.");
+                    var assets = await (from s in db.SalesNarrationSegments
+                        join a in db.SalesNarrationAssets on new { s.CompanyId, Id = s.AssetId } equals new { a.CompanyId, a.Id }
+                        where s.CompanyId == companyId && s.RevisionId == revisionId select a).Distinct().ToListAsync(ct);
+                    foreach (var asset in assets)
+                    {
+                        if (asset.Status is SalesNarrationAsset.Pending or SalesNarrationAsset.Generating) continue;
+                        if (asset.Status == SalesNarrationAsset.Ready && await StoredAsync(asset, ct)) continue;
+                        if (asset.FailureCode == "retention_deletion") throw new SalesNarrationException("Audio cleanup is in progress. Retry shortly.");
+                        if (asset.AttemptCount >= 3) throw new SalesNarrationException("Three attempts have been used. Review the script or speech configuration before creating a new revision.");
+                        asset.Status = SalesNarrationAsset.Pending; asset.FailureCode = null; asset.Version++; asset.UpdatedUtc = now;
+                    }
                 }
             }
-        }
-        else throw new SalesNarrationException("Unknown narration action.", 400);
-        revision.Version++;
-        await db.SaveChangesAsync(ct);
-        await tx.CommitAsync(ct);
+            else throw new SalesNarrationException("Unknown narration action.", 400);
+            revision.Version++;
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        });
     }
 
     public async Task<SalesNarrationPreview> PreviewAsync(Guid companyId, Guid userId, SalesNarrationPlaybackRequest request, CancellationToken ct)
@@ -191,7 +209,6 @@ public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedS
             throw new SalesNarrationException("The stored audio is missing or invalid. Review and retry generation.");
         }
         // Recheck release after object I/O; a revoked release never returns a new preview.
-        db.ChangeTracker.Clear();
         revision = await db.SalesNarrationRevisions.AsNoTracking().SingleAsync(x => x.CompanyId == companyId && x.Id == revision.Id, ct);
         await EnsureReleasedAsync(revision, ct);
         await AuthorizeAsync(companyId, userId, request.SessionId, ct);
@@ -214,12 +231,20 @@ public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedS
 
     internal async Task EnsureCurrentAsync(SalesNarrationRevision revision, CancellationToken ct)
     {
+        if(revision.PresetVersionId.HasValue){await EnsurePresetCurrentAsync(revision,ct);return;}
+        if(revision.SourcePresetRevisionId is Guid sourceId)
+        {
+            var source=await db.SalesNarrationRevisions.AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==revision.CompanyId&&x.Id==sourceId&&x.PresetVersionId!=null,ct)
+                ?? throw new SalesNarrationException("The reusable narration release is unavailable.");
+            await EnsureReleasedAsync(source,ct);
+        }
         var session = await db.SalesMeetingSessions.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == revision.CompanyId && x.Id == revision.SessionId, ct);
         if (session is null || session.CustomerCompanyId != revision.AudienceId || Audience(session) != revision.AudienceHash)
             throw new SalesNarrationException("The intended audience changed. Prepare a new revision.");
-        if (!await db.SalesPresentationDecks.AsNoTracking().AnyAsync(x => x.CompanyId == revision.CompanyId &&
-            x.Id == revision.DeckId && x.IsActive && x.Version == revision.DeckVersion &&
-            x.ProcessingVersion == revision.ProcessingVersion && x.Status == SalesPresentationDeckStatus.Processed, ct))
+        var sourceDeck = await db.SalesPresentationDecks.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == revision.CompanyId &&
+            x.SessionId == revision.SessionId && x.Id == revision.DeckId && x.Version == revision.DeckVersion &&
+            x.ProcessingVersion == revision.ProcessingVersion && x.Status == SalesPresentationDeckStatus.Processed, ct);
+        if (sourceDeck is null || !await SalesRoomNarrationSelection.HasIdenticalActiveSnapshotAsync(db, sourceDeck, ct))
             throw new SalesNarrationException("The presentation changed. Prepare and approve its current revision.");
         var segments = await db.SalesNarrationSegments.AsNoTracking().Where(x => x.CompanyId == revision.CompanyId && x.RevisionId == revision.Id).ToListAsync(ct);
         var slides = await db.SalesPresentationSlides.AsNoTracking().Where(x => x.CompanyId == revision.CompanyId &&
@@ -245,6 +270,17 @@ public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedS
             join a in db.SalesNarrationAssets.AsNoTracking() on new { s.CompanyId, Id = s.AssetId } equals new { a.CompanyId, a.Id }
             where s.CompanyId == revision.CompanyId && s.RevisionId == revision.Id orderby s.SlideNumber, s.TalkingPoint
             select new { s, a }).ToListAsync(ct);
+        var changedNotes = new HashSet<Guid>();
+        if (revision.PresetVersionId.HasValue)
+        {
+            var slideIds = parts.Where(x => x.s.PresetSlideId.HasValue).Select(x => x.s.PresetSlideId!.Value).ToArray();
+            var notes = await db.SalesPresentationPresetSlides.AsNoTracking()
+                .Where(x => x.CompanyId == revision.CompanyId && slideIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.SpeakerNotes, ct);
+            foreach (var part in parts)
+                if (part.s.SourceNotesHash is not null && part.s.PresetSlideId is Guid id &&
+                    notes.TryGetValue(id, out var current) && part.s.SourceNotesHash != Hash(current ?? ""))
+                    changedNotes.Add(part.s.Id);
+        }
         var missing = new HashSet<Guid>();
         foreach (var asset in parts.Select(x => x.a).DistinctBy(x => x.Id).Where(x => x.Status == SalesNarrationAsset.Ready))
             if (!await StoredAsync(asset, ct)) missing.Add(asset.Id);
@@ -256,7 +292,7 @@ public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedS
         return new(revision.Id, revision.DeckId, revision.DeckVersion, revision.Language, revision.Voice, revision.Model,
             revision.AudienceId, status, revision.Version, revision.CreatedUtc, revision.ApprovedUtc,
             parts.Select(x => new SalesNarrationSegmentDto(x.s.Id, x.s.SlideNumber, x.s.TalkingPoint, x.s.SourceText,
-                x.s.Script, missing.Contains(x.a.Id) ? SalesNarrationAsset.NeedsReview : x.a.Status, x.s.Reused, x.a.DurationMilliseconds, x.a.Bytes, x.a.AttemptCount, missing.Contains(x.a.Id) ? "asset_missing_or_corrupt" : x.a.FailureCode)).ToArray(),
+                x.s.Script, changedNotes.Contains(x.s.Id) ? "needs_update" : missing.Contains(x.a.Id) ? SalesNarrationAsset.NeedsReview : x.a.Status, x.s.Reused, x.a.DurationMilliseconds, x.a.Bytes, x.a.AttemptCount, changedNotes.Contains(x.s.Id) ? "speaker_notes_changed" : missing.Contains(x.a.Id) ? "asset_missing_or_corrupt" : x.a.FailureCode)).ToArray(),
             attempts.Sum(x => x.InputTokens ?? 0), attempts.Sum(x => x.OutputTokens ?? 0), attempts.Count(x => !x.InputTokens.HasValue),
             attempts.Sum(x => (double)x.GeneratedMilliseconds) / 60000,
             parts.DistinctBy(x => x.a.Id).Sum(x => (double)x.a.ReusedMilliseconds) / 60000,
@@ -284,7 +320,3 @@ public sealed class SalesNarrationService(VirtualCompanyDbContext db, IApprovedS
         return buffer.ToArray();
     }
 }
-
-
-
-

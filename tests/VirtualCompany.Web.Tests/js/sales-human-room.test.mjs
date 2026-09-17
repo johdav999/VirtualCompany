@@ -14,22 +14,47 @@ class Element {
 function track(kind = 'audio') { return { kind, stopped: 0, detached: 0, stop() { this.stopped++; }, attach() { return new Element(); }, detach() { this.detached++; } }; }
 function setup() {
     const grid = new Element(), video = new Element(); const root = new Element();
-    root.querySelector = selector => selector === '[data-participants]' ? grid : selector === '[data-preview]' ? video : null;
-    const reports = []; let tick;
-    const environment = { document: { createElement: () => new Element() }, navigator: { mediaDevices: { addEventListener() {}, removeEventListener() {}, enumerateDevices: async () => [] } },
+    const selects = Object.fromEntries(['audioinput', 'videoinput', 'audiooutput'].map(kind => [kind, new Element()]));
+    root.querySelector = selector => selector === '[data-participants]' ? grid : selector === '[data-preview]' ? video :
+        selects[selector.match(/^\[data-device="(.*)"\]$/)?.[1]] || null;
+    const reports = []; let tick; const storage = new Map();
+    const environment = { document: { createElement: () => new Element() }, localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) }, navigator: { mediaDevices: { addEventListener() {}, removeEventListener() {}, enumerateDevices: async () => [] } },
         setInterval(callback) { tick = callback; return 1; }, clearInterval() {}, MediaStream: class { constructor(tracks) { this.tracks = tracks; } getTracks() { return this.tracks; } } };
     class Room {
         constructor() { this.remoteParticipants = new Map(); this.handlers = new Map(); this.canPlaybackAudio = true; this.localParticipant = { identity: 'human-local', trackPublications: new Map(), isMicrophoneEnabled: false, isCameraEnabled: false, isScreenShareEnabled: false,
             setMicrophoneEnabled: async value => { this.localParticipant.isMicrophoneEnabled = value; }, setCameraEnabled: async value => { this.localParticipant.isCameraEnabled = value; } }; }
         on(event, handler) { this.handlers.set(event, handler); }
         off(event) { this.handlers.delete(event); }
-        async connect() {} async disconnect() { this.disconnected = true; }
+        async connect() {} async disconnect() { this.disconnected = true; } async switchActiveDevice() {}
     }
     const events = Object.fromEntries(['ParticipantConnected','ParticipantDisconnected','TrackSubscribed','TrackUnsubscribed','TrackMuted','TrackUnmuted','LocalTrackPublished','LocalTrackUnpublished','Reconnecting','Reconnected','AudioPlaybackStatusChanged','Disconnected'].map(x => [x, x]));
     const media = new HumanRoomMedia(root, { invokeMethodAsync(_, state) { reports.push(state); return Promise.resolve(); } }, { Room, RoomEvent: events }, environment);
-    return { media, environment, reports, grid, video, tick: () => tick() };
+    return { media, environment, reports, grid, video, selects, storage, tick: () => tick() };
 }
 const token = { identity: 'human-local', url: 'wss://test.example', token: 'synthetic' };
+test('applied device choices are restored and unavailable hardware falls back safely', async () => {
+    const f = setup();
+    let devices = [
+        {kind:'audioinput',deviceId:'rode',label:'RØDE NT-USB'},
+        {kind:'videoinput',deviceId:'camera',label:'Camera'},
+        {kind:'audiooutput',deviceId:'focusrite',label:'Focusrite'}
+    ];
+    f.environment.navigator.mediaDevices.enumerateDevices = async () => devices;
+    await f.media.devices();
+    f.selects.audioinput.value = 'rode'; f.selects.videoinput.value = 'camera'; f.selects.audiooutput.value = 'focusrite';
+    await f.media.action('devices');
+    assert.deepEqual(JSON.parse(f.storage.get('virtual-company:sales-room:devices:v1')),
+        {audioinput:'rode',videoinput:'camera',audiooutput:'focusrite'});
+
+    Object.values(f.selects).forEach(select => select.value = '');
+    await f.media.devices();
+    assert.equal(f.selects.audioinput.value, 'rode'); assert.equal(f.selects.videoinput.value, 'camera');
+    assert.equal(f.selects.audiooutput.value, 'focusrite');
+
+    devices = devices.filter(device => device.deviceId !== 'rode'); f.selects.audioinput.value = '';
+    await f.media.devices(); assert.equal(f.selects.audioinput.value, '');
+    await f.media.dispose();
+});
 test('preview never connects and permission denial retains listening-only access', async () => {
     const f = setup(); f.environment.navigator.mediaDevices.getUserMedia = async () => { throw Object.assign(new Error(), { name: 'NotAllowedError' }); };
     await f.media.previewDevices(); assert.equal(f.media.room, null); assert.equal(f.media.mic, false);

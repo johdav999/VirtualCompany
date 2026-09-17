@@ -1,6 +1,10 @@
 namespace VirtualCompany.Application.Agents;
 
-public sealed record ApprovedSpeechProfile(bool Available, string Model, string Voice, string ConfigurationVersion);
+public sealed record ApprovedSpeechProfile(bool Available, string Model, string Voice, string ConfigurationVersion,
+    IReadOnlyList<string>? AvailableVoices = null)
+{
+    public bool SupportsVoice(string voice) => (AvailableVoices ?? [Voice]).Contains(voice, StringComparer.Ordinal);
+}
 public sealed record ApprovedSpeechRequest(Guid CompanyId, Guid UserId, Guid AgentId, string Text,
     string Language, string Voice, string ConfigurationVersion, string OperationId);
 public sealed record ApprovedSpeechResult(byte[] Pcm, string Transcript, string Model, string ProviderResponseId,

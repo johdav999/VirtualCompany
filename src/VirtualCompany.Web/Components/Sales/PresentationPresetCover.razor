@@ -1,0 +1,26 @@
+@using VirtualCompany.Web.Services
+<div class="preset-cover">
+ @if (SlideId is Guid slide && !failed)
+ {
+  <img src="@SalesPresentationPresetApiClient.CoverUrl(CompanyId, PresetId, slide)" alt="@($"First slide of {Name}")" loading="lazy" decoding="async" @onerror="() => failed = true" />
+ }
+ else
+ {
+  <span>@(Processing ? "Preparing slide preview…" : "No slide preview")</span>
+ }
+</div>
+@code {
+ [Parameter] public Guid CompanyId { get; set; }
+ [Parameter] public Guid PresetId { get; set; }
+ [Parameter] public Guid? SlideId { get; set; }
+ [Parameter] public string Name { get; set; } = "";
+ [Parameter] public bool Processing { get; set; }
+ private bool failed;
+ private (Guid, Guid, Guid?) loaded;
+ protected override void OnParametersSet()
+ {
+  var current = (CompanyId, PresetId, SlideId);
+  if (loaded != current) { loaded = current; failed = false; }
+ }
+}
+

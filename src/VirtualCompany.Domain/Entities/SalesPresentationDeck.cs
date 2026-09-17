@@ -82,9 +82,19 @@ public sealed class SalesPresentationDeck : ICompanyOwnedEntity
     public DateTime? FailedUtc { get; private set; }
     public DateTime? ActivatedUtc { get; private set; }
     public long ConcurrencyVersion { get; private set; }
+    public Guid? PresentationRunId { get; private set; }
+    public Guid? PresetAssetId { get; private set; }
     public Company Company { get; private set; } = null!;
     public SalesMeetingSession Session { get; private set; } = null!;
     public Agent Agent { get; private set; } = null!;
+    public SalesPresentationRun? PresentationRun { get; private set; }
+    public SalesPresentationPresetAsset? PresetAsset { get; private set; }
+    public void BindToPresentationRun(Guid runId, Guid presetAssetId)
+    {
+        EnsureId(runId,nameof(runId)); EnsureId(presetAssetId,nameof(presetAssetId));
+        if(PresentationRunId.HasValue||Status!=SalesPresentationDeckStatus.PendingScan) throw new InvalidOperationException("Only a new compatibility deck can be bound to a presentation run.");
+        PresentationRunId=runId; PresetAssetId=presetAssetId;
+    }
 
     public void BeginProcessing(DateTime nowUtc, TimeSpan staleAfter)
     {

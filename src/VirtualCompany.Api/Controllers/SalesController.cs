@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Api.ProblemHandling;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.CustomerMemory;
 using VirtualCompany.Application.Sales;
@@ -79,6 +80,11 @@ public sealed class SalesController : ControllerBase
         {
             return ValidationProblem(ex.Errors);
         }
+        catch (CalendarReconnectRequiredException ex)
+        {
+            return Problem(title: "Calendar reconnection required.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest,
+                extensions: new Dictionary<string, object?> { ["code"] = CalendarReconnectRequiredException.Code });
+        }
         catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or CalendarProviderException)
         {
             return Problem(title: "Calendar availability is unavailable.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
@@ -105,6 +111,11 @@ public sealed class SalesController : ControllerBase
         catch (SalesValidationException ex)
         {
             return ValidationProblem(ex.Errors);
+        }
+        catch (CalendarReconnectRequiredException ex)
+        {
+            return Problem(title: "Calendar reconnection required.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest,
+                extensions: new Dictionary<string, object?> { ["code"] = CalendarReconnectRequiredException.Code });
         }
         catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or CalendarProviderException)
         {

@@ -35,17 +35,20 @@ public sealed class CalendarOAuthAccessTokenLeaseService : ICalendarOAuthAccessT
             ?? throw new KeyNotFoundException("Calendar connection not found.");
         var external = calendar.ExternalAccountConnection;
         if (calendar.Status != ExternalConnectionStatus.Active || external.Status != ExternalConnectionStatus.Active)
-            throw new InvalidOperationException("Reconnect this calendar before scheduling a meeting.");
+            throw new CalendarReconnectRequiredException();
         var missing = requiredScopes.Where(scope =>
             !external.GrantedScopes.Contains(scope, StringComparer.OrdinalIgnoreCase)).ToArray();
         if (missing.Length > 0)
-            throw new InvalidOperationException("Reconnect this calendar and grant the required calendar permissions.");
+            throw new CalendarReconnectRequiredException();
         if (string.IsNullOrWhiteSpace(external.EncryptedAccessToken) ||
             external.AccessTokenExpiresUtc is { } expiry && expiry <= DateTime.UtcNow.Add(RefreshWindow))
-            await RefreshAsync(external, requiredScopes, cancellationToken);
+        {
+            try { await RefreshAsync(external, requiredScopes, cancellationToken); }
+            catch (OAuthReconnectRequiredException) { throw new CalendarReconnectRequiredException(); }
+        }
         var accessToken = _encryption.Decrypt(
             companyId, external.CredentialPurpose("access_token"),
-            external.EncryptedAccessToken ?? throw new InvalidOperationException("Reconnect this calendar before scheduling a meeting."));
+            external.EncryptedAccessToken ?? throw new CalendarReconnectRequiredException());
         return new CalendarOAuthAccessTokenLease(
             calendar.Id, external.Id, companyId, calendar.Provider,
             calendar.AccountEmail, accessToken, external.AccessTokenExpiresUtc,
@@ -58,7 +61,7 @@ public sealed class CalendarOAuthAccessTokenLeaseService : ICalendarOAuthAccessT
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(external.EncryptedRefreshToken))
-            throw new InvalidOperationException("Reconnect this calendar before scheduling a meeting.");
+            throw new CalendarReconnectRequiredException();
         var refresh = _encryption.Decrypt(
             external.CompanyId, external.CredentialPurpose("refresh_token"), external.EncryptedRefreshToken);
         var provider = external.Provider switch

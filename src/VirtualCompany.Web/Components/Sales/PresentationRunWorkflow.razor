@@ -1,0 +1,95 @@
+@using VirtualCompany.Web.Services
+@inject SalesPresentationPresetApiClient Presets
+@inject SalesPresentationRunApiClient Runs
+
+<section class="run-workflow" aria-labelledby="run-workflow-title">
+ <div class="run-workflow__heading"><div><span class="vc-kicker">Presentation preset</span><h2 id="run-workflow-title">Choose a prepared presentation</h2><p>Slides and reusable defaults are managed in the preset library. Only customer context belongs to this meeting.</p></div>@if(Run is not null){<span class="run-pill">Pinned to version @Run.PresetVersionNumber</span>}</div>
+ <a class="run-library-link" href="@LibraryPath">Manage presentation presets</a>
+ @if(loading){<p class="run-state" aria-live="polite"><span class="spinner-border spinner-border-sm"></span> Loading presentation presets…</p>}
+ else
+ {
+  @if(error is not null){<div class="run-state run-state--error" role="alert">@error <button class="sales-button" type="button" @onclick="Load">Reload</button></div>}
+  <div class="run-grid">
+   <div class="run-main">
+    <label for="meeting-preset">Published preset</label><select id="meeting-preset" class="sales-input" @bind="selectedPresetId" @bind:after="SelectPreset"><option value="">Choose a preset</option>@foreach(var item in Items.Where(x=>x.CurrentPublishedVersion.HasValue)){<option value="@item.Id">@item.Name · v@(item.CurrentPublishedVersion)</option>}</select>
+    @if(Selected?.CurrentPublished is{}version)
+    {
+     <div class="run-defaults"><h3>@(Run is not null && Run.PresetVersionId!=version.Id?"Selected version · review before replacing":"Inherited from the preset")</h3><dl>
+      <div><dt>Presenter</dt><dd>@(Agents.FirstOrDefault(x=>x.Id==version.DefaultPresenterAgentId)?.DisplayName ?? "Choose for this meeting")</dd></div>
+      <div><dt>Duration</dt><dd>@version.DurationMinutes minutes</dd></div><div><dt>Language</dt><dd>@(version.Language.StartsWith("sv")?"Swedish":version.Language=="en"?"English":version.Language)</dd></div>
+      <div><dt>Control</dt><dd>@(version.ControlMode=="manual"?"Manual":"Guided by presenter")</dd></div>
+      <div><dt>Goal</dt><dd>@version.Goal</dd></div><div><dt>Audience</dt><dd>@version.Audience</dd></div>
+      <div><dt>PowerPoint</dt><dd>@version.Asset?.OriginalFileName · @version.Asset?.SlideCount slides</dd></div>
+      @if(!string.IsNullOrWhiteSpace(version.DemoScenario)){<div><dt>Demo scenario</dt><dd>@version.DemoScenario</dd></div>}
+     </dl></div>
+     @if(Run is null || Run.PresetVersionId!=version.Id)
+     {
+      @if(version.DefaultPresenterAgentId is null)
+      {<label for="run-presenter">Presenter for this meeting</label><select id="run-presenter" @bind="presenterId"><option value="">Choose a Sales presenter</option>@foreach(var agent in Agents){<option value="@agent.Id">@agent.DisplayName</option>}</select>}
+      <details class="run-overrides"><summary>Optional adjustments for this meeting</summary><p>Leave blank to use the preset. These changes will not alter the library.</p>
+       <label for="run-goal">Customer-specific goal</label><textarea id="run-goal" maxlength="1000" @bind="goal" placeholder="@version.Goal"></textarea>
+       <label for="run-audience">Attendees or audience</label><input id="run-audience" maxlength="1000" @bind="audience" placeholder="@version.Audience" />
+       <label for="run-duration">Duration in minutes</label><input id="run-duration" type="number" min="5" max="480" @bind="duration" placeholder="@version.DurationMinutes.ToString()" />
+      </details>
+      @if(Run is null){<button class="sales-button sales-button--primary" disabled="@(busy || (version.DefaultPresenterAgentId is null && presenterId is null))" @onclick="Apply">@(busy?"Preparing…":"Use preset")</button>}
+      else if(Run.PresetId==Selected.Id){<button class="sales-button" disabled="@busy" @onclick="Compare">Review replacement</button>}
+      else {<div class="run-update"><p>Replace @Run.PresetName with @Selected.Name for this meeting? The previous presentation remains in history.</p><button class="sales-button sales-button--primary" disabled="@busy" @onclick="UpdateVersion">Confirm replacement</button></div>}
+     }
+    }
+    else if(!Items.Any(x=>x.CurrentPublishedVersion.HasValue))
+    {<div class="run-empty"><h3>No published presentations yet</h3><p>Create a preset, add its PowerPoint and publish it before preparing a meeting.</p><a class="sales-button sales-button--primary" href="@LibraryPath">Prepare a presentation preset</a></div>}
+
+    @if(Run is not null){<div class="run-evidence"><h3>Customer preparation</h3>@foreach(var artifact in Run.Artifacts){<article><span>@Present(artifact.Type)</span><p>@artifact.Content</p>@if(artifact.SourceReference is not null){<small>Source: @artifact.SourceReference</small>}</article>}</div>}
+   </div>
+   <aside class="run-readiness"><h3>Meeting preparation</h3>@if(Run is null){<p>Choose a published preset. Its presenter, slides and settings will be applied together.</p>}else{<strong class="run-status run-status--@Run.PreparationStatus">@Status(Run.PreparationStatus)</strong><p>@Run.PresetName · v@(Run.PresetVersionNumber) · @Run.PresenterName</p>@if(Run.NewerPublishedVersion.HasValue){<div class="run-update"><strong>Version @Run.NewerPublishedVersion is available</strong><p>Your pinned run will not change automatically.</p>@if(Selected?.CurrentPublished is{}latest&&latest.Id!=Run.PresetVersionId){<button class="sales-button" @onclick="Compare">Review changes</button>}</div>}@if(Comparison is not null){<div class="run-comparison"><h4>Review changes</h4>@foreach(var change in Comparison.Changes){<p><strong>@change.Field</strong><br />@change.CurrentValue → @change.NewValue @if(change.OverridePreserved){<em>Override preserved</em>}</p>}<button class="sales-button sales-button--primary" @onclick="UpdateVersion">Update explicitly</button></div>}@if(Run.ReadinessBlockers.Count>0){<ul>@foreach(var blocker in Run.ReadinessBlockers){<li>@Present(blocker)</li>}</ul>}@if(Run.CanRetry){<button class="sales-button" disabled="@busy" @onclick="RetryPreparation">Retry preparation</button>}@if(Run.PreparationStatus=="ready"&&Run.CompatibilityDeckId.HasValue){<a class="sales-button sales-button--primary" href="@PresenterPath">Open presenter</a>}}</aside>
+  </div>
+  @if((Run?.CompatibilityDeckId??LegacyDeckId) is Guid reusableDeck){<details class="run-save"><summary>Save a reusable copy</summary><label for="preset-copy-name">Save meeting setup as preset</label><input id="preset-copy-name" class="sales-input" @bind="saveName" placeholder="Preset name" /><button class="sales-button" disabled="@(busy||string.IsNullOrWhiteSpace(saveName))" @onclick="()=>SaveAsPreset(reusableDeck)">Save setup as preset</button>@if(!string.IsNullOrWhiteSpace(saveMessage)){<span role="status">@saveMessage</span>}</details>}
+
+ }
+</section>
+@code{
+ [Parameter]public Guid CompanyId{get;set;}[Parameter]public Guid InvitationId{get;set;}[Parameter]public IReadOnlyList<SalesPresentationPreparationAgentViewModel> Agents{get;set;}=[];[Parameter]public EventCallback<SalesPresentationRunViewModel?> OnRunChanged{get;set;}[Parameter]public Guid SessionId{get;set;}[Parameter]public Guid? LegacyDeckId{get;set;}[Parameter]public string PresenterPath{get;set;}="#";
+ private IReadOnlyList<SalesPresentationPresetListItemViewModel>Items=[];private SalesPresentationPresetViewModel?Selected;private SalesPresentationRunViewModel?Run;private SalesPresentationRunVersionComparisonViewModel?Comparison;private Guid?selectedPresetId;private string goal="";private string audience="";private string saveName="";private string?saveMessage;private int? duration;private Guid? presenterId;private string LibraryPath=>$"/app/sales/presentation-presets?companyId={CompanyId:D}";private bool loading=true,busy;private string?error;
+ protected override async Task OnParametersSetAsync()=>await Load();
+ private async Task Load()
+ {
+  loading=true;error=null;
+  try
+  {
+   Items=await Presets.ListAsync(CompanyId);
+   Run=SessionId==Guid.Empty?null:await Runs.GetAsync(CompanyId,SessionId);
+   if(Run is not null){selectedPresetId=Run.PresetId;await SelectPreset();}
+  }
+  catch(Exception ex){error=ex.Message;}
+  finally{loading=false;}
+ }
+ private async Task SelectPreset()
+ {
+  error=null;Comparison=null;goal="";audience="";duration=null;presenterId=null;
+  if(selectedPresetId is not Guid id){Selected=null;return;}
+  try{Selected=await Presets.GetAsync(CompanyId,id);}catch(Exception ex){error=ex.Message;}
+ }
+ private Task Apply()=>ApplyCore(false);
+ private Task UpdateVersion()=>ApplyCore(true);
+ private async Task ApplyCore(bool replace)
+ {
+  if(Selected?.CurrentPublished is not{}v||busy)return;
+  if(duration is <5 or >480){error="Choose a duration between 5 and 480 minutes.";return;}
+  busy=true;error=null;
+  try
+  {
+   var request=new ApplySalesPresentationPresetRequest(Selected.Id,v.Id,presenterId,NullIfBlank(goal),NullIfBlank(audience),duration,null,null,null,replace,replace?Run?.ConcurrencyVersion:null);
+   Run=SessionId==Guid.Empty?await Runs.ApplyToInvitationAsync(CompanyId,InvitationId,request):await Runs.ApplyAsync(CompanyId,SessionId,request);
+   Comparison=null;
+   await OnRunChanged.InvokeAsync(Run);
+  }
+  catch(Exception ex){error=ex.Message;}
+  finally{busy=false;}
+ }
+ private static string? NullIfBlank(string value)=>string.IsNullOrWhiteSpace(value)?null:value.Trim();
+
+ private async Task Compare(){if(Run is null||Selected?.CurrentPublished is not{}v)return;try{Comparison=await Runs.CompareAsync(CompanyId,SessionId,Run.Id,v.Id);if(Comparison is null)error="Choose a newer version of the current preset to compare.";}catch(Exception ex){error=ex.Message;}}
+ private async Task RetryPreparation(){if(Run is null)return;busy=true;try{Run=await Runs.RetryAsync(CompanyId,SessionId,Run.Id,Run.ConcurrencyVersion);}catch(Exception e){error=e.Message;}finally{busy=false;}}
+ private async Task SaveAsPreset(Guid deck){busy=true;saveMessage=null;try{var saved=await Runs.SaveAsPresetAsync(CompanyId,SessionId,deck,saveName,null);saveMessage=$"{saved.Name} was saved as a reusable draft.";saveName="";Items=await Presets.ListAsync(CompanyId);}catch(Exception e){error=e.Message;}finally{busy=false;}}
+ private static string Inherited(string? value,string? baseline)=>string.Equals(value?.Trim(),baseline?.Trim(),StringComparison.Ordinal)?"Inherited from preset":"Override for this meeting";private static string Present(string value)=>value.Replace('_',' ');private static string Status(string value)=>value switch{"ready"=>"Ready to present","needs_review"=>"Needs review","preparing"=>"Preparing customer context","failed"=>"Preparation failed",_=>"Preparation pending"};
+}

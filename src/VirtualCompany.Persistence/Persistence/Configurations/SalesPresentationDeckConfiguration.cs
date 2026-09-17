@@ -52,12 +52,18 @@ internal sealed class SalesPresentationDeckConfiguration : IEntityTypeConfigurat
         builder.Property(x => x.ActivatedUtc).HasColumnName("activated_at");
         builder.Property(x => x.ConcurrencyVersion).HasColumnName("concurrency_version")
             .HasDefaultValue(1L).IsConcurrencyToken().IsRequired();
+        builder.Property(x => x.PresentationRunId).HasColumnName("presentation_run_id");
+        builder.Property(x => x.PresetAssetId).HasColumnName("preset_asset_id");
 
-        builder.HasIndex(x => new { x.CompanyId, x.SessionId, x.ContentHash, x.ProcessingVersion }).IsUnique();
+        // Legacy uploads deduplicate by source. Preset-backed decks are immutable
+        // run snapshots and are unique by PresentationRunId instead.
+        builder.HasIndex(x => new { x.CompanyId, x.SessionId, x.ContentHash, x.ProcessingVersion })
+            .IsUnique().HasFilter("[presentation_run_id] IS NULL");
         builder.HasIndex(x => new { x.CompanyId, x.SessionId, x.Version }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.ProcessingStartedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SessionId, x.IsActive })
             .IsUnique().HasFilter("[is_active] = CAST(1 AS bit)");
+        builder.HasIndex(x => new { x.CompanyId, x.PresentationRunId }).IsUnique().HasFilter("[presentation_run_id] IS NOT NULL");
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Session).WithMany()
@@ -68,5 +74,7 @@ internal sealed class SalesPresentationDeckConfiguration : IEntityTypeConfigurat
             .HasForeignKey(nameof(SalesPresentationDeck.CompanyId), nameof(SalesPresentationDeck.AgentId))
             .HasPrincipalKey(nameof(Agent.CompanyId), nameof(Agent.Id))
             .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x=>x.PresentationRun).WithMany().HasForeignKey(nameof(SalesPresentationDeck.CompanyId),nameof(SalesPresentationDeck.PresentationRunId)).HasPrincipalKey(nameof(SalesPresentationRun.CompanyId),nameof(SalesPresentationRun.Id)).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x=>x.PresetAsset).WithMany().HasForeignKey(nameof(SalesPresentationDeck.CompanyId),nameof(SalesPresentationDeck.PresetAssetId)).HasPrincipalKey(nameof(SalesPresentationPresetAsset.CompanyId),nameof(SalesPresentationPresetAsset.Id)).OnDelete(DeleteBehavior.Restrict);
     }
 }

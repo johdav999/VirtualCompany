@@ -115,6 +115,7 @@ app.MapRazorComponents<App>()
         "'self' https://teams.microsoft.com https://*.teams.microsoft.com https://*.cloud.microsoft");
 
 app.MapSalesNarrationPreview();
+app.MapSalesPresentationPresetCover();
 app.Run();
 
 static Uri ResolveApiBaseAddress(string? configuredValue, bool useOfflineMode, HttpContext? httpContext)

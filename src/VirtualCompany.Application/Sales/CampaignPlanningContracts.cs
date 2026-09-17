@@ -12,6 +12,10 @@ public interface ICampaignPlanningService
     Task<CampaignAudienceSnapshotResponse?> CaptureAudienceAsync(Guid companyId, Guid userId, Guid campaignId, Guid segmentId, CancellationToken cancellationToken);
     Task<IReadOnlyList<CampaignActivityResponse>> ListActivitiesAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken);
     Task<CampaignActivityResponse?> AddActivityAsync(Guid companyId, Guid userId, Guid campaignId, CreateCampaignActivityRequest request, CancellationToken cancellationToken);
+    Task<CampaignPresentationActivityResponse?> GetPresentationActivityAsync(Guid companyId, Guid campaignId, Guid activityId, CancellationToken cancellationToken);
+    Task<CampaignPresentationActivityResponse?> SavePresentationActivityAsync(Guid companyId, Guid userId, Guid campaignId, Guid activityId, SaveCampaignPresentationActivityRequest request, CancellationToken cancellationToken);
+    Task<bool> RemovePresentationActivityAsync(Guid companyId, Guid userId, Guid campaignId, Guid activityId, int expectedVersion, CancellationToken cancellationToken);
+    Task<CampaignPresentationActivityResponse?> RetryPresentationActivityAsync(Guid companyId, Guid userId, Guid campaignId, Guid activityId, CancellationToken cancellationToken);
     Task<CampaignPerformanceResponse?> GetPerformanceAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken);
     Task<CampaignPerformanceResponse?> CapturePerformanceSnapshotAsync(Guid companyId, Guid userId, Guid campaignId, CancellationToken cancellationToken);
 }
@@ -171,6 +175,46 @@ public sealed record CampaignActivityResponse(
     int AttemptCount,
     string? ResultSummary,
     string? FailureReason);
+
+public static class CampaignPresentationBlockerCodes
+{
+    public const string PresetUnavailable = "campaign.presentation.preset_unavailable";
+    public const string AssetUnavailable = "campaign.presentation.asset_unavailable";
+    public const string AudienceUnavailable = "campaign.presentation.audience_unavailable";
+    public const string AccountMissing = "campaign.presentation.account_missing";
+    public const string PresenterUnavailable = "campaign.presentation.presenter_unavailable";
+    public const string EventMissing = "campaign.presentation.event_missing";
+    public const string StrategyInvalid = "campaign.presentation.strategy_invalid";
+    public const string CardinalityExceeded = "campaign.presentation.cardinality_exceeded";
+}
+
+public sealed record SaveCampaignPresentationActivityRequest(
+    Guid PresetVersionId,
+    string ExecutionScope,
+    string PresenterStrategy,
+    Guid? ExplicitPresenterAgentId,
+    string WorkStrategy,
+    bool AllowOverrides,
+    Guid? EventSessionId,
+    int PreparationLeadTimeHours,
+    int ExpectedVersion);
+
+public sealed record CampaignPresentationReadinessBlocker(
+    string Code, string Explanation, string Evidence, string CorrectiveAction, bool RequiresReview, bool RequiresApproval);
+
+public sealed record CampaignPresentationRunProjection(
+    int EligibleContacts, int DistinctAccounts, int ProjectedRuns, string SubjectType, bool IsBounded);
+
+public sealed record CampaignPresentationRunResponse(
+    Guid Id, Guid PresentationRunId, string SubjectType, Guid SubjectId, string Status,
+    string? FailureCode, string? FailureSummary, string PreparationStatus, Guid PresenterAgentId);
+
+public sealed record CampaignPresentationActivityResponse(
+    Guid Id, Guid CampaignId, Guid ActivityId, Guid PresetId, string PresetName, Guid PresetVersionId, int PresetVersionNumber,
+    string ExecutionScope, string PresenterStrategy, Guid? ExplicitPresenterAgentId, string WorkStrategy, bool AllowOverrides,
+    Guid? EventSessionId, int PreparationLeadTimeHours, int Version, bool IsReady,
+    CampaignPresentationRunProjection Projection, IReadOnlyList<CampaignPresentationReadinessBlocker> Blockers,
+    IReadOnlyList<CampaignPresentationRunResponse> Runs);
 
 public sealed record CampaignPerformanceResponse(
     Guid CampaignId,

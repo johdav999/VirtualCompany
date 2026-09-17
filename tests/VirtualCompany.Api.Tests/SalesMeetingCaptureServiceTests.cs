@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Documents;
@@ -82,6 +83,34 @@ public sealed class SalesMeetingCaptureServiceTests
     }
 
     [Fact]
+    public async Task Grounded_answer_receives_agent_brief_and_confirmed_artifacts_from_the_whole_meeting()
+    {
+        await using var fixture = await Fixture.CreateAsync(withDeck: true);
+        var deck = await fixture.Db.SalesPresentationDecks.SingleAsync();
+        fixture.Db.SalesMeetingArtifacts.Add(new SalesMeetingArtifact(Guid.NewGuid(), fixture.CompanyId,
+            fixture.SessionId, deck.Id, null, 1, SalesMeetingArtifactType.BriefPositioning,
+            "product_positioning", 0, "The governed product description applies across the meeting.",
+            SalesMeetingArtifactClassification.ConfirmedFact, "knowledge:product-catalog", null, fixture.Now));
+        await fixture.Db.SaveChangesAsync();
+        fixture.Reasoning.ResultFactory = request =>
+        {
+            var source = request.Sources.Single(x => x.Type == "approved_agent_brief" && x.Title == "Products and services");
+            Assert.Contains(request.Sources, x => x.Type == "approved_agent_role_brief");
+            Assert.Contains(request.Sources, x => x.Type == "approved_meeting_artifact" &&
+                x.Title.Contains("product_positioning", StringComparison.Ordinal));
+            return new(Guid.NewGuid(), AgentAiRunStatuses.Completed, "1.0.0", "The product brief is available.",
+                [new("The product brief is available.", "confirmed_fact", .9m, [source.Id])], .9m, [], [], [], [source.Id]);
+        };
+
+        var answer = await fixture.Questions.AskAsync(fixture.CompanyId, fixture.UserId, fixture.SessionId,
+            new(Guid.NewGuid(), 1, fixture.AgentId, "What does the company sell?"), null, CancellationToken.None);
+
+        Assert.Equal("completed", answer!.Status);
+        Assert.Single(answer.Evidence);
+        Assert.Equal("approved_agent_brief", answer.Evidence[0].SourceType);
+    }
+
+    [Fact]
     public async Task Unsupported_or_failed_answer_is_truthful_and_recoverable()
     {
         await using var fixture = await Fixture.CreateAsync(withDeck: true);
@@ -155,7 +184,20 @@ public sealed class SalesMeetingCaptureServiceTests
             db.Companies.Add(new Company(companyId, "Capture Company")); db.Users.Add(new User(userId, "owner@example.com", "Owner", "test", userId.ToString("N")));
             db.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
             db.CustomerCompanies.Add(new CustomerCompany(customerId, companyId, "Customer"));
-            db.Agents.Add(new Agent(agentId, companyId, "alex", "Alex", "Sales Manager", "Sales", null, AgentSeniority.Senior, AgentStatus.Active));
+            var communicationProfile = new Dictionary<string, JsonNode?>
+            {
+                ["briefing"] = new JsonObject
+                {
+                    [AgentBriefingCategories.CompanyInformation] = "Capture Company provides governed business operations.",
+                    [AgentBriefingCategories.ProductsAndServices] = "The product coordinates finance, sales, and support workflows.",
+                    [AgentBriefingCategories.Policies] = "Use only approved evidence for customer-visible claims.",
+                    [AgentBriefingCategories.CustomerSupport] = "Escalate claims that cannot be verified.",
+                    [AgentBriefingCategories.OtherInstructions] = "Keep answers concise."
+                }
+            };
+            db.Agents.Add(new Agent(agentId, companyId, "alex", "Alex", "Sales Manager", "Sales", null,
+                AgentSeniority.Senior, AgentStatus.Active, roleBrief: "Explain the approved company and product context.",
+                communicationProfile: communicationProfile));
             var session = new SalesMeetingSession(sessionId, companyId, Guid.NewGuid(), Guid.NewGuid(), null, null, customerId,
                 "Confirm fit", "Operations leaders", 30, null, "provider", SalesMeetingConsentStatus.Pending,
                 SalesMeetingRetentionPolicy.Standard, 365, now, userId, now);

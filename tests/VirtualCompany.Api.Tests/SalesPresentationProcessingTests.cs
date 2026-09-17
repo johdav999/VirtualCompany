@@ -20,6 +20,7 @@ public sealed class SalesPresentationProcessingTests
         var request = new SalesPresentationRenderRequest(
             Guid.NewGuid(), Guid.NewGuid(), 1,
             new ExtractedPresentationSlide(2, "Revenue < plan", "Use & validate customer data", null, new string('a', 64)),
+            2, ReadOnlyMemory<byte>.Empty,
             1600, 900);
 
         var first = await renderer.RenderAsync(request, CancellationToken.None);
@@ -33,6 +34,22 @@ public sealed class SalesPresentationProcessingTests
         Assert.Contains("width=\"1600\" height=\"900\"", svg, StringComparison.Ordinal);
         Assert.Contains("Revenue &lt; plan", svg, StringComparison.Ordinal);
         Assert.Contains("Use &amp; validate", svg, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Faithful_renderer_rejects_missing_original_content_instead_of_showing_reconstructed_text()
+    {
+        var renderer = new PowerPointSalesPresentationSlideRenderer();
+        var request = new SalesPresentationRenderRequest(
+            Guid.NewGuid(), Guid.NewGuid(), 1,
+            new ExtractedPresentationSlide(1, "Title", "Flattened text", null, new string('a', 64)),
+            1, ReadOnlyMemory<byte>.Empty, 1600, 900);
+
+        var exception = await Assert.ThrowsAsync<SalesPresentationProcessingException>(() =>
+            renderer.RenderAsync(request, CancellationToken.None));
+
+        Assert.Equal("powerpoint_renderer_unavailable", exception.Code);
+        Assert.True(exception.CanRetry);
     }
 
     [Fact]

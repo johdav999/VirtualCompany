@@ -186,6 +186,9 @@ public sealed class SalesMeetingPresentationPreparationQuery(
             }
         }
 
+        if (session is null || await SalesMeetingPresetEligibility.CanChangeAsync(db, session, cancellationToken))
+            actions.Add("change_preset");
+
         return new SalesMeetingPresentationPreparationResponse(
             companyId, invitation.Id, invitation.LeadId,
             leadContext?.Title ?? invitation.Title, customerCompanyName, session?.Id,

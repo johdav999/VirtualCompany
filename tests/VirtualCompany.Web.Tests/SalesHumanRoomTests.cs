@@ -73,6 +73,30 @@ public sealed class SalesHumanRoomTests
         Assert.DoesNotContain(module.Invocations, x => x.Identifier == "connect"); Export("guest-lobby", cut.Markup);
     }
     [Fact]
+    public void Scheduled_room_disables_join_until_the_server_connection_window_opens()
+    {
+        var mediaTokenRequested = false;
+        var opensUtc = DateTime.UtcNow.AddHours(2);
+        using var context = Context(request =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/media-token")) mediaTokenRequested = true;
+            return Ok(new SalesBrowserRoomView(Room, null, "lobby", "not_started", 2, DateTime.UtcNow.AddHours(4),
+                [new(Guid.NewGuid(), "Organizer", "admitted", 1, false, "human-host-1", true)], [])
+                { ConnectionAllowed = false, OpensUtc = opensUtc });
+        });
+        var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
+
+        var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
+
+        cut.WaitForAssertion(() => Assert.Contains("15 minutes before the scheduled start", cut.Markup));
+        Assert.True(cut.Find(".room-join").HasAttribute("disabled"));
+        Assert.False(mediaTokenRequested);
+        var heartbeat = module.Invocations.Last(x => x.Identifier == "heartbeat");
+        var audience = Assert.IsType<BrowserRoomAudience[]>(Assert.Single(heartbeat.Arguments));
+        Assert.Equal("human-host-1", Assert.Single(audience).MediaIdentity);
+        Assert.DoesNotContain(module.Invocations, x => x.Identifier == "connect");
+    }
+    [Fact]
     public void Host_sees_private_lobby_and_versioned_admission_control()
     {
         var pending = Guid.NewGuid(); bool admitted = false;
@@ -142,6 +166,8 @@ public sealed class SalesHumanRoomTests
         Assert.Contains("Needs host confirmation", cut.Markup);
         Assert.Contains("Approve answer", cut.Markup);
         Assert.Contains("1 of 2 clients acknowledged", cut.Markup);
+        Assert.Contains("Present this slide", cut.Markup);
+        Assert.Contains("Speaks the rest of this slide", cut.Markup);
         Export("host-agent", cut.Markup);
     }
     [Fact]

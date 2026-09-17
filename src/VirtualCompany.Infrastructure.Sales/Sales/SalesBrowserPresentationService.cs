@@ -104,6 +104,18 @@ public sealed class SalesBrowserPresentationService(
         ValidateActor(access, request.ActorType, request.ActorId, request.ActorGeneration);
         var result = await runtime.ExecuteAsync(companyId, userId, access.SessionId, toolName, request,
             correlationId, cancellationToken) ?? throw new SalesRoomAccessException("presentation_unavailable", 404);
+        if (toolName is SalesPresentationToolNames.Next or SalesPresentationToolNames.Previous or SalesPresentationToolNames.Goto)
+        {
+            var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+                x.CompanyId == companyId && x.RoomId == roomId, cancellationToken);
+            if (floor is not null)
+            {
+                floor.PresentationMoved(access.ParticipantId, result.Snapshot.Stage.Version,
+                    result.Snapshot.Stage.SlideNumber, result.Snapshot.Private.TalkingPointIndex,
+                    result.Snapshot.Private.ResumeMarker, Now);
+                await db.SaveChangesAsync(cancellationToken);
+            }
+        }
         await CaptureAsync(access, result.Snapshot.Stage, cancellationToken);
         return result;
     }
@@ -121,7 +133,7 @@ public sealed class SalesBrowserPresentationService(
             x.CompanyId == companyId && x.RoomId == roomId, cancellationToken);
         if (floor is not null)
         {
-            floor.SetMode(result.Mode, Now);
+            floor.SetMode(result.Mode, result.Version, Now);
             await db.SaveChangesAsync(cancellationToken);
         }
         return result;

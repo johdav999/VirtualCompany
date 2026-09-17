@@ -3,6 +3,9 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
+using VirtualCompany.Application.Sales;
+using VirtualCompany.Domain.Enums;
+using VirtualCompany.Infrastructure.Sales;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Persistence;
 
@@ -37,6 +40,89 @@ public sealed class SalesNarrationSqlServerTests
     }
 
     [ApiSqlServerFact]
+    public async Task Retrying_execution_strategy_supports_the_complete_narration_flow()
+    {
+        await WithDatabase(async migrationDb =>
+        {
+            await migrationDb.Database.MigrateAsync();
+            var company = Guid.NewGuid();
+            var actor = Guid.NewGuid();
+            var customer = Guid.NewGuid();
+            var contact = Guid.NewGuid();
+            var lead = Guid.NewGuid();
+            var account = Guid.NewGuid();
+            var clock = new RoomClock();
+            var context = new SalesNarrationTests.NarrationContext(company, actor);
+            await using var db = new VirtualCompanyDbContext(
+                Options(migrationDb.Database.GetConnectionString()!), context);
+
+            db.Companies.Add(new Company(company, "Narration retry test"));
+            db.Users.Add(new User(actor, "host@example.test", "Host", "test", actor.ToString("N")));
+            db.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), company, actor,
+                CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            db.CustomerCompanies.Add(new CustomerCompany(customer, company, "Customer"));
+            db.Contacts.Add(new Contact(contact, company, "Buyer", "buyer@example.test", customer));
+            db.Leads.Add(new Lead(lead, company, "Lead", SalesPipelineStage.QualifiedStageId,
+                SalesStatuses.Qualified, contact, customer));
+            var external = new ExternalAccountConnection(account, company, actor,
+                ExternalAccountProvider.Google, "host@example.test", "host@example.test", "provider", "external");
+            external.SetStatus(ExternalConnectionStatus.Active);
+            db.ExternalAccountConnections.Add(external);
+            var calendar = new CalendarConnection(account, company, actor, account,
+                ExternalAccountProvider.Google, "host@example.test", "host@example.test");
+            calendar.SetStatus(ExternalConnectionStatus.Active);
+            db.CalendarConnections.Add(calendar);
+            var invitation = new SalesMeetingInvitation(Guid.NewGuid(), company, lead, null, contact, account,
+                ExternalAccountProvider.Google, "host@example.test", "buyer@example.test", "Buyer", "Meeting",
+                "Goal", clock.Now, clock.Now.AddMinutes(30), "Europe/Stockholm", null, false, actor);
+            db.SalesMeetingInvitations.Add(invitation);
+            var session = new SalesMeetingSession(Guid.NewGuid(), company, invitation.Id, lead, null, contact,
+                customer, "Goal", "Audience", 30, null, "test-calendar-event", SalesMeetingConsentStatus.Pending,
+                SalesMeetingRetentionPolicy.Standard, 365, clock.Now, actor, clock.Now);
+            db.SalesMeetingSessions.Add(session);
+            var agent = new Agent(Guid.NewGuid(), company, "alex-sales", "Alex", "Sales representative", "Sales",
+                null, AgentSeniority.Senior, AgentStatus.Active);
+            db.Agents.Add(agent);
+            var deck = new SalesPresentationDeck(Guid.NewGuid(), company, session.Id, agent.Id, 1,
+                "Synthetic deck", "deck.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation", 100,
+                new string('a', 64), "safe/deck", null, actor, clock.Now);
+            deck.BeginProcessing(clock.Now, TimeSpan.FromMinutes(10));
+            deck.MarkProcessed(2, "test", "1", "static", 1, clock.Now);
+            deck.Activate(clock.Now);
+            db.SalesPresentationDecks.Add(deck);
+            for (var i = 1; i <= 2; i++)
+                db.SalesPresentationSlides.Add(new SalesPresentationSlide(Guid.NewGuid(), company, deck.Id, 1, i,
+                    "Slide", i == 1 ? "Welcome to the presentation." : "Customer goals.", "PRIVATE NOTES",
+                    $"safe/{i}", null, 1600, 900, 100, 100, new string((char)('a' + i), 64),
+                    "Objective", 60, "Transition", clock.Now));
+            await db.SaveChangesAsync();
+
+            var speech = new SalesNarrationTests.FakeSpeech();
+            var storage = new SalesNarrationTests.MemoryStorage();
+            var settings = new SalesNarrationOptions
+            {
+                Enabled = true,
+                InputUsdPerMillion = 10,
+                OutputUsdPerMillion = 20,
+                RateVersion = "synthetic-test-only"
+            };
+            var service = new SalesNarrationService(db, speech, storage, clock,
+                Microsoft.Extensions.Options.Options.Create(settings));
+            var worker = new SalesNarrationWorker(db, context, service, speech, storage,
+                Microsoft.Extensions.Options.Options.Create(settings), clock);
+
+            var revision = await service.PrepareAsync(company, actor, session.Id, new("en"), default);
+            await service.DecideAsync(company, actor, revision.Id, "approve", new(revision.Version), default);
+            foreach (var assetId in await db.SalesNarrationAssets.Select(x => x.Id).ToListAsync())
+                await worker.ProcessAsync(company, assetId, default);
+
+            var completed = await service.GetAsync(company, actor, session.Id, default);
+            Assert.Equal("ready", completed.Revisions.Single().Status);
+            Assert.Equal(2, speech.Calls);
+        });
+    }
+    [ApiSqlServerFact]
     public async Task Additive_upgrade_is_repeatable_and_preserves_existing_Teams_records()
     {
         await WithDatabase(async db =>
@@ -65,7 +151,9 @@ public sealed class SalesNarrationSqlServerTests
     }
 
     private static DbContextOptions<VirtualCompanyDbContext> Options(string connection) => new DbContextOptionsBuilder<VirtualCompanyDbContext>()
-        .UseSqlServer(connection, sql => sql.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker).Assembly.GetName().Name)).Options;
+        .UseSqlServer(connection, sql => sql
+            .MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker).Assembly.GetName().Name)
+            .EnableRetryOnFailure()).Options;
     private static async Task WithDatabase(Func<VirtualCompanyDbContext, Task> action)
     {
         var connection = new SqlConnectionStringBuilder(Environment.GetEnvironmentVariable(ApiSqlServerFactAttribute.ConnectionVariable)!)

@@ -66,6 +66,9 @@ public sealed class SalesPresentationDeckProcessor(
         try
         {
             await using var source = await storage.OpenReadAsync(deck.StorageKey, cancellationToken);
+            await using var sourceBuffer = new MemoryStream();
+            await source.CopyToAsync(sourceBuffer, cancellationToken);
+            var sourceContent = sourceBuffer.ToArray();
             var scan = await virusScanner.ScanAsync(new CompanyDocumentVirusScanRequest(
                 deck.CompanyId, deck.Id, deck.StorageKey, deck.StorageUrl,
                 deck.OriginalFileName, deck.ContentType, deck.FileSizeBytes,
@@ -83,7 +86,8 @@ public sealed class SalesPresentationDeckProcessor(
                     scan.FailureCode ?? "virus_scan_unavailable",
                     "The presentation could not be cleared by malware scanning. Try again later.", true);
 
-            var extracted = await extractor.ExtractAsync(source, options.Value.MaximumSlides, cancellationToken);
+            await using var extractionContent = new MemoryStream(sourceContent, writable: false);
+            var extracted = await extractor.ExtractAsync(extractionContent, options.Value.MaximumSlides, cancellationToken);
             var session = await db.SalesMeetingSessions.IgnoreQueryFilters().AsNoTracking()
                 .SingleAsync(x => x.CompanyId == companyId && x.Id == deck.SessionId, cancellationToken);
             var membership = await db.CompanyMemberships.IgnoreQueryFilters().AsNoTracking()
@@ -114,7 +118,7 @@ public sealed class SalesPresentationDeckProcessor(
             foreach (var item in extracted.Slides)
             {
                 lastRendering = await renderer.RenderAsync(new SalesPresentationRenderRequest(
-                    deck.CompanyId, deck.Id, deck.ProcessingVersion, item,
+                    deck.CompanyId, deck.Id, deck.ProcessingVersion, item, extracted.Slides.Count, sourceContent,
                     options.Value.RenderWidthPixels, options.Value.RenderHeightPixels), cancellationToken);
                 var imageKey = $"companies/{deck.CompanyId:N}/sales/meeting-sessions/{deck.SessionId:N}/decks/{deck.Id:N}/v{deck.ProcessingVersion}/slides/{item.SlideNumber:D4}{lastRendering.FileExtension}";
                 await using var imageContent = new MemoryStream(lastRendering.Content, writable: false);

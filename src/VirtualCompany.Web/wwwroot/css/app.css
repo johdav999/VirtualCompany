@@ -257,6 +257,7 @@ code {
 .sales-main {
     display: grid;
     gap: 20px;
+    grid-template-columns: minmax(0, 1fr);
     min-width: 0;
 }
 
@@ -1289,6 +1290,19 @@ code {
     align-items: start;
     justify-items: start;
     max-width: 680px;
+}
+
+/* The app navigation reduces the sales workspace before the viewport reaches
+   the general mobile breakpoint. Stack this detail page once its main column
+   can no longer contain the lead and meeting controls beside the insight rail. */
+@media (max-width: 1540px) {
+    .sales-lead-workspace {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .sales-lead-assessment {
+        position: static;
+    }
 }
 
 @media (max-width: 1100px) {
@@ -11819,6 +11833,7 @@ body.vc-nav-open {
 }
 
 .sales-meeting-status {
+    container-type: inline-size;
     padding: 0 20px;
 }
 
@@ -11833,6 +11848,23 @@ body.vc-nav-open {
     gap: 16px;
     grid-template-columns: 30px minmax(170px, 0.8fr) minmax(420px, 2fr) auto;
     padding: 16px 0;
+}
+
+@container (max-width: 980px) {
+    .sales-meeting-status__row {
+        align-items: start;
+        grid-template-columns: 30px minmax(0, 1fr) auto;
+    }
+
+    .sales-meeting-status__row dl {
+        grid-column: 2 / -1;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .sales-meeting-status__actions {
+        grid-column: 3;
+        grid-row: 1;
+    }
 }
 
 .sales-meeting-status__row + .sales-meeting-status__row {

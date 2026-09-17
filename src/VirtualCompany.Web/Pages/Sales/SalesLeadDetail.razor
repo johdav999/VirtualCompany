@@ -187,7 +187,7 @@
                             <label class="sales-meeting-grid__title"><span>Title</span><input class="sales-input" maxlength="200" @bind="meetingTitle" /></label>
                             <label class="sales-meeting-grid__location"><span>Location</span><input class="sales-input" maxlength="500" placeholder="Online meeting" @bind="meetingLocation" /></label>
                             <label class="sales-meeting-grid__agenda"><span>Agenda</span><textarea class="sales-input" rows="3" maxlength="4000" @bind="meetingDescription"></textarea></label>
-                            <SalesMeetingTypePicker @bind-Value="meetingType" BrowserReady="browserReadiness.Ready" UnavailableReason="browserReadiness.Reason" CalendarMeetingLabel="OnlineMeetingLabel" />
+                            <SalesMeetingTypePicker @bind-Value="meetingType" BrowserReady="browserReadiness.Ready" UnavailableReason="browserReadiness.Reason" CalendarMeetingLabel="@OnlineMeetingLabel" />
                         </div>
 
                         <div class="sales-availability">
@@ -215,6 +215,10 @@
                         </div>
 
                         <div class="sales-create-deal-panel__footer">
+                            @if (!string.IsNullOrWhiteSpace(meetingErrorMessage))
+                            {
+                                <div class="alert alert-danger" role="alert">@meetingErrorMessage</div>
+                            }
                             <p><span class="bi bi-shield-check" aria-hidden="true"></span>Submitting creates a review item. The invitation is sent only after approval.</p>
                             <div class="sales-actions">
                                 <button type="button" class="sales-button" disabled="@isBusy" @onclick="CancelMeetingForm">Cancel</button>
@@ -707,7 +711,7 @@
         var connection = SelectedCalendar;
         if (connection?.RequiresReconnect == true)
         {
-            actionMessage = "Reconnect this account and grant calendar access before checking availability.";
+            RedirectToCalendarConnections(companyId);
             return;
         }
 
@@ -726,6 +730,10 @@
             busyWindows = result.BusyWindows;
             suggestedSlots = result.SuggestedSlots;
         }
+        catch (SalesApiException ex) when (ex.RequiresCalendarReconnect)
+        {
+            RedirectToCalendarConnections(companyId);
+        }
         catch (Exception ex) when (ex is SalesApiException or TimeZoneNotFoundException or InvalidTimeZoneException)
         {
             actionMessage = ex.Message;
@@ -736,12 +744,15 @@
         }
     }
 
+    private string? meetingErrorMessage;
+
     private async Task SubmitMeetingForApprovalAsync()
     {
+        meetingErrorMessage = null;
         if (ResolvedCompanyId is not Guid companyId || selectedCalendarId is not Guid connectionId || meetingDate is null) return;
         if (SelectedCalendar?.RequiresReconnect == true)
         {
-            actionMessage = "Reconnect this account and grant calendar access before scheduling.";
+            RedirectToCalendarConnections(companyId);
             return;
         }
 
@@ -767,8 +778,13 @@
             busyWindows = [];
             actionMessage = "Meeting invitation submitted for approval.";
         }
+        catch (SalesApiException ex) when (ex.RequiresCalendarReconnect)
+        {
+            RedirectToCalendarConnections(companyId);
+        }
         catch (Exception ex) when (ex is SalesApiException or FormatException or TimeZoneNotFoundException or InvalidTimeZoneException)
         {
+            meetingErrorMessage = ex.Message;
             actionMessage = ex.Message;
         }
         finally
@@ -776,6 +792,9 @@
             isBusy = false;
         }
     }
+
+    private void RedirectToCalendarConnections(Guid companyId) =>
+        Navigation.NavigateTo($"/settings/calendar-connections?companyId={companyId:D}&calendarConnection=reconnect-required");
 
     private void ShowRescheduleForm(SalesMeetingInvitationResponse invitation)
     {

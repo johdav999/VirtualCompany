@@ -41,6 +41,48 @@ public sealed class SalesBrowserMeetingSchedulingTests
         var client = new SalesBrowserMeetingApiClient(new CompanyApiTransport(new HttpClient(new Handler(_ => throw new Exception("Must not send"))) { BaseAddress = new("https://api.example.test") }), true);
         await Assert.ThrowsAsync<ArgumentException>(() => client.ReadinessAsync(Guid.Empty)); await Assert.ThrowsAsync<InvalidOperationException>(() => client.ReadinessAsync(Guid.NewGuid()));
     }
+    [Theory]
+    [InlineData("calendar.reconnect_required", true)]
+    [InlineData("calendar.unavailable", false)]
+    public async Task Calendar_error_code_survives_the_sales_client(string code, bool reconnect)
+    {
+        var client = new SalesApiClient(new HttpClient(new Handler(_ => new(HttpStatusCode.BadRequest)
+        { Content = JsonContent.Create(new { code, detail = "Calendar request failed." }) })) { BaseAddress = new("https://api.example.test") });
+        var exception = await Assert.ThrowsAsync<SalesApiException>(() => client.GetCalendarAvailabilityAsync(Guid.NewGuid(),
+            new SalesMeetingAvailabilityRequest(Guid.NewGuid(), DateTime.UtcNow, DateTime.UtcNow.AddDays(1), "UTC", 30)));
+        Assert.Equal(reconnect, exception.RequiresCalendarReconnect);
+        Assert.Equal(code, exception.Code);
+    }
+
+    [Fact]
+    public async Task Scheduling_validation_displays_the_actionable_field_error()
+    {
+        var client = new SalesApiClient(new HttpClient(new Handler(_ => new(HttpStatusCode.BadRequest)
+        { Content = JsonContent.Create(new { code = "sales.request.invalid", detail = "The sales request is invalid.",
+            errors = new { StartsUtc = new[] { "Choose a meeting time at least five minutes from now." } } }) }))
+            { BaseAddress = new("https://api.example.test") }, problemResolver: new GenericResolver());
+        var exception = await Assert.ThrowsAsync<SalesApiException>(() => client.GetCalendarAvailabilityAsync(Guid.NewGuid(),
+            new SalesMeetingAvailabilityRequest(Guid.NewGuid(), DateTime.UtcNow, DateTime.UtcNow.AddDays(1), "UTC", 30)));
+        Assert.Equal("Choose a meeting time at least five minutes from now.", exception.Message);
+        Assert.False(exception.RequiresCalendarReconnect);
+    }
+
+    [Fact]
+    public void Reconnect_navigation_preserves_company_and_destination_notice()
+    {
+        using var context = new TestContext();
+        var navigation = (Microsoft.AspNetCore.Components.NavigationManager)context.Services.GetService(typeof(Microsoft.AspNetCore.Components.NavigationManager))!;
+        var page = new VirtualCompany.Web.Pages.Sales.SalesLeadDetail();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        typeof(VirtualCompany.Web.Pages.Sales.SalesPageBase).GetProperty("Navigation", flags)!.SetValue(page, navigation);
+        var company = Guid.NewGuid();
+        page.GetType().GetMethod("RedirectToCalendarConnections", flags)!.Invoke(page, [company]);
+        Assert.EndsWith($"/settings/calendar-connections?companyId={company:D}&calendarConnection=reconnect-required", navigation.Uri);
+    }
+
+    private sealed class GenericResolver : IApiProblemMessageResolver
+    { public string Resolve(ApiProblemResponse? problem, string fallbackMessage) => "The sales request is invalid."; }
+
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     { protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) => Task.FromResult(respond(request)); }
 }

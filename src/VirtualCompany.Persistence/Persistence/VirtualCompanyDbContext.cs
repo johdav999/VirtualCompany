@@ -486,6 +486,15 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesNarrationAttempt> SalesNarrationAttempts => Set<SalesNarrationAttempt>();
     public DbSet<SalesPresentationDeck> SalesPresentationDecks => Set<SalesPresentationDeck>();
     public DbSet<SalesPresentationSlide> SalesPresentationSlides => Set<SalesPresentationSlide>();
+    public DbSet<SalesPresentationPreset> SalesPresentationPresets => Set<SalesPresentationPreset>();
+    public DbSet<SalesPresentationPresetVersion> SalesPresentationPresetVersions => Set<SalesPresentationPresetVersion>();
+    public DbSet<SalesPresentationPresetAsset> SalesPresentationPresetAssets => Set<SalesPresentationPresetAsset>();
+    public DbSet<SalesPresentationPresetSlide> SalesPresentationPresetSlides => Set<SalesPresentationPresetSlide>();
+    public DbSet<SalesPresentationRun> SalesPresentationRuns => Set<SalesPresentationRun>();
+    public DbSet<SalesPresentationRunArtifact> SalesPresentationRunArtifacts => Set<SalesPresentationRunArtifact>();
+    public DbSet<SalesPresentationLegacyCompatibilityRecord> SalesPresentationLegacyCompatibilityRecords => Set<SalesPresentationLegacyCompatibilityRecord>();
+    public DbSet<SalesCampaignPresentationActivity> SalesCampaignPresentationActivities => Set<SalesCampaignPresentationActivity>();
+    public DbSet<SalesCampaignPresentationRun> SalesCampaignPresentationRuns => Set<SalesCampaignPresentationRun>();
     public DbSet<SalesMeetingArtifact> SalesMeetingArtifacts => Set<SalesMeetingArtifact>();
     public DbSet<SalesMeetingTranscriptSegment> SalesMeetingTranscriptSegments => Set<SalesMeetingTranscriptSegment>();
     public DbSet<SalesMeetingQuestion> SalesMeetingQuestions => Set<SalesMeetingQuestion>();
@@ -1034,6 +1043,14 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is SalesMeetingSession ||
                 entry.Entity is SalesPresentationDeck ||
                 entry.Entity is SalesPresentationSlide ||
+                entry.Entity is SalesPresentationPreset ||
+                entry.Entity is SalesPresentationPresetVersion ||
+                entry.Entity is SalesPresentationPresetAsset ||
+                entry.Entity is SalesPresentationPresetSlide ||
+                entry.Entity is SalesPresentationRun ||
+                entry.Entity is SalesPresentationRunArtifact ||
+                entry.Entity is SalesCampaignPresentationActivity ||
+                entry.Entity is SalesCampaignPresentationRun ||
                 entry.Entity is SalesMeetingArtifact ||
                 entry.Entity is SalesMeetingTranscriptSegment ||
                 entry.Entity is SalesMeetingQuestion ||
@@ -1222,6 +1239,24 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(deck => CurrentCompanyId != null && deck.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesPresentationSlide>()
             .HasQueryFilter(slide => CurrentCompanyId != null && slide.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationPreset>()
+            .HasQueryFilter(preset => CurrentCompanyId != null && preset.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationPresetVersion>()
+            .HasQueryFilter(version => CurrentCompanyId != null && version.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationPresetAsset>()
+            .HasQueryFilter(asset => CurrentCompanyId != null && asset.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationPresetSlide>()
+            .HasQueryFilter(slide => CurrentCompanyId != null && slide.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationRun>()
+            .HasQueryFilter(run => CurrentCompanyId != null && run.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationRunArtifact>()
+            .HasQueryFilter(artifact => CurrentCompanyId != null && artifact.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesPresentationLegacyCompatibilityRecord>()
+            .HasQueryFilter(record => CurrentCompanyId != null && record.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignPresentationActivity>()
+            .HasQueryFilter(configuration => CurrentCompanyId != null && configuration.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignPresentationRun>()
+            .HasQueryFilter(run => CurrentCompanyId != null && run.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesMeetingArtifact>()
             .HasQueryFilter(artifact => CurrentCompanyId != null && artifact.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesMeetingTranscriptSegment>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);

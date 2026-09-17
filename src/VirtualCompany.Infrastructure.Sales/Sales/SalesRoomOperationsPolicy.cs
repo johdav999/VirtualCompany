@@ -20,10 +20,12 @@ internal static class SalesRoomOperationsPolicy
             string.IsNullOrWhiteSpace(options.ProviderRateCardReference) ||
             options.ProviderRateCardReference.Length > 500)
             return "cost_policy_missing";
+        if (options.ProviderRateCheckedUtc.Kind == DateTimeKind.Unspecified)
+            return "provider_rates_stale";
+        var checkedUtc = options.ProviderRateCheckedUtc.ToUniversalTime();
         if (options.ProviderRateMaximumAgeDays is < 1 or > 90 ||
-            options.ProviderRateCheckedUtc.Kind != DateTimeKind.Utc ||
-            options.ProviderRateCheckedUtc > nowUtc.AddMinutes(5) ||
-            options.ProviderRateCheckedUtc < nowUtc.AddDays(-options.ProviderRateMaximumAgeDays))
+            checkedUtc > nowUtc.AddMinutes(5) ||
+            checkedUtc < nowUtc.AddDays(-options.ProviderRateMaximumAgeDays))
             return "provider_rates_stale";
         return null;
     }

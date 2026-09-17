@@ -1,0 +1,75 @@
+@using VirtualCompany.Web.Services
+@using VirtualCompany.Web.Pages.Sales
+
+<section class="preset-editor @(IsCreation ? "preset-editor--create" : "preset-editor--edit")" aria-label="Presentation preset defaults">
+  @if (IsCreation)
+  {
+    <div class="preset-editor-guidance" role="note">
+      <span class="preset-editor-guidance__mark" aria-hidden="true">i</span>
+      <div><strong>Reusable by design</strong><p>Customer and meeting-specific facts are added only when this preset is used.</p></div>
+    </div>
+  }
+
+  <section class="preset-editor-section" aria-labelledby="identity-title">
+    <header><span>01</span><div><h3 id="identity-title">Identity &amp; ownership</h3><p>Name the preset clearly so the Sales team can find and reuse it.</p></div></header>
+    <div class="preset-editor-grid">
+      <label><span>Name</span><input id="preset-name" @bind="Model.Name" maxlength="200" placeholder="e.g. Executive product overview" autocomplete="off" aria-describedby="preset-name-error" /><small id="preset-name-error" class="preset-field-error" aria-live="polite">@Error("name")</small></label>
+      <label><span>Owner</span><input value="@Model.OwnerDisplayName" readonly aria-readonly="true" title="Preset ownership follows the signed-in company member." /><small class="preset-field-help">Follows the signed-in company member</small></label>
+      <label class="preset-field-wide"><span>Description <small>Optional</small></span><textarea @bind="Model.Description" maxlength="1000" placeholder="Describe when your team should use this presentation"></textarea><small class="preset-field-error" aria-live="polite">@Error("description")</small></label>
+    </div>
+  </section>
+
+  <section class="preset-editor-section" aria-labelledby="defaults-title">
+    <header><span>02</span><div><h3 id="defaults-title">Presentation defaults</h3><p>These settings travel with the preset when it is selected for a meeting.</p></div></header>
+    <div class="preset-editor-grid">
+      <label><span>Default presenter</span><select @bind="Model.PresenterValue"><option value="">Select a presenter</option>@foreach(var agent in Agents){<option value="@agent.Id">@agent.DisplayName · @agent.RoleName</option>}</select><small class="preset-field-error" aria-live="polite">@Error("defaultPresenterAgentId")</small></label>
+      <label><span>Language</span><select @bind="Model.Language"><option value="en">English</option><option value="sv-SE">Swedish</option></select><small class="preset-field-help">Used for generated preparation</small></label>
+      <label><span>Duration</span><div class="preset-input-suffix"><input type="number" min="5" max="480" @bind="Model.DurationMinutes" /><span>minutes</span></div><small class="preset-field-error" aria-live="polite">@Error("durationMinutes")</small></label>
+      <label><span>Meeting record retention</span><div class="preset-input-suffix"><input type="number" min="1" max="3650" @bind="Model.RetentionDays" /><span>days</span></div><small class="preset-field-help">Attendee consent is checked separately in each meeting.</small><small class="preset-field-error">@Error("behaviorSettingsJson")</small></label>
+      <label><span>Control mode</span><select @bind="Model.ControlMode"><option value="assisted">Presenter assisted by AI</option><option value="manual">Manual</option></select><small class="preset-field-help">Execution policy is rechecked at use time</small></label>
+      <label class="preset-field-wide"><span>Audience</span><input @bind="Model.Audience" maxlength="500" placeholder="Who is this presentation designed for?" /><small class="preset-field-error" aria-live="polite">@Error("audience")</small></label>
+      <label class="preset-field-wide"><span>Goal</span><textarea @bind="Model.Goal" maxlength="1000" placeholder="What should this presentation help the audience understand or decide?"></textarea><small class="preset-field-error" aria-live="polite">@Error("goal")</small></label>
+      <label class="preset-field-wide"><span>Demo scenario <small>Optional</small></span><textarea @bind="Model.DemoScenario" maxlength="1000" placeholder="Describe a reusable product scenario or demonstration flow"></textarea><small class="preset-field-help">Keep this generic; customer-specific facts belong to each presentation run.</small></label>
+    </div>
+  </section>
+
+  <section class="preset-editor-section" aria-labelledby="situations-title">
+    <header><span>03</span><div><h3 id="situations-title">Where this preset can be used</h3><p>Select every supported Sales workflow.</p></div></header>
+    <fieldset class="preset-choice-grid">
+      <legend class="visually-hidden">Supported situations</legend>
+      <label class="preset-choice"><input type="checkbox" @bind="Model.AllowSalesMeeting" /><span class="preset-choice__check" aria-hidden="true">✓</span><span><strong>Sales meetings</strong><small>Customer and prospect conversations</small></span></label>
+      <label class="preset-choice"><input type="checkbox" @bind="Model.AllowCampaign" /><span class="preset-choice__check" aria-hidden="true">✓</span><span><strong>Campaign activities</strong><small>Planned outreach and campaign work</small></span></label>
+      <label class="preset-choice"><input type="checkbox" @bind="Model.AllowAdHoc" /><span class="preset-choice__check" aria-hidden="true">✓</span><span><strong>Ad-hoc presentations</strong><small>One-off or internal preparation</small></span></label>
+    </fieldset>
+    <small class="preset-field-error" aria-live="polite">@Error("allowedContextTypes")</small>
+  </section>
+
+  <section class="preset-editor-section" aria-labelledby="behavior-title">
+    <header><span>04</span><div><h3 id="behavior-title">Presenter behavior</h3><p>Choose how the presentation supports the person delivering it.</p></div></header>
+    <fieldset class="preset-behavior-grid">
+      <legend class="visually-hidden">Presentation behavior</legend>
+      <label class="preset-behavior"><input type="checkbox" @bind="Model.PauseForQuestions" /><span><strong>Pause for questions</strong><small>Insert natural breaks between sections.</small></span></label>
+      <label class="preset-behavior"><input type="checkbox" @bind="Model.ShowSpeakerNotes" /><span><strong>Show speaker notes</strong><small>Keep approved notes visible to the presenter.</small></span></label>
+    </fieldset>
+  </section>
+
+  <footer class="preset-editor-footer">
+    <p>@(IsCreation ? "You can upload the PowerPoint after creating the draft." : "Changes apply only to this draft version.")</p>
+    <div>
+      @if (IsCreation && OnCancel.HasDelegate) { <button type="button" class="sales-button" disabled="@IsBusy" @onclick="OnCancel">Cancel</button> }
+      <button type="button" class="sales-button sales-button--primary" disabled="@IsBusy" @onclick="OnSave">@(IsBusy ? "Saving…" : SubmitLabel)</button>
+    </div>
+  </footer>
+</section>
+
+@code {
+  [Parameter, EditorRequired] public PresentationPresetEditModel Model { get; set; } = default!;
+  [Parameter] public IReadOnlyList<CompanyAgentSummaryViewModel> Agents { get; set; } = [];
+  [Parameter] public bool IsBusy { get; set; }
+  [Parameter] public bool IsCreation { get; set; }
+  [Parameter] public IReadOnlyDictionary<string,string[]> Errors { get; set; } = new Dictionary<string,string[]>();
+  [Parameter] public EventCallback OnSave { get; set; }
+  [Parameter] public EventCallback OnCancel { get; set; }
+  [Parameter] public string SubmitLabel { get; set; } = "Save draft";
+  private string? Error(string field) => Errors.TryGetValue(field, out var values) ? values.FirstOrDefault() : null;
+}

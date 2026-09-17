@@ -1,0 +1,154 @@
+@using VirtualCompany.Web.Services
+@inject SalesApiClient CampaignApi
+@inject SalesPresentationPresetApiClient PresetApi
+
+<section class="campaign-presentation-editor" aria-labelledby="campaign-presentation-title-@Activity.Id">
+    <div class="campaign-presentation-editor__heading">
+        <div>
+            <span class="campaign-presentation-editor__eyebrow">Presentation</span>
+            <h3 id="campaign-presentation-title-@Activity.Id">@Activity.Name</h3>
+            <p>Pin a published preset and create governed preparation work. This activity never starts a live presentation.</p>
+        </div>
+        @if (Config is not null)
+        {
+            <span class="sales-badge sales-badge--info">Pinned version</span>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(message))
+    {
+        <div class="sales-alert @(hasError ? "sales-alert--danger" : "sales-alert--success")" role="status">@message</div>
+    }
+
+    <div class="campaign-presentation-editor__grid">
+        <div class="campaign-presentation-editor__form">
+            <label>
+                <span>Presentation preset</span>
+                <select class="sales-input" value="@presetVersionId" @onchange="SelectPresetAsync" disabled="@busy">
+                    <option value="">Choose a published preset</option>
+                    @foreach (var preset in Presets.Where(x => x.CurrentPublished is not null))
+                    {
+                        <option value="@preset.CurrentPublished!.Id">@preset.Name — Published v@preset.CurrentPublished.VersionNumber</option>
+                    }
+                </select>
+            </label>
+            @if (slides.Count > 0)
+            {
+                <div class="campaign-presentation-slides" aria-label="Preset slide preview">
+                    @foreach (var slide in slides.Take(3))
+                    {
+                        <article><strong>@(slide.Title ?? $"Slide {slide.SlideNumber}")</strong><span>@slide.Objective</span></article>
+                    }
+                </div>
+            }
+            <fieldset>
+                <legend>Execution scope</legend>
+                <div class="campaign-presentation-segments">
+                    @foreach (var option in Scopes)
+                    {
+                        <label><input type="radio" name="scope-@Activity.Id" value="@option.Value" checked="@(scope == option.Value)" @onchange="() => scope = option.Value" /> @option.Label</label>
+                    }
+                </div>
+            </fieldset>
+            <div class="campaign-presentation-editor__fields">
+                <label><span>Presenter strategy</span><select class="sales-input" @bind="presenterStrategy"><option value="campaign_owner">Campaign owner</option><option value="activity_owner">Activity owner</option><option value="explicit">Specific presenter</option></select></label>
+                <label><span>Specific presenter ID (optional)</span><input class="sales-input" @bind="explicitPresenter" placeholder="Agent ID" /></label>
+                <label><span>Preparation lead time</span><input class="sales-input" type="number" min="0" max="2160" @bind="leadTimeHours" /><small>Hours before the due activity</small></label>
+                <label><span>Preparation behavior</span><select class="sales-input" @bind="workStrategy"><option value="preparation_task">Preparation task</option><option value="handoff">Agent handoff</option><option value="meeting_binding">Meeting binding</option></select></label>
+                <label class="campaign-presentation-editor__wide"><span>Campaign event session ID</span><input class="sales-input" @bind="eventSession" placeholder="Required for campaign-event or meeting binding" /></label>
+                <label class="campaign-presentation-check"><input type="checkbox" @bind="allowOverrides" /> Allow reviewed run-level overrides</label>
+            </div>
+            <div class="sales-actions">
+                <button class="sales-button sales-button--primary" disabled="@busy" @onclick="SaveAsync">Save presentation activity</button>
+                @if (Config is not null && Config.Runs.Count == 0)
+                {
+                    <button class="sales-button sales-button--danger" disabled="@busy" @onclick="RemoveAsync">Remove activity</button>
+                }
+            </div>
+        </div>
+
+        <aside class="campaign-presentation-editor__evidence">
+            <section>
+                <h4>Run projection</h4>
+                @if (Config is null)
+                {
+                    <p>Save the configuration to calculate its company-scoped audience projection.</p>
+                }
+                else
+                {
+                    <div class="campaign-presentation-metrics"><div><strong>@Config.Projection.EligibleContacts</strong><span>Eligible contacts</span></div><div><strong>@Config.Projection.DistinctAccounts</strong><span>Accounts</span></div><div><strong>@Config.Projection.ProjectedRuns</strong><span>Presentation runs</span></div></div>
+                    <p>Stable subject keys prevent duplicate worker delivery from creating duplicate runs.</p>
+                }
+            </section>
+            <section>
+                <h4>Readiness</h4>
+                @if (Config?.IsReady == true)
+                {
+                    <div class="campaign-presentation-ready">Ready for campaign approval</div>
+                }
+                else if (Config is null)
+                {
+                    <p>Choose and save a published preset version.</p>
+                }
+                else
+                {
+                    @foreach (var blocker in Config.Blockers)
+                    {
+                        <article class="campaign-presentation-blocker"><strong>@blocker.Explanation</strong><span>@blocker.Evidence</span><small>@blocker.CorrectiveAction</small></article>
+                    }
+                }
+            </section>
+            @if (Config is { Runs.Count: > 0 })
+            {
+                <section>
+                    <div class="campaign-presentation-runs-heading"><h4>Preparation runs</h4>@if (Config.Runs.Any(x => x.Status == "failed")) { <button class="sales-button" disabled="@busy" @onclick="RetryAsync">Retry failed subjects</button> }</div>
+                    @foreach (var run in Config.Runs.Take(8))
+                    {
+                        <div class="campaign-presentation-run"><div><strong>@run.SubjectType</strong><span>@run.SubjectId</span></div><span class="@RunBadge(run.Status)">@Present(run.Status)</span></div>
+                    }
+                </section>
+            }
+        </aside>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter, EditorRequired] public Guid CampaignId { get; set; }
+    [Parameter, EditorRequired] public CampaignActivityResponse Activity { get; set; } = default!;
+    [Parameter] public CampaignPresentationActivityResponse? Config { get; set; }
+    [Parameter] public IReadOnlyList<SalesPresentationPresetViewModel> Presets { get; set; } = [];
+    [Parameter] public EventCallback OnChanged { get; set; }
+    private string presetVersionId = ""; private string scope = "per_contact"; private string presenterStrategy = "campaign_owner";
+    private string workStrategy = "preparation_task"; private string explicitPresenter = ""; private string eventSession = "";
+    private int leadTimeHours = 24; private bool allowOverrides; private bool busy; private bool hasError; private string? message;
+    private IReadOnlyList<SalesPresentationPresetSlideViewModel> slides = [];
+    private static readonly (string Value, string Label)[] Scopes = [("per_contact", "Per contact"), ("per_account", "Per account"), ("campaign_event", "Campaign event")];
+    protected override void OnParametersSet()
+    {
+        if (Config is null) return;
+        presetVersionId = Config.PresetVersionId.ToString("D"); scope = Config.ExecutionScope; presenterStrategy = Config.PresenterStrategy;
+        workStrategy = Config.WorkStrategy; explicitPresenter = Config.ExplicitPresenterAgentId?.ToString("D") ?? "";
+        eventSession = Config.EventSessionId?.ToString("D") ?? ""; leadTimeHours = Config.PreparationLeadTimeHours; allowOverrides = Config.AllowOverrides;
+    }
+    private async Task SelectPresetAsync(ChangeEventArgs args)
+    {
+        presetVersionId = args.Value?.ToString() ?? ""; slides = [];
+        if (!Guid.TryParse(presetVersionId, out var versionId)) return;
+        var preset = Presets.FirstOrDefault(x => x.CurrentPublished?.Id == versionId);
+        if (preset is not null) slides = await PresetApi.GetSlidesAsync(CompanyId, preset.Id, versionId);
+    }
+    private async Task SaveAsync() => await ActAsync(async () =>
+    {
+        if (!Guid.TryParse(presetVersionId, out var versionId)) throw new SalesApiException("Choose a published presentation preset.");
+        Config = await CampaignApi.SaveCampaignPresentationActivityAsync(CompanyId, CampaignId, Activity.Id,
+            new(versionId, scope, presenterStrategy, Parse(explicitPresenter), workStrategy, allowOverrides, Parse(eventSession), leadTimeHours, Config?.Version ?? 0));
+        message = "Presentation activity saved."; await OnChanged.InvokeAsync();
+    });
+    private async Task RetryAsync() => await ActAsync(async () => { Config = await CampaignApi.RetryCampaignPresentationActivityAsync(CompanyId, CampaignId, Activity.Id); message = "Failed subjects were queued for retry."; await OnChanged.InvokeAsync(); });
+    private async Task RemoveAsync() => await ActAsync(async () => { await CampaignApi.RemoveCampaignPresentationActivityAsync(CompanyId, CampaignId, Activity.Id, Config!.Version); message = "Presentation configuration removed."; await OnChanged.InvokeAsync(); });
+    private async Task ActAsync(Func<Task> action) { busy = true; hasError = false; message = null; try { await action(); } catch (Exception ex) when (ex is SalesApiException or SalesPresentationPresetApiException) { hasError = true; message = ex.Message; } finally { busy = false; } }
+    private static Guid? Parse(string value) => Guid.TryParse(value, out var id) ? id : null;
+    private static string Present(string value) => value.Replace('_', ' ');
+    private static string RunBadge(string status) => status == "prepared" ? "sales-badge sales-badge--success" : status == "failed" ? "sales-badge sales-badge--danger" : "sales-badge sales-badge--info";
+}

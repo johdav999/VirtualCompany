@@ -15,6 +15,18 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class SalesNarrationController(ISalesNarrationService service,
     ICompanyContextAccessor context) : ControllerBase
 {
+    [HttpGet("presets/{versionId:guid}")]
+    public Task<IActionResult> GetPreset(Guid versionId,CancellationToken ct) =>
+        Run(async()=>Ok(await service.GetPresetAsync(Company(),UserId(),versionId,ct)));
+
+    [HttpPost("presets/{versionId:guid}/prepare")]
+    public Task<IActionResult> PreparePreset(Guid versionId,PrepareSalesNarration command,CancellationToken ct) =>
+        Run(async()=>Ok(await service.PreparePresetAsync(Company(),UserId(),versionId,command,ct)));
+
+    [HttpGet("presets/{versionId:guid}/revisions/{revisionId:guid}/segments/{segmentId:guid}/preview")]
+    public Task<IActionResult> PreviewPreset(Guid versionId,Guid revisionId,Guid segmentId,CancellationToken ct) =>
+        Run(async()=>{var preview=await service.PreviewPresetAsync(Company(),UserId(),versionId,revisionId,segmentId,ct);return File(preview.Audio,preview.ContentType);});
+
     [HttpGet("sessions/{sessionId:guid}")]
     public Task<IActionResult> Get(Guid sessionId, CancellationToken ct) =>
         Run(async () => Ok(await service.GetAsync(Company(), UserId(), sessionId, ct)));
@@ -23,9 +35,9 @@ public sealed class SalesNarrationController(ISalesNarrationService service,
     public Task<IActionResult> Prepare(Guid sessionId, PrepareSalesNarration command, CancellationToken ct) =>
         Run(async () => Ok(await service.PrepareAsync(Company(), UserId(), sessionId, command, ct)));
 
-    [HttpPost("revisions/{revisionId:guid}/{action}")]
-    public Task<IActionResult> Decide(Guid revisionId, string action, SalesNarrationDecision command, CancellationToken ct) =>
-        Run(async () => { await service.DecideAsync(Company(), UserId(), revisionId, action, command, ct); return NoContent(); });
+    [HttpPost("revisions/{revisionId:guid}/{decision}")]
+    public Task<IActionResult> Decide(Guid revisionId, string decision, SalesNarrationDecision command, CancellationToken ct) =>
+        Run(async () => { await service.DecideAsync(Company(), UserId(), revisionId, decision, command, ct); return NoContent(); });
 
     [HttpGet("sessions/{sessionId:guid}/revisions/{revisionId:guid}/segments/{segmentId:guid}/preview")]
     public Task<IActionResult> Preview(Guid sessionId, Guid revisionId, Guid segmentId, [FromQuery] Guid audienceId, CancellationToken ct) =>

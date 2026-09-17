@@ -3,6 +3,7 @@
 @inherits SalesPageBase
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
+@inject SalesPresentationPresetApiClient PresentationPresetApi
 
 <PageTitle>@SalesText["SalesCampaigns"]</PageTitle>
 
@@ -17,6 +18,7 @@
                 <a href="@BuildPath("/app/sales/prospects")">@SalesText["Prospects"]</a>
                 <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
                 <a class="active" href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
+                <a href="@BuildPath("/app/sales/presentation-presets")">Presentation presets</a>
             </nav>
         </header>
 
@@ -205,6 +207,10 @@
                             }
                             else if (activeTab == "Activity plan")
                             {
+                                <div class="campaign-tab-toolbar">
+                                    <div><strong>Campaign activity plan</strong><span>Email delivery and presentation preparation use separate governed execution paths.</span></div>
+                                    <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="AddPresentationActivityAsync">Add presentation</button>
+                                </div>
                                 <div class="campaign-activity-table">
                                     <div class="campaign-activity-table__head"><span>Activity</span><span>Channel</span><span>Execution</span><span>Due</span><span>Status</span></div>
                                     @if (activities.Count == 0)
@@ -220,6 +226,12 @@
                                             <span>@LocalDateTime.DateTime(activity.DueUtc)</span>
                                             <span class="@BadgeClass(activity.Status)">@PresentCampaignState(activity.Status)</span>
                                         </div>
+                                        @if (activity.ActivityType == "presentation" && ResolvedCompanyId is Guid presentationCompanyId)
+                                        {
+                                            presentationConfigurations.TryGetValue(activity.Id, out var presentationConfiguration);
+                                            <CampaignPresentationActivityEditor CompanyId="presentationCompanyId" CampaignId="selectedCampaign.Id"
+                                                Activity="activity" Config="presentationConfiguration" Presets="publishedPresets" OnChanged="ReloadPresentationActivitiesAsync" />
+                                        }
                                     }
                                 </div>
                             }
@@ -427,6 +439,8 @@
     private CampaignReadinessResponse? readiness;
     private CampaignPerformanceResponse? performance;
     private List<CampaignActivityResponse> activities = [];
+    private List<SalesPresentationPresetViewModel> publishedPresets = [];
+    private Dictionary<Guid, CampaignPresentationActivityResponse?> presentationConfigurations = [];
     private List<CampaignSegmentResponse> segments = [];
     private string activeTab = "Overview";
     private static readonly string[] CampaignTabs = ["Overview", "Audience", "Activity plan", "Performance", "Alex"];
@@ -463,6 +477,10 @@
             campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
             audienceOptions = await SalesApiClient.GetCampaignAudienceOptionsAsync(companyId);
             segments = (await SalesApiClient.ListCampaignSegmentsAsync(companyId)).ToList();
+            var presetItems = await PresentationPresetApi.ListAsync(companyId);
+            var presetTasks = presetItems.Where(x => x.CurrentPublishedVersion.HasValue).Select(x => PresentationPresetApi.GetAsync(companyId, x.Id)).ToArray();
+            var presetDetails = await Task.WhenAll(presetTasks);
+            publishedPresets = presetDetails.Where(x => x?.CurrentPublished is not null).Select(x => x!).ToList();
             if (selectedCampaign is not null)
             {
                 await LoadCampaignDetailAsync(companyId, selectedCampaign.Id);
@@ -526,8 +544,45 @@
         initiative = await initiativeTask;
         readiness = await readinessTask;
         activities = (await activitiesTask).ToList();
+        await LoadPresentationConfigurationsAsync(companyId, campaignId);
         performance = await performanceTask;
         activeTab = "Overview";
+    }
+
+    private async Task LoadPresentationConfigurationsAsync(Guid companyId, Guid campaignId)
+    {
+        var presentationActivities = activities.Where(x => x.ActivityType == "presentation").ToArray();
+        var tasks = presentationActivities.ToDictionary(x => x.Id,
+            x => SalesApiClient.GetCampaignPresentationActivityAsync(companyId, campaignId, x.Id));
+        await Task.WhenAll(tasks.Values);
+        presentationConfigurations = tasks.ToDictionary(x => x.Key, x => x.Value.Result);
+    }
+
+    private async Task ReloadPresentationActivitiesAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || selectedCampaign is null) return;
+        activities = (await SalesApiClient.ListCampaignActivitiesAsync(companyId, selectedCampaign.Id)).ToList();
+        await LoadPresentationConfigurationsAsync(companyId, selectedCampaign.Id);
+        readiness = await SalesApiClient.GetCampaignReadinessAsync(companyId, selectedCampaign.Id);
+    }
+
+    private async Task AddPresentationActivityAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || selectedCampaign is null) return;
+        isSubmitting = true; actionMessage = null;
+        try
+        {
+            var start = initiative?.PlanningStartsUtc ?? DateTime.UtcNow;
+            var due = initiative?.EndsUtc ?? start.AddDays(7);
+            await SalesApiClient.AddCampaignActivityAsync(companyId, selectedCampaign.Id,
+                new("Customer presentation", "presentation", "presentation", "manual", start, due,
+                    initiative?.TimeZoneId ?? TimeZoneInfo.Utc.Id, initiative?.OwnerUserId, initiative?.OwnerAgentId,
+                    null, null, null, null));
+            await ReloadPresentationActivitiesAsync(); activeTab = "Activity plan";
+            actionMessage = "Presentation activity added. Choose a published preset and execution scope.";
+        }
+        catch (SalesApiException ex) { actionMessage = ex.Message; }
+        finally { isSubmitting = false; }
     }
 
     private async Task ChangeCampaignStateAsync(string action)

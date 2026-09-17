@@ -1,0 +1,19 @@
+@using VirtualCompany.Web.Services
+@if (Preset is not null && Version is not null)
+{
+<section class="preset-summary" aria-labelledby="summary-title"><div class="preset-section-title"><div><span>PRESET IDENTITY</span><h3 id="summary-title">Version v@(Version.VersionNumber)</h3><p>@(Version.Lifecycle == "draft" ? "This is a draft. Edit its fields in Settings, then save your changes." : "Published version fields are read-only. Create a draft to make changes.")</p></div>
+  @if (Version.Lifecycle == "draft" && Preset.Lifecycle != "archived" && OnEdit.HasDelegate)
+  { <button type="button" class="sales-button sales-button--primary sales-button--small" disabled="@IsBusy" @onclick="OnEdit">Edit draft</button> }
+</div>
+  <dl><div><dt>Owner</dt><dd>@OwnerName</dd></div><div><dt>Presenter</dt><dd>@(PresenterName ?? "Choose at use time")</dd></div><div><dt>Language</dt><dd>@(Version.Language.StartsWith("sv") ? "Swedish" : "English")</dd></div><div><dt>Duration</dt><dd>@Version.DurationMinutes minutes</dd></div><div><dt>Audience</dt><dd>@Version.Audience</dd></div><div><dt>Goal</dt><dd>@Version.Goal</dd></div><div><dt>Supported situations</dt><dd>@string.Join(", ", Version.AllowedContextTypes.Select(PresentContext))</dd></div><div><dt>Control mode</dt><dd>@(Version.ControlMode == "manual" ? "Manual" : "Presenter assisted by AI")</dd></div>@if(!string.IsNullOrWhiteSpace(Version.DemoScenario)){<div><dt>Demo scenario</dt><dd>@Version.DemoScenario</dd></div>}</dl>
+</section>
+}
+@code {
+ [Parameter] public SalesPresentationPresetViewModel? Preset { get; set; }
+ [Parameter] public SalesPresentationPresetVersionViewModel? Version { get; set; }
+ [Parameter] public string OwnerName { get; set; } = "Company member";
+ [Parameter] public string? PresenterName { get; set; }
+ [Parameter] public bool IsBusy { get; set; }
+ [Parameter] public EventCallback OnEdit { get; set; }
+ private static string PresentContext(string value) => value switch { "sales_meeting" => "Sales meetings", "campaign_activity" => "Campaign activities", "ad_hoc" => "Ad-hoc presentations", _ => value.Replace('_',' ') };
+}

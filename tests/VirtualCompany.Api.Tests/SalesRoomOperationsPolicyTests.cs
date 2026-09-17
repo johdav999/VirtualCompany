@@ -31,6 +31,24 @@ public sealed class SalesRoomOperationsPolicyTests
     }
 
     [Fact]
+    public void Enabled_agent_accepts_an_explicit_local_rate_timestamp_from_configuration_binding()
+    {
+        var options = Valid();
+        options.ProviderRateCheckedUtc = Now.ToLocalTime();
+
+        Assert.Null(SalesRoomOperationsPolicy.ConfigurationProblem(options, Now));
+    }
+
+    [Fact]
+    public void Enabled_agent_rejects_an_ambiguous_rate_timestamp()
+    {
+        var options = Valid();
+        options.ProviderRateCheckedUtc = DateTime.SpecifyKind(Now, DateTimeKind.Unspecified);
+
+        Assert.Equal("provider_rates_stale", SalesRoomOperationsPolicy.ConfigurationProblem(options, Now));
+    }
+
+    [Fact]
     public void Disabled_agent_does_not_require_provider_cost_secrets()
     {
         Assert.Null(SalesRoomOperationsPolicy.ConfigurationProblem(new SalesRoomAgentOptions(), Now));

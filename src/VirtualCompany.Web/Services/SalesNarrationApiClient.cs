@@ -2,27 +2,40 @@ using System.Net.Http.Json;
 
 namespace VirtualCompany.Web.Services;
 
-public sealed record NarrationSpeechProfile(bool Available, string Model, string Voice, string ConfigurationVersion);
+public sealed record NarrationSpeechProfile(bool Available, string Model, string Voice, string ConfigurationVersion, IReadOnlyList<string>? AvailableVoices = null);
 public sealed record NarrationScript(int SlideNumber, int TalkingPoint, string Text);
 public sealed record NarrationSegment(Guid Id, int SlideNumber, int TalkingPoint, string SourceText,
     string Script, string Status, bool Reused, int DurationMilliseconds, long Bytes, int Attempts, string? FailureCode);
-public sealed record NarrationRevision(Guid Id, Guid DeckId, int DeckVersion, string Language, string Voice,
-    string Model, Guid AudienceId, string Status, long Version, DateTime CreatedUtc, DateTime? ApprovedUtc,
+public sealed record NarrationRevision(Guid Id, Guid? DeckId, int DeckVersion, string Language, string Voice,
+    string Model, Guid? AudienceId, string Status, long Version, DateTime CreatedUtc, DateTime? ApprovedUtc,
     IReadOnlyList<NarrationSegment> Segments, int InputTokens, int OutputTokens, int UnresolvedAttempts,
     double GeneratedMinutes, double ReusedMinutes, decimal? EstimatedCostUsd);
 public sealed record NarrationWorkspace(NarrationSpeechProfile Speech, IReadOnlyList<NarrationRevision> Revisions);
 
 public sealed class SalesNarrationApiClient(ICompanyApiTransport transport)
 {
+    public async Task<NarrationWorkspace> GetPresetAsync(Guid company,Guid version,CancellationToken ct=default)
+    {
+        using var response=await transport.SendAsync(company,HttpMethod.Get,$"api/sales/narration/presets/{version}",null,ct);
+        await Check(response,ct);return (await response.Content.ReadFromJsonAsync<NarrationWorkspace>(ct))!;
+    }
+    public async Task PreparePresetAsync(Guid company,Guid version,string language,NarrationScript[]? scripts=null,string? voice=null)
+    {
+        using var content=JsonContent.Create(new{language,scripts,voice});
+        using var response=await transport.SendAsync(company,HttpMethod.Post,$"api/sales/narration/presets/{version}/prepare",content,default);
+        await Check(response,default);
+    }
+    public static string PresetPreviewUrl(Guid company,Guid version,NarrationRevision revision,NarrationSegment segment)=>
+        $"/sales/preset-narration-preview/{company}/{version}/{revision.Id}/{segment.Id}";
     public async Task<NarrationWorkspace> GetAsync(Guid company, Guid session, CancellationToken ct = default)
     {
         using var response = await transport.SendAsync(company, HttpMethod.Get, $"api/sales/narration/sessions/{session}", null, ct);
         await Check(response, ct);
         return (await response.Content.ReadFromJsonAsync<NarrationWorkspace>(ct))!;
     }
-    public async Task PrepareAsync(Guid company, Guid session, string language, NarrationScript[]? scripts = null)
+    public async Task PrepareAsync(Guid company, Guid session, string language, NarrationScript[]? scripts = null, string? voice = null)
     {
-        using var content = JsonContent.Create(new { language, scripts });
+        using var content = JsonContent.Create(new { language, scripts, voice });
         using var response = await transport.SendAsync(company, HttpMethod.Post, $"api/sales/narration/sessions/{session}/prepare", content, default);
         await Check(response, default);
     }
@@ -36,7 +49,7 @@ public sealed class SalesNarrationApiClient(ICompanyApiTransport transport)
     {
         if (response.IsSuccessStatusCode) return;
         if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-            throw new InvalidOperationException("Only the meeting organizer can prepare and preview narration.");
+            throw new InvalidOperationException("Narration requires access as the preset owner or meeting organizer.");
         var problem = await response.Content.ReadFromJsonAsync<NarrationProblem>(ct);
         throw new InvalidOperationException(problem?.Detail ?? "Narration is unavailable. Reload and try again.");
     }
@@ -50,6 +63,15 @@ public static class SalesNarrationPreviewEndpoint
 {
     public static void MapSalesNarrationPreview(this WebApplication app)
     {
+        app.MapGet("/sales/preset-narration-preview/{company:guid}/{version:guid}/{revision:guid}/{segment:guid}",
+            async(Guid company,Guid version,Guid revision,Guid segment,ICompanyApiTransport transport,HttpContext context,CancellationToken ct)=>{
+                context.Response.Headers.CacheControl="no-store";
+                context.Response.Headers["Referrer-Policy"]="no-referrer";
+                context.Response.Headers["X-Content-Type-Options"]="nosniff";
+                using var response=await transport.SendAsync(company,HttpMethod.Get,$"api/sales/narration/presets/{version}/revisions/{revision}/segments/{segment}/preview",null,ct);
+                if(!response.IsSuccessStatusCode)return Results.StatusCode((int)response.StatusCode);
+                return Results.Bytes(await response.Content.ReadAsByteArrayAsync(ct),"audio/wav");
+            });
         app.MapGet("/sales/narration-preview/{company:guid}/{session:guid}/{revision:guid}/{segment:guid}",
             async (Guid company, Guid session, Guid revision, Guid segment, Guid audienceId,
                 ICompanyApiTransport transport, HttpContext context, CancellationToken ct) =>

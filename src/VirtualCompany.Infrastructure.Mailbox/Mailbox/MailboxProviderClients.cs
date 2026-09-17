@@ -1189,6 +1189,15 @@ internal static class MailboxOAuthHttpResponse
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        try
+        {
+            using var json = JsonDocument.Parse(body);
+            if (json.RootElement.ValueKind == JsonValueKind.Object &&
+                json.RootElement.TryGetProperty("error", out var error) &&
+                error.ValueKind == JsonValueKind.String && error.GetString() == "invalid_grant")
+                throw new OAuthReconnectRequiredException();
+        }
+        catch (JsonException) { }
         var providerError = TryReadOAuthError(body);
         var detail = string.IsNullOrWhiteSpace(providerError)
             ? $"{providerDisplayName} OAuth token endpoint returned {(int)response.StatusCode} ({response.ReasonPhrase})."

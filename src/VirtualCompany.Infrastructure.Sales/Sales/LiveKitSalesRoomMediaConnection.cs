@@ -24,11 +24,12 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
     private volatile string state = "connecting";
     private readonly TaskCompletionSource disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private sealed class TrackReader(AudioStream stream, CancellationTokenSource stop, long generation)
+    private sealed class TrackReader(AudioStream stream, CancellationTokenSource stop, long generation, Guid participantId)
     {
         public AudioStream Stream { get; } = stream;
         public CancellationTokenSource Stop { get; } = stop;
         public long Generation { get; } = generation;
+        public Guid ParticipantId { get; } = participantId;
         public Task Pump { get; set; } = Task.CompletedTask;
     }
     private LiveKitSalesRoomMediaConnection(IReadOnlyCollection<SalesRoomMediaParticipant> humans, SalesRoomMediaOptions options)
@@ -94,10 +95,18 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
                 publication.Source != LiveKit.Proto.TrackSource.SourceMicrophone ||
                 !allowed.TryGetValue(publication.Participant.Identity, out var participant)) return;
             if (readers.ContainsKey(remoteTrack.Sid)) return;
+            // LiveKit can subscribe the replacement microphone before it reports the old
+            // track as unpublished. Retire that participant's old reader here so a browser
+            // device switch cannot make the replacement lose the bounded reader slot.
+            foreach (var stale in readers.Where(x => x.Value.ParticipantId == participant).ToArray())
+            {
+                readers.Remove(stale.Key);
+                stale.Value.Stop.Cancel();
+            }
             if (readers.Count >= allowed.Count) { publication.SetSubscribed(false); return; }
             var stop = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             var reader = new TrackReader(new AudioStream(remoteTrack, sampleRate: 24000, numChannels: 1,
-                frameSizeMs: 20, capacity: options.MaximumBufferedFrames), stop, Interlocked.Increment(ref trackGeneration));
+                frameSizeMs: 20, capacity: options.MaximumBufferedFrames), stop, Interlocked.Increment(ref trackGeneration), participant);
             readers[remoteTrack.Sid] = reader;
             reader.Pump = Task.Run(() => PumpAsync(participant, publication.Participant.Identity, remoteTrack.Sid, reader));
             pumps.Add(reader.Pump);
@@ -185,6 +194,14 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
         }
         return Task.CompletedTask;
     }
+    public bool IsParticipantConnected(Guid participantId)
+    {
+        lock (inputLock)
+            return room.RemoteParticipants.Values.Any(participant =>
+                allowed.TryGetValue(participant.Identity, out var allowedParticipantId) &&
+                allowedParticipantId == participantId);
+    }
+
     public SalesRoomMediaStatistics GetStatistics() => new(state, Interlocked.Read(ref received),
         Interlocked.Read(ref dropped), Interlocked.Read(ref sent), reconnects, output?.Generation ?? 1);
 

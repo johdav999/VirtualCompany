@@ -89,6 +89,24 @@ public sealed class SalesMeetingSession : ICompanyOwnedEntity
     public Guid InvitationId { get; private set; }
     public Guid? PresenterAgentId { get; private set; }
 
+    // Called only after the application verifies that the browser room is unoccupied
+    // and its agent is stopped. Preserve sequence/history to reject stale commands.
+    public void ReopenPreparation(Guid actorUserId, DateTime nowUtc)
+    {
+        if (actorUserId != CreatedByUserId) throw new UnauthorizedAccessException("Only the organizer can change meeting preparation.");
+        if (Status is SalesMeetingSessionStatus.Completed or SalesMeetingSessionStatus.Cancelled or SalesMeetingSessionStatus.Failed)
+            throw new InvalidOperationException("An ended meeting cannot be reopened for preparation.");
+        if (Status == SalesMeetingSessionStatus.Ready) return;
+        Status = SalesMeetingSessionStatus.Ready;
+        CurrentSlideIndex = 0;
+        CurrentTalkingPointIndex = 0;
+        ResumeMarker = null;
+        StatusReason = "Organizer changed the presentation while the room was unoccupied.";
+        UpdatedByUserId = actorUserId;
+        UpdatedUtc = Utc(nowUtc, nameof(nowUtc));
+        ConcurrencyVersion++;
+    }
+
     public void SelectPresenter(Guid agentId, Guid actorId, DateTime nowUtc)
     {
         EnsureId(agentId, nameof(agentId));

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Documents;
@@ -89,7 +90,7 @@ public sealed class SalesMeetingQuestionAnsweringService(
 
         try
         {
-            var sources = await BuildSourcesAsync(session, membership, agent.Id, deck, slide, request.Question, cancellationToken);
+            var sources = await BuildSourcesAsync(session, membership, agent, deck, slide, request.Question, cancellationToken);
             var result = await reasoning.ReasonAsync(new AgentReasoningRequest(
                 companyId, agent.Id, AgentCapabilityIds.SalesMeetingQuestionAnswering, "1.0.0",
                 "sales-meeting-grounded-answer-v1", "1.0.0",
@@ -158,7 +159,7 @@ public sealed class SalesMeetingQuestionAnsweringService(
     }
 
     private async Task<Dictionary<string, GroundingSource>> BuildSourcesAsync(SalesMeetingSession session, CompanyMembership membership,
-        Guid agentId, SalesPresentationDeck? deck, SalesPresentationSlide? slide, string query, CancellationToken ct)
+        Agent agent, SalesPresentationDeck? deck, SalesPresentationSlide? slide, string query, CancellationToken ct)
     {
         var values = new Dictionary<string, GroundingSource>(StringComparer.Ordinal);
         void Add(string id, string type, string title, string text)
@@ -169,9 +170,20 @@ public sealed class SalesMeetingQuestionAnsweringService(
         {
             Add($"presentation-slide:{slide.Id:N}", "visible_slide", slide.Title ?? $"Slide {slide.SlideNumber}", slide.ExtractedText);
             if (!string.IsNullOrWhiteSpace(slide.SpeakerNotes)) Add($"presentation-notes:{slide.Id:N}", "approved_speaker_notes", $"Notes for slide {slide.SlideNumber}", slide.SpeakerNotes);
-            var artifacts = await db.SalesMeetingArtifacts.AsNoTracking().Where(x => x.CompanyId == session.CompanyId && x.SessionId == session.Id && x.SlideId == slide.Id && x.Classification == SalesMeetingArtifactClassification.ConfirmedFact).Take(20).ToListAsync(ct);
-            foreach (var item in artifacts) Add($"meeting-artifact:{item.Id:N}", "approved_slide_plan", item.Section, item.Content);
         }
+        Add($"agent-role-brief:{agent.Id:N}", "approved_agent_role_brief", $"{agent.DisplayName} role brief", agent.RoleBrief ?? string.Empty);
+        if (agent.CommunicationProfile.TryGetValue("briefing", out var briefingNode) && briefingNode is JsonObject briefing)
+            foreach (var category in AgentBriefingCategories.All)
+                if (briefing[category] is JsonValue value && value.TryGetValue<string>(out var content))
+                    Add($"agent-brief:{agent.Id:N}:{category}", "approved_agent_brief", BriefingTitle(category), content);
+
+        var artifacts = await db.SalesMeetingArtifacts.AsNoTracking().Where(x =>
+                x.CompanyId == session.CompanyId && x.SessionId == session.Id &&
+                x.Classification == SalesMeetingArtifactClassification.ConfirmedFact)
+            .OrderBy(x => x.ArtifactVersion).ThenBy(x => x.Section).ThenBy(x => x.Order).ToListAsync(ct);
+        foreach (var item in artifacts)
+            Add($"meeting-artifact:{item.Id:N}", "approved_meeting_artifact",
+                $"{item.Section} · {item.ArtifactType.ToStorageValue()}", item.Content);
         var customer = await db.CustomerCompanies.AsNoTracking().SingleAsync(x => x.CompanyId == session.CompanyId && x.Id == session.CustomerCompanyId, ct);
         Add($"customer:{customer.Id:N}", "authorized_customer_record", customer.Name, $"Customer: {customer.Name}. Industry: {customer.Industry ?? "not recorded"}. Status: {customer.Status}.");
         if (session.DealId is Guid dealId)
@@ -184,11 +196,20 @@ public sealed class SalesMeetingQuestionAnsweringService(
             var contact = await db.Contacts.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == session.CompanyId && x.Id == contactId, ct);
             if (contact is not null) Add($"contact:{contact.Id:N}", "authorized_contact_record", contact.FullName, $"Contact: {contact.FullName}. Role: {contact.Title ?? "not recorded"}.");
         }
-        var knowledgeResults = await knowledge.SearchAsync(new CompanyKnowledgeSemanticSearchQuery(session.CompanyId, query, 10,
-            new CompanyKnowledgeAccessContext(session.CompanyId, membership.Id, membership.UserId, membership.Role.ToStorageValue(), ["sales", "knowledge"], agentId)), ct);
+        var knowledgeResults = await knowledge.SearchAsync(new CompanyKnowledgeSemanticSearchQuery(session.CompanyId, query, 20,
+            new CompanyKnowledgeAccessContext(session.CompanyId, membership.Id, membership.UserId, membership.Role.ToStorageValue(), ["sales", "knowledge"], agent.Id)), ct);
         foreach (var item in knowledgeResults) Add($"knowledge-chunk:{item.ChunkId:N}", "approved_company_knowledge", item.DocumentTitle, item.Content);
         return values;
     }
+
+    private static string BriefingTitle(string category) => category switch
+    {
+        AgentBriefingCategories.CompanyInformation => "Company information",
+        AgentBriefingCategories.ProductsAndServices => "Products and services",
+        AgentBriefingCategories.Policies => "Company policies",
+        AgentBriefingCategories.CustomerSupport => "Customer support",
+        _ => "Other operating instructions"
+    };
 
     private static void RequireAuthority(AgentEffectiveAuthorityDto authority, string tool, ToolActionType action)
     {

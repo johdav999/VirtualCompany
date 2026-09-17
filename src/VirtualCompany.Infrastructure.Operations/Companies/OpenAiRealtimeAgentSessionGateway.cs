@@ -366,7 +366,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 ["output"] = new JsonObject
                 {
                     ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24_000 },
-                    ["voice"] = options.Voice
+                    ["voice"] = request.Voice ?? options.Voice
                 }
             },
             ["tools"] = JsonSerializer.SerializeToNode(tools),

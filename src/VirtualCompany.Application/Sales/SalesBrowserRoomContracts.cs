@@ -12,14 +12,24 @@ public sealed record SalesRoomPublicParticipantView(Guid Id, string DisplayName,
 public sealed record SalesRoomOperationView(Guid Id, string Action, string State, int Attempts, string? ProblemCode);
 public sealed record SalesBrowserRoomView(Guid Id, Guid? MeetingSessionId, string State, string AgentHealth,
     long Version, DateTime ExpiresUtc, IReadOnlyList<SalesRoomParticipantView> Participants, IReadOnlyList<SalesRoomOperationView> Operations)
-{ public Guid? InvitationId { get; init; } public string ConsentNoticeVersion { get; init; } = ""; }
+{
+    public Guid? InvitationId { get; init; }
+    public string ConsentNoticeVersion { get; init; } = "";
+    public bool ConnectionAllowed { get; init; } = true;
+    public DateTime? OpensUtc { get; init; }
+}
 public sealed record SalesRoomInvitationResult(Guid Id, string Secret, DateTime ExpiresUtc)
 { public override string ToString() => $"Invitation {{ Id = {Id}, Secret = [redacted] }}"; }
 public sealed record SalesRoomGuestSession(string Credential, SalesRoomGuestView Participant)
 { public override string ToString() => "SalesRoomGuestSession { Credential = [redacted] }"; }
 public sealed record SalesRoomGuestView(Guid RoomId, Guid ParticipantId, string RoomState, string AdmissionState,
     long Version, DateTime ExpiresUtc, bool AiProcessingAllowed, bool TranscriptRetentionAllowed)
-{ public IReadOnlyList<SalesRoomPublicParticipantView> Participants { get; init; } = []; public string ConsentNoticeVersion { get; init; } = ""; }
+{
+    public IReadOnlyList<SalesRoomPublicParticipantView> Participants { get; init; } = [];
+    public string ConsentNoticeVersion { get; init; } = "";
+    public bool ConnectionAllowed { get; init; } = true;
+    public DateTime? OpensUtc { get; init; }
+}
 public sealed record SalesRoomWorkItem(Guid CompanyId, Guid RoomId, Guid OperationId);
 public sealed record SalesRoomWebhook(string EventId, string EventType, string RoomReference, string? ParticipantIdentity, long OccurredUnixSeconds);
 public interface ISalesBrowserRoomService

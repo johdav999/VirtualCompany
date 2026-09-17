@@ -129,6 +129,20 @@ public sealed partial class SalesApiClient
 
     public async Task<IReadOnlyList<CampaignActivityResponse>> ListCampaignActivitiesAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
         await GetAsync<List<CampaignActivityResponse>>(companyId, $"api/sales/campaigns/{campaignId:D}/activities", allowNotFound: false, cancellationToken) ?? [];
+    public Task<CampaignActivityResponse> AddCampaignActivityAsync(Guid companyId, Guid campaignId, CreateCampaignActivityRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CreateCampaignActivityRequest, CampaignActivityResponse>(companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/activities", request, cancellationToken);
+
+    public Task<CampaignPresentationActivityResponse?> GetCampaignPresentationActivityAsync(Guid companyId, Guid campaignId, Guid activityId, CancellationToken cancellationToken = default) =>
+        GetAsync<CampaignPresentationActivityResponse>(companyId, $"api/sales/campaigns/{campaignId:D}/activities/{activityId:D}/presentation", allowNotFound: true, cancellationToken);
+
+    public Task<CampaignPresentationActivityResponse> SaveCampaignPresentationActivityAsync(Guid companyId, Guid campaignId, Guid activityId, SaveCampaignPresentationActivityRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<SaveCampaignPresentationActivityRequest, CampaignPresentationActivityResponse>(companyId, HttpMethod.Put, $"api/sales/campaigns/{campaignId:D}/activities/{activityId:D}/presentation", request, cancellationToken);
+
+    public Task<CampaignPresentationActivityResponse> RetryCampaignPresentationActivityAsync(Guid companyId, Guid campaignId, Guid activityId, CancellationToken cancellationToken = default) =>
+        SendAsync<object, CampaignPresentationActivityResponse>(companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/activities/{activityId:D}/presentation/retry", new { }, cancellationToken);
+
+    public Task RemoveCampaignPresentationActivityAsync(Guid companyId, Guid campaignId, Guid activityId, int expectedVersion, CancellationToken cancellationToken = default) =>
+        DeleteAsync(companyId, $"api/sales/campaigns/{campaignId:D}/activities/{activityId:D}/presentation?expectedVersion={expectedVersion}", cancellationToken);
 
     public Task<CampaignPerformanceResponse?> GetCampaignPerformanceAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
         GetAsync<CampaignPerformanceResponse>(companyId, $"api/sales/campaigns/{campaignId:D}/performance", allowNotFound: true, cancellationToken);
@@ -243,6 +257,18 @@ public sealed partial class SalesApiClient
         }
     }
 
+    private async Task DeleteAsync(Guid companyId, string uri, CancellationToken cancellationToken)
+    {
+        if (_useOfflineMode) throw new SalesApiException("Sales actions need the backend API. Start the API project before changing live tenant data.");
+        try
+        {
+            using var request = CreateCompanyRequest(companyId, HttpMethod.Delete, uri, null);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw await CreateExceptionAsync(response, cancellationToken);
+        }
+        catch (HttpRequestException) { throw new SalesApiException("The sales workspace could not reach the backend API."); }
+    }
+
     private static HttpRequestMessage CreateCompanyRequest(Guid companyId, HttpMethod method, string uri, HttpContent? content)
     {
         var request = new HttpRequestMessage(method, uri) { Content = content };
@@ -259,8 +285,8 @@ public sealed partial class SalesApiClient
 
         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
         return problem?.Errors is { Count: > 0 }
-            ? new SalesApiException(_problemResolver?.Resolve(problem, FormatProblem(problem)) ?? FormatProblem(problem), problem.Errors)
-            : new SalesApiException(_problemResolver?.Resolve(problem, "The sales request failed.") ?? problem?.Detail ?? problem?.Title ?? "The sales request failed.");
+            ? new SalesApiException(string.Join(" ", problem.Errors.Values.SelectMany(x => x).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct()), problem.Errors, problem.Code)
+            : new SalesApiException(_problemResolver?.Resolve(problem, "The sales request failed.") ?? problem?.Detail ?? problem?.Title ?? "The sales request failed.", code: problem?.Code);
     }
 
     private static string FormatProblem(ApiProblemResponse problem)
@@ -273,12 +299,15 @@ public sealed partial class SalesApiClient
 
 public sealed class SalesApiException : Exception
 {
-    public SalesApiException(string message, IReadOnlyDictionary<string, string[]>? errors = null) : base(message)
+    public SalesApiException(string message, IReadOnlyDictionary<string, string[]>? errors = null, string? code = null) : base(message)
     {
         Errors = errors;
+        Code = code;
     }
 
     public IReadOnlyDictionary<string, string[]>? Errors { get; }
+    public string? Code { get; }
+    public bool RequiresCalendarReconnect => Code == "calendar.reconnect_required";
 }
 
 public sealed record SalesDashboardResponse(
@@ -460,6 +489,20 @@ public sealed record CampaignReadinessResponse(Guid CampaignId, string Lifecycle
 public sealed record CampaignActivityResponse(Guid Id, string Name, string ActivityType, string Channel, string ExecutionMode, string Status,
     DateTime PlannedStartUtc, DateTime DueUtc, Guid? OwnerUserId, Guid? OwnerAgentId, Guid? DependsOnActivityId,
     string? RequiredToolCapability, int AttemptCount, string? ResultSummary, string? FailureReason);
+public sealed record CreateCampaignActivityRequest(string Name, string ActivityType, string Channel, string ExecutionMode,
+    DateTime PlannedStartUtc, DateTime DueUtc, string TimeZoneId, Guid? OwnerUserId, Guid? OwnerAgentId,
+    Guid? DependsOnActivityId, Guid? MilestoneId, Guid? SalesSequenceStepId, string? RequiredToolCapability);
+public sealed record SaveCampaignPresentationActivityRequest(Guid PresetVersionId, string ExecutionScope, string PresenterStrategy,
+    Guid? ExplicitPresenterAgentId, string WorkStrategy, bool AllowOverrides, Guid? EventSessionId, int PreparationLeadTimeHours, int ExpectedVersion);
+public sealed record CampaignPresentationReadinessBlocker(string Code, string Explanation, string Evidence, string CorrectiveAction, bool RequiresReview, bool RequiresApproval);
+public sealed record CampaignPresentationRunProjection(int EligibleContacts, int DistinctAccounts, int ProjectedRuns, string SubjectType, bool IsBounded);
+public sealed record CampaignPresentationRunResponse(Guid Id, Guid PresentationRunId, string SubjectType, Guid SubjectId, string Status,
+    string? FailureCode, string? FailureSummary, string PreparationStatus, Guid PresenterAgentId);
+public sealed record CampaignPresentationActivityResponse(Guid Id, Guid CampaignId, Guid ActivityId, Guid PresetId, string PresetName,
+    Guid PresetVersionId, int PresetVersionNumber, string ExecutionScope, string PresenterStrategy, Guid? ExplicitPresenterAgentId,
+    string WorkStrategy, bool AllowOverrides, Guid? EventSessionId, int PreparationLeadTimeHours, int Version, bool IsReady,
+    CampaignPresentationRunProjection Projection, IReadOnlyList<CampaignPresentationReadinessBlocker> Blockers,
+    IReadOnlyList<CampaignPresentationRunResponse> Runs);
 public sealed record CampaignPerformanceResponse(Guid CampaignId, string LifecycleStatus, CampaignObjectiveResponse? Objective,
     decimal? ObjectiveProgress, int Audience, int Sent, int Delivered, int Replied, int Bounced, int Opportunities, int WonDeals,
     IReadOnlyList<CampaignCurrencyAmountResponse> DirectRevenue, IReadOnlyList<CampaignCurrencyAmountResponse> PlannedBudget,

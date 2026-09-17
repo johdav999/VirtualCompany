@@ -126,12 +126,13 @@
 
         message = ConnectionResult?.ToLowerInvariant() switch
         {
+            "reconnect-required" => "Your calendar connection has expired or needs permission. Reconnect your calendar below (or choose Connect Google Calendar or Connect Microsoft 365), then return to the lead and try again.",
             "connected" => "Calendar connected and ready for meeting scheduling.",
             "denied" => "Calendar access was not approved. No connection was changed.",
             "failed" => "The calendar connection could not be completed.",
             _ => message
         };
-        isError = ConnectionResult is "denied" or "failed";
+        isError = ConnectionResult is "denied" or "failed" or "reconnect-required";
         await LoadAsync();
     }
 

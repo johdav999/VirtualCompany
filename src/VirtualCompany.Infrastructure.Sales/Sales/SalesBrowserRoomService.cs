@@ -94,14 +94,30 @@ public sealed partial class SalesBrowserRoomService(VirtualCompanyDbContext db, 
         var operation = new SalesRoomOperation(room.CompanyId, room.Id, Guid.NewGuid(), "expire", null, null, "", Now, true);
         db.SalesRoomOperations.Add(operation); Queue(operation, room.ExpiresUtc);
     }
-    private async Task<SalesBrowserRoomView> View(SalesBrowserRoom room, CancellationToken ct) => new(room.Id, room.MeetingSessionId, room.State, room.AgentHealth, room.Version, room.ExpiresUtc,
-        await db.SalesRoomParticipants.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id).OrderBy(x => x.Id)
-            .Select(x => new SalesRoomParticipantView(x.Id, x.DisplayName, x.State, x.Version, x.Connected,
-                "human-" + x.Id.ToString("N") + "-" + x.Generation, x.MemberUserId == room.OrganizerUserId,
-                x.AiProcessingAllowed, x.TranscriptRetentionAllowed)).ToListAsync(ct),
-        await db.SalesRoomOperations.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.State != "completed").OrderByDescending(x => x.CreatedUtc).Take(20)
-            .Select(x => new SalesRoomOperationView(x.Id, x.Action, x.State, x.Attempts, x.ProblemCode)).ToListAsync(ct))
-        { InvitationId = room.InvitationId, ConsentNoticeVersion = Options.NoticeVersion };
+    private async Task<(bool Allowed, DateTime? OpensUtc)> ConnectionWindow(SalesBrowserRoom room, CancellationToken ct)
+    {
+        if (!room.InvitationId.HasValue) return (true, null);
+        var invitation = await db.SalesMeetingInvitations.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == room.CompanyId && x.Id == room.InvitationId)
+            .Select(x => new { x.Status, x.StartsUtc })
+            .SingleOrDefaultAsync(ct);
+        if (invitation is null) return (false, null);
+        var opensUtc = invitation.StartsUtc.AddMinutes(-15);
+        return (invitation.Status == SalesMeetingInvitationStatus.Scheduled && opensUtc <= Now, opensUtc);
+    }
+    private async Task<SalesBrowserRoomView> View(SalesBrowserRoom room, CancellationToken ct)
+    {
+        var window = await ConnectionWindow(room, ct);
+        return new(room.Id, room.MeetingSessionId, room.State, room.AgentHealth, room.Version, room.ExpiresUtc,
+            await db.SalesRoomParticipants.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id).OrderBy(x => x.Id)
+                .Select(x => new SalesRoomParticipantView(x.Id, x.DisplayName, x.State, x.Version, x.Connected,
+                    "human-" + x.Id.ToString("N") + "-" + x.Generation, x.MemberUserId == room.OrganizerUserId,
+                    x.AiProcessingAllowed, x.TranscriptRetentionAllowed)).ToListAsync(ct),
+            await db.SalesRoomOperations.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.State != "completed").OrderByDescending(x => x.CreatedUtc).Take(20)
+                .Select(x => new SalesRoomOperationView(x.Id, x.Action, x.State, x.Attempts, x.ProblemCode)).ToListAsync(ct))
+            { InvitationId = room.InvitationId, ConsentNoticeVersion = Options.NoticeVersion,
+                ConnectionAllowed = window.Allowed, OpensUtc = window.OpensUtc };
+    }
     public async Task<SalesBrowserRoomView> GetAsync(Guid company, Guid actor, Guid room, CancellationToken ct) => await View(await Host(company, actor, room, ct), ct);
     public async Task<SalesBrowserRoomView> CreateAsync(Guid company, Guid actor, Guid meeting, CreateSalesBrowserRoom request, CancellationToken ct)
     {

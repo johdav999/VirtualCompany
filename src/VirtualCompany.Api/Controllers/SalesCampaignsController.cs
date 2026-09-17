@@ -186,6 +186,57 @@ public sealed class SalesCampaignsController : ControllerBase
         }
     }
 
+    [HttpGet("{id:guid}/activities/{activityId:guid}/presentation")]
+    public async Task<ActionResult<CampaignPresentationActivityResponse>> PresentationActivityAsync(
+        Guid id, Guid activityId, CancellationToken cancellationToken)
+    {
+        var response = await _planning.GetPresentationActivityAsync(CompanyId(), id, activityId, cancellationToken);
+        return response is null ? NotFound() : Ok(response);
+    }
+
+    [HttpPut("{id:guid}/activities/{activityId:guid}/presentation")]
+    public async Task<ActionResult<CampaignPresentationActivityResponse>> SavePresentationActivityAsync(
+        Guid id, Guid activityId, [FromBody] SaveCampaignPresentationActivityRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response = await _planning.SavePresentationActivityAsync(CompanyId(), UserId(), id, activityId, request, cancellationToken);
+            return response is null ? NotFound() : Ok(response);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            return Problem(title: "Presentation activity changed.", detail: ex.Message, statusCode: StatusCodes.Status409Conflict);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        {
+            return Problem(title: "Presentation activity could not be saved.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    [HttpDelete("{id:guid}/activities/{activityId:guid}/presentation")]
+    public async Task<IActionResult> RemovePresentationActivityAsync(Guid id, Guid activityId, [FromQuery] int expectedVersion, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _planning.RemovePresentationActivityAsync(CompanyId(), UserId(), id, activityId, expectedVersion, cancellationToken) ? NoContent() : NotFound();
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            return Problem(title: "Presentation activity changed.", detail: ex.Message, statusCode: StatusCodes.Status409Conflict);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Problem(title: "Presentation activity could not be removed.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    [HttpPost("{id:guid}/activities/{activityId:guid}/presentation/retry")]
+    public async Task<ActionResult<CampaignPresentationActivityResponse>> RetryPresentationActivityAsync(Guid id, Guid activityId, CancellationToken cancellationToken)
+    {
+        var response = await _planning.RetryPresentationActivityAsync(CompanyId(), UserId(), id, activityId, cancellationToken);
+        return response is null ? NotFound() : Ok(response);
+    }
+
     [HttpGet("{id:guid}/performance")]
     public async Task<ActionResult<CampaignPerformanceResponse>> PerformanceAsync(Guid id, CancellationToken cancellationToken)
     {

@@ -22,13 +22,17 @@ public sealed partial class SalesBrowserRoomService
             throw new SalesRoomAccessException("room_unavailable", 410);
         return (room, participant);
     }
-    private SalesRoomGuestView GuestView(SalesBrowserRoom room, SalesRoomParticipant p) => new(room.Id, p.Id, room.State, p.State, p.Version,
-        room.ExpiresUtc < p.ExpiresUtc ? room.ExpiresUtc : p.ExpiresUtc, p.AiProcessingAllowed, p.TranscriptRetentionAllowed)
-        { ConsentNoticeVersion = Options.NoticeVersion };
+    private async Task<SalesRoomGuestView> GuestView(SalesBrowserRoom room, SalesRoomParticipant p, CancellationToken ct)
+    {
+        var window = await ConnectionWindow(room, ct);
+        return new(room.Id, p.Id, room.State, p.State, p.Version,
+            room.ExpiresUtc < p.ExpiresUtc ? room.ExpiresUtc : p.ExpiresUtc, p.AiProcessingAllowed, p.TranscriptRetentionAllowed)
+            { ConsentNoticeVersion = Options.NoticeVersion, ConnectionAllowed = window.Allowed, OpensUtc = window.OpensUtc };
+    }
     public async Task<SalesRoomGuestView> GuestStatusAsync(string credential, Guid room, CancellationToken ct)
     {
         var result = await Guest(credential, room, ct);
-        var view = GuestView(result.Room, result.Participant);
+        var view = await GuestView(result.Room, result.Participant, ct);
         // Lobby access does not grant audience access. Never return host operations or member IDs.
         if (result.Participant.State != SalesRoomParticipantStates.Admitted) return view;
         var participants = await db.SalesRoomParticipants.IgnoreQueryFilters()
@@ -57,7 +61,7 @@ public sealed partial class SalesBrowserRoomService
             var participant = new SalesRoomParticipant(room.CompanyId, room.Id, request.DisplayName.Trim(), Hash(credential), room.ExpiresUtc);
             db.SalesRoomParticipants.Add(participant); grant.Redeem(participant.Id, Now); room.Touch();
             Record(room, Guid.NewGuid(), "redeem", participant.Id, participant.Id, new { grant.Id }, actorType: "guest");
-            return new SalesRoomGuestSession(credential, GuestView(room, participant));
+            return new SalesRoomGuestSession(credential, await GuestView(room, participant, ct));
         }, ct);
     }
     private async Task<SalesRoomMediaToken> Token(SalesBrowserRoom room, SalesRoomParticipant participant, CancellationToken ct)
@@ -107,7 +111,7 @@ public sealed partial class SalesBrowserRoomService
     private async Task<SalesRoomGuestView> Consent(SalesBrowserRoom room, SalesRoomParticipant participant, SetSalesRoomConsent request, CancellationToken ct)
     {
         var actor = participant.MemberUserId ?? participant.Id; var actorType = participant.MemberUserId.HasValue ? "user" : "guest";
-        if (await Replay(room.CompanyId, room.Id, actor, request.CommandId, "consent", request, ct)) return GuestView(room, participant);
+        if (await Replay(room.CompanyId, room.Id, actor, request.CommandId, "consent", request, ct)) return await GuestView(room, participant, ct);
         if (participant.Version != request.ExpectedVersion) throw new SalesRoomAccessException("version_conflict");
         if (request.Purpose is not ("ai_processing" or "retained_transcript") || request.NoticeVersion != Options.NoticeVersion)
             throw new SalesRoomAccessException("consent_notice_or_purpose_invalid", 400);
@@ -119,7 +123,7 @@ public sealed partial class SalesBrowserRoomService
             room.StopAgent("consent_withdrawn", "AI stopped immediately because a participant withdrew processing consent.", Now);
             Record(room, Guid.NewGuid(), "stop_agents", null, actor, new { request.Purpose }, true, actorType);
         }
-        return GuestView(room, participant);
+        return await GuestView(room, participant, ct);
     }
     public async Task LeaveAsync(string credential, Guid roomId, CancellationToken ct) => await Transaction(async () =>
     {

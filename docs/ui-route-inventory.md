@@ -4,6 +4,9 @@ This inventory records the route topology after the UI consolidation. Canonical 
 
 ## Primary And Settings Routes
 
+Sales presentation authoring lives at `/app/sales/presentation-presets`: PowerPoint source, reusable scripts, approved cached narration and presentation settings are edited there. The canonical `/app/sales/meeting-invitations/{InvitationId}/prepare` route is a preset selector and meeting launcher. The former editor remains only at the explicit `/legacy-prepare` compatibility suffix; current navigation does not link to it. Attendee consent is evaluated in the actual meeting, never inherited as preset approval.
+
+
 | Purpose | Canonical route | Compatibility or contextual routes |
 | --- | --- | --- |
 | Overview | `/dashboard` | `/` resolves through the existing home flow; Today is the default. `companyId` selects company context, `period=month` selects Monthly, `lens=company|finance|sales|marketing|customers` selects an authorized responsibility lens, and optional `year` plus `month` select a reporting month together. |
@@ -57,6 +60,7 @@ This inventory records the route topology after the UI consolidation. Canonical 
 - `/app/sales/prospects`
 - `/app/sales/pipeline`
 - `/app/sales/campaigns`
+- `/app/sales/presentation-presets` (company-scoped reusable presentation library and immutable version workflow)
 - `/app/sales/deals/{DealId}`
 - `/app/sales/contacts/{ContactId}`
 

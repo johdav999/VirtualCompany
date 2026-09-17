@@ -30,7 +30,11 @@ public sealed class SalesRoomAgentService(
 
     public async Task<SalesRoomAgentStatusView> GetAsync(Guid companyId, Guid userId, Guid roomId, CancellationToken ct)
     {
-        var (room, _, _) = await ControllerAsync(companyId, userId, roomId, false, ct);
+        var floorExists = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+            x.CompanyId == companyId && x.RoomId == roomId, ct);
+        var room = floorExists
+            ? (await ControllerAsync(companyId, userId, roomId, false, ct)).Room
+            : await OrganizerAsync(companyId, userId, roomId, false, ct);
         return await ViewAsync(room, ct);
     }
 
@@ -43,11 +47,14 @@ public sealed class SalesRoomAgentService(
         var voice = await speech.GetProfileAsync(ct);
         if (!provider.Available || !voice.Available)
             throw Error(SalesRoomAgentProblemCodes.Unavailable, "Agent voice is unavailable. Continue with the human call, manual slides, or typed questions.", 503);
-        SalesBrowserRoom room;
-        await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct))
+        var attempt = 0;
+        var result = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            room = await OrganizerAsync(companyId, userId, roomId, true, ct);
+            if (attempt++ > 0) db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var room = await OrganizerAsync(companyId, userId, roomId, true, ct);
             var replay = await ReplayAsync(companyId, roomId, command.CommandId, "agent_start", ct);
+            Guid owner = Guid.Empty;
             if (!replay)
             {
                 if (room.Version != command.ExpectedVersion) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room changed. Refresh before starting the agent.");
@@ -66,7 +73,7 @@ public sealed class SalesRoomAgentService(
                 foreach (var speechItem in abandoned)
                     speechItem.Fail(SalesRoomAgentSpeechStates.Interrupted, "worker_replaced",
                         "A prior worker lease ended before this speech completed; it will not be replayed.", Now);
-                var owner = Guid.NewGuid();
+                owner = Guid.NewGuid();
                 try { room.StartAgent(runtime.AgentId, userId, owner, Now.AddSeconds(Options.LeaseSeconds), Now); }
                 catch (InvalidOperationException ex) { throw Error(SalesRoomAgentProblemCodes.Conflict, ex.Message); }
                 var host = await db.SalesRoomParticipants.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
@@ -84,28 +91,32 @@ public sealed class SalesRoomAgentService(
                         meeting.CurrentTalkingPointIndex, meeting.ResumeMarker, meeting.PresentationControlMode, Now);
                     db.SalesRoomFloors.Add(floor);
                 }
-                else floor.SetMode(meeting.PresentationControlMode, Now);
+                else floor.SetMode(meeting.PresentationControlMode, meeting.ConcurrencyVersion, Now);
                 Record(room, command.CommandId, "agent_start", userId, command);
                 SalesRoomBenchmarkTelemetry.RecordOwnership("acquired");
                 await db.SaveChangesAsync(ct);
-                await tx.CommitAsync(ct);
-                await commands.SignalAsync(new(companyId, roomId, owner, room.AgentGeneration, "start"), ct);
-                return await ViewAsync(room, ct);
             }
             await tx.CommitAsync(ct);
-        }
-        return await ViewAsync(room, ct);
+            return (Room: room, ShouldSignal: !replay, Owner: owner);
+        });
+        if (result.ShouldSignal)
+            await commands.SignalAsync(new(companyId, roomId, result.Owner, result.Room.AgentGeneration, "start"), ct);
+        return await ViewAsync(result.Room, ct);
     }
 
     public async Task<SalesRoomAgentStatusView> StopAsync(Guid companyId, Guid userId, Guid roomId,
         StopSalesRoomAgent command, CancellationToken ct)
     {
         ValidateCommand(command.CommandId);
-        Guid owner = Guid.Empty; long generation = 0; SalesBrowserRoom room;
-        await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct))
+        var attempt = 0;
+        var result = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            room = await OrganizerAsync(companyId, userId, roomId, true, ct);
+            if (attempt++ > 0) db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var room = await OrganizerAsync(companyId, userId, roomId, true, ct);
             var replay = await ReplayAsync(companyId, roomId, command.CommandId, "agent_stop", ct);
+            var owner = Guid.Empty;
+            var generation = 0L;
             if (!replay)
             {
                 if (room.Version != command.ExpectedVersion) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room changed. Refresh before stopping the agent.");
@@ -115,12 +126,14 @@ public sealed class SalesRoomAgentService(
                     (x.Status == SalesRoomAgentSpeechStates.Queued || x.Status == SalesRoomAgentSpeechStates.Processing)).ToListAsync(ct);
                 foreach (var item in pending) item.Fail(SalesRoomAgentSpeechStates.Interrupted, "host_stopped", "The host stopped AI before this speech completed.", Now);
                 Record(room, command.CommandId, "agent_stop", userId, command);
-                await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+                await db.SaveChangesAsync(ct);
             }
-            else await tx.CommitAsync(ct);
-        }
-        await commands.SignalAsync(new(companyId, roomId, owner, generation, "stop"), ct);
-        return await ViewAsync(room, ct);
+            await tx.CommitAsync(ct);
+            return (Room: room, ShouldSignal: !replay, Owner: owner, Generation: generation);
+        });
+        if (result.ShouldSignal)
+            await commands.SignalAsync(new(companyId, roomId, result.Owner, result.Generation, "stop"), ct);
+        return await ViewAsync(result.Room, ct);
     }
 
     public Task<SalesRoomAgentStatusView> InvokeNarrationAsync(Guid companyId, Guid userId, Guid roomId,
@@ -363,22 +376,24 @@ public sealed class SalesRoomAgentService(
     {
         ValidateCommand(commandId);
         RequireAgentAdmission();
-        SalesBrowserRoom room; SalesRoomAgentSpeech? item;
-        await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct))
+        var attempt = 0;
+        var room = await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
         {
-            room = await OrganizerAsync(companyId, userId, roomId, true, ct);
-            item = await db.SalesRoomAgentSpeech.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.RoomId == roomId && x.CommandId == commandId, ct);
+            if (attempt++ > 0) db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+            var currentRoom = await OrganizerAsync(companyId, userId, roomId, true, ct);
+            var item = await db.SalesRoomAgentSpeech.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.RoomId == roomId && x.CommandId == commandId, ct);
             if (item is null)
             {
-                if (room.Version != expectedVersion) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room changed. Refresh before asking the agent to speak.");
-                if (!room.IsAgentOwner(room.AgentLeaseOwnerId ?? Guid.Empty, room.AgentGeneration, Now) || room.AgentId is not Guid agentId || room.MeetingSessionId is not Guid sessionId)
+                if (!AcceptsSpeechCommandVersion(expectedVersion, currentRoom.Version))
+                    throw Error(SalesRoomAgentProblemCodes.Conflict, "The room changed. Refresh before asking the agent to speak.");
+                if (!currentRoom.IsAgentOwner(currentRoom.AgentLeaseOwnerId ?? Guid.Empty, currentRoom.AgentGeneration, Now) || currentRoom.AgentId is not Guid agentId || currentRoom.MeetingSessionId is not Guid sessionId)
                     throw Error(SalesRoomAgentProblemCodes.Unavailable, "Start the room agent before asking it to speak.");
-                await RequireConsentAsync(room, ct);
+                await RequireConsentAsync(currentRoom, ct);
                 if (kind == SalesRoomAgentSpeechKinds.Narration)
                 {
                     if (offset < 0 || revision is null || segment is null ||
-                        !await db.SalesNarrationRevisions.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.SessionId == sessionId &&
-                            x.Id == revision && x.ApprovedUtc != null && x.RevokedUtc == null && x.RetainUntilUtc > Now, ct) ||
+                        !await SalesRoomNarrationSelection.Current(db, companyId, sessionId, Now).AnyAsync(x => x.Id == revision, ct) ||
                         !await db.SalesNarrationSegments.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.RevisionId == revision && x.Id == segment, ct))
                         throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "Choose a current approved narration segment.");
                 }
@@ -391,13 +406,13 @@ public sealed class SalesRoomAgentService(
                         string.IsNullOrWhiteSpace(released.AnswerText) || released.Evidence.Count == 0)
                         throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "Only a verified answer with approved evidence can be spoken.");
                 }
-                var floor = await FloorAsync(room, ct);
-                if (room.AgentHealth == SalesRoomAgentHealthStates.Paused && room.AgentLeaseOwnerId is Guid resumeOwner)
-                    room.ResumeAgent(resumeOwner, room.AgentGeneration);
-                try { floor.AgentClaim(floor.ResponseGeneration, room.AgentTurnGeneration, Now); }
+                var floor = await FloorAsync(currentRoom, ct);
+                if (currentRoom.AgentHealth == SalesRoomAgentHealthStates.Paused && currentRoom.AgentLeaseOwnerId is Guid resumeOwner)
+                    currentRoom.ResumeAgent(resumeOwner, currentRoom.AgentGeneration);
+                try { floor.AgentClaim(floor.ResponseGeneration, currentRoom.AgentTurnGeneration, Now); }
                 catch (InvalidOperationException ex) { throw Error(SalesRoomAgentProblemCodes.FloorConflict, ex.Message); }
-                item = new(Guid.NewGuid(), companyId, roomId, sessionId, commandId, agentId, room.AgentGeneration,
-                    room.AgentTurnGeneration, kind, userId, Now, revision, segment, question, offset,
+                item = new(Guid.NewGuid(), companyId, roomId, sessionId, commandId, agentId, currentRoom.AgentGeneration,
+                    currentRoom.AgentTurnGeneration, kind, userId, Now, revision, segment, question, offset,
                     floor.ResponseGeneration);
                 db.SalesRoomAgentSpeech.Add(item);
                 db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.User, userId,
@@ -410,7 +425,8 @@ public sealed class SalesRoomAgentService(
                 await db.SaveChangesAsync(ct);
             }
             await tx.CommitAsync(ct);
-        }
+            return currentRoom;
+        });
         if (room.MeetingSessionId is Guid speechSession)
         {
             var floor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
@@ -420,6 +436,9 @@ public sealed class SalesRoomAgentService(
         await commands.SignalAsync(new(companyId, roomId, room.AgentLeaseOwnerId ?? Guid.Empty, room.AgentGeneration, "wake"), ct);
         return await ViewAsync(room, ct);
     }
+
+    internal static bool AcceptsSpeechCommandVersion(long expectedVersion, long currentVersion) =>
+        expectedVersion > 0 && expectedVersion <= currentVersion;
 
     private async Task<(SalesBrowserRoom Room, SalesRoomParticipant Participant, SalesRoomFloor Floor)> ControllerAsync(
         Guid company, Guid user, Guid roomId, bool tracked, CancellationToken ct)
@@ -478,9 +497,7 @@ public sealed class SalesRoomAgentService(
     private async Task<(Guid RevisionId, Guid SegmentId)?> CurrentNarrationAsync(
         SalesBrowserRoom room, SalesMeetingSession session, CancellationToken ct)
     {
-        var revision = await db.SalesNarrationRevisions.IgnoreQueryFilters().AsNoTracking().Where(x =>
-            x.CompanyId == room.CompanyId && x.SessionId == session.Id && x.ApprovedUtc != null &&
-            x.RevokedUtc == null && x.RetainUntilUtc > Now).OrderByDescending(x => x.ApprovedUtc).FirstOrDefaultAsync(ct);
+        var revision = await SalesRoomNarrationSelection.Current(db, room.CompanyId, session.Id, Now).FirstOrDefaultAsync(ct);
         if (revision is null) return null;
         var segment = await db.SalesNarrationSegments.IgnoreQueryFilters().AsNoTracking().Where(x =>
             x.CompanyId == room.CompanyId && x.RevisionId == revision.Id &&
@@ -566,13 +583,17 @@ public sealed class SalesRoomAgentService(
                 question.Status.ToStorageValue(), question.Visibility.ToStorageValue(), question.ConcurrencyVersion,
                 question.Evidence.Select(x => new SalesRoomAgentEvidenceView(x.SourceId, x.SourceType, x.SourceTitle)).Distinct().ToArray());
             var meeting = await db.SalesMeetingSessions.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.CompanyId == room.CompanyId && x.Id == session, ct);
-            var revision = await db.SalesNarrationRevisions.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == room.CompanyId &&
-                x.SessionId == session && x.ApprovedUtc != null && x.RevokedUtc == null && x.RetainUntilUtc > Now)
-                .OrderByDescending(x => x.ApprovedUtc).FirstOrDefaultAsync(ct);
+            var revision = await SalesRoomNarrationSelection.Current(db, room.CompanyId, session, Now).FirstOrDefaultAsync(ct);
             if (revision is not null)
             {
+                var floorCursor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+                    x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+                var talkingPoint = floorCursor is not null && floorCursor.SlideNumber == Math.Max(1, meeting.CurrentSlideIndex)
+                    ? Math.Max(1, floorCursor.TalkingPointIndex)
+                    : 1;
                 var segment = await db.SalesNarrationSegments.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == room.CompanyId &&
-                    x.RevisionId == revision.Id && x.SlideNumber == meeting.CurrentSlideIndex)
+                    x.RevisionId == revision.Id && x.SlideNumber == Math.Max(1, meeting.CurrentSlideIndex) &&
+                    x.TalkingPoint >= talkingPoint)
                     .OrderBy(x => x.TalkingPoint).FirstOrDefaultAsync(ct);
                 narrationRevisionId = revision.Id; narrationSegmentId = segment?.Id;
                 narrationState = segment is null ? "slide_not_prepared" : "ready";

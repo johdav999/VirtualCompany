@@ -47,7 +47,7 @@ public sealed partial class SalesMeetingPreparationPageTests
         cut.Find("#meeting-goal").Change("Confirm the operational fit");
         cut.Find("#meeting-audience").Change("Operations leadership");
         cut.Find("#meeting-demo").Change("Show the weekly review");
-        cut.Find("form").Submit();
+        cut.Find(".meeting-session-form").Submit();
 
         cut.WaitForAssertion(() => Assert.Equal(1, handler.PutCalls));
         Assert.NotNull(handler.LastRequest);
@@ -69,7 +69,7 @@ public sealed partial class SalesMeetingPreparationPageTests
 
         Assert.Equal("Review current workflow", cut.Find("#meeting-goal").GetAttribute("value") ?? cut.Find("#meeting-goal").TextContent);
         cut.Find("#meeting-goal").Change("Agree the rollout path");
-        cut.Find("form").Submit();
+        cut.Find(".meeting-session-form").Submit();
 
         cut.WaitForAssertion(() => Assert.Equal(1, handler.PutCalls));
         Assert.Equal(4, handler.LastRequest!.ExpectedVersion);
@@ -88,7 +88,7 @@ public sealed partial class SalesMeetingPreparationPageTests
         cut.Find("#meeting-goal").Change("Confirm fit");
         cut.Find("#meeting-audience").Change("Decision makers");
         cut.Find("#meeting-duration").Change("4");
-        cut.Find("form").Submit();
+        cut.Find(".meeting-session-form").Submit();
 
         cut.WaitForAssertion(() => Assert.Contains("Duration must be between 5 and 480 minutes", cut.Markup));
         Assert.Equal(0, handler.PutCalls);
@@ -107,7 +107,7 @@ public sealed partial class SalesMeetingPreparationPageTests
         cut.WaitForElement("#meeting-goal");
 
         cut.Find("#meeting-goal").Change("My stale edit");
-        cut.Find("form").Submit();
+        cut.Find(".meeting-session-form").Submit();
 
         cut.WaitForAssertion(() =>
         {
@@ -128,7 +128,7 @@ public sealed partial class SalesMeetingPreparationPageTests
 
         cut.Find("#meeting-goal").Change("Confirm the operational fit");
         cut.Find("#meeting-audience").Change("Operations leadership");
-        cut.Find("form").Submit();
+        cut.Find(".meeting-session-form").Submit();
 
         cut.WaitForAssertion(() =>
         {
@@ -214,6 +214,18 @@ public sealed partial class SalesMeetingPreparationPageTests
         });
     }
 
+    [Fact]
+    public void Preset_selection_is_available_before_a_session_and_legacy_setup_is_collapsed()
+    {
+        using var context=CreateContext(new PreparationHandler());
+        var cut=Render(context);
+        cut.WaitForElement(".run-workflow");
+        Assert.Contains("Choose a prepared presentation",cut.Markup);
+        Assert.False(cut.Find(".meeting-legacy-panel").HasAttribute("open"));
+        Assert.NotNull(cut.Find(".meeting-legacy-panel #meeting-goal"));
+        Assert.Null(cut.Find(".run-workflow").QuerySelector("#meeting-goal"));
+    }
+
     private static TestContext CreateContext(PreparationHandler handler, bool browserDiagnostics = false)
     {
         var context = new TestContext().AddVirtualCompanyWebPresentationServices();
@@ -226,6 +238,10 @@ public sealed partial class SalesMeetingPreparationPageTests
         context.Services.AddSingleton(serviceProvider => new SalesMeetingSessionApiClient(
             transport, false, serviceProvider.GetRequiredService<IApiProblemMessageResolver>()));
         context.Services.AddSingleton(new SalesPresentationDeckApiClient(transport, false));
+        context.Services.AddSingleton(serviceProvider => new SalesPresentationPresetApiClient(
+            transport, false, serviceProvider.GetRequiredService<IApiProblemMessageResolver>()));
+        context.Services.AddSingleton(serviceProvider => new SalesPresentationRunApiClient(
+            transport, false, serviceProvider.GetRequiredService<IApiProblemMessageResolver>()));
         context.Services.AddSingleton(new SalesBrowserMeetingApiClient(transport,false));
         context.Services.AddSingleton(new TeamsCallControlApiClient(transport, false));
         context.Services.AddSingleton(new SalesPresentationPreparationTelemetry());
