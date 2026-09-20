@@ -94,6 +94,7 @@ public sealed class AccountingProviderSwitchInternalToolRoutingTests
             Proxy<IProactiveTaskCreationService>(),
             Proxy<IApprovalRequestService>(),
             Proxy<ICompanyKnowledgeSearchService>(),
+            Proxy<ICompanyDocumentPublicationService>(),
             Proxy<IFinanceToolProvider>(),
             Proxy<IFinanceTransactionAnomalyDetectionService>(),
             Proxy<IFinanceAgentAnalysisService>(),

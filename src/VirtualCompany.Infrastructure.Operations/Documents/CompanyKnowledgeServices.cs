@@ -381,6 +381,8 @@ public sealed class OpenAiCompatibleEmbeddingGenerator : IEmbeddingGenerator
 
         if (string.Equals(provider, "deterministic", StringComparison.Ordinal))
         {
+            if (!_options.AllowDeterministic)
+                throw new PermanentBackgroundJobException("Deterministic knowledge embeddings are disabled. Configure a production embedding provider.");
             var embeddings = inputs.Select(CreateDeterministicEmbedding).ToArray();
             return new EmbeddingBatchResult(provider, _options.Model, _options.ModelVersion, _options.Dimensions, embeddings);
         }
@@ -1247,20 +1249,28 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
     private readonly IEmbeddingGenerator _embeddingGenerator;
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
     private readonly IKnowledgeAccessPolicyEvaluator _accessPolicyEvaluator;
+    private readonly IRemoteKnowledgeSourceAvailabilityGate _remoteAvailability;
 
     public CompanyKnowledgeSearchService(
         VirtualCompanyDbContext dbContext,
         IEmbeddingGenerator embeddingGenerator,
         ICompanyMembershipContextResolver membershipContextResolver,
-        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator)
+        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator,
+        IRemoteKnowledgeSourceAvailabilityGate remoteAvailability)
     {
         _dbContext = dbContext;
         _embeddingGenerator = embeddingGenerator;
         _membershipContextResolver = membershipContextResolver;
         _accessPolicyEvaluator = accessPolicyEvaluator;
+        _remoteAvailability = remoteAvailability;
     }
 
     public async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchAsync(
+        CompanyKnowledgeSemanticSearchQuery query,
+        CancellationToken cancellationToken) =>
+        (await SearchDetailedAsync(query, cancellationToken)).Results;
+
+    public async Task<CompanyKnowledgeSearchPageDto> SearchDetailedAsync(
         CompanyKnowledgeSemanticSearchQuery query,
         CancellationToken cancellationToken)
     {
@@ -1296,22 +1306,256 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
             query.TopN,
             BuildAccessContext(query.CompanyId, membership, query.AccessContext),
             query.AllowedDocumentIds?.Where(x=>x!=Guid.Empty).Distinct().Take(100).ToArray());
-        var embeddingBatch = await _embeddingGenerator.GenerateAsync([scopedSearch.QueryText], cancellationToken);
-        if (embeddingBatch.Embeddings.Count == 0)
+        var accessScan = await LoadAllowedDocumentsAsync(
+            scopedSearch.CompanyId, scopedSearch.AccessContext, scopedSearch.AllowedDocumentIds, cancellationToken);
+        if (accessScan.AllowedDocuments.Count == 0)
         {
-            return Array.Empty<CompanyKnowledgeSearchResultDto>();
+            var unavailableStatus = accessScan.NotYetIndexedCount > 0
+                ? CompanyKnowledgeRetrievalStatuses.NotYetIndexed
+                : accessScan.UnavailableSourceCount > 0
+                    ? CompanyKnowledgeRetrievalStatuses.SourceUnavailable
+                    : CompanyKnowledgeRetrievalStatuses.NoMatch;
+            return new CompanyKnowledgeSearchPageDto(unavailableStatus, []);
         }
 
-        var queryEmbedding = KnowledgeEmbeddingSerializer.Serialize(embeddingBatch.Embeddings[0].Values);
+        var embeddingBatch = await _embeddingGenerator.GenerateAsync([scopedSearch.QueryText], cancellationToken);
+        var authorizedSearch = scopedSearch with
+        {
+            TopN = Math.Min(80, Math.Max(scopedSearch.TopN * 4, scopedSearch.TopN)),
+            AllowedDocumentIds = accessScan.AllowedDocuments.Keys.ToArray()
+        };
+        IReadOnlyList<CompanyKnowledgeSearchResultDto> semanticResults = [];
+        if (embeddingBatch.Embeddings.Count > 0)
+        {
+            var queryEmbedding = KnowledgeEmbeddingSerializer.Serialize(embeddingBatch.Embeddings[0].Values);
+            semanticResults = IsPostgreSql()
+                ? await SearchPostgreSqlAsync(authorizedSearch, queryEmbedding, cancellationToken)
+                : await SearchFallbackAsync(authorizedSearch, embeddingBatch.Embeddings[0].Values, cancellationToken);
+        }
 
-        return IsPostgreSql()
-            ? await SearchPostgreSqlAsync(scopedSearch, queryEmbedding, cancellationToken)
-            : await SearchFallbackAsync(scopedSearch, embeddingBatch.Embeddings[0].Values, cancellationToken);
+        var keywordResults = await SearchKeywordAsync(authorizedSearch, cancellationToken);
+        var merged = MergeRankedResults(
+            semanticResults,
+            keywordResults,
+            accessScan.AllowedDocuments,
+            scopedSearch.TopN);
+        return new CompanyKnowledgeSearchPageDto(
+            merged.Count == 0 ? CompanyKnowledgeRetrievalStatuses.NoMatch : CompanyKnowledgeRetrievalStatuses.Available,
+            merged);
+    }
+
+    public async Task<CompanyKnowledgeRepositoryListPageDto> ListRepositoryDocumentsAsync(
+        CompanyKnowledgeRepositoryListQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (query.CompanyId == Guid.Empty)
+            throw new CompanyKnowledgeSearchValidationException("CompanyId is required.");
+        if (query.PageSize is < 1 or > 50)
+            throw new CompanyKnowledgeSearchValidationException("PageSize must be between 1 and 50.");
+        if (query.AccessContext?.AgentId is not Guid agentId || agentId == Guid.Empty)
+            throw new CompanyKnowledgeSearchValidationException("A trusted agent context is required.");
+
+        var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
+        if (membership is null && !HasRequestedMembership(query.AccessContext))
+            throw new UnauthorizedAccessException("The current user cannot list repository knowledge for this company.");
+        var accessContext = BuildAccessContext(query.CompanyId, membership, query.AccessContext);
+        var offset = DecodeListCursor(query.Cursor);
+        var take = Math.Min(201, query.PageSize * 4 + 1);
+        var candidates = await _dbContext.CompanyKnowledgeDocumentRemoteSources
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(source => source.Document)
+            .Include(source => source.Connection)
+            .Where(source =>
+                source.CompanyId == query.CompanyId &&
+                source.Connection.CompanyId == query.CompanyId &&
+                source.Connection.LifecycleState == DocumentRepositoryLifecycleStates.Active &&
+                source.Connection.Audience == DocumentRepositoryAudiences.Company &&
+                source.Connection.AgentGrants.Any(grant => grant.CompanyId == query.CompanyId && grant.AgentId == agentId))
+            .OrderBy(source => source.Document.Title)
+            .ThenBy(source => source.DocumentId)
+            .Skip(offset)
+            .Take(take)
+            .ToListAsync(cancellationToken);
+
+        var items = new List<CompanyKnowledgeRepositoryDocumentDto>(query.PageSize);
+        var consumed = 0;
+        var unavailableCount = 0;
+        foreach (var source in candidates)
+        {
+            if (items.Count >= query.PageSize) break;
+            consumed++;
+            if (!_accessPolicyEvaluator.CanAccess(accessContext, source.Document)) continue;
+            var availability = await _remoteAvailability.CheckAsync(
+                query.CompanyId, source.DocumentId, accessContext, cancellationToken);
+            if (!availability.IsAvailable)
+            {
+                if (!string.Equals(availability.ReasonCode, "local_access_revoked", StringComparison.Ordinal))
+                    unavailableCount++;
+                continue;
+            }
+
+            var indexingState = source.Document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed &&
+                                source.Document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed &&
+                                source.Document.ActiveChunkCount > 0
+                ? CompanyKnowledgeRetrievalStatuses.Available
+                : CompanyKnowledgeRetrievalStatuses.NotYetIndexed;
+            items.Add(new CompanyKnowledgeRepositoryDocumentDto(
+                CreateDocumentHandle(source.DocumentId),
+                CreateRepositoryHandle(source.ConnectionId),
+                source.Document.Title,
+                source.Document.DocumentType.ToStorageValue(),
+                source.SourceWebUrl,
+                source.RemoteVersion,
+                source.Document.ActiveChunkCount,
+                indexingState,
+                source.Document.UpdatedUtc));
+        }
+
+        var hasMore = consumed < candidates.Count || candidates.Count == take;
+        var status = items.Count > 0
+            ? CompanyKnowledgeRetrievalStatuses.Available
+            : unavailableCount > 0
+                ? CompanyKnowledgeRetrievalStatuses.SourceUnavailable
+                : CompanyKnowledgeRetrievalStatuses.NoMatch;
+        return new CompanyKnowledgeRepositoryListPageDto(
+            status,
+            items,
+            hasMore ? EncodeListCursor(offset + consumed) : null);
+    }
+
+    public async Task<CompanyKnowledgeRepositoryReadResultDto> ReadRepositoryDocumentAsync(
+        CompanyKnowledgeRepositoryReadQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (query.CompanyId == Guid.Empty)
+            throw new CompanyKnowledgeSearchValidationException("CompanyId is required.");
+        if (query.MaxCharacters is < 1 or > 8000)
+            throw new CompanyKnowledgeSearchValidationException("MaxCharacters must be between 1 and 8000.");
+        if (query.AccessContext?.AgentId is not Guid agentId || agentId == Guid.Empty)
+            throw new CompanyKnowledgeSearchValidationException("A trusted agent context is required.");
+        if (!TryParseHandle(query.DocumentHandle, "knowledge-document", out var documentId))
+            throw new CompanyKnowledgeSearchValidationException("DocumentHandle is invalid.");
+
+        var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
+        if (membership is null && !HasRequestedMembership(query.AccessContext))
+            throw new UnauthorizedAccessException("The current user cannot read repository knowledge for this company.");
+        var accessContext = BuildAccessContext(query.CompanyId, membership, query.AccessContext);
+        var source = await _dbContext.CompanyKnowledgeDocumentRemoteSources
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Include(item => item.Document)
+            .Include(item => item.Connection)
+            .Where(item =>
+                item.CompanyId == query.CompanyId &&
+                item.DocumentId == documentId &&
+                item.Connection.CompanyId == query.CompanyId &&
+                item.Connection.LifecycleState == DocumentRepositoryLifecycleStates.Active &&
+                item.Connection.Audience == DocumentRepositoryAudiences.Company &&
+                item.Connection.AgentGrants.Any(grant => grant.CompanyId == query.CompanyId && grant.AgentId == agentId))
+            .SingleOrDefaultAsync(cancellationToken);
+        if (source is null || !_accessPolicyEvaluator.CanAccess(accessContext, source.Document))
+            return EmptyReadResult(CompanyKnowledgeRetrievalStatuses.NotFound, query.DocumentHandle);
+
+        var availability = await _remoteAvailability.CheckAsync(
+            query.CompanyId, documentId, accessContext, cancellationToken);
+        if (!availability.IsAvailable)
+        {
+            return EmptyReadResult(
+                string.Equals(availability.ReasonCode, "local_access_revoked", StringComparison.Ordinal)
+                    ? CompanyKnowledgeRetrievalStatuses.NotFound
+                    : CompanyKnowledgeRetrievalStatuses.SourceUnavailable,
+                query.DocumentHandle);
+        }
+
+        var repositoryHandle = CreateRepositoryHandle(source.ConnectionId);
+        if (source.Document.IngestionStatus != CompanyKnowledgeDocumentIngestionStatus.Processed ||
+            source.Document.IndexingStatus != CompanyKnowledgeDocumentIndexingStatus.Indexed ||
+            source.Document.ActiveChunkCount <= 0)
+        {
+            return new CompanyKnowledgeRepositoryReadResultDto(
+                CompanyKnowledgeRetrievalStatuses.NotYetIndexed,
+                query.DocumentHandle,
+                repositoryHandle,
+                source.Document.Title,
+                null,
+                source.SourceWebUrl,
+                source.RemoteVersion,
+                [],
+                null);
+        }
+
+        var chunks = await _dbContext.CompanyKnowledgeChunks
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(chunk =>
+                chunk.CompanyId == query.CompanyId &&
+                chunk.DocumentId == documentId &&
+                chunk.IsActive &&
+                chunk.ChunkSetVersion == source.Document.CurrentChunkSetVersion)
+            .OrderBy(chunk => chunk.ChunkIndex)
+            .Select(chunk => new ReadableKnowledgeChunk(
+                chunk.Id, chunk.ChunkIndex, chunk.Content, chunk.SourceReference))
+            .Take(500)
+            .ToListAsync(cancellationToken);
+        var cursor = DecodeReadCursor(query.Cursor, chunks.Count);
+        var builder = new StringBuilder(query.MaxCharacters);
+        var citations = new List<CompanyKnowledgeEvidenceCitationDto>();
+        var chunkPosition = cursor.ChunkPosition;
+        var characterOffset = cursor.CharacterOffset;
+        while (chunkPosition < chunks.Count && builder.Length < query.MaxCharacters)
+        {
+            var chunk = chunks[chunkPosition];
+            if (characterOffset > chunk.Content.Length)
+                throw new CompanyKnowledgeSearchValidationException("Cursor is invalid.");
+            if (builder.Length > 0 && characterOffset == 0)
+            {
+                var separatorLength = Math.Min(2, query.MaxCharacters - builder.Length);
+                builder.Append("\n\n".AsSpan(0, separatorLength));
+                if (builder.Length >= query.MaxCharacters) break;
+            }
+
+            var remaining = query.MaxCharacters - builder.Length;
+            var available = chunk.Content.Length - characterOffset;
+            var count = Math.Min(remaining, available);
+            builder.Append(chunk.Content.AsSpan(characterOffset, count));
+            if (citations.All(citation => citation.ChunkId != chunk.Id))
+            {
+                citations.Add(new CompanyKnowledgeEvidenceCitationDto(
+                    query.DocumentHandle,
+                    chunk.Id,
+                    chunk.ChunkIndex,
+                    chunk.SourceReference,
+                    source.SourceWebUrl,
+                    source.RemoteVersion));
+            }
+
+            characterOffset += count;
+            if (characterOffset >= chunk.Content.Length)
+            {
+                chunkPosition++;
+                characterOffset = 0;
+            }
+        }
+
+        var nextCursor = chunkPosition < chunks.Count
+            ? EncodeReadCursor(chunkPosition, characterOffset)
+            : null;
+        return new CompanyKnowledgeRepositoryReadResultDto(
+            CompanyKnowledgeRetrievalStatuses.Available,
+            query.DocumentHandle,
+            repositoryHandle,
+            source.Document.Title,
+            builder.ToString(),
+            source.SourceWebUrl,
+            source.RemoteVersion,
+            citations,
+            nextCursor);
     }
 
     // Providers without PostgreSQL jsonb operators still fail closed by prefiltering
     // allowed documents before any similarity scoring happens in memory.
-    private async Task<IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor>> LoadAllowedDocumentsAsync(
+    private async Task<KnowledgeAccessScan> LoadAllowedDocumentsAsync(
         Guid companyId,
         CompanyKnowledgeAccessContext accessContext,
         IReadOnlyList<Guid>? requestedDocumentIds,
@@ -1322,17 +1566,52 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
             .AsNoTracking()
             .Where(document =>
                 document.CompanyId == companyId &&
-                document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed &&
-                document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed &&
-                document.ActiveChunkCount > 0 &&
                 (requestedDocumentIds == null || requestedDocumentIds.Contains(document.Id)))
+            .Take(200)
             .ToListAsync(cancellationToken);
 
-        return documents
-            .Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document))
-            .ToDictionary(
-                document => document.Id,
-                document => new AllowedKnowledgeDocumentDescriptor(document.Id));
+        var documentIds = documents.Select(document => document.Id).ToArray();
+        var remoteSources = await _dbContext.CompanyKnowledgeDocumentRemoteSources
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(source => source.CompanyId == companyId && documentIds.Contains(source.DocumentId))
+            .Select(source => new RemoteKnowledgeDescriptor(
+                source.DocumentId,
+                source.ConnectionId,
+                source.RemoteVersion,
+                source.SourceWebUrl))
+            .ToDictionaryAsync(source => source.DocumentId, cancellationToken);
+
+        var allowed = new Dictionary<Guid, AllowedKnowledgeDocumentDescriptor>();
+        var unavailableSourceCount = 0;
+        var notYetIndexedCount = 0;
+        foreach (var document in documents.Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document)))
+        {
+            var availability = await _remoteAvailability.CheckAsync(companyId, document.Id, accessContext, cancellationToken);
+            if (!availability.IsAvailable)
+            {
+                if (remoteSources.ContainsKey(document.Id) &&
+                    !string.Equals(availability.ReasonCode, "local_access_revoked", StringComparison.Ordinal))
+                    unavailableSourceCount++;
+                continue;
+            }
+
+            if (document.IngestionStatus != CompanyKnowledgeDocumentIngestionStatus.Processed ||
+                document.IndexingStatus != CompanyKnowledgeDocumentIndexingStatus.Indexed ||
+                document.ActiveChunkCount <= 0)
+            {
+                notYetIndexedCount++;
+                continue;
+            }
+
+            remoteSources.TryGetValue(document.Id, out var remote);
+            allowed[document.Id] = new AllowedKnowledgeDocumentDescriptor(
+                document.Id,
+                remote?.RemoteVersion ?? $"chunk-set:{document.CurrentChunkSetVersion}",
+                remote?.ConnectionId,
+                remote?.SourceWebUrl ?? document.SourceRef);
+        }
+        return new KnowledgeAccessScan(allowed, unavailableSourceCount, notYetIndexedCount);
     }
 
     private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchPostgreSqlAsync(
@@ -1626,8 +1905,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
         IReadOnlyList<float> queryEmbedding,
         CancellationToken cancellationToken)
     {
-        var allowedDocuments = await LoadAllowedDocumentsAsync(request.CompanyId, request.AccessContext, request.AllowedDocumentIds, cancellationToken);
-        var allowedDocumentIds = allowedDocuments.Keys.ToArray();
+        var allowedDocumentIds = request.AllowedDocumentIds?.ToArray() ?? [];
         if (allowedDocumentIds.Length == 0)
         {
             return Array.Empty<CompanyKnowledgeSearchResultDto>();
@@ -1655,6 +1933,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
                 SourceType = chunk.Document.SourceType,
                 chunk.Document.SourceRef
             })
+            .Take(2000)
             .ToListAsync(cancellationToken);
 
         return candidates
@@ -1692,6 +1971,206 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
             .ThenBy(result => result.DocumentId)
             .Take(request.TopN)
             .ToArray();
+    }
+
+    private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchKeywordAsync(
+        ScopedKnowledgeSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        var allowedDocumentIds = request.AllowedDocumentIds?.ToArray() ?? [];
+        if (allowedDocumentIds.Length == 0) return [];
+
+        var candidates = await _dbContext.CompanyKnowledgeChunks
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(chunk =>
+                chunk.CompanyId == request.CompanyId &&
+                chunk.IsActive &&
+                chunk.ChunkSetVersion == chunk.Document.CurrentChunkSetVersion &&
+                allowedDocumentIds.Contains(chunk.DocumentId))
+            .OrderBy(chunk => chunk.DocumentId)
+            .ThenBy(chunk => chunk.ChunkIndex)
+            .Select(chunk => new KeywordKnowledgeCandidate(
+                chunk.Id,
+                chunk.Content,
+                chunk.DocumentId,
+                chunk.ChunkIndex,
+                chunk.SourceReference,
+                chunk.Metadata,
+                chunk.Document.Title,
+                chunk.Document.OriginalFileName,
+                chunk.Document.DocumentType,
+                chunk.Document.SourceType,
+                chunk.Document.SourceRef))
+            .Take(2000)
+            .ToListAsync(cancellationToken);
+
+        return candidates
+            .Select(candidate => (Candidate: candidate, Score: KeywordScore(
+                request.QueryText, candidate.Title, candidate.OriginalFileName, candidate.Content)))
+            .Where(match => match.Score > 0d)
+            .OrderByDescending(match => match.Score)
+            .ThenBy(match => match.Candidate.ChunkIndex)
+            .ThenBy(match => match.Candidate.DocumentId)
+            .Take(request.TopN)
+            .Select(match =>
+            {
+                var candidate = match.Candidate;
+                var documentType = candidate.DocumentType.ToStorageValue();
+                var sourceType = candidate.SourceType.ToStorageValue();
+                return new CompanyKnowledgeSearchResultDto(
+                    candidate.Id,
+                    candidate.Content,
+                    match.Score,
+                    candidate.DocumentId,
+                    candidate.Title,
+                    candidate.ChunkIndex,
+                    candidate.SourceReference,
+                    candidate.Metadata.ToDictionary(
+                        pair => pair.Key,
+                        pair => pair.Value?.DeepClone(),
+                        StringComparer.OrdinalIgnoreCase),
+                    new CompanyKnowledgeSourceReferenceDto(
+                        candidate.DocumentId,
+                        candidate.Title,
+                        documentType,
+                        sourceType,
+                        candidate.SourceRef,
+                        candidate.Id,
+                        candidate.ChunkIndex,
+                        candidate.SourceReference),
+                    new CompanyKnowledgeSourceDocumentDto(
+                        candidate.DocumentId,
+                        candidate.Title,
+                        documentType,
+                        sourceType,
+                        candidate.SourceRef));
+            })
+            .ToArray();
+    }
+
+    private static IReadOnlyList<CompanyKnowledgeSearchResultDto> MergeRankedResults(
+        IReadOnlyList<CompanyKnowledgeSearchResultDto> semanticResults,
+        IReadOnlyList<CompanyKnowledgeSearchResultDto> keywordResults,
+        IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor> allowedDocuments,
+        int topN)
+    {
+        var merged = new Dictionary<Guid, CompanyKnowledgeSearchResultDto>();
+        foreach (var result in semanticResults.Concat(keywordResults))
+        {
+            if (!allowedDocuments.TryGetValue(result.DocumentId, out var document)) continue;
+            var decorated = result with
+            {
+                ContentVersion = document.ContentVersion,
+                DocumentHandle = CreateDocumentHandle(result.DocumentId),
+                EvidenceClassification = CompanyKnowledgeEvidenceClassifications.UntrustedEvidence
+            };
+            if (!merged.TryGetValue(result.ChunkId, out var current) || decorated.Score > current.Score)
+                merged[result.ChunkId] = decorated;
+        }
+
+        return merged.Values
+            .OrderByDescending(result => result.Score)
+            .ThenBy(result => result.ChunkIndex)
+            .ThenBy(result => result.DocumentId)
+            .Take(topN)
+            .ToArray();
+    }
+
+    private static double KeywordScore(string query, string title, string fileName, string content)
+    {
+        var normalizedQuery = query.Trim();
+        if (normalizedQuery.Length == 0) return 0d;
+        if (title.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase) ||
+            fileName.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase))
+            return 1d;
+        if (content.Contains(normalizedQuery, StringComparison.OrdinalIgnoreCase)) return 0.9d;
+
+        var tokens = Tokenize(normalizedQuery);
+        if (tokens.Count == 0) return 0d;
+        var titleMatches = tokens.Count(token =>
+            title.Contains(token, StringComparison.OrdinalIgnoreCase) ||
+            fileName.Contains(token, StringComparison.OrdinalIgnoreCase));
+        var contentMatches = tokens.Count(token => content.Contains(token, StringComparison.OrdinalIgnoreCase));
+        var coverage = (double)Math.Max(titleMatches, contentMatches) / tokens.Count;
+        if (coverage <= 0d) return 0d;
+        return Math.Min(0.89d, (titleMatches > 0 ? 0.7d : 0.5d) + coverage * 0.19d);
+    }
+
+    private static IReadOnlyList<string> Tokenize(string value)
+    {
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                current.Append(char.ToLowerInvariant(character));
+            }
+            else if (current.Length > 1)
+            {
+                tokens.Add(current.ToString());
+                current.Clear();
+            }
+            else
+            {
+                current.Clear();
+            }
+        }
+        if (current.Length > 1) tokens.Add(current.ToString());
+        return tokens.Distinct(StringComparer.Ordinal).Take(20).ToArray();
+    }
+
+    private static CompanyKnowledgeRepositoryReadResultDto EmptyReadResult(string status, string documentHandle) =>
+        new(status, documentHandle, null, null, null, null, null, [], null);
+
+    private static string CreateDocumentHandle(Guid documentId) => $"knowledge-document:{documentId:N}";
+    private static string CreateRepositoryHandle(Guid repositoryId) => $"document-repository:{repositoryId:N}";
+
+    private static bool TryParseHandle(string? handle, string prefix, out Guid id)
+    {
+        id = Guid.Empty;
+        if (string.IsNullOrWhiteSpace(handle)) return false;
+        var expectedPrefix = prefix + ":";
+        return handle.StartsWith(expectedPrefix, StringComparison.Ordinal) &&
+               Guid.TryParseExact(handle[expectedPrefix.Length..], "N", out id) &&
+               id != Guid.Empty;
+    }
+
+    private static string EncodeListCursor(int offset) =>
+        Convert.ToBase64String(Encoding.UTF8.GetBytes(offset.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+
+    private static int DecodeListCursor(string? cursor)
+    {
+        if (string.IsNullOrWhiteSpace(cursor)) return 0;
+        try
+        {
+            var value = Encoding.UTF8.GetString(Convert.FromBase64String(cursor));
+            if (int.TryParse(value, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var offset) && offset >= 0 && offset <= 10000)
+                return offset;
+        }
+        catch (FormatException) { }
+        throw new CompanyKnowledgeSearchValidationException("Cursor is invalid.");
+    }
+
+    private static string EncodeReadCursor(int chunkPosition, int characterOffset) =>
+        Convert.ToBase64String(Encoding.UTF8.GetBytes($"{chunkPosition}:{characterOffset}"));
+
+    private static KnowledgeReadCursor DecodeReadCursor(string? cursor, int chunkCount)
+    {
+        if (string.IsNullOrWhiteSpace(cursor)) return new KnowledgeReadCursor(0, 0);
+        try
+        {
+            var value = Encoding.UTF8.GetString(Convert.FromBase64String(cursor));
+            var parts = value.Split(':', StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && int.TryParse(parts[0], out var chunkPosition) &&
+                int.TryParse(parts[1], out var characterOffset) &&
+                chunkPosition >= 0 && chunkPosition <= chunkCount && characterOffset >= 0 && characterOffset <= 16000)
+                return new KnowledgeReadCursor(chunkPosition, characterOffset);
+        }
+        catch (FormatException) { }
+        throw new CompanyKnowledgeSearchValidationException("Cursor is invalid.");
     }
 
     private static double CosineSimilarity(IReadOnlyList<float> left, IReadOnlyList<float> right)
@@ -1742,7 +2221,43 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
         command.Parameters.Add(parameter);
     }
 
-    private sealed record AllowedKnowledgeDocumentDescriptor(Guid DocumentId);
+    private sealed record AllowedKnowledgeDocumentDescriptor(
+        Guid DocumentId,
+        string ContentVersion,
+        Guid? ConnectionId,
+        string? SourceLink);
+
+    private sealed record KnowledgeAccessScan(
+        IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor> AllowedDocuments,
+        int UnavailableSourceCount,
+        int NotYetIndexedCount);
+
+    private sealed record RemoteKnowledgeDescriptor(
+        Guid DocumentId,
+        Guid ConnectionId,
+        string RemoteVersion,
+        string SourceWebUrl);
+
+    private sealed record KeywordKnowledgeCandidate(
+        Guid Id,
+        string Content,
+        Guid DocumentId,
+        int ChunkIndex,
+        string SourceReference,
+        Dictionary<string, JsonNode?> Metadata,
+        string Title,
+        string OriginalFileName,
+        CompanyKnowledgeDocumentType DocumentType,
+        CompanyKnowledgeDocumentSourceType SourceType,
+        string? SourceRef);
+
+    private sealed record ReadableKnowledgeChunk(
+        Guid Id,
+        int ChunkIndex,
+        string Content,
+        string SourceReference);
+
+    private sealed record KnowledgeReadCursor(int ChunkPosition, int CharacterOffset);
 }
 
 public static class KnowledgeEmbeddingSerializer

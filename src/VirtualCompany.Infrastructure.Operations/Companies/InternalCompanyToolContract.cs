@@ -6,6 +6,7 @@ using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Tasks;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Companies;
@@ -17,6 +18,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
     private readonly IProactiveTaskCreationService _proactiveTaskCreationService;
     private readonly IApprovalRequestService _approvalRequestService;
     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
+    private readonly ICompanyDocumentPublicationService _documentPublicationService;
     private readonly IFinanceToolProvider _financeToolProvider;
     private readonly IFinanceTransactionAnomalyDetectionService _financeAnomalyDetectionService;
     private readonly IFinanceAgentAnalysisService _financeAgentAnalysisService;
@@ -35,6 +37,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         IProactiveTaskCreationService proactiveTaskCreationService,
         IApprovalRequestService approvalRequestService,
         ICompanyKnowledgeSearchService knowledgeSearchService,
+        ICompanyDocumentPublicationService documentPublicationService,
         IFinanceToolProvider financeToolProvider,
         IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService,
         IFinanceAgentAnalysisService financeAgentAnalysisService,
@@ -52,6 +55,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         _proactiveTaskCreationService = proactiveTaskCreationService;
         _approvalRequestService = approvalRequestService;
         _knowledgeSearchService = knowledgeSearchService;
+        _documentPublicationService = documentPublicationService;
         _financeToolProvider = financeToolProvider;
         _financeAnomalyDetectionService = financeAnomalyDetectionService;
         _financeAgentAnalysisService = financeAgentAnalysisService;
@@ -103,7 +107,13 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "tasks.list" => await ExecuteTaskListAsync(request, cancellationToken),
                 "tasks.update_status" => await ExecuteTaskStatusUpdateAsync(request, cancellationToken),
                 "approvals.create_request" => await ExecuteApprovalCreateRequestAsync(request, cancellationToken),
-                "knowledge.search" => await ExecuteKnowledgeSearchAsync(request, cancellationToken),
+                DocumentKnowledgeToolNames.Search => await ExecuteKnowledgeSearchAsync(request, cancellationToken),
+                DocumentKnowledgeToolNames.List => await ExecuteRepositoryDocumentListAsync(request, cancellationToken),
+                DocumentKnowledgeToolNames.Read => await ExecuteRepositoryDocumentReadAsync(request, cancellationToken),
+                DocumentPublicationToolNames.PrepareCreate => await ExecuteDocumentPublicationPrepareAsync(request, cancellationToken),
+                DocumentPublicationToolNames.PrepareUpdate => await ExecuteDocumentUpdatePrepareAsync(request, cancellationToken),
+                DocumentPublicationToolNames.Create => await ExecuteDocumentPublicationCreateAsync(request, cancellationToken),
+                DocumentPublicationToolNames.Update => await ExecuteDocumentUpdateAsync(request, cancellationToken),
                 "get_cash_balance" => await ExecuteGetCashBalanceAsync(request, cancellationToken),
                 "list_transactions" => await ExecuteListTransactionsAsync(request, cancellationToken),
                 "resolve_finance_agent_query" => await ExecuteResolveFinanceAgentQueryAsync(request, cancellationToken),
@@ -423,6 +433,114 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
             Metadata(request, "approval_request_service"));
     }
 
+    private async Task<InternalToolExecutionResponse> ExecuteDocumentPublicationPrepareAsync(
+        InternalToolExecutionRequest request, CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var failure)) return failure;
+        var connectionId = ReadGuid(request.Payload, "connectionId");
+        var fileName = ReadString(request.Payload, "fileName");
+        var contentBase64 = ReadString(request.Payload, "contentBase64");
+        var idempotencyKey = ReadString(request.Payload, "idempotencyKey");
+        if (!connectionId.HasValue || string.IsNullOrWhiteSpace(fileName) ||
+            string.IsNullOrWhiteSpace(contentBase64) || string.IsNullOrWhiteSpace(idempotencyKey))
+            return Failed("document_publication_invalid", "Connection, filename, content, and idempotency key are required.");
+
+        var actorId = request.ActorUserId ?? request.AgentId;
+        var publication = await _documentPublicationService.PrepareAsync(request.CompanyId, request.AgentId,
+            request.ActorUserId.HasValue ? "user" : "agent", actorId,
+            new PrepareDocumentPublicationCommand(connectionId.Value, fileName,
+                ReadString(request.Payload, "contentType"), contentBase64, idempotencyKey), cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "The immutable file is staged. Use documents.create with its request ID and SHA-256 hash to request approval.",
+            new Dictionary<string, JsonNode?> { ["publication"] = Serialize(publication) },
+            Metadata(request, "document_publication_prepare"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteDocumentUpdatePrepareAsync(
+        InternalToolExecutionRequest request, CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var failure)) return failure;
+        var connectionId = ReadGuid(request.Payload, "connectionId");
+        var itemId = ReadString(request.Payload, "itemId");
+        var expectedVersion = ReadString(request.Payload, "expectedRemoteVersion");
+        var evidenceVersion = ReadString(request.Payload, "originalEvidenceVersion");
+        var fileName = ReadString(request.Payload, "fileName");
+        var contentBase64 = ReadString(request.Payload, "contentBase64");
+        var idempotencyKey = ReadString(request.Payload, "idempotencyKey");
+        if (!connectionId.HasValue || string.IsNullOrWhiteSpace(itemId) || string.IsNullOrWhiteSpace(expectedVersion) ||
+            string.IsNullOrWhiteSpace(evidenceVersion) || string.IsNullOrWhiteSpace(fileName) ||
+            string.IsNullOrWhiteSpace(contentBase64) || string.IsNullOrWhiteSpace(idempotencyKey))
+            return Failed("document_update_invalid", "Connection, target item, exact versions, filename, replacement content, and idempotency key are required.");
+        var actorId = request.ActorUserId ?? request.AgentId;
+        var publication = await _documentPublicationService.PrepareUpdateAsync(request.CompanyId, request.AgentId,
+            request.ActorUserId.HasValue ? "user" : "agent", actorId,
+            new PrepareDocumentUpdateCommand(connectionId.Value, itemId, expectedVersion, evidenceVersion, fileName,
+                ReadString(request.Payload, "contentType"), contentBase64, idempotencyKey,
+                ReadGuid(request.Payload, "stalePublicationRequestId")), cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "The exact-version replacement is staged. Review the original and proposed artifacts, then use documents.update with the immutable proposal fields.",
+            new Dictionary<string, JsonNode?> { ["publication"] = Serialize(publication) },
+            Metadata(request, "document_update_prepare"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteDocumentPublicationCreateAsync(
+        InternalToolExecutionRequest request, CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var failure)) return failure;
+        var publicationId = ReadGuid(request.Payload, "publicationRequestId");
+        var contentSha256 = ReadString(request.Payload, "contentSha256");
+        var repositoryName = ReadString(request.Payload, "repositoryName");
+        var targetFolderItemId = ReadString(request.Payload, "targetFolderItemId");
+        var fileName = ReadString(request.Payload, "fileName");
+        var sizeBytes = ReadLong(request.Payload, "sizeBytes");
+        if (!publicationId.HasValue || string.IsNullOrWhiteSpace(contentSha256) || string.IsNullOrWhiteSpace(repositoryName) ||
+            string.IsNullOrWhiteSpace(targetFolderItemId) || string.IsNullOrWhiteSpace(fileName) || !sizeBytes.HasValue)
+            return Failed("document_publication_invalid", "The staged publication ID, repository, folder, filename, size, and SHA-256 hash are required.");
+        var staged = await _documentPublicationService.GetAsync(request.CompanyId, publicationId.Value, cancellationToken);
+        if (staged is null || staged.RepositoryName != repositoryName || staged.TargetFolderItemId != targetFolderItemId ||
+            staged.FileName != fileName || staged.SizeBytes != sizeBytes.Value || staged.ContentSha256 != contentSha256)
+            return Failed("document_publication_changed", "The staged file no longer matches the exact approved destination and bytes.");
+        var publication = await _documentPublicationService.QueueApprovedAsync(request.CompanyId, request.AgentId,
+            request.ExecutionId, publicationId.Value, contentSha256, cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "The approved file creation is queued for durable delivery.",
+            new Dictionary<string, JsonNode?> { ["publication"] = Serialize(publication) },
+            Metadata(request, "document_publication_create"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteDocumentUpdateAsync(
+        InternalToolExecutionRequest request, CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var failure)) return failure;
+        var publicationId = ReadGuid(request.Payload, "publicationRequestId");
+        var contentSha256 = ReadString(request.Payload, "contentSha256");
+        var repositoryName = ReadString(request.Payload, "repositoryName");
+        var targetFolderItemId = ReadString(request.Payload, "targetFolderItemId");
+        var targetItemId = ReadString(request.Payload, "targetItemId");
+        var fileName = ReadString(request.Payload, "fileName");
+        var expectedVersion = ReadString(request.Payload, "expectedRemoteVersion");
+        var evidenceVersion = ReadString(request.Payload, "originalEvidenceVersion");
+        var sizeBytes = ReadLong(request.Payload, "sizeBytes");
+        if (!publicationId.HasValue || string.IsNullOrWhiteSpace(contentSha256) || string.IsNullOrWhiteSpace(repositoryName) ||
+            string.IsNullOrWhiteSpace(targetFolderItemId) || string.IsNullOrWhiteSpace(targetItemId) ||
+            string.IsNullOrWhiteSpace(fileName) || string.IsNullOrWhiteSpace(expectedVersion) ||
+            string.IsNullOrWhiteSpace(evidenceVersion) || !sizeBytes.HasValue)
+            return Failed("document_update_invalid", "The staged update ID, repository destination, target item, versions, filename, size, and SHA-256 hash are required.");
+        var staged = await _documentPublicationService.GetAsync(request.CompanyId, publicationId.Value, cancellationToken);
+        if (staged is null || staged.OperationKind != DocumentPublicationOperationKinds.Update ||
+            staged.RepositoryName != repositoryName || staged.TargetFolderItemId != targetFolderItemId ||
+            staged.TargetItemId != targetItemId || staged.FileName != fileName || staged.SizeBytes != sizeBytes.Value ||
+            staged.ContentSha256 != contentSha256 || staged.ExpectedRemoteVersion != expectedVersion ||
+            staged.OriginalEvidenceVersion != evidenceVersion)
+            return Failed("document_update_changed", "The staged replacement no longer matches the exact reviewed target, versions, and bytes.");
+        var publication = await _documentPublicationService.QueueApprovedAsync(request.CompanyId, request.AgentId,
+            request.ExecutionId, publicationId.Value, contentSha256, cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "The approved conditional replacement is queued for durable delivery.",
+            new Dictionary<string, JsonNode?> { ["publication"] = Serialize(publication) },
+            Metadata(request, "document_update_execute"));
+    }
+
     private async Task<InternalToolExecutionResponse> ExecuteKnowledgeSearchAsync(
         InternalToolExecutionRequest request,
         CancellationToken cancellationToken)
@@ -439,25 +557,95 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         }
 
         var topN = Math.Clamp(ReadInt(request.Payload, "topN") ?? 5, 1, 20);
-        var results = await _knowledgeSearchService.SearchAsync(
+        var page = await _knowledgeSearchService.SearchDetailedAsync(
             new CompanyKnowledgeSemanticSearchQuery(
                 request.CompanyId,
                 queryText,
                 topN,
-                new CompanyKnowledgeAccessContext(
-                    request.CompanyId,
-                    AgentId: request.AgentId)),
+                BuildKnowledgeAccessContext(request)),
             cancellationToken);
+
+        var metadata = Metadata(request, "knowledge_search_service");
+        AddKnowledgeAuditMetadata(
+            metadata,
+            page.Results.Select(result => result.DocumentHandle),
+            page.Results.Select(result => result.DocumentId));
 
         return InternalToolExecutionResponse.Succeeded(
             "Knowledge search completed.",
             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["results"] = Serialize(results),
-                ["resultCount"] = JsonValue.Create(results.Count),
-                ["query"] = JsonValue.Create(queryText)
+                ["results"] = Serialize(page.Results),
+                ["resultCount"] = JsonValue.Create(page.Results.Count),
+                ["query"] = JsonValue.Create(queryText),
+                ["retrievalStatus"] = JsonValue.Create(page.Status),
+                ["evidenceClassification"] = JsonValue.Create(CompanyKnowledgeEvidenceClassifications.UntrustedEvidence),
+                ["mayAuthorizeActions"] = JsonValue.Create(false)
             },
-            Metadata(request, "knowledge_search_service"));
+            metadata);
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteRepositoryDocumentListAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure)) return actionFailure;
+        var page = await _knowledgeSearchService.ListRepositoryDocumentsAsync(
+            new CompanyKnowledgeRepositoryListQuery(
+                request.CompanyId,
+                Math.Clamp(ReadInt(request.Payload, "pageSize") ?? 20, 1, 50),
+                ReadString(request.Payload, "cursor"),
+                BuildKnowledgeAccessContext(request)),
+            cancellationToken);
+        var metadata = Metadata(request, "knowledge_repository_list_service");
+        AddKnowledgeAuditMetadata(metadata, page.Items.Select(item => item.DocumentHandle));
+        metadata["sourceRepositoryHandles"] = new JsonArray(page.Items
+            .Select(item => (JsonNode?)JsonValue.Create(item.RepositoryHandle))
+            .DistinctBy(node => node!.ToJsonString(), StringComparer.Ordinal)
+            .ToArray());
+        return InternalToolExecutionResponse.Succeeded(
+            "Repository documents were listed.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["page"] = Serialize(page),
+                ["retrievalStatus"] = JsonValue.Create(page.Status),
+                ["evidenceClassification"] = JsonValue.Create(CompanyKnowledgeEvidenceClassifications.UntrustedEvidence),
+                ["mayAuthorizeActions"] = JsonValue.Create(false)
+            },
+            metadata);
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteRepositoryDocumentReadAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var actionFailure)) return actionFailure;
+        var documentHandle = ReadString(request.Payload, "documentHandle");
+        if (string.IsNullOrWhiteSpace(documentHandle))
+            return Failed("document_handle_required", "A repository document handle is required.");
+        var document = await _knowledgeSearchService.ReadRepositoryDocumentAsync(
+            new CompanyKnowledgeRepositoryReadQuery(
+                request.CompanyId,
+                documentHandle,
+                Math.Clamp(ReadInt(request.Payload, "maxCharacters") ?? 4000, 1, 8000),
+                ReadString(request.Payload, "cursor"),
+                BuildKnowledgeAccessContext(request)),
+            cancellationToken);
+        var metadata = Metadata(request, "knowledge_repository_read_service");
+        AddKnowledgeAuditMetadata(metadata, [document.DocumentHandle]);
+        if (!string.IsNullOrWhiteSpace(document.RepositoryHandle))
+            metadata["sourceRepositoryHandles"] = new JsonArray(JsonValue.Create(document.RepositoryHandle));
+        metadata["retrievalStatus"] = JsonValue.Create(document.Status);
+        return InternalToolExecutionResponse.Succeeded(
+            "Repository document read completed.",
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["document"] = Serialize(document),
+                ["retrievalStatus"] = JsonValue.Create(document.Status),
+                ["evidenceClassification"] = JsonValue.Create(CompanyKnowledgeEvidenceClassifications.UntrustedEvidence),
+                ["mayAuthorizeActions"] = JsonValue.Create(false)
+            },
+            metadata);
     }
 
     private async Task<InternalToolExecutionResponse> ExecuteGetCashBalanceAsync(
@@ -1137,6 +1325,41 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
 
     private static InternalToolExecutionResponse Failed(string errorCode, string userSafeSummary) =>
         InternalToolExecutionResponse.Failed("failed", errorCode, userSafeSummary);
+
+    private static CompanyKnowledgeAccessContext BuildKnowledgeAccessContext(InternalToolExecutionRequest request) =>
+        new(
+            request.CompanyId,
+            UserId: request.ActorUserId,
+            DataScopes: ["knowledge"],
+            AgentId: request.AgentId);
+
+    private static void AddKnowledgeAuditMetadata(
+        IDictionary<string, JsonNode?> metadata,
+        IEnumerable<string?> documentHandles,
+        IEnumerable<Guid>? documentIds = null)
+    {
+        var handles = documentHandles
+            .Where(handle => !string.IsNullOrWhiteSpace(handle))
+            .Select(handle => handle!.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Take(50)
+            .ToArray();
+        metadata["sourceDocumentHandles"] = new JsonArray(
+            handles.Select(handle => (JsonNode?)JsonValue.Create(handle)).ToArray());
+        if (documentIds is not null)
+        {
+            metadata["sourceDocumentIds"] = new JsonArray(documentIds
+                .Where(id => id != Guid.Empty)
+                .Distinct()
+                .Take(50)
+                .Select(id => (JsonNode?)JsonValue.Create(id))
+                .ToArray());
+        }
+        metadata["sourceCount"] = JsonValue.Create(handles.Length);
+        metadata["evidenceClassification"] = JsonValue.Create(CompanyKnowledgeEvidenceClassifications.UntrustedEvidence);
+        metadata["documentInstructionsTrusted"] = JsonValue.Create(false);
+        metadata["mayAuthorizeActions"] = JsonValue.Create(false);
+    }
 
     private static Dictionary<string, JsonNode?> Metadata(InternalToolExecutionRequest request, string contractName) =>
         new(StringComparer.OrdinalIgnoreCase)

@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -162,7 +163,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
         var effectiveAuthority = await _effectiveAuthorityResolver.ResolveAsync(companyId, agentId, cancellationToken);
         var requestedAuthority = effectiveAuthority.Find(command.ToolName, actionType, command.Scope);
-        var enforceEffectiveAuthority = IsLauraFinanceAgent(runtimeProfile) || IsFinanceTool(command.ToolName);
+        var enforceEffectiveAuthority = IsLauraFinanceAgent(runtimeProfile) ||
+                                        IsFinanceTool(command.ToolName) ||
+                                        DocumentKnowledgeToolNames.IsRepositoryReadTool(command.ToolName);
         var staleAuthority = (!string.IsNullOrWhiteSpace(command.ExpectedAuthorityVersion) &&
                               !string.Equals(command.ExpectedAuthorityVersion, effectiveAuthority.AuthorityVersion, StringComparison.Ordinal)) ||
                              (!string.IsNullOrWhiteSpace(command.ExpectedAuthorityHash) &&
@@ -442,7 +445,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                         DataSources: ["agent_execution", "policy_guardrail", "finance_application"],
                         CorrelationId: correlationId,
                         RationaleSummary: result.Summary,
-                        Metadata: BuildAuditMetadata(command, decision)),
+                        Metadata: BuildAuditMetadata(command, decision, result: result)),
                     cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 return new ExecuteAgentToolResultDto(
@@ -467,7 +470,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 DataSources: ["agent_execution", "policy_guardrail", "http_request"],
                 CorrelationId: correlationId,
                 RationaleSummary: result.Summary,
-                Metadata: BuildAuditMetadata(command, decision)),
+                Metadata: BuildAuditMetadata(command, decision, result: result)),
             cancellationToken);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -674,21 +677,37 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     {
         var toolPermissions = CloneNodes(runtimeProfile.ToolPermissions);
         var dataScopes = CloneNodes(runtimeProfile.DataScopes);
+        var repositoryAuthorities = effectiveAuthority.Tools
+            .Where(authority =>
+                authority.IsUsable &&
+                string.Equals(authority.GrantSource, AgentAuthorityGrantSources.DocumentRepositoryGrant, StringComparison.Ordinal) &&
+                DocumentKnowledgeToolNames.IsRepositoryGrantTool(authority.ToolName))
+            .ToArray();
 
         if (IsAlexSalesAgent(runtimeProfile))
         {
             var definitions = _companyToolRegistry.ListToolDefinitions().Where(x => x.ToolName.StartsWith("sales.", StringComparison.OrdinalIgnoreCase)).ToArray();
+            var alexAllowedTools = definitions.Select(x => x.ToolName)
+                .Concat(repositoryAuthorities.Select(authority => authority.ToolName))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var alexAllowedActions = definitions.Select(x => x.ActionType.ToStorageValue())
+                .Concat(repositoryAuthorities.Select(authority => authority.ActionType))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             return (
                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["allowed"] = ToJsonArray(definitions.Select(x => x.ToolName).ToArray()),
-                    ["actions"] = ToJsonArray(definitions.Select(x => x.ActionType.ToStorageValue()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()),
-                    ["denied"] = ToJsonArray(_companyToolRegistry.ListTools().Select(x => x.ToolName).Except(definitions.Select(x => x.ToolName), StringComparer.OrdinalIgnoreCase).ToArray()),
+                    ["allowed"] = ToJsonArray(alexAllowedTools),
+                    ["actions"] = ToJsonArray(alexAllowedActions),
+                    ["denied"] = ToJsonArray(_companyToolRegistry.ListTools().Select(x => x.ToolName).Except(alexAllowedTools, StringComparer.OrdinalIgnoreCase).ToArray()),
                     ["deniedActions"] = new JsonArray()
                 },
                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["read"] = new JsonArray("sales", "prospecting"),
+                    ["read"] = repositoryAuthorities.Length == 0
+                        ? new JsonArray("sales", "prospecting")
+                        : new JsonArray("sales", "prospecting", "knowledge"),
                     ["recommend"] = new JsonArray("sales", "prospecting"),
                     ["execute"] = new JsonArray("sales", "prospecting"),
                     ["write"] = new JsonArray()
@@ -697,6 +716,13 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
         if (!IsLauraFinanceAgent(runtimeProfile))
         {
+            if (repositoryAuthorities.Length > 0)
+            {
+                MergePermissionValues(toolPermissions, "allowed", repositoryAuthorities.Select(authority => authority.ToolName));
+                MergePermissionValues(toolPermissions, "actions", [ToolActionType.Read.ToStorageValue()]);
+                RemovePermissionValues(toolPermissions, "denied", repositoryAuthorities.Select(authority => authority.ToolName));
+                MergePermissionValues(dataScopes, ToolActionType.Read.ToStorageValue(), ["knowledge"]);
+            }
             return (toolPermissions, dataScopes);
         }
 
@@ -729,7 +755,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             },
             new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["read"] = new JsonArray(JsonValue.Create("finance")),
+                ["read"] = repositoryAuthorities.Length == 0
+                    ? new JsonArray(JsonValue.Create("finance"))
+                    : new JsonArray(JsonValue.Create("finance"), JsonValue.Create("knowledge")),
                 ["recommend"] = new JsonArray(JsonValue.Create("finance")),
                 ["execute"] = new JsonArray(JsonValue.Create("finance")),
                 ["write"] = new JsonArray()
@@ -745,6 +773,41 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         string.Equals(runtimeProfile.TemplateId, "sales", StringComparison.OrdinalIgnoreCase) ||
         (string.Equals(runtimeProfile.DisplayName, "Alex", StringComparison.OrdinalIgnoreCase) &&
          string.Equals(runtimeProfile.Department, "Sales", StringComparison.OrdinalIgnoreCase));
+
+    private static void MergePermissionValues(
+        IDictionary<string, JsonNode?> target,
+        string key,
+        IEnumerable<string> values)
+    {
+        var merged = ReadJsonStrings(target.TryGetValue(key, out var existing) ? existing : null)
+            .Concat(values)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        target[key] = ToJsonArray(merged);
+    }
+
+    private static void RemovePermissionValues(
+        IDictionary<string, JsonNode?> target,
+        string key,
+        IEnumerable<string> values)
+    {
+        var removed = values.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        target[key] = ToJsonArray(ReadJsonStrings(target.TryGetValue(key, out var existing) ? existing : null)
+            .Where(value => !removed.Contains(value))
+            .ToArray());
+    }
+
+    private static IReadOnlyList<string> ReadJsonStrings(JsonNode? node) =>
+        node is JsonArray array
+            ? array.OfType<JsonValue>()
+                .Select(value => value.TryGetValue<string>(out var text) ? text : null)
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .Select(text => text!)
+                .ToArray()
+            : [];
 
     private Task WriteBoundaryEnforcementAuditAsync(
         Guid companyId,
@@ -788,7 +851,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     private static Dictionary<string, string?> BuildAuditMetadata(
         ExecuteAgentToolCommand command,
         ToolExecutionDecisionDto decision,
-        Guid? approvalRequestId = null)
+        Guid? approvalRequestId = null,
+        ToolExecutionResult? result = null)
     {
         var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
@@ -820,7 +884,40 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             metadata["thresholdEvaluationCount"] = decision.ThresholdEvaluations.Count.ToString(CultureInfo.InvariantCulture);
         }
 
+        if (result?.Metadata is not null)
+        {
+            foreach (var key in new[]
+                     {
+                         "sourceDocumentHandles",
+                         "sourceDocumentIds",
+                         "sourceRepositoryHandles",
+                         "sourceCount",
+                         "retrievalStatus",
+                         "evidenceClassification"
+                     })
+            {
+                if (result.Metadata.TryGetValue(key, out var value))
+                    metadata[key] = ToAuditMetadataValue(value);
+            }
+        }
+
         return metadata;
+    }
+
+    private static string? ToAuditMetadataValue(JsonNode? value)
+    {
+        if (value is JsonArray array)
+        {
+            return string.Join(",", array.Take(50).Select(item => item is JsonValue jsonValue &&
+                jsonValue.TryGetValue<string>(out var text) ? text : item?.ToJsonString()));
+        }
+        if (value is JsonValue scalar)
+        {
+            if (scalar.TryGetValue<string>(out var text)) return text;
+            if (scalar.TryGetValue<int>(out var integer)) return integer.ToString(CultureInfo.InvariantCulture);
+            if (scalar.TryGetValue<bool>(out var boolean)) return boolean ? "true" : "false";
+        }
+        return null;
     }
 
     private static Dictionary<string, JsonNode?> BuildThresholdContext(
@@ -897,6 +994,21 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         if (decision.Metadata.TryGetValue("executionState", out var executionState))
         {
             thresholdContext["executionState"] = executionState?.DeepClone();
+        }
+
+        if (string.Equals(command.ToolName, DocumentPublicationToolNames.Create, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(command.ToolName, DocumentPublicationToolNames.Update, StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var key in new[] { "publicationRequestId", "repositoryName", "targetFolderItemId", "targetItemId",
+                "fileName", "contentType", "sizeBytes", "contentSha256", "expectedRemoteVersion", "originalEvidenceVersion" })
+            {
+                if (command.RequestPayload?.TryGetValue(key, out var value) == true)
+                    thresholdContext[key] = value?.DeepClone();
+            }
+            thresholdContext["rationaleSummary"] = JsonValue.Create(
+                string.Equals(command.ToolName, DocumentPublicationToolNames.Update, StringComparison.OrdinalIgnoreCase)
+                    ? "Replace the reviewed whole file only if its Microsoft version remains unchanged."
+                    : "Create one approved file without overwriting an existing repository item.");
         }
 
         thresholdContext["schemaVersion"] = JsonValue.Create(decision.SchemaVersion);

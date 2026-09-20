@@ -11,6 +11,7 @@ public static class AgentAuthorityGrantSources
 {
     public const string Configured = "configured";
     public const string CompatibilityRolePolicy = "compatibility_role_policy";
+    public const string DocumentRepositoryGrant = "document_repository_grant";
 }
 
 public static class AgentAuthorityReasonCodes

@@ -97,6 +97,7 @@ function Stop-OrphanedRepoApiProcesses
 
 New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
 $buildLock = Enter-VcBuildLock -StateDirectory $stateDirectory -Operation "API server build"
+$previousDotnetProcessorCount = $env:DOTNET_PROCESSOR_COUNT
 try
 {
     # Older launchers and manual commands may have run directly from the stable
@@ -107,14 +108,20 @@ try
         -EntryAssembly "VirtualCompany.Api.dll"
 
     $env:MSBuildEnableWorkloadResolver = "false"
+    # The large immutable migration-history projects can make Roslyn unstable
+    # when the startup graph is compiled with unrestricted process parallelism.
+    # Keep the launcher on the repository's proven bounded build configuration;
+    # this affects compilation only and is restored before the API is started.
+    $env:DOTNET_PROCESSOR_COUNT = "2"
     $buildTimer = [System.Diagnostics.Stopwatch]::StartNew()
     # Let MSBuild perform its incremental restore before compiling. The assets
     # file records the absolute NuGet package root, so reusing an assets file
     # produced by another Windows account (for example an IDE or sandboxed
     # automation account) makes --no-restore fail with NETSDK1064 even when the
     # package is present in the current user's cache.
-    dotnet build $projectPath -c $configuration --disable-build-servers `
+    dotnet build $projectPath -c $configuration --disable-build-servers -m:1 `
         "-p:BuildInParallel=false" `
+        "-p:UseSharedCompilation=false" `
         "-p:VCStartupProject=VirtualCompany.Api" `
         "-p:VCStartupOutputPath=$buildOutputRoot" `
         -v minimal
@@ -134,6 +141,7 @@ try
 }
 finally
 {
+    $env:DOTNET_PROCESSOR_COUNT = $previousDotnetProcessorCount
     if ($null -ne $buildLock)
     {
         $buildLock.Dispose()

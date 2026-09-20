@@ -6,7 +6,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Documents;
 
-public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngestionOrchestrator
+public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngestionOrchestrator, ITrustedCompanyDocumentIngestionService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyDocumentIngestionStatusService _ingestionStatusService;
@@ -26,6 +26,9 @@ public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngest
     }
 
     public async Task ProcessUploadedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
+        => await ProcessAsync(companyId, documentId, false, cancellationToken);
+
+    public async Task ProcessAsync(Guid companyId, Guid documentId, bool requireProductionScanner, CancellationToken cancellationToken)
     {
         await _ingestionStatusService.MarkPendingScanAsync(companyId, documentId, cancellationToken);
 
@@ -70,6 +73,12 @@ public sealed class InlineCompanyDocumentIngestionOrchestrator : IDocumentIngest
         switch (scanResult.Outcome)
         {
             case CompanyDocumentVirusScanOutcome.Clean:
+                if (requireProductionScanner && string.Equals(scanResult.ScannerName, "no_op_placeholder", StringComparison.OrdinalIgnoreCase))
+                {
+                    await _ingestionStatusService.MarkFailedAsync(companyId, documentId,
+                        new CompanyDocumentIngestionFailure("virus_scanner_unavailable", "A production malware scanner is required for repository imports.", "Configure ClamAV and retry the import.", CanRetry: true), cancellationToken);
+                    return;
+                }
                 await _ingestionStatusService.MarkScanCleanAsync(companyId, documentId, scanResult, cancellationToken);
                 break;
             case CompanyDocumentVirusScanOutcome.Blocked:

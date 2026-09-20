@@ -14100,6 +14100,709 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("company_currency_definitions", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentPublicationRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<DateTime?>("ApprovalVersionUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("approval_version_at");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<string>("ConflictRemoteVersion")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("conflict_remote_version");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<string>("ContentSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_sha256");
+
+                    b.Property<string>("ContentType")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("content_type");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("ExpectedRemoteVersion")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("expected_remote_version");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("failure_message");
+
+                    b.Property<string>("FileName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("file_name");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime?>("LocalArtifactsPurgedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("local_artifacts_purged_at");
+
+                    b.Property<string>("OperationKind")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasDefaultValue("create")
+                        .HasColumnName("operation_kind");
+
+                    b.Property<string>("OriginalContentSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("original_content_sha256");
+
+                    b.Property<string>("OriginalEvidenceVersion")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("original_evidence_version");
+
+                    b.Property<long?>("OriginalSizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("original_size_bytes");
+
+                    b.Property<string>("OriginalStorageKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("original_storage_key");
+
+                    b.Property<string>("PolicyDecisionJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("policy_decision_json");
+
+                    b.Property<string>("ProviderItemId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("provider_item_id");
+
+                    b.Property<string>("ProviderVersion")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("provider_version");
+
+                    b.Property<Guid>("RequestingActorId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requesting_actor_id");
+
+                    b.Property<string>("RequestingActorType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("requesting_actor_type");
+
+                    b.Property<Guid>("RequestingAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requesting_agent_id");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint")
+                        .HasColumnName("size_bytes");
+
+                    b.Property<string>("SourceWebUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)")
+                        .HasColumnName("source_web_url");
+
+                    b.Property<Guid?>("StalePublicationRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("stale_publication_request_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<string>("TargetFolderItemId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("target_folder_item_id");
+
+                    b.Property<string>("TargetItemId")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("target_item_id");
+
+                    b.Property<Guid?>("ToolExecutionAttemptId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("tool_execution_attempt_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ToolExecutionAttemptId")
+                        .IsUnique()
+                        .HasFilter("[tool_execution_attempt_id] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "Status");
+
+                    b.ToTable("company_document_publication_requests", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryAgentGrant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "AgentId");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "AgentId")
+                        .IsUnique();
+
+                    b.ToTable("company_document_repository_agent_grants", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApplicationClientId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("application_client_id");
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("audience");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<long>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("concurrency_version");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CredentialReference")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("credential_reference");
+
+                    b.Property<Guid>("DirectoryTenantId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("directory_tenant_id");
+
+                    b.Property<DateTime?>("DisconnectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("disconnected_at");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("DriveId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("drive_id");
+
+                    b.Property<bool>("IsReadOnly")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("is_read_only");
+
+                    b.Property<DateTime?>("LastSynchronizedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_synchronized_at");
+
+                    b.Property<DateTime?>("LastValidatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_validated_at");
+
+                    b.Property<string>("LastValidationCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("last_validation_code");
+
+                    b.Property<string>("LastValidationSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("last_validation_summary");
+
+                    b.Property<string>("LifecycleState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("lifecycle_state");
+
+                    b.Property<string>("ProviderKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("provider_kind");
+
+                    b.Property<DateTime?>("RetrievalPausedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("retrieval_paused_at");
+
+                    b.Property<string>("RootItemId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("root_item_id");
+
+                    b.Property<string>("SynchronizationCursor")
+                        .HasMaxLength(4096)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("synchronization_cursor");
+
+                    b.Property<string>("SynchronizationMode")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("synchronization_mode");
+
+                    b.Property<DateTime?>("SynchronizationPausedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("synchronization_paused_at");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("WritableFolderItemId")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("writable_folder_item_id");
+
+                    b.Property<DateTime?>("WritesPausedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("writes_paused_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "LifecycleState");
+
+                    b.HasIndex("CompanyId", "ProviderKind", "DirectoryTenantId", "DriveId", "RootItemId")
+                        .IsUnique();
+
+                    b.ToTable("company_document_repository_connections", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("CanRetry")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContentType")
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("DocumentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DriveId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("ItemId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("LastModifiedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<string>("RemoteVersion")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SourceWebUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "JobId", "Status");
+
+                    b.HasIndex("CompanyId", "JobId", "DriveId", "ItemId", "RemoteVersion")
+                        .IsUnique();
+
+                    b.ToTable("company_document_repository_import_items", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("DiscoveredCount")
+                        .HasColumnType("int")
+                        .HasColumnName("discovered_count");
+
+                    b.Property<int>("FailedCount")
+                        .HasColumnType("int")
+                        .HasColumnName("failed_count");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_message");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<int>("ProcessedCount")
+                        .HasColumnType("int")
+                        .HasColumnName("processed_count");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Status", "CreatedUtc");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.ToTable("company_document_repository_import_jobs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositorySynchronizationJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ChangedCount")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("FailedCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("FailureMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTime?>("NextRetryUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ObservedCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PageCursor")
+                        .HasMaxLength(4096)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PendingDeltaCursor")
+                        .HasMaxLength(4096)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("ReconciliationGeneration")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("RemovedCount")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .IsConcurrencyToken()
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "NextRetryUtc", "CreatedUtc");
+
+                    b.ToTable("company_document_repository_sync_jobs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryTrackedItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("DriveId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<bool>("IsAvailable")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsFolder")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ItemId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<Guid>("LastSeenGeneration")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<string>("ParentItemId")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("RemoteVersion")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("UnavailableReason")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "LastSeenGeneration");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "ParentItemId");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "DriveId", "ItemId")
+                        .IsUnique();
+
+                    b.ToTable("company_document_repository_tracked_items", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyGoal", b =>
                 {
                     b.Property<Guid>("Id")
@@ -14576,6 +15279,86 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "IndexingStatus", "IndexingStartedUtc");
 
                     b.ToTable("knowledge_documents", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyKnowledgeDocumentRemoteSource", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DocumentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("DriveId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<string>("ImportState")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<bool>("IsAvailable")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("ItemId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("LastValidatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ObservedRemoteVersion")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("RemoteVersion")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("SourceWebUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)");
+
+                    b.Property<string>("UnavailableReason")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "DocumentId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ConnectionId", "DriveId", "ItemId")
+                        .IsUnique();
+
+                    b.ToTable("knowledge_document_remote_sources", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyMembership", b =>
@@ -58008,6 +58791,98 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentPublicationRequest", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryAgentGrant", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "Agent")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
+                        .WithMany("AgentGrants")
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportItem", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportJob", "Job")
+                        .WithMany("Items")
+                        .HasForeignKey("CompanyId", "JobId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportJob", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositorySynchronizationJob", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryTrackedItem", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyGoal", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -58087,6 +58962,27 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyKnowledgeDocumentRemoteSource", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyKnowledgeDocument", "Document")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "DocumentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+
+                    b.Navigation("Document");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyMembership", b =>
@@ -66305,6 +67201,16 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyBriefingSection", b =>
                 {
                     b.Navigation("Contributions");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", b =>
+                {
+                    b.Navigation("AgentGrants");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportJob", b =>
+                {
+                    b.Navigation("Items");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanySimulationRunHistory", b =>

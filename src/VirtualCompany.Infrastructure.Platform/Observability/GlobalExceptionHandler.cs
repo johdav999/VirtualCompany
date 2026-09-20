@@ -120,6 +120,19 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 operationException.StatusCode,
                 operationException.Title,
                 operationException.Detail),
+            DocumentRepositoryConflictException conflictException => new ExceptionHandlingResult(
+                StatusCodes.Status409Conflict,
+                "The repository connection changed",
+                conflictException.Message),
+            DocumentRepositoryUnavailableException unavailableException => new ExceptionHandlingResult(
+                StatusCodes.Status503ServiceUnavailable,
+                "The document repository is unavailable",
+                unavailableException.SafeMessage,
+                Code: unavailableException.Code),
+            DocumentRepositoryValidationException => new ExceptionHandlingResult(
+                StatusCodes.Status400BadRequest,
+                "Invalid document repository request",
+                "The document repository configuration or browse request was invalid."),
             TeamsIdentityException identityException => MapTeamsIdentityException(identityException),
 
             CompanyMembershipAdministrationValidationException validationException => ValidationFailure(validationException.Errors),

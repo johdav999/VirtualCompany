@@ -36,6 +36,7 @@ public sealed class KnowledgeEmbeddingOptions
     public string? ModelVersion { get; set; } = "deterministic-v1";
     public int Dimensions { get; set; } = 256;
     public int TimeoutSeconds { get; set; } = 30;
+    public bool AllowDeterministic { get; set; }
 }
 
 public sealed class KnowledgeIndexingOptions

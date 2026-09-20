@@ -125,6 +125,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{AccountingMigrationWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{FinanceApprovalTaskBackfillWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
+                [$"{KnowledgeEmbeddingOptions.SectionName}:AllowDeterministic"] = "true",
                 [$"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
                 [$"{FinanceInsightsSnapshotWorkerOptions.SectionName}:Enabled"] = "false",

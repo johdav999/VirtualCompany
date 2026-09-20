@@ -51,7 +51,8 @@ public sealed record CompanyKnowledgeDocumentDto(
     DateTime? UploadedUtc,
     DateTime? ProcessingStartedUtc,
     DateTime? ProcessedUtc,
-    DateTime? FailedUtc);
+    DateTime? FailedUtc,
+    string? SourceRef = null);
 
 public interface ICompanyDocumentService
 {
@@ -167,6 +168,11 @@ public interface ICompanyDocumentVirusScanner
 public interface IDocumentIngestionOrchestrator
 {
     Task ProcessUploadedAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken);
+}
+
+public interface ITrustedCompanyDocumentIngestionService
+{
+    Task ProcessAsync(Guid companyId, Guid documentId, bool requireProductionScanner, CancellationToken cancellationToken);
 }
 
 public sealed class CompanyDocumentValidationException : Exception

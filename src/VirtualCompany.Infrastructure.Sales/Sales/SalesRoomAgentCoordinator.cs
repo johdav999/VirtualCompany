@@ -285,6 +285,7 @@ internal sealed class SalesRoomAgentWorker(
     TimeProvider clock,
     ILogger<SalesRoomAgentWorker> logger)
 {
+    private const string QuestionAcknowledgement = "I heard your question. Let me check the approved sources. ";
     private SalesRoomAgentOptions Options => configured.CurrentValue;
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
@@ -705,6 +706,10 @@ internal sealed class SalesRoomAgentWorker(
         var published = 0;
         try
         {
+            if (db.Entry(room).State == EntityState.Detached)
+                room = await RoomAsync(work, responseCt);
+            else
+                await db.Entry(room).ReloadAsync(responseCt);
             if (!room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) || item.TurnGeneration != room.AgentTurnGeneration)
                 throw new WithheldSpeech("turn_fenced", "The requested speech belongs to an obsolete room turn.");
             await EnsureFloorAsync(room, item, responseCt);
@@ -734,7 +739,7 @@ internal sealed class SalesRoomAgentWorker(
             else
             {
                 var question = await ReleasedQuestionAsync(room, item, responseCt);
-                text = question.AnswerText!;
+                text = QuestionAcknowledgement + question.AnswerText!;
                 evidence = JsonSerializer.Serialize(question.Evidence.Select(x => new { x.SourceId, x.SourceType, x.SourceTitle }).Distinct());
                 var profile = await speech.GetProfileAsync(responseCt);
                 if (!profile.Available) throw new WithheldSpeech("voice_unavailable", "Approved-text speech is unavailable.");
@@ -971,7 +976,7 @@ internal sealed class SalesRoomAgentWorker(
             : "Alex";
         var explicitlyAddressed = IsAddressedQuestion(transcript, agentName);
         var connectedHumans = 0;
-        if (interruptedAgent && !explicitlyAddressed && !utterance.Overlapped)
+        if (!explicitlyAddressed && !utterance.Overlapped)
         {
             var admitted = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().Where(x =>
                     x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
@@ -1050,11 +1055,12 @@ internal sealed class SalesRoomAgentWorker(
     internal static bool ShouldTreatInterruptedSpeechAsAddressedQuestion(string text, bool interruptedAgent,
         int connectedHumanCount, bool overlapped)
     {
-        if (!interruptedAgent || connectedHumanCount != 1 || overlapped || string.IsNullOrWhiteSpace(text))
+        if (connectedHumanCount != 1 || overlapped || string.IsNullOrWhiteSpace(text))
             return false;
 
         var normalized = " " + text.Trim().ToLowerInvariant() + " ";
         if (IsQuestion(normalized)) return true;
+        if (!interruptedAgent) return false;
 
         // Realtime transcription can preserve the words while losing interrogative grammar
         // (for example, "What do the finance agents do?" becoming "Find us agent two").

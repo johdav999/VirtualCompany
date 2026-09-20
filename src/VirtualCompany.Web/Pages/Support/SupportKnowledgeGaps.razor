@@ -53,7 +53,14 @@
                         @foreach (var document in knowledgeDocuments)
                         {
                             <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 border-top pt-2">
-                                <span>@document.Title</span>
+                                <span class="d-flex flex-wrap align-items-center gap-2">
+                                    <span>@document.Title</span>
+                                    <span class="badge text-bg-light">@SourceLabel(document)</span>
+                                    @if (SafeSourceLink(document) is { } sourceLink)
+                                    {
+                                        <a class="small" href="@sourceLink" target="_blank" rel="noopener noreferrer">@SupportText["OpenSource"] <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span></a>
+                                    }
+                                </span>
                                 <span class="badge @(document.IndexingStatus == "indexed" ? "text-bg-success" : "text-bg-light")">
                                     @KnowledgeStatus(document)
                                 </span>
@@ -197,6 +204,15 @@
         _ when document.IngestionStatus == "failed" => SupportText["ImportFailed"],
         _ => SupportText["StatusProcessing"]
     };
+
+    private string SourceLabel(SupportKnowledgeDocumentDto document) => document.SourceType == "microsoft365_repository"
+        ? SupportText["Microsoft365Repository"]
+        : SupportText["UploadedKnowledge"];
+
+    private static string? SafeSourceLink(SupportKnowledgeDocumentDto document) =>
+        document.SourceType == "microsoft365_repository" && Uri.TryCreate(document.SourceRef, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps
+            ? uri.ToString()
+            : null;
 
     private async Task CreateTaskAsync(Guid gapId)
     {

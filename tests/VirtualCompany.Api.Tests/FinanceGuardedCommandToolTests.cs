@@ -229,7 +229,8 @@ public sealed class FinanceGuardedCommandToolTests
 
     private static InternalCompanyToolContract Contract(IFinanceGuardedCommandService guarded) => new(
         Proxy<ICompanyTaskQueryService>(), Proxy<ICompanyTaskCommandService>(), Proxy<IProactiveTaskCreationService>(),
-        Proxy<IApprovalRequestService>(), Proxy<ICompanyKnowledgeSearchService>(), Proxy<IFinanceToolProvider>(),
+        Proxy<IApprovalRequestService>(), Proxy<ICompanyKnowledgeSearchService>(),
+        Proxy<ICompanyDocumentPublicationService>(), Proxy<IFinanceToolProvider>(),
         Proxy<IFinanceTransactionAnomalyDetectionService>(), Proxy<IFinanceAgentAnalysisService>(),
         Proxy<IFinanceLedgerAgentReadService>(), Proxy<IFinanceCloseComplianceAgentService>(),
         Proxy<IFinanceAdvancedAccountingAgentService>(), Proxy<IFinanceAccountingDraftAgentService>(),

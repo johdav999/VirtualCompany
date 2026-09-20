@@ -5,6 +5,7 @@ namespace VirtualCompany.Application.Agents;
 public static class AgentCapabilityIds
 {
     public const string GroundedQuestionAnswering = "grounded_question_answering";
+    public const string RepositoryEvidenceReading = "repository_evidence_reading";
     public const string RoleBriefing = "role_briefing";
     public const string WorkPrioritization = "work_prioritization";
     public const string Planning = "planning";

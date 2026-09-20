@@ -1,0 +1,395 @@
+@page "/settings/document-repositories"
+@rendermode InteractiveServer
+@inject IDocumentRepositoryApiClient RepositoryApi
+@inject AgentApiClient AgentApi
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Document repositories</PageTitle>
+
+<section class="repository-page" data-testid="document-repositories-settings">
+    <nav class="repository-breadcrumb" aria-label="Breadcrumb">
+        <a href="@SettingsPath">Settings</a><span aria-hidden="true">/</span><span>Document repositories</span>
+    </nav>
+
+    <header class="repository-header">
+        <div>
+            <span class="repository-kicker">Settings</span>
+            <h1>Document repositories</h1>
+            <p>Connect Microsoft 365 knowledge sources and optionally allow approval-bound creation or whole-file replacement in one designated folder.</p>
+        </div>
+        @if (!accessDenied)
+        {
+            <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="BeginCreate">
+                <span class="bi bi-plus-circle" aria-hidden="true"></span> Connect repository
+            </button>
+        }
+    </header>
+
+    <div class="repository-boundary" role="note">
+        <span class="bi bi-info-circle-fill" aria-hidden="true"></span>
+        <div><strong>Published to Virtual Company</strong><p>Selected files are published to the company and agents you choose. Access is not automatically filtered by each viewer's Microsoft account.</p></div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(statusMessage))
+    {
+        <div class="repository-message repository-message--success" role="status"><span class="bi bi-check-circle" aria-hidden="true"></span>@statusMessage</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <div class="repository-message repository-message--error" role="alert"><span class="bi bi-exclamation-circle" aria-hidden="true"></span><span>@errorMessage</span><button type="button" @onclick="LoadAsync">Try again</button></div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="repository-state"><span class="spinner-border" aria-hidden="true"></span><h2>Loading repositories</h2><p>Checking connection and indexing status.</p></div>
+    }
+    else if (accessDenied)
+    {
+        <div class="repository-state"><span class="bi bi-shield-lock" aria-hidden="true"></span><h2>Administrator access required</h2><p>You can use approved repository knowledge, but only a company administrator can change connections or agent access.</p><a class="btn btn-outline-secondary" href="@SettingsPath">Back to settings</a></div>
+    }
+    else
+    {
+        @if (showEditor)
+        {
+            <section class="repository-editor" aria-labelledby="repository-editor-title">
+                <div class="repository-section-heading">
+                    <div><span class="repository-step">1</span><div><h2 id="repository-editor-title">@(editingId.HasValue ? "Update repository" : "Connect an approved resource")</h2><p>Use identifiers from an explicitly granted SharePoint library or OneDrive for Business folder.</p></div></div>
+                    <button class="repository-icon-button bi bi-x-lg" type="button" aria-label="Close connection form" @onclick="CloseEditor"></button>
+                </div>
+                <div class="repository-form-grid">
+                    <label>Source type<select class="form-select" @bind="edit.ProviderKind"><option value="sharepoint_library">SharePoint document library</option><option value="onedrive_business">OneDrive for Business</option></select></label>
+                    <label>Display name<input class="form-control" maxlength="200" @bind="edit.DisplayName" placeholder="Company knowledge hub" /></label>
+                    <label>Microsoft tenant ID<input class="form-control" @bind="directoryTenantId" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+                    <label>Application ID<input class="form-control" @bind="applicationClientId" placeholder="00000000-0000-0000-0000-000000000000" /></label>
+                    <label>Secure credential reference<input class="form-control" maxlength="256" autocomplete="off" @bind="edit.CredentialReference" /><small>Enter only the reference stored by your administrator, never a client secret.</small></label>
+                    <label>Drive or library ID<input class="form-control" maxlength="160" @bind="edit.DriveId" /></label>
+                    <label class="repository-form-wide">Approved root folder ID<input class="form-control" maxlength="160" @bind="edit.RootItemId" /><small>You can validate this starting root and then choose a child folder below.</small></label>
+                    <label>Company audience<select class="form-select" @bind="edit.Audience"><option value="company">This company</option></select></label>
+                    <label class="repository-form-wide">
+                        <span><input type="checkbox" @bind="edit.EnableWrites" /> Enable approved agent file creation and replacement</span>
+                        <small>Creates and replacements remain approval-bound and are limited to one explicit output folder.</small>
+                    </label>
+                    @if (edit.EnableWrites)
+                    {
+                        <label class="repository-form-wide">Writable output folder ID<input class="form-control" maxlength="160" @bind="edit.WritableFolderItemId" /><small>This folder must be inside the approved root and have an explicit Microsoft write grant.</small></label>
+                    }
+                </div>
+                <fieldset class="repository-agent-picker">
+                    <legend>Agents allowed to use this source</legend>
+                    <p>New connections start with no agent access. Choose only agents that should be able to search and cite these files.</p>
+                    @if (agents.Count == 0)
+                    {
+                        <span class="repository-muted">No agents are available. You can connect now and grant access later.</span>
+                    }
+                    else
+                    {
+                        <div>@foreach (var agent in agents.OrderBy(x => x.DisplayName)) { <label><input type="checkbox" checked="@edit.AgentIds.Contains(agent.Id)" @onchange="eventArgs => ToggleAgent(agent.Id, eventArgs)" /><span><strong>@agent.DisplayName</strong><small>@agent.RoleName</small></span></label> }</div>
+                    }
+                </fieldset>
+                <div class="repository-editor-actions">
+                    <button class="btn btn-outline-secondary" type="button" disabled="@isBusy" @onclick="CloseEditor">Cancel</button>
+                    <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="SaveAndValidateAsync">@(isBusy ? "Checking access…" : "Save and validate")</button>
+                </div>
+            </section>
+        }
+
+        @if (browseConnection is not null)
+        {
+            <section class="repository-browser" aria-labelledby="repository-browser-title">
+                <div class="repository-section-heading">
+                    <div><span class="repository-step">2</span><div><h2 id="repository-browser-title">Choose the published root</h2><p>Only this folder and its descendants can be imported. Shortcuts outside the approved boundary are blocked.</p></div></div>
+                    <button class="repository-icon-button bi bi-x-lg" type="button" aria-label="Close folder browser" @onclick="CloseBrowser"></button>
+                </div>
+                @if (isBrowsing) { <div class="repository-inline-loading"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Loading folders…</div> }
+                else if (browseItems.Count == 0) { <div class="repository-browser-empty">No child folders are available under this root.</div> }
+                else
+                {
+                    <div class="repository-folder-list">
+                        @foreach (var folder in browseItems.Where(x => x.IsFolder))
+                        {
+                            <div><button type="button" @onclick="() => BrowseFolderAsync(folder)"><span class="bi bi-folder" aria-hidden="true"></span><span>@folder.Name</span></button><button class="btn btn-outline-primary btn-sm" type="button" disabled="@isBusy" @onclick="() => UseFolderAsync(folder)">Use this folder</button></div>
+                        }
+                    </div>
+                }
+                <div class="repository-browser-actions"><button class="btn btn-outline-secondary" type="button" @onclick="BrowseConfiguredRootAsync">Back to configured root</button><button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="() => StartImportAsync(browseConnection)">Use current root and start import</button></div>
+            </section>
+        }
+
+        <div class="repository-layout">
+            <main>
+                @if (connections.Count == 0)
+                {
+                    <section class="repository-state repository-state--compact"><span class="bi bi-folder-plus" aria-hidden="true"></span><h2>No document repository connected</h2><p>Connect an approved SharePoint library or OneDrive for Business folder to publish trusted company knowledge to selected agents.</p><button class="btn btn-primary" type="button" @onclick="BeginCreate">Connect repository</button></section>
+                }
+                else
+                {
+                    <div class="repository-list">
+                        @foreach (var connection in connections)
+                        {
+                            <article class="repository-card @CardClass(connection)" data-testid="repository-card">
+                                <header>
+                                    <div class="repository-provider"><span class="bi bi-microsoft" aria-hidden="true"></span></div>
+                                    <div class="repository-identity"><div><h2>@connection.DisplayName</h2><a href="https://www.microsoft365.com/" target="_blank" rel="noopener noreferrer">Open Microsoft 365 <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span></a></div><p>@ProviderLabel(connection.ProviderKind)</p></div>
+                                    <div class="repository-badges"><span>@(connection.IsReadOnly ? "Read only" : "Approved writes")</span><span class="@StatusClass(connection)">@StatusLabel(connection)</span></div>
+                                </header>
+                                @if (!string.IsNullOrWhiteSpace(connection.LastValidationSummary)) { <div class="repository-warning"><span class="bi bi-exclamation-triangle" aria-hidden="true"></span><div><strong>@ValidationTitle(connection)</strong><p>@connection.LastValidationSummary</p></div></div> }
+                                @if (connection.LatestPublicationOperationKind == "update" && connection.LatestPublicationStatus is "conflict" or "unresolved")
+                                {
+                                    <div class="repository-warning repository-warning--publication" role="alert" data-testid="document-update-status">
+                                        <span class="bi bi-files" aria-hidden="true"></span>
+                                        <div>
+                                            <strong>@(connection.LatestPublicationStatus == "conflict" ? "Replacement stopped: the Microsoft file changed" : "Replacement outcome needs review")</strong>
+                                            <p>@(connection.LatestPublicationFailureMessage ?? "The approved replacement was not applied automatically. Review the stale approval and prepare a new proposal from the current Microsoft version.")</p>
+                                            <a href="@ApprovalsPath">Open work approvals</a>
+                                        </div>
+                                    </div>
+                                }
+                                <div class="repository-freshness"><span><span class="bi bi-shield-check" aria-hidden="true"></span><small>Last checked</small><strong>@FormatTime(connection.LastValidatedUtc)</strong></span><span><span class="bi bi-arrow-repeat" aria-hidden="true"></span><small>Last synchronized</small><strong>@FormatTime(connection.LastSynchronizedUtc)</strong></span></div>
+                                <dl class="repository-counts"><div><dt>Indexed</dt><dd>@LocalNumber.Integer(connection.IndexedDocumentCount)</dd><small>Available to agents</small></div><div><dt>Processing</dt><dd>@LocalNumber.Integer(connection.ProcessingDocumentCount)</dd><small>@ProgressLabel(connection)</small></div><div class="@(connection.FailedDocumentCount > 0 ? "has-failures" : string.Empty)"><dt>Failed</dt><dd>@LocalNumber.Integer(connection.FailedDocumentCount)</dd><small>@FailureLabel(connection)</small></div></dl>
+                                <div class="repository-grants"><strong>Visible to these agents</strong><p>Only explicitly selected agents can search and cite this source.</p><div>@if (connection.AgentIds.Count == 0) { <span class="repository-empty-grant">No agents have access</span> } else { @foreach (var agentId in connection.AgentIds) { <span>@AgentName(agentId)</span> } }</div></div>
+                                @if (connection.LifecycleState != "disconnected")
+                                {
+                                    <section class="repository-recovery" aria-label="Operator recovery for @connection.DisplayName" data-testid="repository-operator-recovery">
+                                        <div class="repository-recovery-heading"><div><strong>Operator recovery</strong><p>Pause one capability without changing Microsoft content or the other data paths.</p></div>@if (!connection.FeatureEnabled) { <span class="repository-health-pill has-error">Feature disabled</span> }</div>
+                                        <div class="repository-pause-grid">
+                                            <div><span class="bi bi-file-earmark-text" aria-hidden="true"></span><div><strong>Agent retrieval</strong><small>@PauseDetail("retrieval", connection)</small></div><button class="btn btn-sm btn-outline-secondary" type="button" disabled="@isBusy" @onclick='() => TogglePauseAsync(connection, "retrieval", !connection.RetrievalPausedUtc.HasValue)'>@(connection.RetrievalPausedUtc.HasValue ? "Resume retrieval" : "Pause retrieval")</button></div>
+                                            <div><span class="bi bi-arrow-repeat" aria-hidden="true"></span><div><strong>Synchronization</strong><small>@PauseDetail("synchronization", connection)</small></div><button class="btn btn-sm @(connection.SynchronizationPausedUtc.HasValue ? "btn-primary" : "btn-outline-secondary")" type="button" disabled="@isBusy" @onclick='() => TogglePauseAsync(connection, "synchronization", !connection.SynchronizationPausedUtc.HasValue)'>@(connection.SynchronizationPausedUtc.HasValue ? "Resume sync" : "Pause sync")</button></div>
+                                            @if (!connection.IsReadOnly)
+                                            {
+                                                <div><span class="bi bi-upload" aria-hidden="true"></span><div><strong>Approved writes</strong><small>@PauseDetail("writes", connection)</small></div><button class="btn btn-sm @(connection.WritesPausedUtc.HasValue ? "btn-primary" : "btn-outline-secondary")" type="button" disabled="@isBusy" @onclick='() => TogglePauseAsync(connection, "writes", !connection.WritesPausedUtc.HasValue)'>@(connection.WritesPausedUtc.HasValue ? "Resume writes" : "Pause writes")</button></div>
+                                            }
+                                        </div>
+                                        <div class="repository-operational-health">
+                                            <span><small>Queue age</small><strong>@FormatQueueAge(connection.OldestQueueAgeSeconds)</strong></span>
+                                            <span><small>Last successful sync</small><strong>@FormatTime(connection.LastSynchronizedUtc)</strong></span>
+                                            <span class="@(connection.StaleLeaseCount > 0 ? "has-warning" : string.Empty)"><small>Stale leases</small><strong>@(connection.StaleLeaseCount > 0 ? $"{connection.StaleLeaseCount} detected" : "None detected")</strong></span>
+                                            <span class="@(connection.DependencyHealth == "healthy" ? string.Empty : "has-warning")"><small>Scanner &amp; embeddings</small><strong>@(connection.DependencyHealth == "healthy" ? "Healthy" : "Needs attention")</strong></span>
+                                            <span class="@(connection.IsThrottled ? "has-warning" : string.Empty)"><small>Throttling</small><strong>@(connection.IsThrottled ? "Waiting for Microsoft" : "Normal")</strong></span>
+                                        </div>
+                                        <div class="repository-recovery-actions">
+                                            <button class="btn btn-outline-primary btn-sm" type="button" disabled="@(isBusy || connection.RetryableFailedItemCount == 0 || connection.SynchronizationPausedUtc.HasValue || !connection.FeatureEnabled)" @onclick="() => RetryFailedItemsAsync(connection)">Retry failed items <span>@connection.RetryableFailedItemCount</span></button>
+                                            <button class="btn btn-outline-primary btn-sm" type="button" disabled="@(isBusy || connection.SynchronizationPausedUtc.HasValue || !connection.FeatureEnabled)" @onclick="() => StartSynchronizationAsync(connection, true)">Run full resync</button>
+                                            @if (connection.LatestPublicationRequestId.HasValue && connection.UnresolvedPublicationCount > 0)
+                                            {
+                                                <button class="btn btn-outline-warning btn-sm" type="button" disabled="@(isBusy || connection.WritesPausedUtc.HasValue || !connection.FeatureEnabled)" @onclick="() => ReconcilePublicationAsync(connection)">Reconcile uncertain upload</button>
+                                            }
+                                        </div>
+                                    </section>
+                                }
+                                <footer>
+                                    @if (connection.LifecycleState == "active") { <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="() => StartSynchronizationAsync(connection, false)"><span class="bi bi-arrow-repeat" aria-hidden="true"></span> Sync now</button><button class="btn btn-outline-primary" type="button" disabled="@isBusy" @onclick="() => OpenBrowserAsync(connection)">Choose root</button> }
+                                    @if (connection.LifecycleState != "disconnected") { <button class="btn btn-outline-secondary" type="button" disabled="@isBusy" @onclick="() => BeginEdit(connection)">Edit access</button> }
+                                    @if (connection.LifecycleState is "unavailable" or "pending_validation") { <button class="btn btn-outline-primary" type="button" disabled="@isBusy" @onclick="() => ValidateAsync(connection)">Validate again</button> }
+                                    @if (connection.LifecycleState != "disconnected" && disconnectCandidate?.Id != connection.Id) { <button class="btn btn-outline-danger" type="button" disabled="@isBusy" @onclick="() => disconnectCandidate = connection">Disconnect</button> }
+                                </footer>
+                                @if (disconnectCandidate?.Id == connection.Id)
+                                {
+                                    <div class="repository-confirm" role="alert"><div><strong>Disconnect @connection.DisplayName?</strong><p>Agents immediately lose access. Remote files and shared Microsoft credentials are not deleted.</p></div><button class="btn btn-outline-secondary btn-sm" type="button" @onclick="() => disconnectCandidate = null">Keep connected</button><button class="btn btn-danger btn-sm" type="button" disabled="@isBusy" @onclick="() => DisconnectAsync(connection)">Disconnect source</button></div>
+                                }
+                            </article>
+                        }
+                    </div>
+                }
+            </main>
+            <aside>
+                <section class="repository-aside-card"><div class="repository-aside-title"><span class="bi bi-exclamation-circle" aria-hidden="true"></span><h2>What needs attention</h2></div>@if (AttentionConnection is { } attention) { <div class="repository-attention"><strong>@AttentionTitle(attention)</strong><p>@AttentionDetail(attention)</p><button class="btn btn-outline-primary btn-sm" type="button" disabled="@isBusy" @onclick="() => AttentionActionAsync(attention)">@AttentionAction(attention)</button></div> } else { <div class="repository-all-good"><span class="bi bi-check-circle" aria-hidden="true"></span><div><strong>No repository issues</strong><p>Connected sources are ready or still completing their expected work.</p></div></div> }</section>
+                <section class="repository-aside-card"><div class="repository-aside-title"><span class="bi bi-book" aria-hidden="true"></span><h2>How access works</h2></div><ol><li><span>1</span><div><strong>Connect a bounded source</strong><p>Virtual Company reads the approved root. Optional writes create or replace whole files only in one designated folder.</p></div></li><li><span>2</span><div><strong>Choose agent access</strong><p>New connections grant no agent access until an administrator selects agents.</p></div></li><li><span>3</span><div><strong>Approve exact output</strong><p>Every create shows its exact artifact. Every replacement also shows the original, proposed file, and expected Microsoft version; a changed version stops the write.</p></div></li></ol></section>
+            </aside>
+        </div>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    private IReadOnlyList<DocumentRepositoryConnectionViewModel> connections = [];
+    private IReadOnlyList<CompanyAgentSummaryViewModel> agents = [];
+    private IReadOnlyList<DocumentRepositoryBrowseItemViewModel> browseItems = [];
+    private readonly Dictionary<Guid, string> credentialReferences = [];
+    private readonly ConfigureDocumentRepositoryRequest edit = new();
+    private Guid? editingId;
+    private DocumentRepositoryConnectionViewModel? browseConnection;
+    private DocumentRepositoryConnectionViewModel? disconnectCandidate;
+    private string directoryTenantId = string.Empty;
+    private string applicationClientId = string.Empty;
+    private string? statusMessage;
+    private string? errorMessage;
+    private bool isLoading = true;
+    private bool isBusy;
+    private bool isBrowsing;
+    private bool accessDenied;
+    private bool showEditor;
+    private string SettingsPath => CompanyId is Guid id ? $"/settings?companyId={id:D}" : "/settings";
+    private string ApprovalsPath => CompanyId is Guid id ? $"/approvals?companyId={id:D}" : "/approvals";
+    private DocumentRepositoryConnectionViewModel? AttentionConnection => connections.FirstOrDefault(x => x.LatestPublicationOperationKind == "update" && x.LatestPublicationStatus is "conflict" or "unresolved" || x.LifecycleState is "unavailable" or "pending_validation" || x.FailedDocumentCount > 0 || x.LatestImportStatus is "failed" or "partially_failed" || x.LatestSynchronizationStatus is "failed" or "retry_waiting");
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is null)
+        {
+            var context = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
+            if (context?.ActiveCompany is { } company) Navigation.NavigateTo($"/settings/document-repositories?companyId={company.CompanyId:D}", replace: true);
+            return;
+        }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (CompanyId is not Guid companyId) return;
+        isLoading = true; errorMessage = null;
+        try
+        {
+            var result = await RepositoryApi.ListAsync(companyId);
+            accessDenied = result is null;
+            connections = result ?? [];
+            if (!accessDenied) agents = await AgentApi.GetRosterAsync(companyId);
+        }
+        catch (Exception ex) when (ex is DocumentRepositoryApiException or OnboardingApiException) { errorMessage = ex.Message; }
+        finally { isLoading = false; }
+    }
+
+    private void BeginCreate() { ResetEdit(); edit.EnableWrites = false; edit.WritableFolderItemId = null; showEditor = true; }
+    private void BeginEdit(DocumentRepositoryConnectionViewModel connection)
+    {
+        editingId = connection.Id; edit.ProviderKind = connection.ProviderKind; edit.DirectoryTenantId = connection.DirectoryTenantId;
+        edit.ApplicationClientId = connection.ApplicationClientId; edit.CredentialReference = credentialReferences.GetValueOrDefault(connection.Id, string.Empty); edit.DriveId = connection.DriveId;
+        edit.RootItemId = connection.RootItemId; edit.DisplayName = connection.DisplayName; edit.Audience = connection.Audience;
+        edit.AgentIds = [.. connection.AgentIds]; edit.ExpectedConcurrencyVersion = connection.ConcurrencyVersion;
+        edit.EnableWrites = !connection.IsReadOnly; edit.WritableFolderItemId = connection.WritableFolderItemId;
+        directoryTenantId = connection.DirectoryTenantId.ToString("D"); applicationClientId = connection.ApplicationClientId.ToString("D");
+        showEditor = true; statusMessage = errorMessage = null;
+    }
+    private void ResetEdit() { editingId = null; edit.ProviderKind = "sharepoint_library"; edit.DirectoryTenantId = Guid.Empty; edit.ApplicationClientId = Guid.Empty; edit.CredentialReference = edit.DriveId = edit.RootItemId = edit.DisplayName = string.Empty; edit.Audience = "company"; edit.AgentIds = []; edit.ExpectedConcurrencyVersion = null; directoryTenantId = applicationClientId = string.Empty; }
+    private void CloseEditor() { showEditor = false; ResetEdit(); }
+    private void ToggleAgent(Guid agentId, ChangeEventArgs args) { var selected = args.Value is bool value && value; if (selected && !edit.AgentIds.Contains(agentId)) edit.AgentIds.Add(agentId); else if (!selected) edit.AgentIds.Remove(agentId); }
+
+    private async Task SaveAndValidateAsync()
+    {
+        if (CompanyId is not Guid companyId) return;
+        if (!Guid.TryParse(directoryTenantId, out var tenant) || !Guid.TryParse(applicationClientId, out var application)) { errorMessage = "Enter valid Microsoft tenant and application IDs."; return; }
+        if (string.IsNullOrWhiteSpace(edit.DisplayName) || string.IsNullOrWhiteSpace(edit.CredentialReference) || string.IsNullOrWhiteSpace(edit.DriveId) || string.IsNullOrWhiteSpace(edit.RootItemId)) { errorMessage = "Complete the source name, credential reference, library ID, and root folder ID."; return; }
+        edit.DirectoryTenantId = tenant; edit.ApplicationClientId = application; isBusy = true; errorMessage = statusMessage = null;
+        try
+        {
+            var saved = await RepositoryApi.SaveAsync(companyId, editingId, edit);
+            credentialReferences[saved.Id] = edit.CredentialReference;
+            var validation = await RepositoryApi.ValidateAsync(companyId, saved.Id);
+            showEditor = false; statusMessage = validation.IsAccessible ? $"{validation.RepositoryName} is connected. Choose a root or start the initial import." : null;
+            errorMessage = validation.IsAccessible ? null : validation.SafeSummary ?? "Microsoft could not confirm access to this resource.";
+            await LoadAsync();
+            if (validation.IsAccessible)
+            {
+                browseConnection = connections.FirstOrDefault(x => x.Id == saved.Id) ?? saved;
+                await BrowseConfiguredRootAsync();
+            }
+        }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task ValidateAsync(DocumentRepositoryConnectionViewModel connection)
+    {
+        if (CompanyId is not Guid companyId) return; isBusy = true; errorMessage = statusMessage = null;
+        try { var result = await RepositoryApi.ValidateAsync(companyId, connection.Id); if (result.IsAccessible) statusMessage = $"{result.RepositoryName} is connected and ready."; else errorMessage = result.SafeSummary ?? "Microsoft could not confirm access."; await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task OpenBrowserAsync(DocumentRepositoryConnectionViewModel connection) { browseConnection = connection; await BrowseConfiguredRootAsync(); }
+    private async Task BrowseConfiguredRootAsync() { if (browseConnection is not null) await BrowseAsync(browseConnection.RootItemId); }
+    private async Task BrowseFolderAsync(DocumentRepositoryBrowseItemViewModel folder) => await BrowseAsync(folder.ItemId);
+    private async Task BrowseAsync(string itemId)
+    {
+        if (CompanyId is not Guid companyId || browseConnection is null) return; isBrowsing = true; errorMessage = null;
+        try { var result = await RepositoryApi.BrowseAsync(companyId, browseConnection.Id, itemId); browseItems = result.Items; }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; browseItems = []; }
+        finally { isBrowsing = false; }
+    }
+    private void CloseBrowser() { browseConnection = null; browseItems = []; }
+
+    private async Task UseFolderAsync(DocumentRepositoryBrowseItemViewModel folder)
+    {
+        if (browseConnection is null) return;
+        BeginEdit(browseConnection);
+        edit.RootItemId = folder.ItemId;
+
+        if (string.IsNullOrWhiteSpace(edit.CredentialReference))
+        {
+            showEditor = true;
+            errorMessage = "Enter the secure credential reference, then save and validate this root change.";
+            browseConnection = null;
+            browseItems = [];
+            return;
+        }
+
+        showEditor = false;
+        await SaveAndValidateAsync();
+    }
+
+    private async Task StartImportAsync(DocumentRepositoryConnectionViewModel connection)
+    {
+        if (CompanyId is not Guid companyId) return; isBusy = true; errorMessage = statusMessage = null;
+        try { var job = await RepositoryApi.StartImportAsync(companyId, connection.Id); statusMessage = job.Status == "queued" ? "Initial import queued. Scanning and indexing will continue in the background." : $"Import status: {Friendly(job.Status)}."; CloseBrowser(); await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task StartSynchronizationAsync(DocumentRepositoryConnectionViewModel connection, bool full)
+    {
+        if (CompanyId is not Guid companyId) return; isBusy = true; errorMessage = statusMessage = null;
+        try { var job = await RepositoryApi.StartSynchronizationAsync(companyId, connection.Id, full); statusMessage = job.Status is "queued" or "running" ? "Synchronization queued. Repository status will update as work completes." : $"Synchronization status: {Friendly(job.Status)}."; await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task DisconnectAsync(DocumentRepositoryConnectionViewModel connection)
+    {
+        if (CompanyId is not Guid companyId) return; isBusy = true; errorMessage = statusMessage = null;
+        try { await RepositoryApi.DisconnectAsync(companyId, connection.Id, connection.ConcurrencyVersion); disconnectCandidate = null; statusMessage = $"{connection.DisplayName} was disconnected. No remote files were changed."; await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task TogglePauseAsync(DocumentRepositoryConnectionViewModel connection, string scope, bool paused)
+    {
+        if (CompanyId is not Guid companyId) return; isBusy = true; errorMessage = statusMessage = null;
+        try { await RepositoryApi.SetPauseAsync(companyId, connection.Id, scope, paused, connection.ConcurrencyVersion); statusMessage = $"{Friendly(scope)} {(paused ? "paused" : "resumed")}."; await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task RetryFailedItemsAsync(DocumentRepositoryConnectionViewModel connection)
+    {
+        if (CompanyId is not Guid companyId) return; isBusy = true; errorMessage = statusMessage = null;
+        try { await RepositoryApi.RetryFailedItemsAsync(companyId, connection.Id); statusMessage = "Failed repository items were queued for a safe full reconciliation."; await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private async Task ReconcilePublicationAsync(DocumentRepositoryConnectionViewModel connection)
+    {
+        if (CompanyId is not Guid companyId || connection.LatestPublicationRequestId is not Guid publicationId) return;
+        isBusy = true; errorMessage = statusMessage = null;
+        try { await RepositoryApi.ReconcilePublicationAsync(companyId, publicationId); statusMessage = "The uncertain upload was queued for provider reconciliation. No unconditional overwrite will be attempted."; await LoadAsync(); }
+        catch (DocumentRepositoryApiException ex) { errorMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private Task AttentionActionAsync(DocumentRepositoryConnectionViewModel connection) { if (connection.LatestPublicationOperationKind == "update" && connection.LatestPublicationStatus is "conflict" or "unresolved") { Navigation.NavigateTo(ApprovalsPath); return Task.CompletedTask; } return connection.LifecycleState is "unavailable" or "pending_validation" ? ValidateAsync(connection) : StartSynchronizationAsync(connection, true); }
+    private string AttentionAction(DocumentRepositoryConnectionViewModel connection) => connection.LatestPublicationOperationKind == "update" && connection.LatestPublicationStatus is "conflict" or "unresolved" ? "Open work approvals" : connection.LifecycleState is "unavailable" or "pending_validation" ? "Validate again" : "Run full resync";
+    private string AttentionTitle(DocumentRepositoryConnectionViewModel connection) => connection.LatestPublicationOperationKind == "update" && connection.LatestPublicationStatus == "conflict" ? "A replacement was stopped safely" : connection.LatestPublicationOperationKind == "update" && connection.LatestPublicationStatus == "unresolved" ? "A replacement outcome needs review" : connection.LifecycleState == "unavailable" ? "Connection needs repair" : connection.LifecycleState == "pending_validation" ? "Connection is not validated" : connection.FailedDocumentCount > 0 ? $"{connection.FailedDocumentCount} documents need attention" : "Synchronization did not finish";
+    private string AttentionDetail(DocumentRepositoryConnectionViewModel connection) => connection.LatestPublicationOperationKind == "update" && connection.LatestPublicationStatus is "conflict" or "unresolved" ? connection.LatestPublicationFailureMessage ?? "Review the stale approval and prepare a new proposal from the current Microsoft version." : connection.LastValidationCode == "missing_resource_grant" ? "Microsoft consent exists, but this library or drive still needs an explicit resource grant." : connection.FailedDocumentCount > 0 ? "Restore scanning or indexing dependencies, then run a full resynchronization." : connection.LastValidationSummary ?? "Retry the server-authorized action when the provider is available.";
+    private string AgentName(Guid id) => agents.FirstOrDefault(x => x.Id == id)?.DisplayName ?? "Configured agent";
+    private static string ProviderLabel(string value) => value == "onedrive_business" ? "OneDrive for Business" : "SharePoint document library";
+    private static string StatusLabel(DocumentRepositoryConnectionViewModel connection) => connection.LifecycleState switch { "active" => "Connected", "pending_validation" => "Validation needed", "unavailable" when connection.LastValidationCode == "missing_resource_grant" => "Microsoft grant missing", "unavailable" when connection.LastValidationCode == "invalid_credentials" => "Credential repair needed", "unavailable" => "Unavailable", "disconnected" => "Disconnected", _ => "Status unavailable" };
+    private static string StatusClass(DocumentRepositoryConnectionViewModel connection) => connection.LifecycleState switch { "active" => "is-connected", "pending_validation" => "needs-attention", "unavailable" => "has-error", _ => "is-muted" };
+    private static string CardClass(DocumentRepositoryConnectionViewModel connection) => connection.LifecycleState == "disconnected" ? "repository-card--disconnected" : string.Empty;
+    private static string ValidationTitle(DocumentRepositoryConnectionViewModel connection) => connection.LastValidationCode switch { "missing_resource_grant" => "Microsoft resource grant missing", "invalid_credentials" => "Credential repair required", "provider_throttled" => "Microsoft asked us to wait", _ => "Connection needs attention" };
+    private static string ProgressLabel(DocumentRepositoryConnectionViewModel connection) => connection.LatestImportStatus switch { "queued" => "Waiting to import", "running" => "Importing and scanning", "partially_failed" => "Import partly completed", _ when connection.ProcessingDocumentCount > 0 => "Scanning or indexing", _ => "No work pending" };
+    private static string FailureLabel(DocumentRepositoryConnectionViewModel connection) => connection.FailedDocumentCount > 0 ? "Not available to agents" : "No document failures";
+    private static string FormatTime(DateTime? value) => value.HasValue ? value.Value.ToLocalTime().ToString("g") : "Not yet";
+    private static string FormatQueueAge(double? seconds) => seconds switch { null => "No work waiting", < 60 => "Less than a minute", < 3600 => $"{Math.Ceiling(seconds.Value / 60)} min", _ => $"{Math.Ceiling(seconds.Value / 3600)} hr" };
+    private static string PauseDetail(string scope, DocumentRepositoryConnectionViewModel connection) => scope switch { "retrieval" when connection.RetrievalPausedUtc.HasValue => "Agents cannot search, read, cite, or reuse cached remote evidence.", "retrieval" => "Authorized agents can search and read current evidence.", "synchronization" when connection.SynchronizationPausedUtc.HasValue => "Queued work is preserved; no imports or updates are processed.", "synchronization" => "Remote changes can be scanned and indexed.", "writes" when connection.WritesPausedUtc.HasValue => "Queued approved files are preserved and approval is rechecked on resume.", _ => "Approved creates and replacements can be delivered through the outbox." };
+    private static string Friendly(string value) => value.Replace('_', ' ');
+}

@@ -69,6 +69,35 @@ public static class OperationsModuleRegistration
         services.AddOptions<CompanyDocumentOptions>()
             .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
 
+        services.AddOptions<MicrosoftGraphDocumentRepositoryOptions>()
+            .Bind(configuration.GetSection(MicrosoftGraphDocumentRepositoryOptions.SectionName))
+            .Validate(options =>
+            {
+                if (!Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+                {
+                    return false;
+                }
+
+                return uri.Host.Equals("graph.microsoft.com", StringComparison.OrdinalIgnoreCase) ||
+                    uri.Host.Equals("graph.microsoft.us", StringComparison.OrdinalIgnoreCase) ||
+                    uri.Host.Equals("dod-graph.microsoft.us", StringComparison.OrdinalIgnoreCase) ||
+                    uri.Host.Equals("microsoftgraph.chinacloudapi.cn", StringComparison.OrdinalIgnoreCase);
+            }, "Microsoft Graph document repository BaseUrl must use HTTPS and an approved Microsoft Graph cloud host.")
+            .Validate(options => options.RequestTimeoutSeconds is >= 5 and <= 120 &&
+                options.MaxProviderPagesPerBrowse is >= 1 and <= 100 &&
+                options.MaxAncestryDepth is >= 1 and <= 1024,
+                "Microsoft Graph document repository limits are invalid.")
+            .ValidateOnStart();
+        services.AddHttpClient(MicrosoftGraphDocumentRepositoryAdapter.ClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<MicrosoftGraphDocumentRepositoryOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : options.BaseUrl + "/");
+            client.Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
+        }).ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
+        {
+            AllowAutoRedirect = false
+        });
+
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
 
@@ -80,6 +109,20 @@ public static class OperationsModuleRegistration
 
         services.AddOptions<KnowledgeIndexingOptions>()
             .Bind(configuration.GetSection(KnowledgeIndexingOptions.SectionName));
+
+        services.AddOptions<CompanyDocumentVirusScannerOptions>()
+            .Bind(configuration.GetSection(CompanyDocumentVirusScannerOptions.SectionName));
+        services.AddOptions<DocumentRepositoryImportOptions>()
+            .Bind(configuration.GetSection(DocumentRepositoryImportOptions.SectionName));
+        services.AddOptions<DocumentRepositorySynchronizationOptions>()
+            .Bind(configuration.GetSection(DocumentRepositorySynchronizationOptions.SectionName));
+        services.AddOptions<DocumentRepositoryOperationsOptions>()
+            .Bind(configuration.GetSection(DocumentRepositoryOperationsOptions.SectionName))
+            .Validate(options => options.CleanupIntervalMinutes >= 1 && options.AbandonedStagedArtifactDays >= 1 &&
+                options.TerminalArtifactDays >= 1 && options.SupersededChunkDays >= 1 &&
+                options.CleanupBatchSize is >= 1 and <= 1000,
+                "Document repository operations retention settings are outside supported bounds.")
+            .ValidateOnStart();
 
         services.AddOptions<GroundedContextRetrievalCacheOptions>()
             .Bind(configuration.GetSection(GroundedContextRetrievalCacheOptions.SectionName));
@@ -285,9 +328,18 @@ public static class OperationsModuleRegistration
         services.AddScoped<ICompanyOnboardingWorkshopService, CompanyOnboardingWorkshopService>();
         services.AddScoped<ICompanyOnboardingDocumentGenerationService, CompanyOnboardingDocumentGenerationService>();
         services.AddScoped<ICompanyDocumentService, CompanyDocumentService>();
+        services.AddSingleton<IMicrosoftGraphApplicationTokenProvider, MicrosoftGraphApplicationTokenProvider>();
+        services.AddScoped<IDocumentRepositoryGraphAdapter, MicrosoftGraphDocumentRepositoryAdapter>();
+        services.AddScoped<ICompanyDocumentRepositoryService, CompanyDocumentRepositoryService>();
+        services.AddScoped<ICompanyDocumentRepositoryImportService, CompanyDocumentRepositoryImportService>();
+        services.AddScoped<ICompanyDocumentRepositorySynchronizationService, CompanyDocumentRepositorySynchronizationService>();
+        services.AddScoped<ICompanyDocumentPublicationService, CompanyDocumentPublicationService>();
+        services.AddScoped<IDocumentRepositoryRetentionService, DocumentRepositoryRetentionService>();
+        services.AddScoped<IRemoteKnowledgeSourceAvailabilityGate, RemoteKnowledgeSourceAvailabilityGate>();
         services.AddScoped<ICompanyDocumentIngestionStatusService, CompanyDocumentIngestionStatusService>();
         services.AddScoped<IDocumentIngestionOrchestrator, InlineCompanyDocumentIngestionOrchestrator>();
-        services.AddScoped<ICompanyDocumentVirusScanner, NoOpCompanyDocumentVirusScanner>();
+        services.AddScoped<ITrustedCompanyDocumentIngestionService>(provider => (InlineCompanyDocumentIngestionOrchestrator)provider.GetRequiredService<IDocumentIngestionOrchestrator>());
+        services.AddScoped<ICompanyDocumentVirusScanner, ClamAvCompanyDocumentVirusScanner>();
         services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
         services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
         services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
@@ -303,6 +355,9 @@ public static class OperationsModuleRegistration
         services.AddScoped<IGroundedPromptContextService, GroundedPromptContextService>();
         services.AddScoped<IGroundedContextRetrievalService, GroundedContextRetrievalService>();
         services.AddHostedService<CompanyKnowledgeIndexingBackgroundService>();
+        services.AddHostedService<CompanyDocumentRepositoryImportBackgroundService>();
+        services.AddHostedService<CompanyDocumentRepositorySynchronizationBackgroundService>();
+        services.AddHostedService<DocumentRepositoryRetentionBackgroundService>();
         services.AddSingleton<IDefaultAgentCommunicationProfileProvider, DefaultAgentCommunicationProfileProvider>();
         services.AddScoped<IAgentCommunicationProfileResolver, AgentCommunicationProfileResolver>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();

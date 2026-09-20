@@ -18,6 +18,7 @@ using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Workflows;
@@ -215,6 +216,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IFinanceAutonomyBudgetService? _financeAutonomyBudgets;
     private readonly IDemoTenantExternalSideEffectPolicy? _demoTenantSideEffects;
     private readonly IAuditEventWriter? _auditEventWriter;
+    private readonly ICompanyDocumentPublicationService? _documentPublication;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -250,6 +252,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         IFinanceAutonomyBudgetService? financeAutonomyBudgets = null,
         IDemoTenantExternalSideEffectPolicy? demoTenantSideEffects = null,
         IAuditEventWriter? auditEventWriter = null,
+        ICompanyDocumentPublicationService? documentPublication = null,
         ISalesRoomWorkDispatcher? salesRoomWork = null)
     {
         _salesRoomWork = salesRoomWork;
@@ -286,6 +289,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _financeAutonomyBudgets = financeAutonomyBudgets;
         _demoTenantSideEffects = demoTenantSideEffects;
         _auditEventWriter = auditEventWriter;
+        _documentPublication = documentPublication;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -643,6 +647,15 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
         switch (message.Topic)
         {
+            case CompanyOutboxTopics.DocumentPublicationDeliveryRequested:
+            {
+                var payload = Deserialize<DocumentPublicationDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                    throw new CompanyOutboxPermanentException("Document publication payload tenant does not match the outbox message tenant.");
+                if (_documentPublication is null) throw new InvalidOperationException("Document publication delivery is not configured.");
+                await _documentPublication.DispatchAsync(payload.CompanyId, payload.PublicationRequestId, cancellationToken);
+                break;
+            }
             case CompanyOutboxTopics.PaymentBatchSubmissionRequested:
             {
                 var payload = Deserialize<PaymentBatchSubmissionRequestedMessage>(message);

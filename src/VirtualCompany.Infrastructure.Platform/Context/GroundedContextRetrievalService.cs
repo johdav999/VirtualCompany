@@ -41,6 +41,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
     private readonly GroundedContextRetrievalCacheKeyBuilder _cacheKeyBuilder;
     private readonly GroundedContextRetrievalCacheOptions _cacheOptions;
     private readonly TimeProvider _timeProvider;
+    private readonly IRemoteKnowledgeSourceAvailabilityGate _remoteAvailability;
 
     public GroundedContextRetrievalService(
         VirtualCompanyDbContext dbContext,
@@ -51,7 +52,8 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
         GroundedContextRetrievalCacheKeyBuilder cacheKeyBuilder,
         IOptions<GroundedContextRetrievalCacheOptions> cacheOptions,
         ICorrelationContextAccessor correlationContextAccessor,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IRemoteKnowledgeSourceAvailabilityGate remoteAvailability)
     {
         _dbContext = dbContext;
         _agentRuntimeProfileResolver = agentRuntimeProfileResolver;
@@ -62,6 +64,7 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
         _retrievalScopeEvaluator = retrievalScopeEvaluator;
         _correlationContextAccessor = correlationContextAccessor;
         _timeProvider = timeProvider;
+        _remoteAvailability = remoteAvailability;
     }
 
     public async Task<GroundedContextRetrievalResult> RetrieveAsync(
@@ -252,12 +255,27 @@ public sealed class GroundedContextRetrievalService : IGroundedContextRetrievalS
         var cached = await _sectionCache.TryGetAsync(cacheKey, cancellationToken);
         if (cached is not null)
         {
-            return cached;
+            return await RevalidateCachedKnowledgeAsync(cached, request.CompanyId,
+                _retrievalScopeEvaluator.BuildKnowledgeAccessContext(accessDecision), cancellationToken);
         }
 
         var liveSection = await LoadKnowledgeSectionAsync(request, retrievalIntent, accessDecision, limit, cancellationToken);
         await _sectionCache.TrySetAsync(cacheKey, liveSection, _cacheOptions.GetSectionTtl("knowledge"), cancellationToken);
         return liveSection;
+    }
+
+    private async Task<RetrievalSectionDto> RevalidateCachedKnowledgeAsync(RetrievalSectionDto cached, Guid companyId,
+        CompanyKnowledgeAccessContext accessContext, CancellationToken cancellationToken)
+    {
+        var available = new List<RetrievalItemDto>(cached.Items.Count);
+        foreach (var item in cached.Items)
+        {
+            if (!item.Metadata.TryGetValue("documentId", out var rawDocumentId) || !Guid.TryParse(rawDocumentId, out var documentId))
+                continue;
+            if ((await _remoteAvailability.CheckAsync(companyId, documentId, accessContext, cancellationToken)).IsAvailable)
+                available.Add(item);
+        }
+        return cached with { Items = available };
     }
 
     private async Task<RetrievalSectionDto> LoadMemorySectionWithCacheAsync(

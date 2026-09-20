@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Enums;
@@ -25,6 +26,19 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             ["knowledge.search"],
             ["knowledge"],
             [KnowledgeIndexingSignal, SharedAiProviderSignal],
+            AgentAutonomyLevel.Level0,
+            "none",
+            true),
+        new(
+            AgentCapabilityIds.RepositoryEvidenceReading,
+            "1.0.0",
+            "Repository evidence reading",
+            "List and read explicitly granted Microsoft 365 repository evidence with bounded content windows and citations.",
+            "Knowledge",
+            ToolActionType.Read,
+            [DocumentKnowledgeToolNames.Search, DocumentKnowledgeToolNames.List, DocumentKnowledgeToolNames.Read],
+            ["knowledge"],
+            [KnowledgeIndexingSignal],
             AgentAutonomyLevel.Level0,
             "none",
             true),

@@ -13,6 +13,62 @@ else
         <h3 class="h6">Decision</h3>
         <p class="text-body-secondary mb-0">@Approval.DisplayDecisionSummary</p>
     </section>
+    @if (IsDocumentPublication(Approval))
+    {
+        <section class="approvals-detail-section" data-testid="document-publication-approval">
+            <div class="d-flex align-items-center justify-content-between gap-3 mb-3">
+                <div>
+                    <h3 class="h6 mb-1">@(IsDocumentUpdate(Approval) ? "Replace repository file" : "Create a repository file")</h3>
+                    <p class="text-body-secondary mb-0">@(IsDocumentUpdate(Approval)
+                        ? "Compare the original evidence with the immutable replacement. This approval is for a whole-file replacement, not coauthoring."
+                        : "Review the immutable file and destination. Approval creates one new file and never overwrites an existing file.")</p>
+                </div>
+                <span class="badge text-bg-warning">@(IsPending(Approval) ? "Waiting for approval" : HumanizeStatus(Approval.Status))</span>
+            </div>
+            <dl class="approvals-summary-grid mb-3">
+                <dt>File name</dt><dd><strong>@PublicationText(Approval, "fileName")</strong></dd>
+                <dt>Repository</dt><dd>@PublicationText(Approval, "repositoryName")</dd>
+                <dt>Folder ID</dt><dd><code>@PublicationText(Approval, "targetFolderItemId")</code></dd>
+                @if (IsDocumentUpdate(Approval))
+                {
+                    <dt>Target item</dt><dd><code>@PublicationText(Approval, "targetItemId")</code></dd>
+                    <dt>Expected version</dt><dd><code>@PublicationText(Approval, "expectedRemoteVersion")</code></dd>
+                    <dt>Original evidence</dt><dd><code>@PublicationText(Approval, "originalEvidenceVersion")</code></dd>
+                }
+                <dt>File size</dt><dd>@FormatBytes(PublicationLong(Approval, "sizeBytes"))</dd>
+                <dt>Replacement SHA-256</dt><dd><code class="text-break">@PublicationText(Approval, "contentSha256")</code></dd>
+            </dl>
+            @if (PublicationGuid(Approval, "publicationRequestId") is Guid publicationId)
+            {
+                <div class="d-flex flex-wrap gap-2">
+                    @if (IsDocumentUpdate(Approval))
+                    {
+                        <a class="btn btn-outline-secondary btn-sm"
+                           href="@($"api/companies/{Approval.CompanyId:D}/document-repositories/publications/{publicationId:D}/original")"
+                           download="@($"original-{PublicationText(Approval, "fileName")}")">Download original</a>
+                        <a class="btn btn-outline-primary btn-sm" target="_blank" rel="noopener noreferrer"
+                           href="@($"api/companies/{Approval.CompanyId:D}/document-repositories/publications/{publicationId:D}/review")">Review text changes</a>
+                    }
+                    <a class="btn btn-outline-primary btn-sm"
+                       href="@($"api/companies/{Approval.CompanyId:D}/document-repositories/publications/{publicationId:D}/content")"
+                       download="@PublicationText(Approval, "fileName")">Download proposed file</a>
+                </div>
+            }
+            @if (IsDocumentUpdate(Approval))
+            {
+                <div class="alert @(IsPending(Approval) ? "alert-warning" : "alert-danger") mt-3 mb-0" role="note">
+                    @(IsPending(Approval)
+                        ? "Microsoft Graph enforces the expected version at upload time. Any intervening human edit stops delivery and requires a new proposal and approval."
+                        : "A newer human edit was detected or this proposal is no longer current. This stale proposal is retained for audit evidence and cannot be approved.")
+                </div>
+            }
+            else
+            {
+                <div class="alert alert-info mt-3 mb-0" role="note">The destination and bytes are rechecked immediately before Microsoft Graph receives the upload.</div>
+            }
+        </section>
+    }
+
 
     <section class="approvals-detail-section">
         <h3 class="h6">Payment details</h3>
@@ -85,7 +141,7 @@ else
                 <textarea id="approval-comment" class="form-control" rows="3" value="@DecisionComment" @oninput="HandleCommentChanged"></textarea>
             </div>
             <div class="dashboard-actions">
-                <button class="btn btn-primary" type="button" @onclick="OnApprove" disabled="@IsDeciding">Approve</button>
+                <button class="btn btn-primary" type="button" @onclick="OnApprove" disabled="@IsDeciding">@(Approval is not null && IsDocumentUpdate(Approval) ? "Approve replacement" : "Approve")</button>
                 <button class="btn btn-outline-secondary" type="button" @onclick="OnReject" disabled="@IsDeciding">Reject</button>
             </div>
         </section>
@@ -156,6 +212,44 @@ else
         !string.IsNullOrWhiteSpace(approval.DisplayCounterparty) ||
         !string.IsNullOrWhiteSpace(approval.DisplayPaymentActivity) ||
         !string.IsNullOrWhiteSpace(approval.DisplayStatusNote);
+
+    private static bool IsDocumentPublication(ApprovalRequestViewModel approval) =>
+        string.Equals(PublicationText(approval, "toolName"), "documents.create", StringComparison.OrdinalIgnoreCase) ||
+        IsDocumentUpdate(approval);
+
+    private static bool IsDocumentUpdate(ApprovalRequestViewModel approval) =>
+        string.Equals(PublicationText(approval, "toolName"), "documents.update", StringComparison.OrdinalIgnoreCase);
+
+    private static string PublicationText(ApprovalRequestViewModel approval, string key)
+    {
+        if (!approval.ThresholdContext.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
+            return "Not available";
+        return value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text) ? text : "Not available";
+    }
+
+    private static long PublicationLong(ApprovalRequestViewModel approval, string key)
+    {
+        if (!approval.ThresholdContext.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
+            return 0;
+        if (value.TryGetValue<long>(out var number)) return number;
+        return value.TryGetValue<string>(out var text) && long.TryParse(text, out number) ? number : 0;
+    }
+
+    private static Guid? PublicationGuid(ApprovalRequestViewModel approval, string key)
+    {
+        if (!approval.ThresholdContext.TryGetValue(key, out var node) || node is not System.Text.Json.Nodes.JsonValue value)
+            return null;
+        if (value.TryGetValue<Guid>(out var guid)) return guid;
+        return value.TryGetValue<string>(out var text) && Guid.TryParse(text, out guid) ? guid : null;
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        <= 0 => "Not available",
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024d:0.#} KB",
+        _ => $"{bytes / (1024d * 1024d):0.#} MB"
+    };
 
     private static string HumanizeStatus(string value) =>
         System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(

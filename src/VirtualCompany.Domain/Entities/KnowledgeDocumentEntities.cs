@@ -61,6 +61,17 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
         UploadedUtc = CreatedUtc;
     }
 
+    public static CompanyKnowledgeDocument CreateRepositoryDocument(Guid id, Guid companyId, string title,
+        CompanyKnowledgeDocumentType documentType, string storageKey, string? storageUrl, string originalFileName,
+        string? contentType, string fileExtension, long fileSizeBytes, CompanyKnowledgeDocumentAccessScope accessScope,
+        string sourceRef)
+    {
+        var document = new CompanyKnowledgeDocument(id, companyId, title, documentType, storageKey, storageUrl,
+            originalFileName, contentType, fileExtension, fileSizeBytes, null, accessScope, sourceRef);
+        document.SourceType = CompanyKnowledgeDocumentSourceType.Microsoft365Repository;
+        return document;
+    }
+
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
     public string Title { get; private set; } = null!;
@@ -138,6 +149,35 @@ public sealed class CompanyKnowledgeDocument : ICompanyOwnedEntity
         ClearFailure();
         UpdatedUtc = UploadedUtc.Value;
         return true;
+    }
+
+    public void PrepareRepositoryReplacement(string title, string storageKey, string? storageUrl, string originalFileName,
+        string? contentType, long fileSizeBytes, string sourceRef)
+    {
+        if (SourceType != CompanyKnowledgeDocumentSourceType.Microsoft365Repository) throw new InvalidOperationException("Only repository documents can be replaced from a remote source.");
+        Title = NormalizeRequired(title, nameof(title), 200);
+        StorageKey = NormalizeRequired(storageKey, nameof(storageKey), 1024);
+        StorageUrl = NormalizeOptional(storageUrl, nameof(storageUrl), 2048);
+        OriginalFileName = NormalizeRequired(originalFileName, nameof(originalFileName), 255);
+        ContentType = NormalizeOptional(contentType, nameof(contentType), 255);
+        FileExtension = NormalizeRequired(Path.GetExtension(originalFileName), nameof(originalFileName), 16).ToLowerInvariant();
+        FileSizeBytes = fileSizeBytes > 0 ? fileSizeBytes : throw new ArgumentOutOfRangeException(nameof(fileSizeBytes));
+        SourceRef = NormalizeRequired(sourceRef, nameof(sourceRef), 512);
+        IngestionStatus = CompanyKnowledgeDocumentIngestionStatus.Uploaded;
+        IndexingStatus = CompanyKnowledgeDocumentIndexingStatus.NotIndexed;
+        ActiveChunkCount = 0;
+        ExtractedText = null;
+        ProcessingStartedUtc = ProcessedUtc = IndexedUtc = null;
+        ClearFailure(); ClearIndexingFailure();
+        UploadedUtc = UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void UpdateRepositoryMetadata(string title, string sourceRef)
+    {
+        if (SourceType != CompanyKnowledgeDocumentSourceType.Microsoft365Repository) throw new InvalidOperationException("Only repository document metadata can be synchronized.");
+        Title = NormalizeRequired(title, nameof(title), 200);
+        SourceRef = NormalizeRequired(sourceRef, nameof(sourceRef), 512);
+        UpdatedUtc = DateTime.UtcNow;
     }
 
     public bool MarkPendingScan()

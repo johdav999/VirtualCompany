@@ -31,6 +31,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
     private readonly ILogger<CompanyDocumentService> _logger;
     private readonly IKnowledgeAccessPolicyEvaluator _accessPolicyEvaluator;
+    private readonly IRemoteKnowledgeSourceAvailabilityGate _remoteAvailability;
 
     public CompanyDocumentService(
         VirtualCompanyDbContext dbContext,
@@ -43,7 +44,8 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         IOptions<CompanyDocumentOptions> options,
         ICompanyOutboxEnqueuer outboxEnqueuer,
         ILogger<CompanyDocumentService> logger,
-        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator)
+        IKnowledgeAccessPolicyEvaluator accessPolicyEvaluator,
+        IRemoteKnowledgeSourceAvailabilityGate remoteAvailability)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -56,6 +58,7 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         _outboxEnqueuer = outboxEnqueuer;
         _logger = logger;
         _accessPolicyEvaluator = accessPolicyEvaluator;
+        _remoteAvailability = remoteAvailability;
     }
 
     public async Task<CompanyKnowledgeDocumentDto> UploadAsync(Guid companyId, UploadCompanyDocumentCommand command, CancellationToken cancellationToken)
@@ -197,10 +200,13 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             .ThenByDescending(x => x.Id)
             .ToListAsync(cancellationToken);
 
-        return documents
-            .Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document))
-            .Select(MapDto)
-            .ToArray();
+        var available = new List<CompanyKnowledgeDocumentDto>(documents.Count);
+        foreach (var document in documents.Where(document => _accessPolicyEvaluator.CanAccess(accessContext, document)))
+        {
+            if ((await _remoteAvailability.CheckAsync(companyId, document.Id, accessContext, cancellationToken)).IsAvailable)
+                available.Add(MapDto(document));
+        }
+        return available;
     }
 
     public async Task<CompanyKnowledgeDocumentDto?> GetAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
@@ -220,6 +226,9 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         {
             throw new UnauthorizedAccessException("The current user cannot access this document.");
         }
+
+        if (!(await _remoteAvailability.CheckAsync(companyId, document.Id, BuildAccessContext(companyId, membership), cancellationToken)).IsAvailable)
+            return null;
 
         return MapDto(document);
     }
@@ -693,5 +702,6 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             document.UploadedUtc,
             document.ProcessingStartedUtc,
             document.ProcessedUtc,
-            document.FailedUtc);
+            document.FailedUtc,
+            document.SourceRef);
 }

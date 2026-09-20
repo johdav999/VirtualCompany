@@ -328,7 +328,9 @@ public sealed record SupportKnowledgeDocumentDto(
     string IngestionStatus,
     string IndexingStatus,
     int ActiveChunkCount,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    string SourceType = "upload",
+    string? SourceRef = null);
 public sealed record ImportDefaultSupportKnowledgeResponse(
     IReadOnlyList<SupportKnowledgeDocumentDto> Imported,
     IReadOnlyList<string> Skipped);

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Application.Sales;
@@ -35,9 +36,27 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
             Register("tasks.list", new HashSet<ToolActionType> { ToolActionType.Read }, taskScopes),
             Register("tasks.update_status", new HashSet<ToolActionType> { ToolActionType.Execute }, taskScopes),
             Register("approvals.create_request", new HashSet<ToolActionType> { ToolActionType.Execute }, approvalScopes),
-            Register("knowledge.search", new HashSet<ToolActionType> { ToolActionType.Read, ToolActionType.Recommend }, knowledgeScopes),
             Register("erp", new HashSet<ToolActionType> { ToolActionType.Execute }, paymentsScopes)
-        }.Concat(FinanceToolDefinitions.Select(definition =>
+        }.Concat(KnowledgeToolDefinitions.Select(definition =>
+            Register(
+                definition.ToolName,
+                definition.ToolName == DocumentKnowledgeToolNames.Search
+                    ? new HashSet<ToolActionType> { ToolActionType.Read, ToolActionType.Recommend }
+                    : new HashSet<ToolActionType> { ToolActionType.Read },
+                knowledgeScopes,
+                definition.Version,
+                definition.InputSchema,
+                definition.OutputSchema)))
+          .Concat(DocumentPublicationToolDefinitions.Select(definition =>
+            Register(
+                definition.ToolName,
+                new HashSet<ToolActionType> { definition.ActionType },
+                knowledgeScopes,
+                definition.Version,
+                definition.InputSchema,
+                definition.OutputSchema,
+                definition.SensitiveAction)))
+          .Concat(FinanceToolDefinitions.Select(definition =>
             Register(
                 definition.ToolName,
                 new HashSet<ToolActionType> { definition.ActionType },
@@ -56,10 +75,188 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
           .Concat(MarketingToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, marketingScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
 
         _tools = registrations.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
-        _definitions = FinanceToolDefinitions.Concat(SalesToolDefinitions).Concat(MarketingToolDefinitions)
+        _definitions = KnowledgeToolDefinitions.Concat(DocumentPublicationToolDefinitions).Concat(FinanceToolDefinitions).Concat(SalesToolDefinitions).Concat(MarketingToolDefinitions)
             .ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
         ValidateFinanceExecuteReadiness();
     }
+
+    private static IReadOnlyList<ToolDefinitionManifest> KnowledgeToolDefinitions { get; } =
+    [
+        new(
+            DocumentKnowledgeToolNames.Search,
+            "1.0.0",
+            ToolActionType.Read,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "query": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "queryText": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "topN": { "type": "integer", "minimum": 1, "maximum": 20 }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("results")),
+        new(
+            DocumentKnowledgeToolNames.List,
+            "1.0.0",
+            ToolActionType.Read,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "pageSize": { "type": "integer", "minimum": 1, "maximum": 50 },
+                    "cursor": { "type": "string", "minLength": 1, "maxLength": 128 }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("page")),
+        new(
+            DocumentKnowledgeToolNames.Read,
+            "1.0.0",
+            ToolActionType.Read,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "documentHandle" ],
+                  "properties": {
+                    "documentHandle": { "type": "string", "pattern": "^knowledge-document:[0-9a-f]{32}$", "maxLength": 80 },
+                    "maxCharacters": { "type": "integer", "minimum": 1, "maximum": 8000 },
+                    "cursor": { "type": "string", "minLength": 1, "maxLength": 128 }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("document"))
+    ];
+
+    private static IReadOnlyList<ToolDefinitionManifest> DocumentPublicationToolDefinitions { get; } =
+    [
+        new(
+            DocumentPublicationToolNames.PrepareCreate,
+            "1.0.0",
+            ToolActionType.Recommend,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "connectionId", "fileName", "contentBase64", "idempotencyKey" ],
+                  "properties": {
+                    "connectionId": { "type": "string", "format": "uuid" },
+                    "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "contentType": { "type": "string", "maxLength": 160 },
+                    "contentBase64": { "type": "string", "minLength": 1, "maxLength": 5592408 },
+                    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 200 }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("publication")),
+        new(
+            DocumentPublicationToolNames.PrepareUpdate,
+            "1.0.0",
+            ToolActionType.Recommend,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "connectionId", "itemId", "expectedRemoteVersion", "originalEvidenceVersion", "fileName", "contentBase64", "idempotencyKey" ],
+                  "properties": {
+                    "connectionId": { "type": "string", "format": "uuid" },
+                    "itemId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "expectedRemoteVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "originalEvidenceVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "contentType": { "type": "string", "maxLength": 160 },
+                    "contentBase64": { "type": "string", "minLength": 1, "maxLength": 5592408 },
+                    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "stalePublicationRequestId": { "type": "string", "format": "uuid" }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("publication")),
+        new(
+            DocumentPublicationToolNames.Create,
+            "1.0.0",
+            ToolActionType.Execute,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "publicationRequestId", "repositoryName", "targetFolderItemId", "fileName", "sizeBytes", "contentSha256" ],
+                  "properties": {
+                    "publicationRequestId": { "type": "string", "format": "uuid" },
+                    "repositoryName": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "targetFolderItemId": { "type": "string", "minLength": 1, "maxLength": 160 },
+                    "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "contentType": { "type": "string", "maxLength": 160 },
+                    "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+                    "contentSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("publication"),
+            SensitiveAction: true,
+            SelectionMetadata: new ToolSelectionMetadata(
+                "Create one approved immutable agent output in an explicitly writable Microsoft 365 folder.",
+                "execute", ["document_publication"], "Creates one new file and never overwrites an existing file.",
+                ["staged_artifact", "content_hash", "writable_repository_grant"], 3600,
+                "Confirm the exact filename, folder, size, and hash.", "Always requires current human approval.",
+                "Queued publication request with durable delivery status.",
+                ["Save the approved brief to the company library."], ["save document", "publish file"])),
+        new(
+            DocumentPublicationToolNames.Update,
+            "1.0.0",
+            ToolActionType.Execute,
+            ParseSchema("""
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "publicationRequestId", "repositoryName", "targetFolderItemId", "targetItemId", "fileName", "sizeBytes", "contentSha256", "expectedRemoteVersion", "originalEvidenceVersion" ],
+                  "properties": {
+                    "publicationRequestId": { "type": "string", "format": "uuid" },
+                    "repositoryName": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "targetFolderItemId": { "type": "string", "minLength": 1, "maxLength": 160 },
+                    "targetItemId": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+                    "contentType": { "type": "string", "maxLength": 160 },
+                    "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+                    "contentSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                    "expectedRemoteVersion": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "originalEvidenceVersion": { "type": "string", "minLength": 1, "maxLength": 512 }
+                  }
+                }
+                """),
+            KnowledgeOutputSchema("publication"),
+            SensitiveAction: true,
+            SelectionMetadata: new ToolSelectionMetadata(
+                "Replace one reviewed repository file only while its Microsoft version is unchanged.",
+                "execute", ["document_update"], "Uses provider-enforced optimistic concurrency and never force-overwrites a newer edit.",
+                ["original_artifact", "replacement_hash", "expected_remote_version", "writable_repository_grant"], 3600,
+                "Compare the original and replacement and confirm the exact expected version.", "Always requires a fresh human approval.",
+                "Queued conditional replacement with conflict and reconciliation status.",
+                ["Replace the approved brief without overwriting a newer edit."], ["update document", "replace file"]))
+    ];
+
+    private static JsonObject KnowledgeOutputSchema(string property) => ParseSchema(
+        $$"""
+          {
+            "type": "object",
+            "required": [ "schemaVersion", "status", "success", "data" ],
+            "properties": {
+              "schemaVersion": { "type": "string" },
+              "status": { "type": "string" },
+              "success": { "type": "boolean" },
+              "userSafeSummary": { "type": "string" },
+              "data": {
+                "type": "object",
+                "required": [ "{{property}}" ],
+                "properties": { "{{property}}": { "type": [ "object", "array" ] } }
+              }
+            }
+          }
+          """);
 
     private static IReadOnlyList<ToolDefinitionManifest> FinanceToolDefinitions { get; } =
     [

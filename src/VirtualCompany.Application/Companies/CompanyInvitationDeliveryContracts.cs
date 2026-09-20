@@ -37,6 +37,7 @@ public static class CompanyOutboxTopics
     public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
     public const string DocumentUploaded = SupportedPlatformEventTypeRegistry.DocumentUploaded;
+    public const string DocumentPublicationDeliveryRequested = "documents.publication.delivery_requested";
     public const string WorkflowStateChanged = SupportedPlatformEventTypeRegistry.WorkflowStateChanged;
     public const string ApprovalUpdated = SupportedPlatformEventTypeRegistry.ApprovalUpdated;
     public const string AgentStatusUpdated = SupportedPlatformEventTypeRegistry.AgentStatusUpdated;

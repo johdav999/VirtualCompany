@@ -11,7 +11,8 @@ public enum CompanyKnowledgeDocumentType
 
 public enum CompanyKnowledgeDocumentSourceType
 {
-    Upload = 1
+    Upload = 1,
+    Microsoft365Repository = 2
 }
 
 public enum CompanyKnowledgeDocumentIngestionStatus
@@ -104,10 +105,12 @@ public static class CompanyKnowledgeDocumentTypeValues
 public static class CompanyKnowledgeDocumentSourceTypeValues
 {
     public const string Upload = "upload";
+    public const string Microsoft365Repository = "microsoft365_repository";
 
     private static readonly IReadOnlyDictionary<CompanyKnowledgeDocumentSourceType, string> Values = new Dictionary<CompanyKnowledgeDocumentSourceType, string>
     {
-        [CompanyKnowledgeDocumentSourceType.Upload] = Upload
+        [CompanyKnowledgeDocumentSourceType.Upload] = Upload,
+        [CompanyKnowledgeDocumentSourceType.Microsoft365Repository] = Microsoft365Repository
     };
 
     private static readonly IReadOnlyDictionary<string, CompanyKnowledgeDocumentSourceType> ReverseValues =

@@ -9,6 +9,11 @@ public static class WebApiClientRegistration
         IConfiguration configuration)
     {
         services.AddScoped<ICompanyApiTransport, CompanyApiTransport>();
+        services.AddScoped<DocumentRepositoryApiClient>(sp => new(
+            sp.GetRequiredService<ICompanyApiTransport>(),
+            IsOffline(sp),
+            sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped<IDocumentRepositoryApiClient>(sp => sp.GetRequiredService<DocumentRepositoryApiClient>());
         services.AddScoped(sp => new SalesBrowserRoomApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesBrowserGuestApiClient(new HttpClient
         { BaseAddress = sp.GetRequiredService<ICompanyApiTransport>().BaseAddress, Timeout = TimeSpan.FromSeconds(10) }));

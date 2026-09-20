@@ -151,10 +151,10 @@ public sealed class SalesRoomFloorTests
     [InlineData("Thanks for the explanation.", true, 1, false, false)]
     [InlineData("Okay", true, 1, false, false)]
     [InlineData("Fan noise", true, 1, false, false)]
-    [InlineData("What supports that delivery date?", false, 1, false, false)]
+    [InlineData("What supports that delivery date?", false, 1, false, true)]
     [InlineData("What supports that delivery date?", true, 2, false, false)]
     [InlineData("What supports that delivery date?", true, 1, true, false)]
-    public void A_lone_human_substantive_turn_that_interrupts_the_agent_is_implicitly_addressed(
+    public void A_lone_human_question_or_substantive_interruption_is_implicitly_addressed(
         string text, bool interruptedAgent, int connectedHumans, bool overlapped, bool expected) =>
         Assert.Equal(expected, SalesRoomAgentWorker.ShouldTreatInterruptedSpeechAsAddressedQuestion(
             text, interruptedAgent, connectedHumans, overlapped));

@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -38,11 +39,28 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken)
             ?? throw new KeyNotFoundException("Agent not found.");
 
-        return Resolve(agent, _toolRegistry);
+        var hasRepositoryGrant = await _dbContext.CompanyDocumentRepositoryConnections
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(connection =>
+                connection.CompanyId == companyId &&
+                connection.LifecycleState == DocumentRepositoryLifecycleStates.Active &&
+                connection.Audience == DocumentRepositoryAudiences.Company &&
+                connection.AgentGrants.Any(grant => grant.CompanyId == companyId && grant.AgentId == agentId),
+                cancellationToken);
+
+        return Resolve(
+            agent,
+            _toolRegistry,
+            hasRepositoryGrant ? DocumentKnowledgeToolNames.RepositoryGrantTools : null);
     }
 
-    internal static AgentEffectiveAuthorityDto Resolve(Agent agent, ICompanyToolRegistry toolRegistry)
+    internal static AgentEffectiveAuthorityDto Resolve(
+        Agent agent,
+        ICompanyToolRegistry toolRegistry,
+        IReadOnlySet<string>? repositoryGrantedTools = null)
     {
+        repositoryGrantedTools ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var configuredTools = ReadStrings(agent.Tools, "allowed");
         var deniedTools = ReadStrings(agent.Tools, "denied");
         var configuredActions = ReadStrings(agent.Tools, "actions", out var actionsConfigured);
@@ -55,12 +73,14 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
             .Where(definition =>
                 (relevantScope != "finance" || FinanceAgentCoverageCatalogue.IsOwnedTool(definition.ToolName)) &&
                 (configuredTools.Contains(definition.ToolName) ||
+                 repositoryGrantedTools.Contains(definition.ToolName) ||
                  (toolRegistry.TryGetTool(definition.ToolName, out var registration) &&
                   registration.Scopes.Contains(relevantScope))))
             .ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
 
         var candidateTools = definitions.Keys
             .Concat(configuredTools.Where(tool => IsRelevantConfiguredTool(tool, isLaura, toolRegistry)))
+            .Concat(repositoryGrantedTools)
             .Concat(isLaura ? LauraRolePolicyTools : [])
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
@@ -84,10 +104,13 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
                 : relevantScope;
             var configured = configuredTools.Contains(toolName);
             var compatibility = !configured && isLaura && LauraRolePolicyTools.Contains(toolName);
+            var repositoryGrant = repositoryGrantedTools.Contains(toolName);
             var grantSource = configured ? AgentAuthorityGrantSources.Configured
-                : compatibility ? AgentAuthorityGrantSources.CompatibilityRolePolicy : null;
+                : compatibility ? AgentAuthorityGrantSources.CompatibilityRolePolicy
+                : repositoryGrant ? AgentAuthorityGrantSources.DocumentRepositoryGrant : null;
             var grantVersion = configured ? configuredSourceVersion
-                : compatibility ? LauraRolePolicyVersion : null;
+                : compatibility ? LauraRolePolicyVersion
+                : repositoryGrant ? "document-repository-grant-v1" : null;
             var toolVersion = definition?.Version ?? registration?.Version ?? "unregistered";
 
             if (configured)
@@ -102,11 +125,22 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
                     AgentAuthorityGrantSources.CompatibilityRolePolicy, LauraRolePolicyVersion,
                     "A versioned Laura compatibility policy preserves this previously shipped Finance capability."));
             }
+            else if (repositoryGrant)
+            {
+                configuredGrants.Add(new AgentAuthorityGrantDto(
+                    toolName,
+                    toolVersion,
+                    actionName,
+                    scope,
+                    AgentAuthorityGrantSources.DocumentRepositoryGrant,
+                    "document-repository-grant-v1",
+                    "An active repository connection explicitly grants this agent read access."));
+            }
 
             var requirements = relevantScope == "finance"
                 ? FinanceAgentAuthorizationService.ResolveRequirements(toolName, action)
                 : null;
-            var state = ResolveState(agent, toolName, actionName, scope, registered, configured, compatibility,
+            var state = ResolveState(agent, toolName, actionName, scope, registered, configured, compatibility, repositoryGrant,
                 deniedTools, configuredActions, actionsConfigured, deniedActions, registration);
 
             var riskClassification = registration?.FinanceRiskClassification;
@@ -170,6 +204,7 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
         bool registered,
         bool configured,
         bool compatibility,
+        bool repositoryGrant,
         IReadOnlySet<string> deniedTools,
         IReadOnlySet<string> configuredActions,
         bool actionsConfigured,
@@ -185,7 +220,7 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
         if (deniedTools.Contains(toolName) && !compatibility)
             return new(AgentCapabilityStates.PermissionDenied, AgentAuthorityReasonCodes.ExplicitlyDenied,
                 "The persisted agent profile explicitly denies this tool.");
-        if (!configured && !compatibility)
+        if (!configured && !compatibility && !repositoryGrant)
             return new(AgentCapabilityStates.ConfigurationRequired, AgentAuthorityReasonCodes.ConfigurationRequired,
                 "This registered tool is not granted by the agent profile or a versioned role policy.");
         if (deniedActions.Contains(action) || (configured && actionsConfigured && !configuredActions.Contains(action)))
@@ -193,7 +228,7 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
                 "The agent authority does not include this action class.");
 
         var scopes = ReadStrings(agent.Scopes, action);
-        if (!scopes.Contains(scope) && !compatibility)
+        if (!scopes.Contains(scope) && !compatibility && !repositoryGrant)
             return new(AgentCapabilityStates.PermissionDenied, AgentAuthorityReasonCodes.ScopeDenied,
                 "The agent authority does not include this data scope.");
         if (!IsIntegrationAvailable(agent.Tools, toolName))

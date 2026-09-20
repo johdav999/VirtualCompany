@@ -43,6 +43,14 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyOwnedNote> CompanyNotes => Set<CompanyOwnedNote>();
     public DbSet<CompanySetupTemplate> CompanySetupTemplates => Set<CompanySetupTemplate>();
     public DbSet<CompanyKnowledgeDocument> CompanyKnowledgeDocuments => Set<CompanyKnowledgeDocument>();
+    public DbSet<CompanyDocumentRepositoryConnection> CompanyDocumentRepositoryConnections => Set<CompanyDocumentRepositoryConnection>();
+    public DbSet<CompanyDocumentRepositoryAgentGrant> CompanyDocumentRepositoryAgentGrants => Set<CompanyDocumentRepositoryAgentGrant>();
+    public DbSet<CompanyDocumentRepositoryImportJob> CompanyDocumentRepositoryImportJobs => Set<CompanyDocumentRepositoryImportJob>();
+    public DbSet<CompanyDocumentRepositoryImportItem> CompanyDocumentRepositoryImportItems => Set<CompanyDocumentRepositoryImportItem>();
+    public DbSet<CompanyKnowledgeDocumentRemoteSource> CompanyKnowledgeDocumentRemoteSources => Set<CompanyKnowledgeDocumentRemoteSource>();
+    public DbSet<CompanyDocumentRepositorySynchronizationJob> CompanyDocumentRepositorySynchronizationJobs => Set<CompanyDocumentRepositorySynchronizationJob>();
+    public DbSet<CompanyDocumentRepositoryTrackedItem> CompanyDocumentRepositoryTrackedItems => Set<CompanyDocumentRepositoryTrackedItem>();
+    public DbSet<CompanyDocumentPublicationRequest> CompanyDocumentPublicationRequests => Set<CompanyDocumentPublicationRequest>();
     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
     public DbSet<CompanyKnowledgeChunk> CompanyKnowledgeChunks => Set<CompanyKnowledgeChunk>();
     public DbSet<Agent> Agents => Set<Agent>();
@@ -1401,9 +1409,33 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyKnowledgeDocument>()
             .HasQueryFilter(document =>
                 CurrentCompanyId != null && document.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositoryConnection>()
+            .HasQueryFilter(connection =>
+                CurrentCompanyId != null && connection.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositoryAgentGrant>()
+            .HasQueryFilter(grant =>
+                CurrentCompanyId != null && grant.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositoryImportJob>()
+            .HasQueryFilter(job =>
+                CurrentCompanyId != null && job.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositoryImportItem>()
+            .HasQueryFilter(item =>
+                CurrentCompanyId != null && item.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyKnowledgeDocumentRemoteSource>()
+            .HasQueryFilter(source =>
+                CurrentCompanyId != null && source.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositorySynchronizationJob>()
+            .HasQueryFilter(job =>
+                CurrentCompanyId != null && job.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositoryTrackedItem>()
+            .HasQueryFilter(item =>
+                CurrentCompanyId != null && item.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyKnowledgeChunk>()
             .HasQueryFilter(chunk =>
                 CurrentCompanyId != null && chunk.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentPublicationRequest>()
+            .HasQueryFilter(request =>
+                CurrentCompanyId != null && request.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<MemoryItem>()
             .HasQueryFilter(memoryItem =>
                 CurrentCompanyId != null && memoryItem.CompanyId == CurrentCompanyId);

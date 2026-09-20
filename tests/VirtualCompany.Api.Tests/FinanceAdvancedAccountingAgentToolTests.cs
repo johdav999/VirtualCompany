@@ -259,6 +259,7 @@ public sealed class FinanceAdvancedAccountingAgentToolTests
             Proxy<IProactiveTaskCreationService>((m, _) => Unexpected(m)),
             Proxy<IApprovalRequestService>((m, _) => Unexpected(m)),
             Proxy<ICompanyKnowledgeSearchService>((m, _) => Unexpected(m)),
+            Proxy<ICompanyDocumentPublicationService>((m, _) => Unexpected(m)),
             Proxy<IFinanceToolProvider>((m, _) => Unexpected(m)),
             Proxy<IFinanceTransactionAnomalyDetectionService>((m, _) => Unexpected(m)),
             Proxy<IFinanceAgentAnalysisService>((m, _) => Unexpected(m)),
