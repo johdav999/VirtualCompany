@@ -20,8 +20,8 @@
         </div>
         @if (!accessDenied)
         {
-            <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="BeginCreate">
-                <span class="bi bi-plus-circle" aria-hidden="true"></span> Connect repository
+            <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="OpenGuided">
+                <span class="bi bi-microsoft" aria-hidden="true"></span> Connect Microsoft 365
             </button>
         }
     </header>
@@ -50,6 +50,16 @@
     }
     else
     {
+        @if (showGuided)
+        {
+            <DocumentRepositoryMicrosoftWizard CompanyId="@CompanyId!.Value" Agents="agents" SessionHandle="@Microsoft365Session" Closed="CloseGuidedAsync" Connected="GuidedConnectedAsync" />
+        }
+
+        <details class="repository-advanced">
+            <summary><span class="bi bi-gear" aria-hidden="true"></span><span><strong>Advanced: use your own Entra application</strong><small>Bring and operate your own application registration, credential rotation, Microsoft grants, and technical resource identifiers.</small></span><span class="repository-burden">Higher operational burden</span></summary>
+            <div><p>This path is for administrators who already manage an explicitly granted Entra application. Never paste a client secret; enter only a secure credential reference stored by the platform.</p><button class="btn btn-outline-secondary" type="button" disabled="@isBusy" @onclick="BeginAdvancedCreate">Open customer-managed setup</button></div>
+        </details>
+
         @if (showEditor)
         {
             <section class="repository-editor" aria-labelledby="repository-editor-title">
@@ -118,9 +128,13 @@
 
         <div class="repository-layout">
             <main>
-                @if (connections.Count == 0)
+                @if (connections.Count == 0 && showGuided)
                 {
-                    <section class="repository-state repository-state--compact"><span class="bi bi-folder-plus" aria-hidden="true"></span><h2>No document repository connected</h2><p>Connect an approved SharePoint library or OneDrive for Business folder to publish trusted company knowledge to selected agents.</p><button class="btn btn-primary" type="button" @onclick="BeginCreate">Connect repository</button></section>
+                    <section class="repository-state repository-state--compact"><h2>Repository setup in progress</h2><p>Follow the setup status above. The repository becomes available after Microsoft access is verified.</p></section>
+                }
+                else if (connections.Count == 0)
+                {
+                    <section class="repository-state repository-state--compact"><span class="bi bi-folder-plus" aria-hidden="true"></span><h2>No document repository connected</h2><p>Use the guided Microsoft 365 setup to choose a folder-bounded SharePoint library or OneDrive for Business source without copying technical IDs.</p><button class="btn btn-primary" type="button" @onclick="OpenGuided">Connect Microsoft 365</button></section>
                 }
                 else
                 {
@@ -181,6 +195,7 @@
                                     @if (connection.LifecycleState == "active") { <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="() => StartSynchronizationAsync(connection, false)"><span class="bi bi-arrow-repeat" aria-hidden="true"></span> Sync now</button><button class="btn btn-outline-primary" type="button" disabled="@isBusy" @onclick="() => OpenBrowserAsync(connection)">Choose root</button> }
                                     @if (connection.LifecycleState != "disconnected") { <button class="btn btn-outline-secondary" type="button" disabled="@isBusy" @onclick="() => BeginEdit(connection)">Edit access</button> }
                                     @if (connection.LifecycleState is "unavailable" or "pending_validation") { <button class="btn btn-outline-primary" type="button" disabled="@isBusy" @onclick="() => ValidateAsync(connection)">Validate again</button> }
+                                    @if (connection.CredentialMode == "platform_managed" && connection.LifecycleState == "unavailable") { <button class="btn btn-outline-primary" type="button" disabled="@isBusy" @onclick="OpenGuided">Reconnect Microsoft 365</button> }
                                     @if (connection.LifecycleState != "disconnected" && disconnectCandidate?.Id != connection.Id) { <button class="btn btn-outline-danger" type="button" disabled="@isBusy" @onclick="() => disconnectCandidate = connection">Disconnect</button> }
                                 </footer>
                                 @if (disconnectCandidate?.Id == connection.Id)
@@ -202,6 +217,7 @@
 
 @code {
     [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "microsoft365Session")] public string? Microsoft365Session { get; set; }
     private IReadOnlyList<DocumentRepositoryConnectionViewModel> connections = [];
     private IReadOnlyList<CompanyAgentSummaryViewModel> agents = [];
     private IReadOnlyList<DocumentRepositoryBrowseItemViewModel> browseItems = [];
@@ -219,6 +235,7 @@
     private bool isBrowsing;
     private bool accessDenied;
     private bool showEditor;
+    private bool showGuided;
     private string SettingsPath => CompanyId is Guid id ? $"/settings?companyId={id:D}" : "/settings";
     private string ApprovalsPath => CompanyId is Guid id ? $"/approvals?companyId={id:D}" : "/approvals";
     private DocumentRepositoryConnectionViewModel? AttentionConnection => connections.FirstOrDefault(x => x.LatestPublicationOperationKind == "update" && x.LatestPublicationStatus is "conflict" or "unresolved" || x.LifecycleState is "unavailable" or "pending_validation" || x.FailedDocumentCount > 0 || x.LatestImportStatus is "failed" or "partially_failed" || x.LatestSynchronizationStatus is "failed" or "retry_waiting");
@@ -231,6 +248,7 @@
             if (context?.ActiveCompany is { } company) Navigation.NavigateTo($"/settings/document-repositories?companyId={company.CompanyId:D}", replace: true);
             return;
         }
+        if (!string.IsNullOrWhiteSpace(Microsoft365Session)) showGuided = true;
         await LoadAsync();
     }
 
@@ -249,7 +267,10 @@
         finally { isLoading = false; }
     }
 
-    private void BeginCreate() { ResetEdit(); edit.EnableWrites = false; edit.WritableFolderItemId = null; showEditor = true; }
+    private void OpenGuided() { showGuided = true; showEditor = false; statusMessage = errorMessage = null; }
+    private void BeginAdvancedCreate() { ResetEdit(); edit.EnableWrites = false; edit.WritableFolderItemId = null; showEditor = true; showGuided = false; }
+    private async Task CloseGuidedAsync() { showGuided = false; Microsoft365Session = null; Navigation.NavigateTo($"/settings/document-repositories?companyId={CompanyId:D}", replace: true); await Task.CompletedTask; }
+    private async Task GuidedConnectedAsync() { statusMessage = "Microsoft 365 repository connected. The initial import was queued and will continue in the background."; await LoadAsync(); }
     private void BeginEdit(DocumentRepositoryConnectionViewModel connection)
     {
         editingId = connection.Id; edit.ProviderKind = connection.ProviderKind; edit.DirectoryTenantId = connection.DirectoryTenantId;

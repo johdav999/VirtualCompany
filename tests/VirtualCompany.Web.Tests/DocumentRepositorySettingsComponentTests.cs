@@ -85,6 +85,64 @@ public sealed class DocumentRepositorySettingsComponentTests
         Assert.Empty(cut.FindAll(".repository-card"));
     }
 
+    [Fact]
+    public void Guided_flow_uses_opaque_session_and_connects_from_server_review()
+    {
+        var api = new FakeRepositoryClient([]);
+        using var context = CreateContext(api);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo($"/settings/document-repositories?companyId={CompanyId:D}&microsoft365Session=session-handle");
+        var cut = context.RenderComponent<DocumentRepositoriesSettings>();
+
+        cut.WaitForAssertion(() => Assert.Contains("Choose a source type", cut.Markup));
+        Assert.Equal("session-handle", api.LastRequestedSessionHandle);
+        cut.FindAll(".m365-choice-grid button").Single(x => x.TextContent.Contains("SharePoint", StringComparison.Ordinal)).Click();
+        cut.Find("#sharepoint-search").Input("Finance");
+        cut.Find(".m365-search button").Click();
+        cut.WaitForElement(".m365-source-list button").Click();
+        cut.WaitForElement(".m365-source-list button").Click();
+        cut.WaitForElement(".m365-folder-list .btn").Click();
+        cut.FindAll(".wizard-actions .btn").Last().Click();
+        cut.WaitForElement(".m365-agent-grid input").Change(true);
+        cut.FindAll(".wizard-actions .btn").Last().Click();
+
+        cut.WaitForAssertion(() => Assert.Contains("Review and confirm", cut.Markup));
+        Assert.DoesNotContain("drive-id", cut.Markup, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Published to Virtual Company", cut.Markup);
+        cut.Find(".m365-confirm input").Change(true);
+        cut.FindAll(".wizard-actions .btn").Last().Click();
+        cut.WaitForAssertion(() => Assert.Contains("Repository connected", cut.Markup));
+        Assert.Equal(1, api.FinalizeCalls);
+        Assert.Equal([AgentHandler.AgentId], api.ReviewAgentIds);
+    }
+
+    [Fact]
+    public void Opening_guided_setup_without_a_session_does_not_attempt_resume()
+    {
+        var api = new FakeRepositoryClient([]);
+        using var context = CreateContext(api);
+        var cut = Render(context);
+        cut.FindAll("button").First(x => x.TextContent.Trim() == "Connect Microsoft 365").Click();
+        cut.WaitForElement("[data-testid='microsoft-365-wizard']");
+        Assert.Null(api.LastRequestedSessionHandle);
+        Assert.Empty(cut.FindAll(".m365-alert--error"));
+    }
+
+    [Fact]
+    public void OneDrive_continue_opens_drive_and_folder_selection_advances_to_access()
+    {
+        using var context = CreateContext(new FakeRepositoryClient([]));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo($"/settings/document-repositories?companyId={CompanyId:D}&microsoft365Session=session-handle");
+        var cut = context.RenderComponent<DocumentRepositoriesSettings>();
+        cut.WaitForElement(".m365-choice-grid");
+        cut.FindAll(".m365-choice-grid button").Single(x => x.TextContent.Contains("OneDrive", StringComparison.Ordinal)).Click();
+        cut.WaitForElement(".m365-source-list");
+        var next = cut.Find(".wizard-actions .btn-primary");
+        Assert.False(next.HasAttribute("disabled"));
+        next.Click();
+        cut.WaitForElement(".m365-folder-list .btn").Click();
+        cut.WaitForAssertion(() => Assert.Contains("Choose repository access", cut.Markup));
+    }
+
     private static TestContext CreateContext(FakeRepositoryClient repositoryClient)
     {
         var context = new TestContext().AddVirtualCompanyWebPresentationServices();
@@ -92,6 +150,23 @@ public sealed class DocumentRepositorySettingsComponentTests
         context.Services.AddSingleton(new AgentApiClient(new HttpClient(new AgentHandler()) { BaseAddress = new Uri("http://localhost/") }));
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }));
         return context;
+    }
+
+    [Fact]
+    public void Resumed_provisioning_refreshes_automatically_and_notifies_parent_on_completion()
+    {
+        var api = new FakeRepositoryClient([]) { InitialStatus = "provisioning", SimulatePendingProvisioning = true };
+        using var context = CreateContext(api);
+        var connected = 0;
+        var cut = context.RenderComponent<DocumentRepositoryMicrosoftWizard>(parameters => parameters
+            .Add(x => x.CompanyId, CompanyId)
+            .Add(x => x.SessionHandle, "session-handle")
+            .Add(x => x.Connected, () => connected++));
+        cut.WaitForAssertion(() =>
+        {
+            Assert.Contains("Repository connected", cut.Markup);
+            Assert.Equal(1, connected);
+        }, TimeSpan.FromSeconds(6));
     }
 
     private static IRenderedComponent<DocumentRepositoriesSettings> Render(TestContext context)
@@ -115,7 +190,34 @@ public sealed class DocumentRepositorySettingsComponentTests
         private IReadOnlyList<DocumentRepositoryConnectionViewModel>? current = data;
         public int FullSynchronizationCalls { get; private set; }
         public int DisconnectCalls { get; private set; }
+        public int FinalizeCalls { get; private set; }
+        public string? LastRequestedSessionHandle { get; private set; }
+        public string InitialStatus { get; init; } = "authorized";
+        public bool SimulatePendingProvisioning { get; init; }
+        private int provisioningReads;
+        public IReadOnlyCollection<Guid> ReviewAgentIds { get; private set; } = [];
         public Task<IReadOnlyList<DocumentRepositoryConnectionViewModel>?> ListAsync(Guid companyId, CancellationToken cancellationToken = default) => Task.FromResult(current);
+        public Task<Microsoft365OnboardingStartViewModel> BeginMicrosoftOnboardingAsync(Guid companyId, string returnPath, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task<Microsoft365OnboardingStatusViewModel> GetMicrosoftOnboardingStatusAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default)
+        {
+            LastRequestedSessionHandle = sessionHandle;
+            if (sessionHandle != "session-handle") throw new DocumentRepositoryApiException("Not Found", statusCode: HttpStatusCode.NotFound);
+            return Task.FromResult(new Microsoft365OnboardingStatusViewModel(sessionHandle, InitialStatus, Guid.NewGuid(), "/settings/document-repositories", null, null, DateTime.UtcNow, DateTime.UtcNow.AddMinutes(10), DateTime.UtcNow, 1));
+        }
+        public Task<IReadOnlyList<Microsoft365SourceKindViewModel>> GetMicrosoftSourceKindsAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<Microsoft365SourceKindViewModel>>([new("sharepoint_library", "SharePoint", "Company-owned document libraries", true, null), new("onedrive_business", "OneDrive for Business", "An organizational drive", true, null)]);
+        public Task<Microsoft365SourcePageViewModel> GetMicrosoftOneDriveSourcesAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) => Task.FromResult(new Microsoft365SourcePageViewModel([new("onedrive-handle", "onedrive_business", "OneDrive", "Administrator")], null, false));
+        public Task<Microsoft365SourcePageViewModel> SearchMicrosoftSharePointSitesAsync(Guid companyId, string sessionHandle, string query, string? pageHandle = null, int maxItems = 25, CancellationToken cancellationToken = default) => Task.FromResult(new Microsoft365SourcePageViewModel([new("site-handle", "sharepoint_site", "Finance", "Company site")], null, false));
+        public Task<Microsoft365SourcePageViewModel> GetMicrosoftSharePointLibrariesAsync(Guid companyId, string sessionHandle, string siteHandle, string? pageHandle = null, int maxItems = 25, CancellationToken cancellationToken = default) => Task.FromResult(new Microsoft365SourcePageViewModel([new("source-handle", "sharepoint_library", "Company Knowledge", "Finance")], null, false));
+        public Task<Microsoft365FolderPageViewModel> BrowseMicrosoftFoldersAsync(Guid companyId, string sessionHandle, string sourceHandle, string? folderHandle = null, string? pageHandle = null, int maxItems = 50, CancellationToken cancellationToken = default) => Task.FromResult(new Microsoft365FolderPageViewModel(new(sourceHandle, "sharepoint_library", "Company Knowledge", "Finance"), [], [new("folder-handle", "Policies", DateTime.UtcNow)], null, false));
+        public Task<Microsoft365RepositorySelectionViewModel> SelectMicrosoftRootAsync(Guid companyId, string sessionHandle, string sourceHandle, string folderHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) => Task.FromResult(new Microsoft365RepositorySelectionViewModel("sharepoint_library", "Company Knowledge", "Policies", "Finance", true, "Sites.Selected", null, 2));
+        public Task CancelMicrosoftOnboardingAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task<Microsoft365RepositoryAccessDraftViewModel> ConfigureMicrosoftAccessAsync(Guid companyId, string sessionHandle, bool enableWrites, string? outputFolderHandle, IReadOnlyCollection<Guid> agentIds, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) { ReviewAgentIds = agentIds; return Task.FromResult(new Microsoft365RepositoryAccessDraftViewModel(enableWrites, null, [.. agentIds], 3)); }
+        public Task<Microsoft365RepositoryReviewViewModel> GetMicrosoftReviewAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) => Task.FromResult(new Microsoft365RepositoryReviewViewModel("Acme Advisory", "sharepoint_library", "Company Knowledge", "Policies", "read_only", null, ReviewAgentIds.Select(x => new Microsoft365RepositoryReviewAgentViewModel(x, "Nina")).ToList(), "company", "Existing files will be imported automatically", ["Add read access to the selected folder"], 3));
+        public Task<Microsoft365RepositoryProvisioningViewModel> FinalizeMicrosoftRepositoryAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) { FinalizeCalls++; return Task.FromResult(Provisioning("connected")); }
+        public Task<Microsoft365RepositoryProvisioningViewModel?> GetMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) => Task.FromResult<Microsoft365RepositoryProvisioningViewModel?>(Provisioning(SimulatePendingProvisioning && provisioningReads++ == 0 ? "provisioning" : "connected"));
+        public Task<Microsoft365RepositoryProvisioningViewModel> RetryMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) => Task.FromResult(Provisioning("queued"));
+        public Task<Microsoft365RepositoryProvisioningViewModel> CleanupMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) => Task.FromResult(Provisioning("cleaned"));
+        private static Microsoft365RepositoryProvisioningViewModel Provisioning(string status) => new(Guid.NewGuid(), status, status == "connected" ? Guid.NewGuid() : null, null, null, false, false, 1, DateTime.UtcNow, DateTime.UtcNow, status == "connected" ? DateTime.UtcNow : null);
         public Task<DocumentRepositoryConnectionViewModel> SaveAsync(Guid companyId, Guid? connectionId, ConfigureDocumentRepositoryRequest request, CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task<DocumentRepositoryValidationViewModel> ValidateAsync(Guid companyId, Guid connectionId, CancellationToken cancellationToken = default) => Task.FromResult(new DocumentRepositoryValidationViewModel(true, "succeeded", "Knowledge", "Root", null));
         public Task<DocumentRepositoryBrowseViewModel> BrowseAsync(Guid companyId, Guid connectionId, string? parentItemId, CancellationToken cancellationToken = default) => Task.FromResult(new DocumentRepositoryBrowseViewModel("root", [], false));

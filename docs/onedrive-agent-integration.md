@@ -4,10 +4,10 @@ Virtual Company can register a company-owned Microsoft 365 document repository, 
 
 ## Access model
 
-- Authentication is application-only. Consumer Microsoft accounts and delegated employee tokens are not supported.
+- Repository runtime authentication is application-only. The guided platform-managed setup uses a short-lived delegated Microsoft administrator credential only inside its expiring onboarding session; it never becomes an agent or repository runtime credential. Consumer Microsoft accounts are not supported.
 - Every connection belongs to one Virtual Company company, has the explicit `company` audience, and starts with no agent grants unless agent IDs are deliberately supplied.
 - Company owners and administrators manage connections. All reads remain server-scoped to the active company.
-- The application never provisions Microsoft permissions, widens consent, changes sharing, deletes remote content, or deletes a shared application credential when a connection is disconnected.
+- Prompt 10 discovery is read-only and never provisions Microsoft permissions, changes sharing, deletes remote content, or creates a repository connection. Resource assignment remains a separately reviewed finalization step.
 - A disconnected connection is immediately unusable. Later import/synchronization workers must recheck this lifecycle state before doing work.
 
 A dedicated SharePoint site and document library is the recommended company-owned source. OneDrive for Business folders are supported for organizations that deliberately assign an application to that folder.
@@ -27,19 +27,49 @@ Grant the API managed identity read access to the secret. Rotate by adding a new
 
 Client secrets are the supported credential method for this endpoint. They must never be put in request bodies, SQL, appsettings, logs, or audit metadata. Workload-identity federation is not silently substituted and requires a future explicit implementation.
 
+### Platform-managed administrator authorization
+
+The guided **Connect Microsoft 365** foundation uses one production multi-tenant Entra application owned by the Virtual Company deployment. Register the exact callback URI configured in `Microsoft365DocumentOnboarding:CallbackUri`; wildcard, HTTP (except loopback development), fragment, and browser-supplied redirect URIs are rejected. The authorization request uses the organizational endpoint, authorization code with PKCE, nonce and the v2-supported `prompt=consent`. Permissions that require administrator approval still require an eligible Microsoft administrator; the prompt value itself is not `admin_consent`. The callback validates the signing key, issuer, audience, tenant, nonce, initiating Virtual Company user and continuing company-admin membership.
+
+The setup scopes include delegated `Files.ReadWrite` for bounded OneDrive/folder discovery and the later reviewed folder-permission assignment, plus `Sites.Read.All` for SharePoint site and library discovery. Prompt 10 uses this authority only for bounded reads; prompt 11 uses it only after explicit review confirmation to assign the selected application. It is temporary setup authority, not the repository runtime permission. The deployment application separately carries administrator consent for `Files.SelectedOperations.Selected`. Consent alone grants no folder access; the runtime receives access only after the reviewed assignment succeeds.
+
+Onboarding state is stored as queryable company/user/status metadata plus Data Protection ciphertext. State handles are SHA-256 hashed; nonce, PKCE verifier and delegated tokens are never stored in ordinary columns or returned to the browser. Cancellation, expiry and callback failure clear the ciphertext. Protect the shared Data Protection key ring as production credential material and retain prior keys long enough for the maximum onboarding lifetime during rotation.
+
+Store the platform client secret under `Microsoft365DocumentOnboarding:CredentialReference` in `IPlatformSecretStore`. Rotate it by adding a new secret-store version under the same reference, verify a new authorization start and app-only token acquisition, then retire the prior version. Changing the client ID, credential mode, redirect URI or authority is a reviewed deployment change. The current implementation supports `client_secret_reference`; certificate, managed identity and workload-identity modes must not be configured until their explicit token exchange implementation exists.
+
+For local Development only, keep the application secret in ASP.NET user secrets as `Microsoft365DocumentOnboarding:DevelopmentClientSecret`. Startup copies it into the encrypted local `IPlatformSecretStore` entry named by `CredentialReference`; it is never written to repository configuration or logs. Configure `PlatformClientId`, the exact loopback `CallbackUri`, and `CredentialReference` in user secrets as well. Non-Development environments ignore `DevelopmentClientSecret` and must use the configured production secret-store provider.
+
+The authority host is configurable for future sovereign-cloud support, but the Graph base URL, authority, app registration, redirect URI and permission availability must all belong to the same cloud. The default scope values and role/issuer expectations are verified for the global Microsoft cloud only. Treat Azure Government, DoD and China deployments as unsupported until their endpoints and selected-permission behavior have been live-validated and documented; changing only `AuthorityHost` is insufficient.
+
 ## Microsoft permission and endpoint matrix
 
 Microsoft Selected permissions require both Entra administrator consent and a separate assignment on the target resource. Consent alone grants no resource access. Virtual Company reports `missing_resource_grant` on a 403 and never falls back to tenant-wide read permission. See Microsoft's [Selected permissions overview](https://learn.microsoft.com/en-us/graph/permissions-selected-overview), [drive metadata API](https://learn.microsoft.com/en-us/graph/api/drive-get), [drive item metadata API](https://learn.microsoft.com/en-us/graph/api/driveitem-get), and [list children API](https://learn.microsoft.com/en-us/graph/api/driveitem-list-children).
 
 | Source | Recommended application consent and assignment | Runtime endpoints |
 |---|---|---|
-| SharePoint document library | `Sites.Selected` with `read` assigned to a dedicated site. Use a separately reviewed `write` assignment only when approved agent output is enabled. `Lists.SelectedOperations.Selected` assigned to the exact library is an acceptable narrower alternative when the tenant has verified drive endpoint compatibility. | Read endpoints plus create `PUT /drives/{drive-id}/items/{folder-id}:/{filename}:/content` and conditional replacement `PUT /drives/{drive-id}/items/{item-id}/content` |
+| SharePoint document library folder | `Files.SelectedOperations.Selected` with `read` assigned to the approved root drive item. Use a separately reviewed `write` assignment only on the designated descendant output folder. | Read endpoints plus create `PUT /drives/{drive-id}/items/{folder-id}:/{filename}:/content` and conditional replacement `PUT /drives/{drive-id}/items/{item-id}/content` |
 | OneDrive for Business folder | `Files.SelectedOperations.Selected` with `read` assigned to the approved root. Assign `write` only to the designated output folder when approved agent output is enabled. The administrator supplies the already granted drive and folder item IDs. | Read endpoints plus the same create and conditional replacement content endpoints |
 
-Do not grant `Files.Read.All`, `Sites.Read.All`, or a write scope merely to make discovery work. Virtual Company has no broad discovery dependency: administrators provide the pre-granted drive ID and root item ID. A write assignment is justified only for the explicit output folder and is rechecked immediately before delivery. Microsoft permission provisioning must be performed independently by an authorized Microsoft 365 administrator.
+Do not grant tenant-wide **application** `Files.Read.All`, `Sites.Read.All`, or a write scope merely to make discovery work. The guided setup uses short-lived delegated `Files.ReadWrite` and `Sites.Read.All` during the administrator session and returns only Data Protection-protected selection handles to the browser. Runtime access still requires `Files.SelectedOperations.Selected` application consent and a separate drive-item assignment. The advanced customer-managed path may still accept pre-granted IDs.
 
 Microsoft's current v1.0 `driveItem: delta` permission table lists `Files.Read.All` as the least-privileged application permission and does not list Selected application permissions. Virtual Company therefore uses delta only when that endpoint succeeds under the connection's already approved permission profile. A 403 from delta does not trigger broader consent: the worker performs a bounded full enumeration under the existing Selected grant and commits removals only after every page succeeds. An expired delta cursor also stages a complete reconciliation before unseen files are made unavailable. See Microsoft's [drive delta documentation](https://learn.microsoft.com/en-us/graph/api/driveitem-delta?view=graph-rest-1.0).
 
+### Guided discovery endpoint matrix
+
+| Setup operation | Microsoft Graph endpoint | Delegated permission | Notes |
+|---|---|---|---|
+| OneDrive for Business discovery | `GET /me/drive` | `Files.ReadWrite` | Accepts only `driveType=business`; consumer drives are excluded. The write-capable delegated scope is retained only for the reviewed permission-assignment call. |
+| SharePoint site search | `GET /sites?search={query}` | `Sites.Read.All` | Personal Microsoft accounts are unsupported. Search is bounded and rate-limited. |
+| Site libraries | `GET /sites/{site-id}/drives` and `GET /drives/{drive-id}/root` | `Sites.Read.All` | Consumer drives, remote items and unsupported roots are excluded. |
+| Folder metadata and children | `GET /drives/{drive-id}/items/{item-id}` and `/children` | `Files.ReadWrite` or `Sites.Read.All` | Folder-only results; ancestry, drive identity, paging host and depth are validated server-side. |
+| Selection preflight | folder metadata plus ancestry revalidation | same as browse | Determines the intended Selected application permission but performs no assignment. |
+| Reviewed root assignment | `GET/POST /drives/{drive-id}/items/{root-id}/permissions` | delegated `Files.ReadWrite`; application consent `Files.SelectedOperations.Selected` | Reuses an exact existing application grant or creates one `read` role. No site/drive-wide fallback. |
+| Reviewed output assignment | `GET/POST /drives/{drive-id}/items/{output-id}/permissions` | same | Created only when output is enabled and server-verified as a descendant; role is `write`. |
+| Managed partial cleanup | `DELETE /drives/{drive-id}/items/{item-id}/permissions/{permission-id}` | delegated `Files.ReadWrite` | Targets only persisted permission IDs created by this wizard after explicit confirmation. |
+
+The browser receives only opaque, Data Protection-protected handles bound to the onboarding session. Handles carry no authority on their own and cannot be reused across sessions. The canonical tenant, site, drive, root, display metadata and selection version are retained inside encrypted onboarding state. Folder names, paths, URLs, user principal names, provider payloads and continuation URLs are excluded from audit metadata.
+
+Tenant Conditional Access, consent policies, SharePoint access policies, disabled site search, an unlicensed or unprovisioned OneDrive, administrator role restrictions, and Graph throttling can prevent discovery. The API reports bounded `access_lost`, `discovery_access_denied`, `source_unavailable`, `provider_throttled`, or `provider_unavailable` states and never compensates by requesting tenant-wide application access.
 ## Runtime configuration
 
 The global Microsoft Graph cloud is the default:
@@ -53,6 +83,22 @@ The global Microsoft Graph cloud is the default:
     "MaxAncestryDepth": 256,
     "MaxImportItems": 500,
     "AllowedDownloadHostSuffixes": [ ".sharepoint.com", ".onedrive.com" ]
+  },
+  "Microsoft365DocumentOnboarding": {
+    "AuthorityHost": "https://login.microsoftonline.com",
+    "PlatformClientId": "<multi-tenant-application-id>",
+    "CallbackUri": "https://api.example.com/api/document-repositories/microsoft/callback",
+    "CredentialMode": "client_secret_reference",
+    "CredentialReference": "platform/microsoft365/client-secret",
+    "WebOrigin": "https://your-web-host.example",
+    "DelegatedSetupScopes": [ "openid", "profile", "offline_access", "https://graph.microsoft.com/Files.ReadWrite", "https://graph.microsoft.com/Sites.Read.All" ],
+    "SelectedApplicationPermission": "Files.SelectedOperations.Selected",
+    "OneDriveSelectedApplicationPermission": "Files.SelectedOperations.Selected",
+    "SharePointSelectedApplicationPermission": "Files.SelectedOperations.Selected",
+    "SessionLifetimeMinutes": 20,
+    "CleanupIntervalMinutes": 5,
+    "ProvisioningPollIntervalSeconds": 5,
+    "AllowedReturnPathPrefixes": [ "/settings/document-repositories" ]
   },
   "CompanyDocumentVirusScanner": {
     "Enabled": true,
@@ -94,6 +140,17 @@ Supported Graph cloud hosts are `graph.microsoft.com`, `graph.microsoft.us`, `do
 
 All routes require the company-admin policy and resolved company context:
 
+- `GET .../microsoft/onboarding/{sessionHandle}/source-kinds` reports the configured OneDrive for Business and SharePoint discovery capabilities.
+- `GET .../sources/onedrive` discovers the signed-in administrator's organizational OneDrive without exposing its Graph ID.
+- `GET .../sources/sharepoint/sites` and `/libraries` return bounded pages represented by opaque site/source handles.
+- `GET .../folders` returns folder-only children, breadcrumb handles and an opaque continuation handle.
+- `POST .../selection` revalidates the folder and ancestry, persists the canonical encrypted selection and returns selected-permission preflight; it does not create a connection or permission grant.
+- `POST .../access` persists the server-validated read/write choice, optional descendant output folder and company-agent selections; no Microsoft mutation occurs.
+- `GET .../review` returns the server-derived tenant/source/root, output, agents, import behavior and exact `read`/`write` changes.
+- `POST .../finalize` requires the current draft version and explicit confirmation, then idempotently queues durable provisioning. Repeated requests return the same operation.
+- `GET .../provisioning` reports queued, provisioning, reconciliation-required, failed, connected or cleaned state without exposing provider IDs or credentials.
+- `POST .../provisioning/retry` reconciles the exact application permission before any retry. `POST .../provisioning/cleanup` requires confirmation and durably queues removal of only wizard-managed partial grants; its worker treats timeouts as reconciliation-required instead of claiming synchronous success.
+
 - `POST /api/companies/{companyId}/document-repositories` registers a pending connection. It remains read-only unless `enableWrites` and a designated `writableFolderItemId` are both supplied.
 - `PUT /api/companies/{companyId}/document-repositories/{connectionId}` reconfigures it using `expectedConcurrencyVersion` and resets validation.
 - `GET` collection and item routes return sanitized state and never return the credential reference.
@@ -112,16 +169,34 @@ All routes require the company-admin policy and resolved company context:
 
 Validation states distinguish invalid credentials, missing resource grants, missing resources, throttling, provider availability, and boundary violations. Provider response bodies, access tokens, download URLs, and paging URLs are never returned or persisted.
 
+## Provisioning, retry, cleanup, and rotation
+
+Finalization is a durable background workflow. It rechecks the initiating company administrator, tenant, root ancestry, output-folder ancestry and current delegated authority; records every exact resource, role, permission ID, attempt and ownership decision; and verifies the finished connection with a platform application token. The connection becomes active and its idempotent initial import is queued only after the root `read` grant is observable. Write behavior remains disabled unless the separate output `write` grant is also verified.
+
+An existing customer-managed application permission is recorded as pre-existing and is never treated as wizard-managed. Timeout, throttling and provider 5xx responses enter reconciliation: the worker reads the exact drive-item permission and does not issue another POST when the intended application/role already exists. Partial setup remains operator-visible and never enables writes. Retry requires a still-authorized Virtual Company administrator and retained temporary Microsoft authority. If that authority expires, restart authorization before reconciling.
+
+Cancellation before finalization has no Microsoft side effect. After provisioning begins, ordinary cancellation is rejected; use retry or the explicitly confirmed cleanup action. Cleanup deletes only the persisted permission IDs that this workflow created, never a pre-existing/customer-managed grant and never remote content. Disconnect continues to preserve all Microsoft permissions; any future revoke-on-disconnect option must remain separately confirmed and ownership-bound.
+
+For platform credential rotation, add the new secret-store version under the same reference, allow app-only token caches to refresh, validate a platform-managed connection, and then retire the old secret. Rotation does not change persisted resource assignments because those target the stable application ID. Changing the application ID requires a reviewed migration of resource grants; do not silently repoint existing connections.
+
 ## Administrator and user experience
 
 Open **Settings → Document repositories** to manage the publication boundary. The page uses only live API state; it does not simulate a connected provider when the API, scanner, embedding service, or Microsoft grant is unavailable.
 
-1. Choose SharePoint document library or OneDrive for Business and enter the pre-granted Microsoft tenant, application, drive/library, and starting folder identifiers.
-2. Enter the name of the credential already stored in the platform secret store. Never paste a client secret into the form.
-3. Select the explicit company audience and the agents allowed to search and cite the source. No agents are selected by default.
-4. Save and validate the resource. A missing Microsoft resource assignment is shown separately from invalid credentials or provider availability; fix the grant in Microsoft 365 and then validate again.
-5. Browse within the validated boundary, select the published root, and start the initial import. The page reports scanning/indexing work, partial failures, indexed totals, validation freshness, synchronization freshness, and the next safe action.
-6. Use **Sync now** for ordinary refresh or the full-resynchronization recovery action after repairing a dependency. Disconnect immediately removes the source from new agent retrieval without deleting Microsoft files or shared credentials.
+The primary path is **Connect Microsoft 365**. It is an eight-milestone guided workflow: connect, administrator sign-in, approval, source type, source/folder selection, access, agents, and review/connect. The administrator never copies or sees tenant, application, credential, drive, folder, or Graph identifiers in this path.
+
+1. Start the guided connection and continue to Microsoft with full-page navigation. The callback returns to the settings page with only the opaque, company/user-bound setup handle.
+2. Choose OneDrive for Business or SharePoint. SharePoint is recommended for durable company-owned knowledge. Search is offered only for the backend-supported SharePoint site discovery endpoint.
+3. Browse eligible sources and folders using server-issued opaque handles. Breadcrumbs, pagination, empty results, throttling and access loss remain inside the protected setup session.
+4. Keep the recommended read-only mode or explicitly enable approval-bound output and choose a separate descendant output folder. Coauthoring, deletion and arbitrary sharing are not supported.
+5. Select agents from the current company roster. The initial selection is empty, and Microsoft administrator approval never grants Virtual Company agent access by itself.
+6. Review the server-derived tenant/source names, approved root, access mode, output folder, agent audience, import behavior and exact permission changes. **Connect repository** remains disabled until the administrator deliberately confirms the review.
+7. The page then reports durable `queued`, `provisioning`, `reconciliation_required`, `failed`, `cleaned` and `connected` outcomes. Retry reads the exact managed permission before another attempt; cleanup targets only a persisted wizard-managed grant. Refreshing does not manufacture success or duplicate a connection.
+8. After connection, use the existing health, import, synchronization, agent-access, publication, recovery and disconnect controls. Platform-managed connections that lose consent expose a guided reconnect action.
+
+The legacy customer-managed form remains under **Advanced: use your own Entra application**. It is intended only for administrators who operate their own registration, credential rotation, resource grants and technical identifiers. Existing customer-managed connections remain editable through that path and are never silently converted to platform-managed credentials.
+
+Troubleshooting is state-specific: consent denial restarts safely; wrong tenant or account requires the company administrator account; insufficient authority requires an authorized Microsoft 365 administrator; expired sessions restart without a permission mutation; no eligible sources and tenant policy blocks require Microsoft-side policy/resource review; throttling offers bounded retry; partial or ambiguous provisioning offers only reviewed retry or managed-grant cleanup; validation failure never enables writes. Live Microsoft verification requires the configured tenant, administrator authority and selected-resource consent described above.
 
 Repository access can also be reached from **Settings → Agents → Document repository access**. Agent answers and Support knowledge retain safe source provenance; an unavailable source remains unavailable rather than silently degrading into an uncited answer. Read-only members see an access explanation and cannot invoke management endpoints because the API independently enforces the company-admin policy.
 

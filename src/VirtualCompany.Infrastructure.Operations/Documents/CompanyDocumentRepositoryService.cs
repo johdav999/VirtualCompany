@@ -223,7 +223,7 @@ internal sealed class CompanyDocumentRepositoryService(
     }
 
     private static GraphRepositoryContext ToGraphContext(CompanyDocumentRepositoryConnection connection) =>
-        new(connection.ProviderKind, connection.DirectoryTenantId, connection.ApplicationClientId, connection.CredentialReference, connection.DriveId, connection.RootItemId);
+        new(connection.ProviderKind, connection.CredentialMode, connection.DirectoryTenantId, connection.ApplicationClientId, connection.CredentialReference, connection.DriveId, connection.RootItemId);
 
     private async Task<Dictionary<Guid, RepositoryPresentation>> LoadPresentationAsync(
         Guid companyId,
@@ -309,7 +309,7 @@ internal sealed class CompanyDocumentRepositoryService(
         presentation?.OldestQueueAgeSeconds, presentation?.StaleLeaseCount ?? 0,
         presentation?.RetryableFailedItemCount ?? 0, presentation?.UnresolvedPublicationCount ?? 0,
         presentation?.DependencyHealth ?? "healthy", presentation?.IsThrottled ?? false,
-        operationsOptions.Value.Enabled);
+        operationsOptions.Value.Enabled, connection.CredentialMode);
 
     private sealed record RepositoryPresentation(
         int Indexed,

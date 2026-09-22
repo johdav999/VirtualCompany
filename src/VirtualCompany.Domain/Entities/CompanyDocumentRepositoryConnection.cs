@@ -22,6 +22,7 @@ public sealed class CompanyDocumentRepositoryConnection : ICompanyOwnedEntity
         DirectoryTenantId = Require(directoryTenantId, nameof(directoryTenantId));
         ApplicationClientId = Require(applicationClientId, nameof(applicationClientId));
         CredentialReference = Normalize(credentialReference, nameof(credentialReference), 256);
+        CredentialMode = DocumentRepositoryCredentialModes.CustomerManaged;
         DriveId = Normalize(driveId, nameof(driveId), 160);
         RootItemId = Normalize(rootItemId, nameof(rootItemId), 160);
         DisplayName = Normalize(displayName, nameof(displayName), 200);
@@ -39,6 +40,7 @@ public sealed class CompanyDocumentRepositoryConnection : ICompanyOwnedEntity
     public Guid DirectoryTenantId { get; private set; }
     public Guid ApplicationClientId { get; private set; }
     public string CredentialReference { get; private set; } = null!;
+    public string CredentialMode { get; private set; } = DocumentRepositoryCredentialModes.CustomerManaged;
     public string DriveId { get; private set; } = null!;
     public string RootItemId { get; private set; } = null!;
     public string DisplayName { get; private set; } = null!;
@@ -112,6 +114,15 @@ public sealed class CompanyDocumentRepositoryConnection : ICompanyOwnedEntity
             IsReadOnly = true;
         }
 
+        Touch(updatedUtc);
+    }
+
+    public void UsePlatformManagedCredential(Guid applicationClientId, DateTime updatedUtc)
+    {
+        EnsureConnected();
+        ApplicationClientId = Require(applicationClientId, nameof(applicationClientId));
+        CredentialMode = DocumentRepositoryCredentialModes.PlatformManaged;
+        CredentialReference = DocumentRepositoryCredentialModes.PlatformManagedReference;
         Touch(updatedUtc);
     }
 
@@ -196,6 +207,19 @@ public sealed class CompanyDocumentRepositoryConnection : ICompanyOwnedEntity
         if (normalized.Length > maxLength) throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
         return normalized;
     }
+}
+
+public static class DocumentRepositoryCredentialModes
+{
+    public const string CustomerManaged = "customer_managed";
+    public const string PlatformManaged = "platform_managed";
+    public const string PlatformManagedReference = "platform-managed";
+    public static string Normalize(string value) => value?.Trim().ToLowerInvariant() switch
+    {
+        CustomerManaged => CustomerManaged,
+        PlatformManaged => PlatformManaged,
+        _ => throw new ArgumentException("Credential mode must be customer_managed or platform_managed.", nameof(value))
+    };
 }
 
 public static class DocumentRepositoryPauseScopes

@@ -64,7 +64,7 @@ internal sealed class CompanyDocumentRepositoryImportService(
         if (job.Connection.LifecycleState != DocumentRepositoryLifecycleStates.Active) { job.Fail("connection_not_active", "The repository connection is not active.", now); await db.SaveChangesAsync(ct); return; }
         try
         {
-            var context = new GraphRepositoryContext(job.Connection.ProviderKind, job.Connection.DirectoryTenantId, job.Connection.ApplicationClientId, job.Connection.CredentialReference, job.Connection.DriveId, job.Connection.RootItemId);
+            var context = new GraphRepositoryContext(job.Connection.ProviderKind, job.Connection.CredentialMode, job.Connection.DirectoryTenantId, job.Connection.ApplicationClientId, job.Connection.CredentialReference, job.Connection.DriveId, job.Connection.RootItemId);
             var files = await graph.EnumerateFilesAsync(context, ct); job.SetDiscoveredCount(files.Count, now);
             foreach (var file in files) db.CompanyDocumentRepositoryImportItems.Add(new CompanyDocumentRepositoryImportItem(job.CompanyId, job.Id, job.Connection.DriveId, file.ItemId, file.Name, file.RemoteVersion, file.WebUrl, file.ContentType, file.SizeBytes, file.LastModifiedUtc, now));
             await db.SaveChangesAsync(ct);

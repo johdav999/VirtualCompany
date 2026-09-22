@@ -238,6 +238,7 @@ The current consolidation references are stored in `docs/design/references/`:
 - `responsibility-driven-today-workspace-reference.png`
 - `responsibility-assignments-settings-reference.png`
 - `responsibility-driven-monthly-workspace-reference.png`
+- `microsoft-365-guided-connection-reference.png`
 
 The responsibility settings reference was generated from
 `responsibility-assignments-settings-reference-prompt.md`. It defines the stacked

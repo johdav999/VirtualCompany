@@ -14359,6 +14359,14 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("CredentialMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasDefaultValue("customer_managed")
+                        .HasColumnName("credential_mode");
+
                     b.Property<string>("CredentialReference")
                         .IsRequired()
                         .HasMaxLength(256)
@@ -14631,6 +14639,308 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("company_document_repository_import_jobs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryOnboardingSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("CallbackReceivedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("callback_received_at");
+
+                    b.Property<DateTime?>("CancelledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<long>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("concurrency_version");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("ExpiredUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expired_at");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<Guid>("InitiatingUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("initiating_user_id");
+
+                    b.Property<string>("ProtectedSetupMaterial")
+                        .HasMaxLength(12000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("protected_setup_material");
+
+                    b.Property<Guid?>("ProviderTenantId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("provider_tenant_id");
+
+                    b.Property<string>("ReturnPath")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("return_path");
+
+                    b.Property<string>("SessionHandleHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("session_handle_hash");
+
+                    b.Property<string>("StateHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("state_hash");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SessionHandleHash")
+                        .IsUnique();
+
+                    b.HasIndex("StateHash")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "ExpiresUtc");
+
+                    b.HasIndex("CompanyId", "InitiatingUserId", "Status");
+
+                    b.ToTable("company_document_repository_onboarding_sessions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryProvisioning", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<long>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("concurrency_version");
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DirectoryTenantId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("directory_tenant_id");
+
+                    b.Property<string>("DriveId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("drive_id");
+
+                    b.Property<bool>("EnableWrites")
+                        .HasColumnType("bit")
+                        .HasColumnName("enable_writes");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<Guid>("InitiatingUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("initiating_user_id");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<Guid>("OnboardingSessionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("onboarding_session_id");
+
+                    b.Property<string>("ProviderKind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("provider_kind");
+
+                    b.Property<string>("RootDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("root_display_name");
+
+                    b.Property<string>("RootItemId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("root_item_id");
+
+                    b.Property<string>("RootPermissionId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("root_permission_id");
+
+                    b.Property<bool>("RootPermissionManaged")
+                        .HasColumnType("bit")
+                        .HasColumnName("root_permission_managed");
+
+                    b.Property<string>("SiteId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("site_id");
+
+                    b.Property<string>("SourceDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("source_display_name");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("WritableFolderDisplayName")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("writable_folder_display_name");
+
+                    b.Property<string>("WritableFolderItemId")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("writable_folder_item_id");
+
+                    b.Property<string>("WritePermissionId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("write_permission_id");
+
+                    b.Property<bool>("WritePermissionManaged")
+                        .HasColumnType("bit")
+                        .HasColumnName("write_permission_managed");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConnectionId")
+                        .IsUnique()
+                        .HasFilter("[connection_id] IS NOT NULL");
+
+                    b.HasIndex("OnboardingSessionId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "NextAttemptUtc");
+
+                    b.ToTable("company_document_repository_provisionings", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryProvisioningAgent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("ProvisioningId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("provisioning_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProvisioningId");
+
+                    b.HasIndex("CompanyId", "AgentId");
+
+                    b.HasIndex("CompanyId", "ProvisioningId", "AgentId")
+                        .IsUnique();
+
+                    b.ToTable("company_document_repository_provisioning_agents", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositorySynchronizationJob", b =>
@@ -58859,6 +59169,48 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Connection");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryOnboardingSession", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryProvisioning", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryOnboardingSession", "OnboardingSession")
+                        .WithMany()
+                        .HasForeignKey("OnboardingSessionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("OnboardingSession");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryProvisioningAgent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryProvisioning", "Provisioning")
+                        .WithMany("Agents")
+                        .HasForeignKey("ProvisioningId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "Agent")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+
+                    b.Navigation("Provisioning");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositorySynchronizationJob", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryConnection", "Connection")
@@ -67211,6 +67563,11 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryImportJob", b =>
                 {
                     b.Navigation("Items");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyDocumentRepositoryProvisioning", b =>
+                {
+                    b.Navigation("Agents");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanySimulationRunHistory", b =>

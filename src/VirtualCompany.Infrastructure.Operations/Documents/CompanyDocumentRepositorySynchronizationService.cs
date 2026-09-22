@@ -356,7 +356,7 @@ internal sealed class CompanyDocumentRepositorySynchronizationService(
     private static void EnsureActive(CompanyDocumentRepositoryConnection connection) { if (connection.LifecycleState != DocumentRepositoryLifecycleStates.Active) throw new DocumentRepositoryUnavailableException("connection_not_active", "Validate the repository connection before synchronizing it."); }
     private static bool IsRetryable(string code) => code is DocumentRepositoryValidationCodes.Throttled or DocumentRepositoryValidationCodes.Unavailable or "synchronization_failed" or "reconciliation_item_failures";
     private static string ValidateKey(string value) => string.IsNullOrWhiteSpace(value) || value.Trim().Length > 200 ? throw new DocumentRepositoryValidationException("IdempotencyKey is required and must be 200 characters or fewer.") : value.Trim();
-    private static GraphRepositoryContext ToContext(CompanyDocumentRepositoryConnection x) => new(x.ProviderKind, x.DirectoryTenantId, x.ApplicationClientId, x.CredentialReference, x.DriveId, x.RootItemId);
+    private static GraphRepositoryContext ToContext(CompanyDocumentRepositoryConnection x) => new(x.ProviderKind, x.CredentialMode, x.DirectoryTenantId, x.ApplicationClientId, x.CredentialReference, x.DriveId, x.RootItemId);
     private static DocumentRepositorySynchronizationJobDto Map(CompanyDocumentRepositorySynchronizationJob x) => new(x.Id, x.ConnectionId, x.Status, x.Mode, x.AttemptCount, x.ObservedCount, x.ChangedCount, x.RemovedCount, x.FailedCount, x.NextRetryUtc, x.FailureCode, x.FailureMessage, x.CreatedUtc, x.UpdatedUtc, x.CompletedUtc);
 }
 

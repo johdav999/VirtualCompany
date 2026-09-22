@@ -39,6 +39,37 @@ public sealed class DocumentRepositoryApiClientTests
         Assert.Contains(handler.Bodies, body => body.Contains("\"expectedConcurrencyVersion\":7", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Typed_client_keeps_setup_identifiers_inside_opaque_handles()
+    {
+        var companyId = Guid.NewGuid();
+        var handler = new SetupHandler();
+        var client = CreateClient(handler);
+        var start = await client.BeginMicrosoftOnboardingAsync(companyId, "/settings/document-repositories");
+        var kinds = await client.GetMicrosoftSourceKindsAsync(companyId, start.SessionHandle);
+        var sites = await client.SearchMicrosoftSharePointSitesAsync(companyId, start.SessionHandle, "Finance & Legal", "opaque page");
+        var libraries = await client.GetMicrosoftSharePointLibrariesAsync(companyId, start.SessionHandle, sites.Items[0].SelectionHandle);
+        var folders = await client.BrowseMicrosoftFoldersAsync(companyId, start.SessionHandle, libraries.Items[0].SelectionHandle);
+        var selection = await client.SelectMicrosoftRootAsync(companyId, start.SessionHandle, libraries.Items[0].SelectionHandle, folders.Items[0].SelectionHandle, 2);
+        var access = await client.ConfigureMicrosoftAccessAsync(companyId, start.SessionHandle, false, null, [], selection.SelectionVersion);
+        var review = await client.GetMicrosoftReviewAsync(companyId, start.SessionHandle);
+        var finalized = await client.FinalizeMicrosoftRepositoryAsync(companyId, start.SessionHandle, review.DraftVersion);
+        var provisioning = await client.GetMicrosoftProvisioningAsync(companyId, start.SessionHandle);
+        await client.RetryMicrosoftProvisioningAsync(companyId, start.SessionHandle);
+        await client.CleanupMicrosoftProvisioningAsync(companyId, start.SessionHandle);
+        await client.CancelMicrosoftOnboardingAsync(companyId, start.SessionHandle, access.DraftVersion);
+
+        Assert.Equal("sharepoint_library", kinds[0].Kind);
+        Assert.Equal("Policies", selection.RootDisplayName);
+        Assert.False(access.EnableWrites);
+        Assert.Equal("Policies", review.RootName);
+        Assert.Equal("queued", finalized.Status);
+        Assert.Equal("queued", provisioning!.Status);
+        Assert.Contains("query=Finance%20%26%20Legal", handler.Requests[2].RequestUri!.Query);
+        Assert.Contains("pageHandle=opaque%20page", handler.Requests[2].RequestUri!.Query);
+        Assert.All(handler.Requests, request => Assert.DoesNotContain("drive-id", request.RequestUri!.ToString(), StringComparison.Ordinal));
+        Assert.Contains(handler.Bodies, body => body.Contains("\"sourceHandle\":\"source-handle\"", StringComparison.Ordinal));
+    }
     [Theory]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.Unauthorized)]
@@ -96,6 +127,36 @@ public sealed class DocumentRepositoryApiClientTests
         }
     }
 
+    private sealed class SetupHandler : HttpMessageHandler
+    {
+        public List<HttpRequestMessage> Requests { get; } = [];
+        public List<string> Bodies { get; } = [];
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            if (request.Content is not null) Bodies.Add(await request.Content.ReadAsStringAsync(cancellationToken));
+            var path = request.RequestUri!.AbsolutePath;
+            var json = request.Method == HttpMethod.Post && path.EndsWith("/microsoft/onboarding", StringComparison.Ordinal)
+                ? """{"sessionHandle":"session-handle","authorizationUrl":"https://login.microsoftonline.com/authorize","expiresUtc":"2026-09-21T12:00:00Z"}"""
+                : path.EndsWith("/source-kinds", StringComparison.Ordinal)
+                    ? """[{"kind":"sharepoint_library","displayName":"SharePoint","description":"Company source","isAvailable":true}]"""
+                    : path.EndsWith("/sites", StringComparison.Ordinal)
+                        ? """{"items":[{"selectionHandle":"site-handle","kind":"sharepoint_site","displayName":"Finance"}],"isTruncated":false}"""
+                        : path.EndsWith("/libraries", StringComparison.Ordinal)
+                            ? """{"items":[{"selectionHandle":"source-handle","kind":"sharepoint_library","displayName":"Documents"}],"isTruncated":false}"""
+                            : path.EndsWith("/folders", StringComparison.Ordinal)
+                                ? """{"source":{"selectionHandle":"source-handle","kind":"sharepoint_library","displayName":"Documents"},"breadcrumbs":[],"items":[{"selectionHandle":"folder-handle","displayName":"Policies"}],"isTruncated":false}"""
+                                : path.EndsWith("/selection", StringComparison.Ordinal)
+                                    ? """{"sourceKind":"sharepoint_library","sourceDisplayName":"Documents","rootDisplayName":"Policies","canAssignSelectedApplicationPermission":true,"applicationPermission":"Sites.Selected","selectionVersion":3}"""
+                                    : path.EndsWith("/access", StringComparison.Ordinal)
+                                        ? """{"enableWrites":false,"agentIds":[],"draftVersion":4}"""
+                                        : path.EndsWith("/review", StringComparison.Ordinal)
+                                            ? """{"tenantDisplay":"Acme","sourceKind":"sharepoint_library","sourceName":"Documents","rootName":"Policies","accessMode":"read_only","agents":[],"audience":"company","importBehavior":"Automatic","permissionChanges":["Read selected folder"],"draftVersion":4}"""
+                                            : """{"id":"11111111-1111-1111-1111-111111111111","status":"queued","canRetry":false,"canCleanup":false,"attemptCount":0,"createdUtc":"2026-09-21T10:00:00Z","updatedUtc":"2026-09-21T10:00:00Z"}""";
+            var noContent = path.EndsWith("/cancel", StringComparison.Ordinal);
+            return new HttpResponseMessage(noContent ? HttpStatusCode.NoContent : HttpStatusCode.OK) { Content = new StringContent(noContent ? string.Empty : json, Encoding.UTF8, "application/json") };
+        }
+    }
     private sealed class StaticHandler(HttpStatusCode status, string content) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>

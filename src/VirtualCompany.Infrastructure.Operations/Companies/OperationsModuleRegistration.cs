@@ -1,4 +1,4 @@
-﻿using VirtualCompany.Application.CustomerMemory;
+using VirtualCompany.Application.CustomerMemory;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authorization;
@@ -97,6 +97,25 @@ public static class OperationsModuleRegistration
         {
             AllowAutoRedirect = false
         });
+        services.AddHttpClient(MicrosoftGraphDocumentRepositorySetupAdapter.ClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<MicrosoftGraphDocumentRepositoryOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : options.BaseUrl + "/");
+            client.Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
+        }).ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddHttpClient(MicrosoftGraphDocumentRepositoryPermissionAdapter.ClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<MicrosoftGraphDocumentRepositoryOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl.EndsWith('/') ? options.BaseUrl : options.BaseUrl + "/");
+            client.Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
+        }).ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false });
+        services.AddOptions<Microsoft365DocumentOnboardingOptions>()
+            .Bind(configuration.GetSection(Microsoft365DocumentOnboardingOptions.SectionName));
+        services.AddHostedService<Microsoft365DocumentOnboardingDevelopmentSecretBootstrapper>();
+        services.AddHttpClient(DocumentRepositoryMicrosoftOnboardingService.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        }).ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler { AllowAutoRedirect = false });
 
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
@@ -331,6 +350,15 @@ public static class OperationsModuleRegistration
         services.AddSingleton<IMicrosoftGraphApplicationTokenProvider, MicrosoftGraphApplicationTokenProvider>();
         services.AddScoped<IDocumentRepositoryGraphAdapter, MicrosoftGraphDocumentRepositoryAdapter>();
         services.AddScoped<ICompanyDocumentRepositoryService, CompanyDocumentRepositoryService>();
+        services.AddScoped<IDocumentRepositoryMicrosoftSetupAdapter, MicrosoftGraphDocumentRepositorySetupAdapter>();
+        services.AddScoped<IDocumentRepositoryMicrosoftPermissionAdapter, MicrosoftGraphDocumentRepositoryPermissionAdapter>();
+        services.AddSingleton<IMicrosoft365OnboardingMaterialProtector, Microsoft365OnboardingMaterialProtector>();
+        services.AddSingleton<IMicrosoft365IdTokenValidator, Microsoft365IdTokenValidator>();
+        services.AddScoped<DocumentRepositoryMicrosoftOnboardingService>();
+        services.AddScoped<IDocumentRepositoryMicrosoftOnboardingService>(provider => provider.GetRequiredService<DocumentRepositoryMicrosoftOnboardingService>());
+        services.AddScoped<IDocumentRepositoryProvisioningProcessor>(provider => provider.GetRequiredService<DocumentRepositoryMicrosoftOnboardingService>());
+        services.AddHostedService<DocumentRepositoryOnboardingExpiryWorker>();
+        services.AddHostedService<DocumentRepositoryProvisioningWorker>();
         services.AddScoped<ICompanyDocumentRepositoryImportService, CompanyDocumentRepositoryImportService>();
         services.AddScoped<ICompanyDocumentRepositorySynchronizationService, CompanyDocumentRepositorySynchronizationService>();
         services.AddScoped<ICompanyDocumentPublicationService, CompanyDocumentPublicationService>();

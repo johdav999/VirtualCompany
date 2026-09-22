@@ -26,7 +26,7 @@ internal sealed class RemoteKnowledgeSourceAvailabilityGate(
             {
                 x.IsAvailable, x.RemoteVersion, x.ObservedRemoteVersion, x.ItemId,
                 Connection = new { x.Connection.ProviderKind, x.Connection.DirectoryTenantId, x.Connection.ApplicationClientId,
-                    x.Connection.CredentialReference, x.Connection.DriveId, x.Connection.RootItemId, x.Connection.LifecycleState, x.Connection.Audience, x.Connection.RetrievalPausedUtc },
+                    x.Connection.CredentialMode, x.Connection.CredentialReference, x.Connection.DriveId, x.Connection.RootItemId, x.Connection.LifecycleState, x.Connection.Audience, x.Connection.RetrievalPausedUtc },
                 AgentGranted = !accessContext.AgentId.HasValue || x.Connection.AgentGrants.Any(g => g.AgentId == accessContext.AgentId.Value)
             })
             .SingleOrDefaultAsync(cancellationToken);
@@ -39,7 +39,7 @@ internal sealed class RemoteKnowledgeSourceAvailabilityGate(
 
         try
         {
-            var context = new GraphRepositoryContext(source.Connection.ProviderKind, source.Connection.DirectoryTenantId,
+            var context = new GraphRepositoryContext(source.Connection.ProviderKind, source.Connection.CredentialMode, source.Connection.DirectoryTenantId,
                 source.Connection.ApplicationClientId, source.Connection.CredentialReference, source.Connection.DriveId,
                 source.Connection.RootItemId);
             var current = await graph.ValidateItemAsync(context, source.ItemId, cancellationToken);

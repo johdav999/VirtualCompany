@@ -7,6 +7,21 @@ namespace VirtualCompany.Web.Services;
 public interface IDocumentRepositoryApiClient
 {
     Task<IReadOnlyList<DocumentRepositoryConnectionViewModel>?> ListAsync(Guid companyId, CancellationToken cancellationToken = default);
+    Task<Microsoft365OnboardingStartViewModel> BeginMicrosoftOnboardingAsync(Guid companyId, string returnPath, CancellationToken cancellationToken = default);
+    Task<Microsoft365OnboardingStatusViewModel> GetMicrosoftOnboardingStatusAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<Microsoft365SourceKindViewModel>> GetMicrosoftSourceKindsAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
+    Task<Microsoft365SourcePageViewModel> GetMicrosoftOneDriveSourcesAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
+    Task<Microsoft365SourcePageViewModel> SearchMicrosoftSharePointSitesAsync(Guid companyId, string sessionHandle, string query, string? pageHandle = null, int maxItems = 25, CancellationToken cancellationToken = default);
+    Task<Microsoft365SourcePageViewModel> GetMicrosoftSharePointLibrariesAsync(Guid companyId, string sessionHandle, string siteHandle, string? pageHandle = null, int maxItems = 25, CancellationToken cancellationToken = default);
+    Task<Microsoft365FolderPageViewModel> BrowseMicrosoftFoldersAsync(Guid companyId, string sessionHandle, string sourceHandle, string? folderHandle = null, string? pageHandle = null, int maxItems = 50, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositorySelectionViewModel> SelectMicrosoftRootAsync(Guid companyId, string sessionHandle, string sourceHandle, string folderHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default);
+    Task CancelMicrosoftOnboardingAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositoryAccessDraftViewModel> ConfigureMicrosoftAccessAsync(Guid companyId, string sessionHandle, bool enableWrites, string? outputFolderHandle, IReadOnlyCollection<Guid> agentIds, long expectedConcurrencyVersion, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositoryReviewViewModel> GetMicrosoftReviewAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositoryProvisioningViewModel> FinalizeMicrosoftRepositoryAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositoryProvisioningViewModel?> GetMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositoryProvisioningViewModel> RetryMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
+    Task<Microsoft365RepositoryProvisioningViewModel> CleanupMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default);
     Task<DocumentRepositoryConnectionViewModel> SaveAsync(Guid companyId, Guid? connectionId, ConfigureDocumentRepositoryRequest request, CancellationToken cancellationToken = default);
     Task<DocumentRepositoryValidationViewModel> ValidateAsync(Guid companyId, Guid connectionId, CancellationToken cancellationToken = default);
     Task<DocumentRepositoryBrowseViewModel> BrowseAsync(Guid companyId, Guid connectionId, string? parentItemId, CancellationToken cancellationToken = default);
@@ -25,6 +40,57 @@ public sealed class DocumentRepositoryApiClient(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
+    public Task<Microsoft365OnboardingStartViewModel> BeginMicrosoftOnboardingAsync(Guid companyId, string returnPath, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365OnboardingStartViewModel>(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding", new { returnPath }, cancellationToken);
+
+    public Task<Microsoft365OnboardingStatusViewModel> GetMicrosoftOnboardingStatusAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365OnboardingStatusViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}", null, cancellationToken);
+
+    public async Task<IReadOnlyList<Microsoft365SourceKindViewModel>> GetMicrosoftSourceKindsAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        await SendRequiredAsync<List<Microsoft365SourceKindViewModel>>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/source-kinds", null, cancellationToken);
+
+    public Task<Microsoft365SourcePageViewModel> GetMicrosoftOneDriveSourcesAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365SourcePageViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/sources/onedrive", null, cancellationToken);
+
+    public Task<Microsoft365SourcePageViewModel> SearchMicrosoftSharePointSitesAsync(Guid companyId, string sessionHandle, string query, string? pageHandle = null, int maxItems = 25, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365SourcePageViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/sources/sharepoint/sites?query={Uri.EscapeDataString(query)}&maxItems={maxItems}{Optional("pageHandle", pageHandle)}", null, cancellationToken);
+
+    public Task<Microsoft365SourcePageViewModel> GetMicrosoftSharePointLibrariesAsync(Guid companyId, string sessionHandle, string siteHandle, string? pageHandle = null, int maxItems = 25, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365SourcePageViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/sources/sharepoint/libraries?siteHandle={Uri.EscapeDataString(siteHandle)}&maxItems={maxItems}{Optional("pageHandle", pageHandle)}", null, cancellationToken);
+
+    public Task<Microsoft365FolderPageViewModel> BrowseMicrosoftFoldersAsync(Guid companyId, string sessionHandle, string sourceHandle, string? folderHandle = null, string? pageHandle = null, int maxItems = 50, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365FolderPageViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/folders?sourceHandle={Uri.EscapeDataString(sourceHandle)}&maxItems={maxItems}{Optional("folderHandle", folderHandle)}{Optional("pageHandle", pageHandle)}", null, cancellationToken);
+
+    public Task<Microsoft365RepositorySelectionViewModel> SelectMicrosoftRootAsync(Guid companyId, string sessionHandle, string sourceHandle, string folderHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365RepositorySelectionViewModel>(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/selection", new { sourceHandle, folderHandle, expectedConcurrencyVersion }, cancellationToken);
+
+    public async Task CancelMicrosoftOnboardingAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default)
+    {
+        EnsureAvailable(companyId);
+        using var content = JsonContent.Create(new { expectedConcurrencyVersion }, options: JsonOptions);
+        using var response = await transport.SendAsync(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/cancel", content, cancellationToken);
+        if (!response.IsSuccessStatusCode) throw await CreateExceptionAsync(response, cancellationToken);
+    }
+
+    public Task<Microsoft365RepositoryAccessDraftViewModel> ConfigureMicrosoftAccessAsync(Guid companyId, string sessionHandle, bool enableWrites, string? outputFolderHandle, IReadOnlyCollection<Guid> agentIds, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365RepositoryAccessDraftViewModel>(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/access", new { enableWrites, outputFolderHandle, agentIds, expectedConcurrencyVersion }, cancellationToken);
+
+    public Task<Microsoft365RepositoryReviewViewModel> GetMicrosoftReviewAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365RepositoryReviewViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/review", null, cancellationToken);
+
+    public Task<Microsoft365RepositoryProvisioningViewModel> FinalizeMicrosoftRepositoryAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365RepositoryProvisioningViewModel>(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/finalize", new { expectedConcurrencyVersion, confirmed = true }, cancellationToken);
+
+    public Task<Microsoft365RepositoryProvisioningViewModel?> GetMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        SendAsync<Microsoft365RepositoryProvisioningViewModel>(companyId, HttpMethod.Get, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/provisioning", null, false, cancellationToken);
+
+    public Task<Microsoft365RepositoryProvisioningViewModel> RetryMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365RepositoryProvisioningViewModel>(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/provisioning/retry", new { }, cancellationToken);
+
+    public Task<Microsoft365RepositoryProvisioningViewModel> CleanupMicrosoftProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken = default) =>
+        SendRequiredAsync<Microsoft365RepositoryProvisioningViewModel>(companyId, HttpMethod.Post, $"api/companies/{companyId:D}/document-repositories/microsoft/onboarding/{Uri.EscapeDataString(sessionHandle)}/provisioning/cleanup", new { confirmed = true }, cancellationToken);
+
+    private static string Optional(string name, string? value) => string.IsNullOrWhiteSpace(value) ? string.Empty : $"&{name}={Uri.EscapeDataString(value)}";
     public Task<IReadOnlyList<DocumentRepositoryConnectionViewModel>?> ListAsync(Guid companyId, CancellationToken cancellationToken = default) =>
         SendAsync<IReadOnlyList<DocumentRepositoryConnectionViewModel>>(companyId, HttpMethod.Get,
             $"api/companies/{companyId:D}/document-repositories", null, allowForbidden: true, cancellationToken);
@@ -205,7 +271,22 @@ public sealed class DocumentRepositoryConnectionViewModel
     public string DependencyHealth { get; set; } = "healthy";
     public bool IsThrottled { get; set; }
     public bool FeatureEnabled { get; set; } = true;
+    public string CredentialMode { get; set; } = "customer_managed";
 }
+
+public sealed record Microsoft365OnboardingStartViewModel(string SessionHandle, string AuthorizationUrl, DateTime ExpiresUtc);
+public sealed record Microsoft365OnboardingStatusViewModel(string SessionHandle, string Status, Guid? ProviderTenantId, string ReturnPath, string? FailureCode, string? FailureSummary, DateTime CreatedUtc, DateTime ExpiresUtc, DateTime? CompletedUtc, long ConcurrencyVersion);
+public sealed record Microsoft365SourceKindViewModel(string Kind, string DisplayName, string Description, bool IsAvailable, string? UnavailableReason);
+public sealed record Microsoft365SourceViewModel(string SelectionHandle, string Kind, string DisplayName, string? Context);
+public sealed record Microsoft365SourcePageViewModel(IReadOnlyList<Microsoft365SourceViewModel> Items, string? NextPageHandle, bool IsTruncated);
+public sealed record Microsoft365FolderBreadcrumbViewModel(string SelectionHandle, string DisplayName);
+public sealed record Microsoft365FolderViewModel(string SelectionHandle, string DisplayName, DateTime? LastModifiedUtc);
+public sealed record Microsoft365FolderPageViewModel(Microsoft365SourceViewModel Source, IReadOnlyList<Microsoft365FolderBreadcrumbViewModel> Breadcrumbs, IReadOnlyList<Microsoft365FolderViewModel> Items, string? NextPageHandle, bool IsTruncated);
+public sealed record Microsoft365RepositorySelectionViewModel(string SourceKind, string SourceDisplayName, string RootDisplayName, string? SourceContext, bool CanAssignSelectedApplicationPermission, string ApplicationPermission, string? UnavailableReason, long SelectionVersion);
+public sealed record Microsoft365RepositoryAccessDraftViewModel(bool EnableWrites, string? OutputFolderName, IReadOnlyList<Guid> AgentIds, long DraftVersion);
+public sealed record Microsoft365RepositoryReviewAgentViewModel(Guid Id, string DisplayName);
+public sealed record Microsoft365RepositoryReviewViewModel(string TenantDisplay, string SourceKind, string SourceName, string RootName, string AccessMode, string? OutputFolderName, IReadOnlyList<Microsoft365RepositoryReviewAgentViewModel> Agents, string Audience, string ImportBehavior, IReadOnlyList<string> PermissionChanges, long DraftVersion);
+public sealed record Microsoft365RepositoryProvisioningViewModel(Guid Id, string Status, Guid? ConnectionId, string? FailureCode, string? FailureSummary, bool CanRetry, bool CanCleanup, int AttemptCount, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? CompletedUtc);
 
 public sealed record DocumentPublicationRecoveryViewModel(Guid Id, string Status);
 

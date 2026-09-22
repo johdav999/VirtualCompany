@@ -45,6 +45,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyKnowledgeDocument> CompanyKnowledgeDocuments => Set<CompanyKnowledgeDocument>();
     public DbSet<CompanyDocumentRepositoryConnection> CompanyDocumentRepositoryConnections => Set<CompanyDocumentRepositoryConnection>();
     public DbSet<CompanyDocumentRepositoryAgentGrant> CompanyDocumentRepositoryAgentGrants => Set<CompanyDocumentRepositoryAgentGrant>();
+    public DbSet<CompanyDocumentRepositoryOnboardingSession> CompanyDocumentRepositoryOnboardingSessions => Set<CompanyDocumentRepositoryOnboardingSession>();
+    public DbSet<CompanyDocumentRepositoryProvisioning> CompanyDocumentRepositoryProvisionings => Set<CompanyDocumentRepositoryProvisioning>();
+    public DbSet<CompanyDocumentRepositoryProvisioningAgent> CompanyDocumentRepositoryProvisioningAgents => Set<CompanyDocumentRepositoryProvisioningAgent>();
     public DbSet<CompanyDocumentRepositoryImportJob> CompanyDocumentRepositoryImportJobs => Set<CompanyDocumentRepositoryImportJob>();
     public DbSet<CompanyDocumentRepositoryImportItem> CompanyDocumentRepositoryImportItems => Set<CompanyDocumentRepositoryImportItem>();
     public DbSet<CompanyKnowledgeDocumentRemoteSource> CompanyKnowledgeDocumentRemoteSources => Set<CompanyKnowledgeDocumentRemoteSource>();
@@ -1415,6 +1418,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyDocumentRepositoryAgentGrant>()
             .HasQueryFilter(grant =>
                 CurrentCompanyId != null && grant.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyDocumentRepositoryOnboardingSession>()
+            .HasQueryFilter(session =>
+                CurrentCompanyId != null && session.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyDocumentRepositoryImportJob>()
             .HasQueryFilter(job =>
                 CurrentCompanyId != null && job.CompanyId == CurrentCompanyId);

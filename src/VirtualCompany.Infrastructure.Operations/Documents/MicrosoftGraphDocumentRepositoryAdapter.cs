@@ -25,11 +25,18 @@ public sealed class MicrosoftGraphDocumentRepositoryOptions
 
 internal sealed record GraphRepositoryContext(
     string ProviderKind,
+    string CredentialMode,
     Guid DirectoryTenantId,
     Guid ApplicationClientId,
     string CredentialReference,
     string DriveId,
-    string RootItemId);
+    string RootItemId)
+{
+    public GraphRepositoryContext(string providerKind, Guid directoryTenantId, Guid applicationClientId,
+        string credentialReference, string driveId, string rootItemId)
+        : this(providerKind, DocumentRepositoryCredentialModes.CustomerManaged, directoryTenantId,
+            applicationClientId, credentialReference, driveId, rootItemId) { }
+}
 
 internal sealed record GraphRepositoryValidation(string RepositoryName, string RootName);
 internal sealed record GraphBrowsePage(IReadOnlyList<DocumentRepositoryBrowseItem> Items, bool IsTruncated);
@@ -63,7 +70,8 @@ internal interface IMicrosoftGraphApplicationTokenProvider
 
 internal sealed class MicrosoftGraphApplicationTokenProvider(
     IPlatformSecretStore secretStore,
-    IOptions<MicrosoftGraphDocumentRepositoryOptions> options) : IMicrosoftGraphApplicationTokenProvider
+    IOptions<MicrosoftGraphDocumentRepositoryOptions> options,
+    IOptions<Microsoft365DocumentOnboardingOptions> platformOptions) : IMicrosoftGraphApplicationTokenProvider
 {
     private readonly ConcurrentDictionary<TokenCacheKey, CachedToken> _tokens = new();
     private readonly ConcurrentDictionary<TokenCacheKey, SemaphoreSlim> _locks = new();
@@ -71,7 +79,15 @@ internal sealed class MicrosoftGraphApplicationTokenProvider(
 
     public async Task<string> GetAccessTokenAsync(GraphRepositoryContext context, CancellationToken cancellationToken)
     {
-        var secret = await secretStore.GetAsync(context.CredentialReference, null, cancellationToken)
+        var credentialReference = context.CredentialMode == DocumentRepositoryCredentialModes.PlatformManaged
+            ? platformOptions.Value.CredentialReference
+            : context.CredentialReference;
+        var clientId = context.CredentialMode == DocumentRepositoryCredentialModes.PlatformManaged && Guid.TryParse(platformOptions.Value.PlatformClientId, out var platformClientId)
+            ? platformClientId
+            : context.ApplicationClientId;
+        if (string.IsNullOrWhiteSpace(credentialReference) || clientId == Guid.Empty)
+            throw new DocumentRepositoryUnavailableException(DocumentRepositoryValidationCodes.InvalidCredentials, "The platform Microsoft Graph identity is unavailable.");
+        var secret = await secretStore.GetAsync(credentialReference, null, cancellationToken)
             ?? throw new DocumentRepositoryUnavailableException(DocumentRepositoryValidationCodes.InvalidCredentials, "The configured Microsoft Graph credential is unavailable.");
         var key = BuildKey(context);
         if (_tokens.TryGetValue(key, out var cached) && cached.SecretVersion == secret.Version && cached.ExpiresUtc > DateTimeOffset.UtcNow.AddMinutes(5))
@@ -88,7 +104,7 @@ internal sealed class MicrosoftGraphApplicationTokenProvider(
             {
                 var credential = new ClientSecretCredential(
                     context.DirectoryTenantId.ToString("D"),
-                    context.ApplicationClientId.ToString("D"),
+                    clientId.ToString("D"),
                     secret.Value);
                 var token = await credential.GetTokenAsync(new TokenRequestContext([_scope]), cancellationToken);
                 _tokens[key] = new CachedToken(token.Token, token.ExpiresOn, secret.Version);
@@ -106,8 +122,8 @@ internal sealed class MicrosoftGraphApplicationTokenProvider(
     }
 
     public void Invalidate(GraphRepositoryContext context) => _tokens.TryRemove(BuildKey(context), out _);
-    private TokenCacheKey BuildKey(GraphRepositoryContext context) => new(context.DirectoryTenantId, context.ApplicationClientId, context.CredentialReference, _scope);
-    private sealed record TokenCacheKey(Guid TenantId, Guid ClientId, string CredentialReference, string Scope);
+    private TokenCacheKey BuildKey(GraphRepositoryContext context) => new(context.DirectoryTenantId, context.ApplicationClientId, context.CredentialMode, context.CredentialReference, _scope);
+    private sealed record TokenCacheKey(Guid TenantId, Guid ClientId, string CredentialMode, string CredentialReference, string Scope);
     private sealed record CachedToken(string Value, DateTimeOffset ExpiresUtc, string SecretVersion);
 }
 

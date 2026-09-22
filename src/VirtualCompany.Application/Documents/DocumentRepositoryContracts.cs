@@ -56,7 +56,91 @@ public sealed record DocumentRepositoryConnectionDto(
     int UnresolvedPublicationCount = 0,
     string DependencyHealth = "healthy",
     bool IsThrottled = false,
-    bool FeatureEnabled = true);
+    bool FeatureEnabled = true,
+    string CredentialMode = "customer_managed");
+
+public sealed record BeginMicrosoft365OnboardingCommand(string ReturnPath);
+public sealed record Microsoft365OnboardingStartDto(string SessionHandle, string AuthorizationUrl, DateTime ExpiresUtc);
+public sealed record Microsoft365OnboardingStatusDto(
+    string SessionHandle, string Status, Guid? ProviderTenantId, string ReturnPath,
+    string? FailureCode, string? FailureSummary, DateTime CreatedUtc, DateTime ExpiresUtc,
+    DateTime? CompletedUtc, long ConcurrencyVersion);
+public sealed record Microsoft365AuthorizationCallbackCommand(
+    string State, string? Code, string? Error, string? ErrorDescription);
+public sealed record Microsoft365SourceKindDto(string Kind, string DisplayName, string Description, bool IsAvailable, string? UnavailableReason);
+public sealed record Microsoft365SourceDto(string SelectionHandle, string Kind, string DisplayName, string? Context);
+public sealed record Microsoft365SourcePageDto(IReadOnlyList<Microsoft365SourceDto> Items, string? NextPageHandle, bool IsTruncated);
+public sealed record Microsoft365FolderBreadcrumbDto(string SelectionHandle, string DisplayName);
+public sealed record Microsoft365FolderDto(string SelectionHandle, string DisplayName, DateTime? LastModifiedUtc);
+public sealed record Microsoft365FolderPageDto(
+    Microsoft365SourceDto Source, IReadOnlyList<Microsoft365FolderBreadcrumbDto> Breadcrumbs,
+    IReadOnlyList<Microsoft365FolderDto> Items, string? NextPageHandle, bool IsTruncated);
+public sealed record SelectMicrosoft365RepositoryRootCommand(string SourceHandle, string FolderHandle, long ExpectedConcurrencyVersion);
+public sealed record Microsoft365RepositorySelectionDto(
+    string SourceKind, string SourceDisplayName, string RootDisplayName, string? SourceContext,
+    bool CanAssignSelectedApplicationPermission, string ApplicationPermission, string? UnavailableReason,
+    long SelectionVersion);
+public sealed record ConfigureMicrosoft365RepositoryAccessCommand(
+    bool EnableWrites,
+    string? OutputFolderHandle,
+    IReadOnlyCollection<Guid>? AgentIds,
+    long ExpectedConcurrencyVersion);
+public sealed record Microsoft365RepositoryAccessDraftDto(
+    bool EnableWrites,
+    string? OutputFolderName,
+    IReadOnlyList<Guid> AgentIds,
+    long DraftVersion);
+public sealed record Microsoft365RepositoryReviewAgentDto(Guid Id, string DisplayName);
+public sealed record Microsoft365RepositoryReviewDto(
+    string TenantDisplay,
+    string SourceKind,
+    string SourceName,
+    string RootName,
+    string AccessMode,
+    string? OutputFolderName,
+    IReadOnlyList<Microsoft365RepositoryReviewAgentDto> Agents,
+    string Audience,
+    string ImportBehavior,
+    IReadOnlyList<string> PermissionChanges,
+    long DraftVersion);
+public sealed record FinalizeMicrosoft365RepositoryCommand(long ExpectedConcurrencyVersion, bool Confirmed);
+public sealed record Microsoft365RepositoryProvisioningDto(
+    Guid Id, string Status, Guid? ConnectionId, string? FailureCode, string? FailureSummary,
+    bool CanRetry, bool CanCleanup, int AttemptCount, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? CompletedUtc);
+public sealed record CleanupMicrosoft365RepositoryProvisioningCommand(bool Confirmed);
+
+public interface IDocumentRepositoryMicrosoftOnboardingService
+{
+    Task<Microsoft365OnboardingStartDto> BeginAsync(Guid companyId, BeginMicrosoft365OnboardingCommand command, CancellationToken cancellationToken);
+    Task<Microsoft365OnboardingStatusDto> CompleteCallbackAsync(Microsoft365AuthorizationCallbackCommand command, CancellationToken cancellationToken);
+    Task<Microsoft365OnboardingStatusDto?> GetStatusAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken);
+    Task<IReadOnlyList<Microsoft365SourceKindDto>> GetSourceKindsAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken);
+    Task<Microsoft365SourcePageDto> GetOneDriveSourcesAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken);
+    Task<Microsoft365SourcePageDto> SearchSharePointSitesAsync(Guid companyId, string sessionHandle, string query, string? pageHandle, int maxItems, CancellationToken cancellationToken);
+    Task<Microsoft365SourcePageDto> GetSharePointLibrariesAsync(Guid companyId, string sessionHandle, string siteHandle, string? pageHandle, int maxItems, CancellationToken cancellationToken);
+    Task<Microsoft365FolderPageDto> BrowseFoldersAsync(Guid companyId, string sessionHandle, string sourceHandle, string? folderHandle, string? pageHandle, int maxItems, CancellationToken cancellationToken);
+    Task<Microsoft365RepositorySelectionDto> SelectRootAsync(Guid companyId, string sessionHandle, SelectMicrosoft365RepositoryRootCommand command, CancellationToken cancellationToken);
+    Task<Microsoft365RepositoryAccessDraftDto> ConfigureAccessAsync(Guid companyId, string sessionHandle, ConfigureMicrosoft365RepositoryAccessCommand command, CancellationToken cancellationToken);
+    Task<Microsoft365RepositoryReviewDto> GetReviewAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken);
+    Task<Microsoft365RepositoryProvisioningDto> FinalizeAsync(Guid companyId, string sessionHandle, FinalizeMicrosoft365RepositoryCommand command, CancellationToken cancellationToken);
+    Task<Microsoft365RepositoryProvisioningDto?> GetProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken);
+    Task<Microsoft365RepositoryProvisioningDto> RetryProvisioningAsync(Guid companyId, string sessionHandle, CancellationToken cancellationToken);
+    Task<Microsoft365RepositoryProvisioningDto> CleanupProvisioningAsync(Guid companyId, string sessionHandle, CleanupMicrosoft365RepositoryProvisioningCommand command, CancellationToken cancellationToken);
+    Task CancelAsync(Guid companyId, string sessionHandle, long expectedConcurrencyVersion, CancellationToken cancellationToken);
+    Task ExpirePendingAsync(CancellationToken cancellationToken);
+}
+
+public interface IDocumentRepositoryProvisioningProcessor
+{
+    Task ProcessPendingAsync(CancellationToken cancellationToken);
+}
+
+public sealed class DocumentRepositoryOnboardingException(string code, string safeMessage, bool retryable = false) : InvalidOperationException(safeMessage)
+{
+    public string Code { get; } = code;
+    public string SafeMessage { get; } = safeMessage;
+    public bool Retryable { get; } = retryable;
+}
 
 public sealed record SetDocumentRepositoryPauseCommand(string Scope, bool Paused, long ExpectedConcurrencyVersion);
 public sealed record RetryDocumentRepositoryFailuresCommand(string IdempotencyKey);

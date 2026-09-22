@@ -6,7 +6,7 @@ Implementation prompt pack, grounded in repository inspection on 2026-09-17.
 
 Implement Microsoft 365 business document repositories for Virtual Company agents. Support OneDrive for Business and SharePoint document libraries through Microsoft Graph. A shared SharePoint library is the recommended company-owned source; connecting a OneDrive for Business folder remains supported. Consumer Microsoft accounts, Git repositories, document coauthoring, arbitrary sharing links, deletion of remote files, and changes to Microsoft permissions by agents are outside this pack.
 
-Execute prompts in order. Prompts 1–5 deliver the read-only release; prompts 6–8 complete controlled creation, updates and recovery. This ordering is not permission to stop at prompt 5 when asked to implement the whole pack. Each prompt delivers working behavior and its tests, not just contracts or a plan. Do not implement this pack merely because asked to read or edit it.
+Execute prompts in order. Prompts 1–5 deliver the read-only release; prompts 6–8 complete controlled creation, updates and recovery. Prompts 9–12 replace the normal manual-ID setup with a guided Microsoft 365 administrator connection while retaining bring-your-own-app configuration as an advanced fallback. This ordering is not permission to stop at an intermediate prompt when asked to implement the whole pack. Each prompt delivers working behavior and its tests, not just contracts or a plan. Do not implement this pack merely because asked to read or edit it.
 
 Default to application authentication for autonomous company agents, with explicitly granted Microsoft resources and an explicit company audience configured by an administrator. The connection is a company knowledge publication boundary: application access does not imply that every company member or every agent may read everything. Do not imply that this mode mirrors each employee's Microsoft permissions. Delegated, per-user repository access is a separate future feature; do not silently use an employee's refresh token as the company service identity.
 
@@ -386,3 +386,191 @@ Run focused recovery/retention/security tests, relevant document/agent/Support/W
 ### Definition of done
 
 Recovery controls are implemented, the full requested integration is complete, documentation is usable and acceptance evidence is honest. Clearly list any external verification still blocked; do not describe an unverified deployment as production-validated.
+
+## Guided Microsoft 365 connection follow-on
+
+The following prompts are grounded in repository inspection on 2026-09-20, after prompts 1–8 were implemented. The production repository now includes company-scoped connection, validation, folder browsing, import, synchronization, agent retrieval, approved publication/update, recovery and retention behavior. `DocumentRepositoriesSettings.razor` still exposes directory tenant ID, application client ID, credential reference, drive ID and root item ID in the primary connection form. `CompanyDocumentRepositoryConnection`, `DocumentRepositoryContracts`, `CompanyDocumentRepositoriesController`, `CompanyDocumentRepositoryService` and `MicrosoftGraphDocumentRepositoryAdapter` assume a customer-managed application identity and client-secret reference.
+
+Prompts 9–12 introduce a platform-managed connection path with Microsoft administrator authorization, source discovery, reviewed selected-permission provisioning and a guided UI. They do not replace the app-only runtime access model with per-user access. The administrator's delegated authorization exists only to complete setup; autonomous imports, synchronization, retrieval and approved writes continue under the narrowly granted application identity. Existing customer-managed connections, imported documents, approvals and jobs must remain compatible.
+
+When implementing these prompts, verify the current Microsoft identity and Graph behavior against official documentation. In particular, distinguish tenant-wide admin consent from the separate assignment on a selected OneDrive or SharePoint resource. Determine and document the least-privileged delegated authorization needed temporarily for discovery and permission provisioning, and the selected application permission used by the runtime. Do not request `Files.Read.All`, `Files.ReadWrite.All`, `Sites.Read.All` or `Sites.ReadWrite.All` as a persistent runtime fallback merely to simplify discovery.
+
+## Prompt 9 — Add secure Microsoft administrator authorization
+
+### Title and outcome
+
+Implement the platform-managed authorization foundation behind **Connect Microsoft 365** so a company administrator can sign in with a Microsoft 365 administrator account, grant the reviewed consent and return to the same company setup flow without entering tenant, application or secret identifiers.
+
+### Current context
+
+The existing document repository connection uses a directory tenant ID, application client ID and `IPlatformSecretStore` credential reference supplied through the UI. `MicrosoftGraphDocumentRepositoryAdapter` acquires application-only tokens from that tuple. `DocumentRepositoriesSettings.razor` and `DocumentRepositoryApiClient` expose the manual configuration. The repository already contains protected OAuth/state and replay patterns for mailbox, calendar, Finance and Marketing integrations, plus a Teams administrator-consent surface; inspect and reuse the appropriate platform conventions without importing capability implementation projects into Operations. `IPlatformSecretStore` has Get/Set but no delete, so it is not automatically suitable for disposable authorization-session material.
+
+### Dependencies
+
+Prompts 1–8. Deployment registration of a production multi-tenant Microsoft Entra application, reviewed redirect URIs and a platform-owned certificate, workload identity or other supported non-user credential are required for live authorization. Local deterministic tests must not require real Microsoft credentials.
+
+### Implementation requirements
+
+1. Add an explicit document-repository credential mode that distinguishes existing customer-managed application connections from platform-managed Microsoft 365 connections. Preserve all existing records and API behavior through a compatible migration and backfill. Platform-managed connections resolve the deployment-owned application identity server-side; they do not copy its credential reference into browser contracts or require a company-specific client secret.
+2. Add a company-owned, expiring onboarding session with initiating user, company, return destination, correlation, status, provider tenant, replay/concurrency state and safe failure information. Persist only queryable workflow state. Protect state, nonce and PKCE material using established security boundaries. Any temporary delegated token material must be encrypted at rest in an appropriate short-lived credential/session store, excluded from logs and responses, and actually removed or made cryptographically unusable on completion, cancellation and expiry. Do not assume `IPlatformSecretStore` can delete it.
+3. Add company-admin endpoints to begin authorization, receive or complete the callback, read status and cancel an onboarding session. The browser receives only an authorization URL or opaque session handle. Validate the authenticated initiating user and company again after callback; enforce single use, expiry, same-company ownership, safe return-URL allowlisting and replay denial.
+4. Use authorization code with PKCE and current Microsoft identity guidance. Require an organizational Microsoft account in the intended tenant and an administrator consent result sufficient for the platform application's selected application permission. Validate issuer, tenant, audience, state, nonce and callback errors. Do not trust a tenant ID, role claim, redirect destination or completion flag supplied by the browser.
+5. Separate setup authority from runtime authority. The delegated administrator credential may be used only by the bounded onboarding workflow introduced in prompts 9–11 and must never become the repository's continuing identity, an agent credential or a general Graph token. The runtime remains application-only and receives no access until a selected-resource assignment is completed.
+6. Add stable safe failure codes for consent denied, non-organizational account, wrong tenant, insufficient administrator authority, expired/replayed state, invalid callback, unavailable configuration and provider throttling. Audit start, successful tenant association, denial, cancellation and expiry without names, email addresses, codes or tokens. Add low-cardinality observability for authorization outcome and age.
+7. Add validated configuration for authority host, platform client ID, callback URI, credential mode/reference and onboarding lifetimes. Fail the connection action clearly when configuration is absent while allowing unrelated application startup and existing customer-managed connections to continue. Document registration, credential rotation, redirect URI and sovereign-cloud limitations in `docs/onedrive-agent-integration.md`.
+
+### Constraints and preservation rules
+
+Follow `/production-implementation.md`, `/docs/architecture-rules.md`, the shared instructions in this prompt pack and all scoped `AGENTS.md` files. Operations owns the document onboarding use case; cross-cutting token protection may live in Platform. Do not persist authorization codes, raw claims, access/refresh tokens or client credentials in ordinary business columns, audit events, URLs, browser storage or logs. Do not silently convert existing customer-managed connections. There is no folder picker or final resource grant in this prompt.
+
+### Acceptance criteria
+
+- Given an authorized Virtual Company administrator and valid Microsoft administrator consent, the callback resumes the same company-owned onboarding session and records the verified Microsoft tenant without exposing a credential.
+- Given a callback with changed state, nonce, tenant, user/company context, redirect target or an already consumed code, the flow fails closed and cannot be replayed.
+- Given cancellation or expiry, temporary authorization material can no longer be used and status explains that setup must restart.
+- Given missing platform Microsoft configuration, existing customer-managed repositories remain operational and the new action reports a specific unavailable state.
+
+### Verification
+
+Add unit tests for state/nonce/PKCE, issuer/tenant validation, replay, expiry, cancellation, protected material cleanup and configuration. Add API authorization and tenant-isolation tests for begin/status/callback completion, including forged company and open-redirect attempts. Verify the SQL Server migration and pending-model check, then run affected API, Operations and security tests. Categorize a real Entra consent smoke test separately when credentials are available.
+
+### Definition of done
+
+The real authorization start/callback lifecycle is secure, company-scoped, observable and documented. It returns a verified tenant-bound setup session, not a mock success or a long-lived delegated repository credential, and has no unfinished production token-handling path.
+
+## Prompt 10 — Discover Microsoft 365 sources and browse folders
+
+### Title and outcome
+
+Let the authorized administrator choose **OneDrive for Business** or **SharePoint**, discover an eligible drive or document library and browse folders without copying Graph IDs or URLs.
+
+### Current context
+
+Prompt 9 supplies an authenticated, tenant-bound onboarding session and temporary setup authority. The current browse API operates only after a `CompanyDocumentRepositoryConnection` has been saved and validated with a pre-granted root. `MicrosoftGraphDocumentRepositoryAdapter` already contains bounded drive-item operations for an active connection, but no setup-time source discovery. The normal UI still asks for drive and root IDs.
+
+### Dependencies
+
+Prompt 9 and its configured Microsoft application. A live tenant must contain at least one eligible business OneDrive or SharePoint library for external verification.
+
+### Implementation requirements
+
+1. Add setup-time queries for source kinds, eligible OneDrive for Business drives, eligible SharePoint sites/libraries and folder children. Keep Microsoft response models inside the provider adapter and return normalized, minimal source/folder views. Verify the current least-privileged delegated permissions for each discovery endpoint and document the matrix; request no scope unrelated to the implemented flow.
+2. Make source selection explicit. OneDrive for Business discovery must identify the organizational drive and owner context safely; SharePoint discovery must identify the selected site and document library. Exclude consumer OneDrive, unsupported drives, shortcuts or remote items that cannot be safely bounded, and explain unavailable sources without leaking inaccessible tenant resources.
+3. Implement bounded, paged folder-only browsing with breadcrumb navigation, loading, empty, throttled and access-lost results. Enforce configured page/depth limits and cancellation. Accept only opaque server-issued selection handles tied to the onboarding session; do not let the browser substitute arbitrary tenant, site, drive, item, path, paging URL or Graph URL values.
+4. Resolve and retain the canonical provider identities needed for finalization—provider kind, tenant, site where applicable, drive, selected root item, stable display/web-link metadata and selection version—inside the protected onboarding state. Re-resolve ancestry and folder type server-side before accepting a selection. Do not yet create the production connection or represent the source as granted.
+5. Provide an availability/preflight check for the selected root and determine whether selected application permission can be assigned there using the intended runtime permission. Consent without resource assignment is still not connected. Never fall back to tenant-wide application read access when selected discovery or assignment is unsupported.
+6. Audit safe discovery outcomes and selected source type/opaque identifiers without folder names, paths, URLs, user principal names or provider payloads. Apply throttling and abuse limits to searches and browse calls.
+7. Extend typed API clients and contracts for the setup flow without breaking the existing active-connection browse contract used for root maintenance. Update the Microsoft endpoint/permission documentation and list any tenant policies that can prevent discovery.
+
+### Constraints and preservation rules
+
+Follow shared architecture, tenant and provider-adapter rules. Setup reads use the temporary delegated administrator authority only within its company-bound session. Runtime jobs continue to use application-only access. This prompt performs no persistent Microsoft permission assignment, import or write grant, and must not create a partially active repository connection.
+
+### Acceptance criteria
+
+- Given a valid onboarding session, the administrator can select OneDrive for Business or SharePoint and browse eligible folders without seeing or entering a Graph ID.
+- Given a forged selection handle, paging link, drive from another tenant/session or item outside the browsed hierarchy, the API returns no metadata and does not alter setup state.
+- Given a consumer drive, unsupported shortcut or inaccessible library, it cannot be selected as a valid company source.
+- Given throttling or lost delegated access, the session remains recoverable and returns an actionable bounded failure rather than broadening permissions.
+
+### Verification
+
+Add Graph adapter contract tests for both source kinds, paging, empty libraries, special characters, shortcuts, ancestry, cross-drive references, throttling and expired delegated authority. Add API tests for forged handles, cross-company/session access, bounds and cancellation. Run focused Operations/API/Web-client tests and builds. Perform a live discovery/browse smoke test for both source kinds when authorized and record any endpoint-specific permission differences.
+
+### Definition of done
+
+Real Microsoft source and folder discovery works through server-controlled opaque selections with bounded navigation and no manual IDs. Unsupported or unauthorized states are explicit, and no production connection or resource permission is prematurely claimed.
+
+## Prompt 11 — Review and provision least-privilege repository access
+
+### Title and outcome
+
+Complete the administrator's choices for read-only versus an optional writable output folder and agent access, show an exact review, then idempotently provision the selected Microsoft resource permission and activate the repository connection.
+
+### Current context
+
+Prompt 10 leaves a verified source/root selection in the onboarding session. Existing connection entities already model audience, explicit agent grants, read-only mode and a writable folder item ID. Existing validation, import, synchronization, publication and update workflows assume the Microsoft resource grant already exists. The current create endpoint writes a pending connection before validation; it does not provision Microsoft permissions. Creating a selected-resource permission is a new external side effect and must follow the repository's workflow/outbox and reconciliation rules.
+
+### Dependencies
+
+Prompts 9–10. The platform Entra application must have administrator consent for the reviewed selected application permission, and the onboarding administrator must retain the temporary authority required by current Microsoft Graph documentation to assign the selected resource.
+
+### Implementation requirements
+
+1. Extend the onboarding draft with an access mode: read-only by default, or approved agent output enabled with one explicitly selected writable folder. Reuse the secure folder browser to select the output folder and prove it is the same drive and a descendant of the approved root. Do not permit the root, output folder or access mode to be replaced by browser-supplied IDs.
+2. Add explicit company-agent selection using the current roster and backend company validation. Default to no agent grants. Preserve the `company` publication audience explanation: Microsoft administrator access and a resource grant do not automatically authorize every Virtual Company agent or employee.
+3. Produce a server-derived review projection containing Microsoft tenant/source type, source and root names, read/write behavior, output folder when enabled, selected agents, import behavior and the exact permission changes Virtual Company will request. The browser submits the draft concurrency/version and a confirmation, not a reconstructed connection payload.
+4. Implement finalization as a durable, idempotent provisioning workflow. At execution time, revalidate session ownership/expiry, administrator authority, source/root identity and ancestry; assign the platform application `read` on the approved root and, only when enabled, the documented write role on the designated output folder. Verify current Graph role semantics and endpoint compatibility for OneDrive and SharePoint before coding. Never widen to an entire tenant, site or drive as a convenience.
+5. Persist provider permission identifiers, resource identities, provisioning attempts and ownership provenance needed to distinguish wizard-managed grants from pre-existing/customer-managed grants. Reconcile timeouts and duplicate delivery by reading the exact resource permission before retrying; do not create duplicate grants or claim success from an ambiguous response. Partial read/write provisioning remains an operator-visible incomplete state and never enables writes.
+6. Create or activate the `CompanyDocumentRepositoryConnection` only from the finalized server-side selection, using platform-managed credential mode. Reuse existing validation and agent-grant boundaries. Queue the initial import only after the read grant is verified and connection validation succeeds. A failed import does not roll back an otherwise valid connection, but its failure must be visible.
+7. Consume and clean the temporary delegated authorization after finalization. Runtime Graph operations must prove they use the platform application token and selected resource grant rather than the administrator token. Recheck read/write grant availability before existing retrieval and publication behavior as already required.
+8. Define safe cancellation and disconnect semantics for wizard-managed grants. A cancellation before permission mutation has no Microsoft side effect. If a managed grant was created and setup cannot complete, expose a reviewed retry or cleanup action with durable reconciliation. Existing customer-managed grants must never be revoked. Any future disconnect option to revoke wizard-managed grants requires explicit administrator confirmation, targets only persisted grant IDs created by this workflow and never deletes remote content.
+9. Audit draft confirmation, provisioning, validation, activation, cleanup/reconciliation and failure using safe identifiers and correlation. Add low-cardinality metrics for provisioning age/outcome. Update the operations documentation with consent-versus-resource-grant behavior, retry, cleanup and credential rotation.
+
+### Constraints and preservation rules
+
+Follow the Database and EF Core, Workflow and Approval, and External Side Effects and Outbox sections of `/docs/architecture-rules.md`. Microsoft permission mutation is authorized only by the administrator's explicit review confirmation; agents cannot invoke it. Preserve existing manual/customer-managed connections and their non-revocation behavior. Never store delegated tokens or expose platform credentials in the resulting connection DTO.
+
+### Acceptance criteria
+
+- Given a confirmed read-only draft, finalization creates or verifies exactly one root read assignment, validates the application-only connection and queues initial import without a client secret or Graph ID being entered in the UI.
+- Given approved writes, only the selected descendant output folder receives the reviewed write assignment; a folder outside the root or another drive is denied.
+- Given no selected agents, imported content is inaccessible to agents until an administrator later grants access; given selected agents, only valid agents in that company are persisted.
+- Given duplicate execution, a timeout or process restart, reconciliation produces at most the intended grants and one connection, with no false active state.
+- Given expired authority, changed source, revoked consent or incomplete write provisioning, the workflow fails safely with a recoverable state and does not run a write.
+
+### Verification
+
+Test draft tampering, cross-company agents, output-folder escape, consent/grant races, duplicate claims, partial success, ambiguous Graph responses, restart recovery and platform-token runtime use. Add SQL Server migration, uniqueness, concurrency and pending-model checks. Run existing connection/import/publication/update regressions for customer-managed and platform-managed modes. Perform separately recorded live read-only and writable-folder provisioning checks when authorized; do not simulate them as live success.
+
+### Definition of done
+
+Review and connect is a real, durable permission-provisioning workflow. The activated connection is least-privileged, application-only, compatible with existing repository operations and recoverable from ambiguity, with no broad fallback or unmanaged partial side effect.
+
+## Prompt 12 — Deliver the guided Connect Microsoft 365 experience
+
+### Title and outcome
+
+Replace the normal technical-ID form with a polished guided workflow: connect Microsoft 365, sign in as an administrator, approve access, choose OneDrive or SharePoint, select the root, choose optional writes, select agents, review and connect.
+
+### Current context
+
+Prompts 9–11 provide authorization, discovery, draft/review and durable finalization APIs. `DocumentRepositoriesSettings.razor` already displays connection health, imports, synchronization, recovery and disconnect controls, but its primary editor exposes tenant ID, application ID, credential reference, drive ID and root item ID. The page has focused component, surface and API-client tests. The current settings reference image predates the guided flow.
+
+### Dependencies
+
+Prompts 9–11. The mandatory reference-image workflow in `/docs/design.md` applies. Read `/src/VirtualCompany.Web/AGENTS.md`, use `$polish-uat-loop` for hands-on browser UAT and keep a real configured Microsoft tenant separate from deterministic UI fixtures.
+
+### Implementation requirements
+
+1. Before UI implementation, write a design reference prompt and generate/store a new guided-connection reference under `docs/design/references/`. It must use the canonical Settings shell and show the desktop and responsive intent for the eight requested milestones. Compare the implemented UI to the reference and refine it; `/docs/design.md` wins over the image.
+2. Make **Connect Microsoft 365** the primary action. Present a short explanation of administrator consent, folder-bounded application access and Virtual Company agent access. Starting the flow calls the typed API client and navigates to Microsoft; never ask the user to find or paste a tenant ID, application ID, client secret, drive ID or folder ID.
+3. Resume the correct wizard after the Microsoft callback using only the opaque onboarding handle. Show an eight-step progress treatment matching the requested journey: connect, administrator sign-in, approval, source type, source/folder selection, read/write choice, agents, and review/connect. Steps may share a screen when that improves usability, but progress, back behavior and completed choices must remain clear.
+4. Build accessible OneDrive/SharePoint selection and folder browsing with breadcrumb navigation, search only if the backend safely supports it, pagination/load-more, keyboard operation and clear selected-folder summary. Distinguish OneDrive for Business from SharePoint in plain language and recommend SharePoint for durable company-owned knowledge without blocking deliberate OneDrive selection.
+5. Make read-only the recommended default. When writes are enabled, require a separate output-folder selection and explain that agents can only create or replace approved whole files there. Reuse the existing approval/conflict explanations; do not imply coauthoring, deletion or arbitrary sharing.
+6. Present agent access as explicit checkboxes/cards from the current company roster, initially empty. The review page must repeat source, approved root, access mode, output folder, agent audience and Microsoft permission changes. Disable final confirmation until server review is current and require a deliberate **Connect repository** action.
+7. Represent finalization as pending work rather than a synchronous fiction. Show connecting, grant verification, validation, import queued, connected and recoverable failure states. Handle consent denied, wrong account/tenant, missing admin authority, expired session, no eligible sources, permission policy block, throttling, partial provisioning, validation failure and cancellation with one safe next action. Refresh/retry must not duplicate connections or grants.
+8. Move the existing customer-managed form behind an administrator-only **Advanced: use your own Entra application** disclosure or separate route. Clearly label its operational burden and keep its existing validation behavior. Editing an existing customer-managed connection continues to work; platform-managed connections never reveal or request the platform credential reference.
+9. Preserve the existing repository list, health, import/sync/recovery, agent access editing, publication and disconnect experiences after connection. Add a safe reauthorization/reconnect entry point for platform-managed connections when consent is revoked. Do not add a new primary navigation destination.
+10. Update `DocumentRepositoryApiClient`, component tests, surface tests, route inventory and `docs/onedrive-agent-integration.md`. Provide administrator-facing setup copy and operator troubleshooting without exposing Graph IDs in the normal workflow. Localize or centralize new user-facing text according to established conventions.
+
+### Constraints and preservation rules
+
+Follow `/docs/design.md`, `/ui-instructions.md`, shared security rules and backend-authoritative decisions. Blazor state cannot confer authorization or manufacture completed steps. Avoid popup-only behavior that breaks callback/resume; use full-page navigation unless an established, accessible popup flow is proven. Do not store tokens or sensitive callback parameters in browser storage, query history, telemetry or error displays.
+
+### Acceptance criteria
+
+- Given an authorized company administrator, the visible primary journey completes all eight milestones without entering or seeing tenant, application, credential, drive or folder identifiers.
+- Given a non-administrator or direct API attempt, setup and provisioning are denied server-side even if the UI is manipulated.
+- Given consent denial, session expiry, Microsoft throttling or partial provisioning, the page explains the state and offers only a safe restart, retry, cleanup or support action; retry does not duplicate side effects.
+- Given no selected agents, the review says no agents will receive access; given selected agents, the final connected card reflects exactly those grants.
+- Given a narrow viewport or keyboard-only use, every step, folder choice, error and confirmation remains reachable and understandable.
+- Given an existing customer-managed connection, it remains editable and operational through the advanced path with no migration to platform-managed credentials.
+
+### Verification
+
+Run focused component, typed-client, API contract, authorization and tenant-isolation tests. Exercise success, consent denial, expired session, no sources, read-only, writable output, no-agent, partial-provisioning and customer-managed fallback states. Use `$polish-uat-loop` for browser UAT, capture comparison evidence against the generated reference and fix in-scope findings. Build API and Web after focused checks. Record live Microsoft success separately from fixture-driven UI coverage.
+
+### Definition of done
+
+The primary user experience is the requested eight-step guided connection, visually verified and production-backed. Normal users never handle Microsoft implementation identifiers or secrets, all intermediate/failure states are implemented, the advanced legacy path remains compatible and no button or screen is backed by mock behavior.

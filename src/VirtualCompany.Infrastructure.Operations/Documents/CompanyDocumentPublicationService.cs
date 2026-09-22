@@ -102,7 +102,7 @@ internal sealed class CompanyDocumentPublicationService(
         }
 
         var connection = await WritableConnectionAsync(companyId, command.ConnectionId, agentId, cancellationToken);
-        var context = new GraphRepositoryContext(connection.ProviderKind, connection.DirectoryTenantId,
+        var context = new GraphRepositoryContext(connection.ProviderKind, connection.CredentialMode, connection.DirectoryTenantId,
             connection.ApplicationClientId, connection.CredentialReference, connection.DriveId, connection.RootItemId);
         var target = await graph.ValidateItemAsync(context, command.ItemId.Trim(), cancellationToken);
         if (!target.IsAvailable || string.IsNullOrWhiteSpace(target.RemoteVersion))
@@ -180,7 +180,7 @@ internal sealed class CompanyDocumentPublicationService(
         var connection = await WritableConnectionAsync(companyId, request.ConnectionId, agentId, cancellationToken);
         if (request.OperationKind == DocumentPublicationOperationKinds.Update)
         {
-            var context = new GraphRepositoryContext(connection.ProviderKind, connection.DirectoryTenantId,
+            var context = new GraphRepositoryContext(connection.ProviderKind, connection.CredentialMode, connection.DirectoryTenantId,
                 connection.ApplicationClientId, connection.CredentialReference, connection.DriveId, connection.RootItemId);
             var target = await graph.ValidateItemAsync(context, request.TargetItemId!, cancellationToken);
             if (!target.IsAvailable || !string.Equals(target.RemoteVersion, request.ExpectedRemoteVersion, StringComparison.Ordinal))
@@ -273,7 +273,7 @@ internal sealed class CompanyDocumentPublicationService(
         if (!string.Equals(connection.WritableFolderItemId, request.TargetFolderItemId, StringComparison.Ordinal))
             throw new CompanyOutboxPermanentException("The publication destination changed after approval.");
 
-        var context = new GraphRepositoryContext(connection.ProviderKind, connection.DirectoryTenantId,
+        var context = new GraphRepositoryContext(connection.ProviderKind, connection.CredentialMode, connection.DirectoryTenantId,
             connection.ApplicationClientId, connection.CredentialReference, connection.DriveId, connection.RootItemId);
         if (request.Status is DocumentPublicationStatuses.Sending or DocumentPublicationStatuses.ReconciliationRequired)
         {

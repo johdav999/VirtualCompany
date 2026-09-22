@@ -18,6 +18,13 @@ public sealed class DocumentRepositorySettingsSurfaceTests
         Assert.Contains("Pause retrieval", page, StringComparison.Ordinal);
         Assert.Contains("Retry failed items", page, StringComparison.Ordinal);
         Assert.Contains("Reconcile uncertain upload", page, StringComparison.Ordinal);
+        Assert.Contains("Connect Microsoft 365", page, StringComparison.Ordinal);
+        Assert.Contains("Advanced: use your own Entra application", page, StringComparison.Ordinal);
+        var wizard = Read("src", "VirtualCompany.Web", "Pages", "DocumentRepositoryMicrosoftWizard.razor");
+        Assert.Contains("Step @step of 8", wizard, StringComparison.Ordinal);
+        Assert.Contains("No agents receive access yet", wizard, StringComparison.Ordinal);
+        Assert.Contains("Retry safely", wizard, StringComparison.Ordinal);
+        Assert.DoesNotContain("tenant ID", wizard, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("mock", page, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -31,6 +38,8 @@ public sealed class DocumentRepositorySettingsSurfaceTests
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "document-repositories-settings-reference-prompt.md")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "document-repository-operator-recovery-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "document-repository-operator-recovery-reference-prompt.md")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "microsoft-365-guided-connection-reference.png")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "microsoft-365-guided-connection-reference-prompt.md")));
     }
 
     [Fact]

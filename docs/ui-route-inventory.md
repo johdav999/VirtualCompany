@@ -23,7 +23,7 @@ Sales presentation authoring lives at `/app/sales/presentation-presets`: PowerPo
 
 - `/settings/responsibilities` (company-scoped responsibility matrix and size-preset setup; all active members may read, while owner/admin mutation is enforced by the API)
 - `/settings/agents`
-- `/settings/document-repositories` (company-admin Microsoft 365 connection, root selection, import/sync health, and explicit agent grants; remains under Settings rather than primary navigation)
+- `/settings/document-repositories` (company-admin eight-step Microsoft 365 connection with callback resume through an opaque setup handle, root/output-folder selection, explicit agent grants, server-derived review, durable provisioning, customer-managed advanced fallback, and existing import/sync health; remains under Settings rather than primary navigation)
 - `/agents/manage`
 - `/agents/mailboxes/connect`
 - `/agents/automation`

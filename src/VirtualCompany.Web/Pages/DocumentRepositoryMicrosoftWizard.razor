@@ -1,0 +1,402 @@
+@inject IDocumentRepositoryApiClient RepositoryApi
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<section class="m365-wizard" aria-labelledby="m365-wizard-title" data-testid="microsoft-365-wizard">
+    <header class="m365-wizard__header">
+        <div><span class="repository-kicker">Guided connection</span><h2 id="m365-wizard-title">Connect Microsoft 365</h2><p>Sign in as a Microsoft 365 administrator, choose a folder-bounded source, then decide which Virtual Company agents may use it.</p></div>
+        <button class="repository-icon-button bi bi-x-lg" type="button" aria-label="Close Microsoft 365 connection" @onclick="CancelAsync"></button>
+    </header>
+
+    <div class="m365-progress" aria-label="Connection progress">
+        <strong>Step @step of 8 · @StepLabel(step)</strong>
+        <ol>@for (var index = 1; index <= 8; index++) { var item = index; <li class="@(item < step ? "is-complete" : item == step ? "is-active" : string.Empty)" aria-current="@(item == step ? "step" : null)"><span>@(item < step ? "✓" : item)</span><small>@StepLabel(item)</small></li> }</ol>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <div class="m365-alert m365-alert--error" role="alert"><span class="bi bi-exclamation-triangle" aria-hidden="true"></span><div><strong>@ErrorTitle</strong><p>@errorMessage</p></div></div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="m365-state" aria-live="polite"><span class="spinner-border" aria-hidden="true"></span><h3>@loadingTitle</h3><p>@loadingDetail</p></div>
+    }
+    else if (step == 1)
+    {
+        <div class="m365-intro">
+            <div class="m365-intro__icon"><span class="bi bi-microsoft" aria-hidden="true"></span></div>
+            <div><h3>Connect company knowledge without copying technical IDs</h3><p>A Microsoft 365 administrator signs in once to approve setup. Virtual Company then requests access only to the folder you select. Microsoft access and Virtual Company agent access are reviewed separately.</p></div>
+            <ul><li><span class="bi bi-shield-check"></span><strong>Folder bounded</strong><small>No tenant-wide fallback</small></li><li><span class="bi bi-person-lock"></span><strong>Administrator reviewed</strong><small>Agents cannot change permissions</small></li><li><span class="bi bi-people"></span><strong>No agents by default</strong><small>You choose every agent grant</small></li></ul>
+            <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="StartAsync">@(isBusy ? "Preparing Microsoft sign-in…" : "Sign in with Microsoft 365")</button>
+        </div>
+    }
+    else if (step is 2 or 3)
+    {
+        <div class="m365-state">
+            <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span><h3>Complete Microsoft administrator approval</h3><p>The Microsoft sign-in page opens in this browser. If it was closed or the session no longer continues, restart setup to create a fresh one-time authorization.</p>
+            <div class="m365-state__actions"><button class="btn btn-primary" type="button" @onclick="RestartAsync">Restart setup</button><button class="btn btn-outline-secondary" type="button" @onclick="CancelAsync">Cancel</button></div>
+        </div>
+    }
+    else if (step == 4)
+    {
+        <WizardHeading Title="Choose a source type" Detail="SharePoint is recommended for durable, company-owned knowledge. OneDrive for Business is available for an intentionally selected organizational folder." />
+        <div class="m365-choice-grid">
+            @foreach (var kind in sourceKinds)
+            {
+                <button type="button" disabled="@(!kind.IsAvailable || isBusy)" @onclick="() => ChooseKindAsync(kind)"><span class="bi @(kind.Kind == "sharepoint_library" ? "bi-building" : "bi-cloud")"></span><strong>@kind.DisplayName @(kind.Kind == "sharepoint_library" ? "· Recommended" : string.Empty)</strong><p>@kind.Description</p>@if (!kind.IsAvailable) { <small>@kind.UnavailableReason</small> }</button>
+            }
+        </div>
+        <WizardActions Back="Back" BackAction="RestartAsync" Primary="Continue" PrimaryDisabled="true" />
+    }
+    else if (step == 5)
+    {
+        <WizardHeading Title="Choose the approved folder" Detail="Browse only the sources returned for this administrator session. Folder names stay in this setup view and opaque selections are verified by the server." />
+        @if (sourceStage == "sites")
+        {
+            <div class="m365-search"><label for="sharepoint-search">Find a SharePoint site</label><div><input id="sharepoint-search" class="form-control" @bind="siteQuery" @bind:event="oninput" placeholder="Search company sites" /><button class="btn btn-outline-primary" type="button" disabled="@(isBusy || string.IsNullOrWhiteSpace(siteQuery))" @onclick="SearchSitesAsync">Search</button></div></div>
+        }
+        <div class="m365-browser" aria-live="polite">
+            @if (breadcrumbs.Count > 0) { <nav aria-label="Folder breadcrumb">@foreach (var crumb in breadcrumbs) { <button type="button" @onclick="() => BrowseFolderAsync(crumb.SelectionHandle)">@crumb.DisplayName</button><span>/</span> }</nav> }
+            @if (sourceItems.Count > 0)
+            {
+                <div class="m365-source-list">@foreach (var source in sourceItems) { <button type="button" disabled="@isBusy" @onclick="() => SelectSourceAsync(source)"><span class="bi @(sourceStage == "sites" ? "bi-building" : "bi-journal-text")"></span><span><strong>@source.DisplayName</strong><small>@source.Context</small></span><span>@(sourceStage == "sites" ? "Browse libraries" : "Browse folders")</span></button> }</div>
+            }
+            else if (folderItems.Count > 0)
+            {
+                <div class="m365-folder-list">@foreach (var folder in folderItems) { <div><button type="button" @onclick="() => BrowseFolderAsync(folder.SelectionHandle)"><span class="bi bi-folder"></span><span><strong>@folder.DisplayName</strong><small>@FormatModified(folder.LastModifiedUtc)</small></span></button><button class="btn btn-outline-primary btn-sm" type="button" @onclick="() => SelectFolderAsync(folder)">@(selectingOutput ? "Use as output" : "Use this folder")</button></div> }</div>
+            }
+            else if (!isBusy) { <div class="m365-empty"><span class="bi bi-folder2-open"></span><strong>No folders available here</strong><p>@(sourceStage == "folders" ? "Create a folder in this OneDrive or SharePoint location, then refresh the folder list. Only eligible folders can be selected." : "Choose a source, or search for a SharePoint site to continue.")</p>@if (sourceStage == "folders") { <button class="btn btn-outline-primary" type="button" @onclick="() => BrowseFolderAsync(currentFolderHandle)">Refresh folders</button> }</div> }
+            @if (!string.IsNullOrWhiteSpace(nextPageHandle)) { <button class="btn btn-outline-secondary m365-load-more" type="button" disabled="@isBusy" @onclick="LoadMoreAsync">Load more</button> }
+        </div>
+        <WizardActions Back="Back" BackAction="BackFromBrowserAsync" Primary="Continue" PrimaryAction="ContinueFromSourceAsync" PrimaryDisabled="@(isBusy || sourceItems.Count != 1)" />
+    }
+    else if (step == 6)
+    {
+        <WizardHeading Title="Choose repository access" Detail="Read-only is recommended. Optional writes remain approval-bound and can create or replace whole files only in one separate output folder." />
+        <div class="m365-access-options">
+            <label class="@(enableWrites ? string.Empty : "is-selected")"><input type="radio" name="access-mode" checked="@(!enableWrites)" @onchange="() => SetWrites(false)" /><span class="bi bi-eye"></span><span><strong>Read only <em>Recommended</em></strong><small>Agents can search and cite approved knowledge. They cannot change Microsoft files.</small></span></label>
+            <label class="@(enableWrites ? "is-selected" : string.Empty)"><input type="radio" name="access-mode" checked="@enableWrites" @onchange="() => SetWrites(true)" /><span class="bi bi-pencil-square"></span><span><strong>Approved agent output</strong><small>Creates and whole-file replacements require approval and are limited to one descendant output folder.</small></span></label>
+        </div>
+        @if (enableWrites)
+        {
+            <div class="m365-output-summary"><div><strong>Output folder</strong><p>@(outputFolderName ?? "Choose a separate folder inside the approved root.")</p></div><button class="btn btn-outline-primary" type="button" @onclick="ChooseOutputFolderAsync">@(outputFolderName is null ? "Choose output folder" : "Change folder")</button></div>
+        }
+        <WizardActions Back="Back" BackAction="() => step = 5" Primary="Continue to agents" PrimaryAction="ContinueToAgents" PrimaryDisabled="@(enableWrites && outputFolderHandle is null)" />
+    }
+    else if (step == 7)
+    {
+        <WizardHeading Title="Choose agent access" Detail="No agents are selected by default. Only selected agents can search, read, and cite this repository through Virtual Company." />
+        <div class="m365-agent-grid">
+            @if (Agents.Count == 0) { <div class="m365-empty"><span class="bi bi-people"></span><strong>No agents available</strong><p>Connect now and grant agent access later.</p></div> }
+            @foreach (var agent in Agents.OrderBy(x => x.DisplayName)) { <label class="@(selectedAgentIds.Contains(agent.Id) ? "is-selected" : string.Empty)"><input type="checkbox" checked="@selectedAgentIds.Contains(agent.Id)" @onchange="args => ToggleAgent(agent.Id, args)" /><span><strong>@agent.DisplayName</strong><small>@agent.RoleName</small></span></label> }
+        </div>
+        <div class="m365-alert m365-alert--info"><span class="bi bi-info-circle"></span><div><strong>Published to Virtual Company</strong><p>Microsoft permission does not automatically grant access to every employee or agent. The selected company audience and agent list remain an independent publication boundary.</p></div></div>
+        <WizardActions Back="Back" BackAction="() => step = 6" Primary="Review connection" PrimaryAction="PrepareReviewAsync" PrimaryDisabled="@isBusy" />
+    }
+    else if (step == 8 && provisioning is null && review is not null)
+    {
+        <div class="m365-review-layout">
+            <div>
+                <WizardHeading Title="Review and confirm" Detail="This review is derived by the server from your protected setup session. Confirm the exact access before Microsoft permissions are changed." />
+                <dl class="m365-review">
+                    <ReviewRow Icon="bi-microsoft" Label="Microsoft tenant" Value="@review.TenantDisplay" />
+                    <ReviewRow Icon="bi-building" Label="Source" Value="@($"{ProviderLabel(review.SourceKind)} · {review.SourceName}")" />
+                    <ReviewRow Icon="bi-folder" Label="Approved root folder" Value="@review.RootName" />
+                    <ReviewRow Icon="bi-shield-check" Label="Access" Value="@(review.AccessMode == "read_only" ? "Read only · Recommended" : "Approved agent output")" />
+                    <ReviewRow Icon="bi-folder-plus" Label="Output folder" Value="@(review.OutputFolderName ?? "Not configured")" />
+                    <ReviewRow Icon="bi-people" Label="Agents with access" Value="@(review.Agents.Count == 0 ? "No agents selected" : string.Join(", ", review.Agents.Select(x => x.DisplayName)))" />
+                    <ReviewRow Icon="bi-building-check" Label="Company publication" Value="Published to Virtual Company" />
+                    <ReviewRow Icon="bi-arrow-down-circle" Label="Initial import" Value="@review.ImportBehavior" />
+                </dl>
+                <div class="m365-permissions"><strong>Microsoft permission changes</strong><ul>@foreach (var permission in review.PermissionChanges) { <li>@permission</li> }</ul></div>
+                @if (review.Agents.Count == 0) { <div class="m365-alert m365-alert--warning"><span class="bi bi-exclamation-triangle"></span><div><strong>No agents receive access yet</strong><p>You can grant access later from the connected repository card.</p></div></div> }
+                <label class="m365-confirm"><input type="checkbox" @bind="reviewConfirmed" /><span>I have reviewed these details and confirm that I want to connect this repository.</span></label>
+                <WizardActions Back="Back" BackAction="() => step = 7" Primary="Connect repository" PrimaryAction="FinalizeAsync" PrimaryDisabled="@(!reviewConfirmed || isBusy)" />
+            </div>
+            <aside><h3>What happens next</h3><ol><li><span class="bi bi-gear"></span><div><strong>Connecting</strong><small>The request is saved as durable background work.</small></div></li><li><span class="bi bi-shield-check"></span><div><strong>Grant verification</strong><small>Microsoft permissions are verified on the exact resource.</small></div></li><li><span class="bi bi-check-circle"></span><div><strong>Validation</strong><small>Application-only access is checked without reusing the administrator session.</small></div></li><li><span class="bi bi-clock"></span><div><strong>Import queued</strong><small>Eligible files enter scanning and indexing.</small></div></li><li><span class="bi bi-circle"></span><div><strong>Connected</strong><small>The repository appears below with live health.</small></div></li></ol></aside>
+        </div>
+    }
+    else if (step == 8 && provisioning is not null)
+    {
+        <div class="m365-state m365-state--provisioning" aria-live="polite">
+            <span class="bi @ProvisioningIcon" aria-hidden="true"></span><h3>@ProvisioningTitle</h3><p>@ProvisioningDetail</p>
+            <div class="m365-provisioning-steps"><span class="is-complete">Request saved</span><span class="@(provisioning.Status is "provisioning" or "connected" ? "is-complete" : string.Empty)">Grant verification</span><span class="@(provisioning.Status == "connected" ? "is-complete" : string.Empty)">Validation</span><span class="@(provisioning.Status == "connected" ? "is-complete" : string.Empty)">Import queued</span></div>
+            <div class="m365-state__actions">@if (provisioning.CanRetry) { <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick="RetryProvisioningAsync">Retry safely</button> } @if (provisioning.CanCleanup) { <button class="btn btn-outline-danger" type="button" disabled="@isBusy" @onclick="CleanupAsync">Clean up managed grant</button> } @if (provisioning.Status == "connected") { <button class="btn btn-primary" type="button" @onclick="FinishAsync">View connected repository</button> } else if (provisioning.Status == "cleaned") { <button class="btn btn-primary" type="button" @onclick="RestartAsync">Start again</button> } else { <button class="btn btn-outline-secondary" type="button" @onclick="RefreshProvisioningAsync">Refresh status</button> }</div>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public IReadOnlyList<CompanyAgentSummaryViewModel> Agents { get; set; } = [];
+    [Parameter] public string? SessionHandle { get; set; }
+    [Parameter] public EventCallback Closed { get; set; }
+    [Parameter] public EventCallback Connected { get; set; }
+
+    private int step = 1;
+    private bool isBusy;
+    private bool isLoading;
+    private bool enableWrites;
+    private bool selectingOutput;
+    private bool reviewConfirmed;
+    private string loadingTitle = "Loading Microsoft 365 setup";
+    private string loadingDetail = "Checking the protected setup session.";
+    private string? sessionHandle;
+    private string? loadedSessionHandle;
+    private string? errorMessage;
+    private string? failureCode;
+    private string? selectedKind;
+    private string sourceStage = string.Empty;
+    private string siteQuery = string.Empty;
+    private string? selectedSiteHandle;
+    private string? sourceHandle;
+    private string? currentFolderHandle;
+    private string? nextPageHandle;
+    private string? selectedRootHandle;
+    private string? outputFolderHandle;
+    private string? outputFolderName;
+    private long sessionVersion;
+    private IReadOnlyList<Microsoft365SourceKindViewModel> sourceKinds = [];
+    private IReadOnlyList<Microsoft365SourceViewModel> sourceItems = [];
+    private IReadOnlyList<Microsoft365FolderViewModel> folderItems = [];
+    private IReadOnlyList<Microsoft365FolderBreadcrumbViewModel> breadcrumbs = [];
+    private readonly HashSet<Guid> selectedAgentIds = [];
+    private Microsoft365RepositoryReviewViewModel? review;
+    private Microsoft365RepositoryProvisioningViewModel? provisioning;
+    private readonly CancellationTokenSource pollingLifetime = new();
+    private bool polling;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!polling && provisioning?.Status is "queued" or "provisioning")
+            _ = MonitorProvisioningAsync();
+    }
+
+    private async Task MonitorProvisioningAsync()
+    {
+        polling = true;
+        try
+        {
+            while (!pollingLifetime.IsCancellationRequested && provisioning?.Status is "queued" or "provisioning")
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), pollingLifetime.Token);
+                await InvokeAsync(async () =>
+                {
+                    await RefreshProvisioningAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (pollingLifetime.IsCancellationRequested) { }
+        finally { polling = false; }
+    }
+
+    public void Dispose() => pollingLifetime.Cancel();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (string.IsNullOrWhiteSpace(SessionHandle) || loadedSessionHandle == SessionHandle) return;
+        loadedSessionHandle = SessionHandle;
+        await ResumeAsync(SessionHandle);
+    }
+
+    private async Task StartAsync()
+    {
+        isBusy = true; ClearError();
+        try
+        {
+            var returnPath = $"/settings/document-repositories?companyId={CompanyId:D}";
+            var start = await RepositoryApi.BeginMicrosoftOnboardingAsync(CompanyId, returnPath);
+            sessionHandle = start.SessionHandle;
+            step = 2;
+            Navigation.NavigateTo(start.AuthorizationUrl, forceLoad: true);
+        }
+        catch (DocumentRepositoryApiException exception)
+        {
+            if (exception.StatusCode == System.Net.HttpStatusCode.NotFound)
+                SetError("Microsoft 365 setup is restarting. Refresh the page after the API is ready, then try again.", "setup_unavailable");
+            else
+                SetError(exception.Message, "configuration_unavailable");
+        }
+        finally { isBusy = false; }
+    }
+
+    private async Task ResumeAsync(string handle)
+    {
+        isLoading = true; sessionHandle = handle; ClearError();
+        try
+        {
+            var status = await RepositoryApi.GetMicrosoftOnboardingStatusAsync(CompanyId, handle);
+            sessionVersion = status.ConcurrencyVersion;
+            if (status.Status == "authorized") { sourceKinds = await RepositoryApi.GetMicrosoftSourceKindsAsync(CompanyId, handle); step = 4; }
+            else if (status.Status is "provisioning" or "connected") { step = 8; provisioning = await RepositoryApi.GetMicrosoftProvisioningAsync(CompanyId, handle); }
+            else if (status.Status is "awaiting_authorization" or "authorizing") { step = 2; SetError("Microsoft sign-in has not completed. Restart setup if the authorization page was closed.", status.Status); }
+            else { step = 1; SetError(status.FailureSummary ?? StatusMessage(status.Status), status.FailureCode ?? status.Status); }
+        }
+        catch (DocumentRepositoryApiException exception)
+        {
+            step = 1;
+            SetError(exception.StatusCode == System.Net.HttpStatusCode.NotFound
+                ? "This setup session is no longer available for your account. Sign in with Microsoft 365 to start a new session."
+                : exception.Message, "session_unavailable");
+        }
+        finally { isLoading = false; }
+    }
+
+    private async Task ChooseKindAsync(Microsoft365SourceKindViewModel kind)
+    {
+        selectedKind = kind.Kind; step = 5; sourceItems = []; folderItems = []; breadcrumbs = []; ClearError();
+        if (kind.Kind == "onedrive_business") { sourceStage = "drives"; await LoadOneDriveAsync(); }
+        else { sourceStage = "sites"; }
+    }
+
+    private async Task LoadOneDriveAsync()
+    {
+        if (sessionHandle is null) return; isBusy = true;
+        try { var page = await RepositoryApi.GetMicrosoftOneDriveSourcesAsync(CompanyId, sessionHandle); sourceItems = page.Items; nextPageHandle = page.NextPageHandle; }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "source_unavailable"); }
+        finally { isBusy = false; }
+    }
+
+    private async Task SearchSitesAsync()
+    {
+        if (sessionHandle is null) return; isBusy = true; ClearError();
+        try { var page = await RepositoryApi.SearchMicrosoftSharePointSitesAsync(CompanyId, sessionHandle, siteQuery); sourceItems = page.Items; nextPageHandle = page.NextPageHandle; }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "discovery_access_denied"); }
+        finally { isBusy = false; }
+    }
+
+    private Task ContinueFromSourceAsync() =>
+        !isBusy && sourceItems.Count == 1 ? SelectSourceAsync(sourceItems[0]) : Task.CompletedTask;
+
+    private async Task SelectSourceAsync(Microsoft365SourceViewModel source)
+    {
+        if (selectedKind == "sharepoint_library" && sourceStage == "sites")
+        {
+            if (sessionHandle is null) return; selectedSiteHandle = source.SelectionHandle; isBusy = true; ClearError();
+            try { var page = await RepositoryApi.GetMicrosoftSharePointLibrariesAsync(CompanyId, sessionHandle, source.SelectionHandle); sourceItems = page.Items; sourceStage = "libraries"; nextPageHandle = page.NextPageHandle; }
+            catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "source_unavailable"); }
+            finally { isBusy = false; }
+            return;
+        }
+        sourceHandle = source.SelectionHandle; sourceItems = []; await BrowseFolderAsync(null);
+    }
+
+    private async Task BrowseFolderAsync(string? folderHandle)
+    {
+        if (sessionHandle is null || sourceHandle is null) return; isBusy = true; ClearError(); currentFolderHandle = folderHandle;
+        try { var page = await RepositoryApi.BrowseMicrosoftFoldersAsync(CompanyId, sessionHandle, sourceHandle, folderHandle); folderItems = page.Items; breadcrumbs = page.Breadcrumbs; nextPageHandle = page.NextPageHandle; sourceStage = "folders"; }
+        catch (DocumentRepositoryApiException exception) { folderItems = []; SetError(exception.Message, "source_unavailable"); }
+        finally { isBusy = false; }
+    }
+
+    private async Task SelectFolderAsync(Microsoft365FolderViewModel folder)
+    {
+        if (selectingOutput) { outputFolderHandle = folder.SelectionHandle; outputFolderName = folder.DisplayName; selectingOutput = false; step = 6; return; }
+        if (sessionHandle is null || sourceHandle is null) return; isBusy = true; ClearError();
+        try { var selected = await RepositoryApi.SelectMicrosoftRootAsync(CompanyId, sessionHandle, sourceHandle, folder.SelectionHandle, sessionVersion); sessionVersion = selected.SelectionVersion; selectedRootHandle = folder.SelectionHandle; step = 6; }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "invalid_selection"); }
+        finally { isBusy = false; }
+    }
+
+    private Task ChooseOutputFolderAsync() { selectingOutput = true; step = 5; folderItems = []; breadcrumbs = []; return BrowseFolderAsync(selectedRootHandle); }
+    private void SetWrites(bool value) { enableWrites = value; if (!value) { outputFolderHandle = null; outputFolderName = null; } }
+    private void ContinueToAgents() => step = 7;
+    private void ToggleAgent(Guid id, ChangeEventArgs args) { if (args.Value is bool selected && selected) selectedAgentIds.Add(id); else selectedAgentIds.Remove(id); }
+
+    private async Task PrepareReviewAsync()
+    {
+        if (sessionHandle is null) return; isBusy = true; ClearError();
+        try
+        {
+            var draft = await RepositoryApi.ConfigureMicrosoftAccessAsync(CompanyId, sessionHandle, enableWrites, outputFolderHandle, selectedAgentIds, sessionVersion);
+            sessionVersion = draft.DraftVersion; review = await RepositoryApi.GetMicrosoftReviewAsync(CompanyId, sessionHandle); sessionVersion = review.DraftVersion; step = 8;
+        }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "review_unavailable"); }
+        finally { isBusy = false; }
+    }
+
+    private async Task FinalizeAsync()
+    {
+        if (sessionHandle is null || review is null || !reviewConfirmed) return; isBusy = true; ClearError();
+        try { provisioning = await RepositoryApi.FinalizeMicrosoftRepositoryAsync(CompanyId, sessionHandle, review.DraftVersion); await PollProvisioningAsync(); }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "provisioning_failed"); }
+        finally { isBusy = false; }
+    }
+
+    private async Task PollProvisioningAsync()
+    {
+        if (provisioning?.Status == "connected") { await Connected.InvokeAsync(); return; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RefreshProvisioningAsync()
+    {
+        if (sessionHandle is null) return;
+        isBusy = true;
+        try
+        {
+            var previousStatus = provisioning?.Status;
+            provisioning = await RepositoryApi.GetMicrosoftProvisioningAsync(CompanyId, sessionHandle) ?? provisioning;
+            if (provisioning?.Status == "connected" && previousStatus != "connected")
+                await Connected.InvokeAsync();
+        }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "provisioning_unavailable"); }
+        finally { isBusy = false; }
+    }
+    private async Task RetryProvisioningAsync() { if (sessionHandle is null) return; isBusy = true; ClearError(); try { provisioning = await RepositoryApi.RetryMicrosoftProvisioningAsync(CompanyId, sessionHandle); await PollProvisioningAsync(); } catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "provisioning_failed"); } finally { isBusy = false; } }
+    private async Task CleanupAsync() { if (sessionHandle is null) return; isBusy = true; ClearError(); try { provisioning = await RepositoryApi.CleanupMicrosoftProvisioningAsync(CompanyId, sessionHandle); } catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "cleanup_failed"); } finally { isBusy = false; } }
+    private async Task FinishAsync() { await Connected.InvokeAsync(); await Closed.InvokeAsync(); }
+    private async Task RestartAsync()
+    {
+        if (sessionHandle is not null && sessionVersion > 0 && provisioning is null)
+        {
+            try { await RepositoryApi.CancelMicrosoftOnboardingAsync(CompanyId, sessionHandle, sessionVersion); }
+            catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "cancel_failed"); return; }
+        }
+        sessionHandle = null; loadedSessionHandle = null; sessionVersion = 0; provisioning = null; review = null; reviewConfirmed = false; step = 1; ClearError();
+    }
+
+    private async Task BackFromBrowserAsync()
+    {
+        if (selectingOutput) { selectingOutput = false; step = 6; return; }
+        if (sourceStage == "folders") { folderItems = []; breadcrumbs = []; sourceItems = []; sourceStage = selectedKind == "sharepoint_library" ? "libraries" : "drives"; if (selectedKind == "sharepoint_library" && selectedSiteHandle is not null && sessionHandle is not null) { var page = await RepositoryApi.GetMicrosoftSharePointLibrariesAsync(CompanyId, sessionHandle, selectedSiteHandle); sourceItems = page.Items; } else await LoadOneDriveAsync(); return; }
+        if (sourceStage == "libraries") { sourceStage = "sites"; sourceItems = []; return; }
+        step = 4;
+    }
+
+    private async Task LoadMoreAsync()
+    {
+        if (sessionHandle is null || nextPageHandle is null) return; isBusy = true;
+        try
+        {
+            if (sourceStage == "sites") { var page = await RepositoryApi.SearchMicrosoftSharePointSitesAsync(CompanyId, sessionHandle, siteQuery, nextPageHandle); sourceItems = [.. sourceItems, .. page.Items]; nextPageHandle = page.NextPageHandle; }
+            else if (sourceStage == "libraries" && selectedSiteHandle is not null) { var page = await RepositoryApi.GetMicrosoftSharePointLibrariesAsync(CompanyId, sessionHandle, selectedSiteHandle, nextPageHandle); sourceItems = [.. sourceItems, .. page.Items]; nextPageHandle = page.NextPageHandle; }
+            else if (sourceHandle is not null) { var page = await RepositoryApi.BrowseMicrosoftFoldersAsync(CompanyId, sessionHandle, sourceHandle, currentFolderHandle, nextPageHandle); folderItems = [.. folderItems, .. page.Items]; nextPageHandle = page.NextPageHandle; }
+        }
+        catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "provider_throttled"); }
+        finally { isBusy = false; }
+    }
+
+    private async Task CancelAsync()
+    {
+        if (sessionHandle is not null && provisioning is null)
+        {
+            try { await RepositoryApi.CancelMicrosoftOnboardingAsync(CompanyId, sessionHandle, sessionVersion); }
+            catch (DocumentRepositoryApiException exception) { SetError(exception.Message, "cancel_failed"); return; }
+        }
+        await Closed.InvokeAsync();
+    }
+
+    private void ClearError() { errorMessage = failureCode = null; }
+    private void SetError(string message, string code) { errorMessage = message; failureCode = code; }
+    private string ErrorTitle => failureCode switch { "consent_denied" => "Microsoft access was not approved", "wrong_tenant" => "Use the company Microsoft account", "insufficient_administrator_authority" => "Administrator authority is required", "expired_or_replayed_state" or "expired" => "This setup session expired", "setup_unavailable" => "Microsoft 365 setup is restarting", "provider_throttled" => "Microsoft asked us to wait", "discovery_access_denied" => "Source discovery is blocked", "source_unavailable" => "This source is unavailable", "invalid_selection" => "That folder cannot be selected", _ => "Microsoft 365 connection needs attention" };
+    private string ProvisioningIcon => provisioning?.Status switch { "connected" or "cleaned" => "bi-check-circle-fill", "failed" or "reconciliation_required" => "bi-exclamation-triangle-fill", _ => "bi-arrow-repeat" };
+    private string ProvisioningTitle => provisioning?.Status switch { "connected" => "Repository connected", "cleaned" => "Managed permission cleaned up", "reconciliation_required" => "Permission result needs reconciliation", "failed" => "Repository could not be connected", "provisioning" => "Verifying Microsoft access", _ => "Connecting repository" };
+    private string ProvisioningDetail => provisioning?.Status switch { "connected" => "The resource grant and application-only connection are verified. The initial import has been queued.", "cleaned" => "The wizard-managed permission created by this setup was removed. No remote content was deleted; you can start a fresh reviewed connection.", "reconciliation_required" => provisioning.FailureSummary ?? "The provider outcome is uncertain. Retry safely or clean up only the managed grant from this setup.", "failed" => provisioning.FailureSummary ?? "Setup stopped without enabling repository writes.", _ => "This durable setup continues in the background. Refreshing this page will not create duplicate grants or connections." };
+    private static string StepLabel(int value) => value switch { 1 => "Connect", 2 => "Admin sign-in", 3 => "Approve", 4 => "Source type", 5 => "Choose folders", 6 => "Access", 7 => "Agents", _ => "Review" };
+    private static string ProviderLabel(string value) => value == "onedrive_business" ? "OneDrive for Business" : "SharePoint";
+    private static string FormatModified(DateTime? value) => value.HasValue ? $"Updated {value.Value.ToLocalTime():d}" : "Folder";
+    private static string StatusMessage(string status) => status switch { "cancelled" => "Setup was cancelled. Start again when you are ready.", "access_lost" => "Microsoft administrator access was lost. Start again with an authorized account.", "discovery_access_denied" => "Tenant policy prevents source discovery for this administrator.", "source_unavailable" => "The selected source is no longer available.", "expired" => "The protected setup session expired. Start again safely.", _ => "Microsoft 365 setup could not continue." };
+}
