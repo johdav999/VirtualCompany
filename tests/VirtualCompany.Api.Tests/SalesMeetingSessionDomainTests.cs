@@ -6,6 +6,60 @@ namespace VirtualCompany.Api.Tests;
 public sealed class SalesMeetingSessionDomainTests
 {
     [Fact]
+    public void Interrupted_navigation_requires_explicit_human_authorization_and_cannot_reopen_terminal_session()
+    {
+        var s = CreateSession(); var actor = Guid.NewGuid(); var now = DateTime.UtcNow;
+        s.ApplyPresentationCommand(SalesPresentationCommandType.Goto, Guid.NewGuid(), 1, 1, 2, 8, null, actor, now);
+        s.ApplyPresentationCommand(SalesPresentationCommandType.Pause, Guid.NewGuid(), 2, 2, null, 8,
+            "slide:2:talking-point:8", actor, now);
+        Assert.Throws<InvalidOperationException>(() => s.ApplyPresentationCommand(SalesPresentationCommandType.Goto,
+            Guid.NewGuid(), 3, 3, 1, 1, null, actor, now));
+        Assert.Equal(SalesMeetingSessionStatus.Interrupted, s.Status);
+        s.TransitionTo(SalesMeetingSessionStatus.Closing, null, null, null, null, actor, now);
+        Assert.Throws<InvalidOperationException>(() => s.ApplyPresentationCommand(SalesPresentationCommandType.Goto,
+            Guid.NewGuid(), 3, s.ConcurrencyVersion, 1, 1, null, actor, now, allowInterruptedNavigation: true));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Browser_resume_restores_precise_floor_point_and_offset(bool staleSessionPoint)
+    {
+        var s = CreateSession(); var now = DateTime.UtcNow; var host = Guid.NewGuid();
+        s.TransitionTo(SalesMeetingSessionStatus.Presenting, 2, staleSessionPoint ? 0 : 8, null, null, s.CreatedByUserId, now);
+        s.TransitionTo(SalesMeetingSessionStatus.Interrupted, 2, null, "slide:2:talking-point:0", null, s.CreatedByUserId, now);
+        var f = new SalesRoomFloor(s.CompanyId, Guid.NewGuid(), host, 4, s.ConcurrencyVersion, 2, 8,
+            "slide:2:talking-point:8", "autonomous", now);
+        f.PauseAt(1420, 4, now);
+        VirtualCompany.Infrastructure.Sales.SalesRoomAgentService.RestoreResumePosition(s, f, host, s.CreatedByUserId, 5, now);
+        Assert.Equal(SalesMeetingSessionStatus.Presenting, s.Status);
+        Assert.Equal(8, s.CurrentTalkingPointIndex);
+        Assert.Equal(s.CurrentTalkingPointIndex, f.TalkingPointIndex);
+        Assert.Equal(s.ResumeMarker, f.ResumeMarker);
+        Assert.Equal(s.ConcurrencyVersion, f.PresentationVersion);
+        Assert.Equal(1420, f.ResumeOffsetMilliseconds);
+        Assert.Equal(SalesRoomFloorStates.Agent, f.State);
+    }
+
+    [Theory]
+    [InlineData("tenant")]
+    [InlineData("version")]
+    [InlineData("slide")]
+    [InlineData("controller")]
+    public void Browser_resume_rejects_foreign_or_moved_floor(string mismatch)
+    {
+        var s = CreateSession(); var now = DateTime.UtcNow; var host = Guid.NewGuid();
+        s.TransitionTo(SalesMeetingSessionStatus.Presenting, 2, 0, null, null, s.CreatedByUserId, now);
+        var f = new SalesRoomFloor(mismatch == "tenant" ? Guid.NewGuid() : s.CompanyId, Guid.NewGuid(), host,
+            4, s.ConcurrencyVersion + (mismatch == "version" ? 1 : 0), mismatch == "slide" ? 1 : 2, 8,
+            "slide:2:talking-point:8", "autonomous", now);
+        Assert.ThrowsAny<Exception>(() => VirtualCompany.Infrastructure.Sales.SalesRoomAgentService.RestoreResumePosition(
+            s, f, mismatch == "controller" ? Guid.NewGuid() : host, s.CreatedByUserId, 5, now));
+        Assert.Equal(0, s.CurrentTalkingPointIndex);
+        Assert.Equal(SalesRoomFloorStates.Host, f.State);
+    }
+
+    [Fact]
     public void Session_preserves_resume_position_through_interruption_and_resume()
     {
         var session = CreateSession();

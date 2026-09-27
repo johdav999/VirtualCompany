@@ -23,7 +23,9 @@ public sealed class SalesRoomAgentService(
     ISalesRoomFloorEventPublisher floorEvents,
     IOptionsMonitor<SalesRoomAgentOptions> configured,
     IOptionsMonitor<SalesRoomLifecycleOptions> lifecycle,
-    TimeProvider clock) : ISalesRoomAgentService
+    TimeProvider clock,
+    ISalesPresentationRuntimeService presentation,
+    IEnumerable<ISalesPresentationEventPublisher> presentationEvents) : ISalesRoomAgentService
 {
     private SalesRoomAgentOptions Options => configured.CurrentValue;
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
@@ -59,6 +61,8 @@ public sealed class SalesRoomAgentService(
             {
                 if (room.Version != command.ExpectedVersion) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room changed. Refresh before starting the agent.");
                 if (room.MeetingSessionId is not Guid sessionId) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room has no meeting session.");
+                if (SalesRoomOperationsPolicy.AudioLimitProblem(room, Options) is { } audioLimit)
+                    throw Error(SalesRoomAgentProblemCodes.QuotaExceeded, audioLimit, 429);
                 await EnforceStartLimitsAsync(companyId, room.Id, ct);
                 TeamsPresenterRuntime runtime;
                 try { runtime = await presenters.ResolveAsync(companyId, sessionId, ct); }
@@ -169,6 +173,9 @@ public sealed class SalesRoomAgentService(
         if (room.MeetingSessionId is not Guid sessionId) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room has no meeting session.");
         var answer = await db.SalesMeetingQuestions.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId &&
             x.SessionId == sessionId && x.Id == command.QuestionId, ct) ?? throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "The grounded answer was not found.", 404);
+        if (answer.ConcurrencyVersion != command.ExpectedQuestionVersion &&
+            !await db.SalesRoomAgentSpeech.AnyAsync(x => x.CompanyId == companyId && x.RoomId == roomId && x.CommandId == command.CommandId && x.QuestionId == answer.Id, ct))
+            throw Error(SalesRoomAgentProblemCodes.Conflict, "The answer changed. Review the current version before requesting speech.");
         if (answer.Visibility != SalesMeetingAnswerVisibility.ApprovedForStage)
         {
             await questions.ApproveForStageAsync(companyId, userId, sessionId, answer.Id, command.ExpectedQuestionVersion,
@@ -213,7 +220,10 @@ public sealed class SalesRoomAgentService(
         ValidateCommand(command.CommandId);
         RequireAgentAdmission();
         var (room, participant, floor) = await ControllerAsync(companyId, userId, roomId, true, ct);
-        if (room.Version != command.ExpectedVersion || floor.Version != command.ExpectedFloorVersion)
+        if (await ReplayAsync(companyId, roomId, command.CommandId, "agent_resume", ct))
+            return await ViewAsync(room, ct);
+        // Lease renewals advance the room version without changing host floor authority.
+        if (!AcceptsSpeechCommandVersion(command.ExpectedVersion, room.Version) || floor.Version != command.ExpectedFloorVersion)
             throw Error(SalesRoomAgentProblemCodes.FloorConflict, "The room floor changed. Refresh before resuming.");
         var session = await SessionAsync(room, ct);
         if (session.ConcurrencyVersion != command.ExpectedPresentationVersion)
@@ -223,21 +233,28 @@ public sealed class SalesRoomAgentService(
                 "Automatic narration is paused until every required participant renders this slide. The host may use the existing explicit audience override.");
         if (room.AgentLeaseOwnerId is not Guid owner || room.AgentId is not Guid agentId)
             throw Error(SalesRoomAgentProblemCodes.Unavailable, "Start the room agent before resuming.");
+        if (!room.IsAgentOwner(owner, room.AgentGeneration, Now) || room.State != SalesBrowserRoomStates.Live ||
+            room.ExpiresUtc <= Now || participant.ExpiresUtc <= Now)
+            throw Error(SalesRoomAgentProblemCodes.Unavailable, "The live room agent is no longer available.");
+        await RequireConsentAsync(room, ct);
+        var source = await CurrentNarrationAsync(room, session, ct, floor.TalkingPointIndex)
+            ?? throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "The current slide has no approved narration to resume.");
         room.ResumeAgent(owner, room.AgentGeneration);
         try
         {
-            floor.Resume(participant.Id, floor.Version, session.ConcurrencyVersion, Math.Max(1, session.CurrentSlideIndex),
-                session.CurrentTalkingPointIndex, session.ResumeMarker, room.AgentTurnGeneration, Now);
+            RestoreResumePosition(session, floor, participant.Id, userId, room.AgentTurnGeneration, Now);
         }
         catch (InvalidOperationException ex) { throw Error(SalesRoomAgentProblemCodes.FloorConflict, ex.Message); }
-        var source = await CurrentNarrationAsync(room, session, ct)
-            ?? throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "The current slide has no approved narration to resume.");
         var speechItem = new SalesRoomAgentSpeech(Guid.NewGuid(), companyId, roomId, session.Id, command.CommandId,
             agentId, room.AgentGeneration, room.AgentTurnGeneration, SalesRoomAgentSpeechKinds.Narration, userId, Now,
             source.RevisionId, source.SegmentId, null, floor.ResumeOffsetMilliseconds, floor.ResponseGeneration);
         db.SalesRoomAgentSpeech.Add(speechItem);
         Record(room, command.CommandId, "agent_resume", userId, command);
         await db.SaveChangesAsync(ct);
+        var snapshot = await presentation.GetCurrentAsync(companyId, userId, session.Id, ct);
+        if (snapshot is not null)
+            foreach (var publisher in presentationEvents)
+                await publisher.PublishAsync(companyId, session.Id, snapshot, ct);
         await floorEvents.AllowPlaybackAsync(companyId, session.Id, new(roomId, floor.ResponseGeneration), ct);
         await commands.SignalAsync(new(companyId, roomId, owner, room.AgentGeneration, "wake"), ct);
         return await ViewAsync(room, ct);
@@ -352,7 +369,9 @@ public sealed class SalesRoomAgentService(
             throw Error(SalesRoomAgentProblemCodes.FloorNotReady, "The addressed turn has no completed grounded answer.");
         var question = await db.SalesMeetingQuestions.IgnoreQueryFilters().Include(x => x.Evidence).SingleOrDefaultAsync(x =>
             x.CompanyId == room.CompanyId && x.SessionId == sessionId && x.Id == questionId && x.AgentId == agentId, ct);
-        if (question is null || question.Status != SalesMeetingQuestionStatus.Completed || question.Evidence.Count == 0)
+        if (question is null ||
+            !(SalesRoomAgentWorker.CanAutomaticallyRelease(question, floor.ControlMode) ||
+              question.Status == SalesMeetingQuestionStatus.Completed && question.Evidence.Count > 0))
             throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "The addressed answer is not verified from approved evidence.");
         if (question.Visibility != SalesMeetingAnswerVisibility.ApprovedForStage)
             question.ApproveForStage(actorUserId, question.ConcurrencyVersion, Now);
@@ -401,12 +420,17 @@ public sealed class SalesRoomAgentService(
                 {
                     var released = await db.SalesMeetingQuestions.AsNoTracking().Include(x => x.Evidence).SingleOrDefaultAsync(x =>
                         x.CompanyId == companyId && x.SessionId == sessionId && x.Id == question && x.AgentId == agentId, ct);
-                    if (released is null || released.Status != SalesMeetingQuestionStatus.Completed ||
+                    if (released is null || released.Status is not (SalesMeetingQuestionStatus.Completed or SalesMeetingQuestionStatus.PartiallySupported) ||
                         released.Visibility != SalesMeetingAnswerVisibility.ApprovedForStage || released.StageApprovedUtc == null ||
                         string.IsNullOrWhiteSpace(released.AnswerText) || released.Evidence.Count == 0)
                         throw Error(SalesRoomAgentProblemCodes.ReleaseRequired, "Only a verified answer with approved evidence can be spoken.");
                 }
                 var floor = await FloorAsync(currentRoom, ct);
+                // This command is an explicit organizer approval of this exact answer,
+                // not an autonomous confirmation of a pending partial response.
+                if (kind == SalesRoomAgentSpeechKinds.Answer && floor.PendingQuestionId == question &&
+                    floor.PendingTurnState is SalesRoomPendingTurnStates.ConfirmationRequired or SalesRoomPendingTurnStates.HostInvocationRequired)
+                    floor.ApprovePending(floor.HostParticipantId, floor.Version, Now);
                 if (currentRoom.AgentHealth == SalesRoomAgentHealthStates.Paused && currentRoom.AgentLeaseOwnerId is Guid resumeOwner)
                     currentRoom.ResumeAgent(resumeOwner, currentRoom.AgentGeneration);
                 try { floor.AgentClaim(floor.ResponseGeneration, currentRoom.AgentTurnGeneration, Now); }
@@ -494,15 +518,32 @@ public sealed class SalesRoomAgentService(
         return rows.Count > 0 && rows.All(x => x.State is SalesRoomPresentationAudienceStates.Rendered or SalesRoomPresentationAudienceStates.Overridden);
     }
 
+    internal static void RestoreResumePosition(SalesMeetingSession session, SalesRoomFloor floor,
+        Guid participantId, Guid userId, long turnGeneration, DateTime now)
+    {
+        // The room floor owns the within-slide audio cursor; a newer/different slide
+        // is still a conflict and must never silently resume an obsolete position.
+        if (session.CompanyId != floor.CompanyId || session.ConcurrencyVersion != floor.PresentationVersion ||
+            session.CurrentSlideIndex != floor.SlideNumber || turnGeneration < floor.TurnGeneration ||
+            session.Status is not (SalesMeetingSessionStatus.Ready or SalesMeetingSessionStatus.Presenting or
+                SalesMeetingSessionStatus.Interrupted or SalesMeetingSessionStatus.Answering))
+            throw new InvalidOperationException("The presentation moved after the interruption. Refresh before resuming.");
+        floor.Resume(participantId, floor.Version, session.ConcurrencyVersion, session.CurrentSlideIndex,
+            floor.TalkingPointIndex, floor.ResumeMarker, turnGeneration, now);
+        session.ResumeBrowserNarration(session.ConcurrencyVersion, floor.SlideNumber, floor.TalkingPointIndex,
+            floor.ResumeMarker, userId, now);
+        floor.SetMode(session.PresentationControlMode, session.ConcurrencyVersion, now);
+    }
+
     private async Task<(Guid RevisionId, Guid SegmentId)?> CurrentNarrationAsync(
-        SalesBrowserRoom room, SalesMeetingSession session, CancellationToken ct)
+        SalesBrowserRoom room, SalesMeetingSession session, CancellationToken ct, int? talkingPoint = null)
     {
         var revision = await SalesRoomNarrationSelection.Current(db, room.CompanyId, session.Id, Now).FirstOrDefaultAsync(ct);
         if (revision is null) return null;
         var segment = await db.SalesNarrationSegments.IgnoreQueryFilters().AsNoTracking().Where(x =>
             x.CompanyId == room.CompanyId && x.RevisionId == revision.Id &&
             x.SlideNumber == Math.Max(1, session.CurrentSlideIndex) &&
-            x.TalkingPoint >= Math.Max(1, session.CurrentTalkingPointIndex)).OrderBy(x => x.TalkingPoint).FirstOrDefaultAsync(ct);
+            x.TalkingPoint == Math.Max(1, talkingPoint ?? session.CurrentTalkingPointIndex)).FirstOrDefaultAsync(ct);
         return segment is null ? null : (revision.Id, segment.Id);
     }
 
@@ -629,6 +670,10 @@ public sealed class SalesRoomAgentService(
                 new(floor.LastPlaybackStopId, floor.PlaybackStopState, floor.PlaybackStopRequiredCount,
                     floor.PlaybackStopAcknowledgedCount, floor.PlaybackStopRequestedUtc, floor.PlaybackStopDeadlineUtc, elapsed));
         }
+        // Older workers left quota stops paused until reconciliation replaced the reason.
+        // Explain the current restart blocker without rewriting persisted usage/history.
+        var audioLimit = room.AgentLastErrorCode == "worker_lease_expired"
+            ? SalesRoomOperationsPolicy.AudioLimitProblem(room, Options) : null;
         return new(room.Id, room.AgentId, name, health, voiceHealth, room.AgentGeneration,
             room.AgentTurnGeneration, participants.Count(x => x.AiProcessingAllowed), participants.Count,
             participants.Count > 0 && participants.All(x => x.AiProcessingAllowed), room.AgentStartedUtc, room.AgentLeaseExpiresUtc,
@@ -637,7 +682,8 @@ public sealed class SalesRoomAgentService(
             room.AgentProviderBilledAudioMilliseconds > 0 ? room.AgentProviderBilledAudioMilliseconds : null,
             room.AgentProviderBilledAudioMilliseconds > 0 ? "reported_by_provider" : "provider_duration_not_reported",
             room.AgentOutputAudioMilliseconds, room.AgentInputTokens, room.AgentOutputTokens, estimated,
-            room.AgentLastErrorCode, room.AgentLastErrorSummary, room.Version, latest, recent, floorView);
+            audioLimit is not null ? "quota_exceeded" : room.AgentLastErrorCode,
+            audioLimit ?? room.AgentLastErrorSummary, room.Version, latest, recent, floorView);
     }
 
     private async Task<bool> ReplayAsync(Guid company, Guid room, Guid command, string action, CancellationToken ct)

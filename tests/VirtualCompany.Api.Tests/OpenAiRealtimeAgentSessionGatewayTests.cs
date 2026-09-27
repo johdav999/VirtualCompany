@@ -71,6 +71,35 @@ public sealed class OpenAiRealtimeAgentSessionGatewayTests
         Assert.Null(input["turn_detection"]);
     }
 
+    [Fact]
+    public void Automatic_pcm_turn_completion_does_not_bypass_local_speech_aware_interruption()
+    {
+        var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "BuildSession" && x.GetParameters()[1].ParameterType == typeof(RealtimeAgentPcmSessionCreateRequest));
+        var request = new RealtimeAgentPcmSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "teams", "Handle turns.", [], TimeSpan.FromMinutes(5));
+        var session = Assert.IsType<JsonObject>(method.Invoke(null, [new SharedRealtimeAgentOptions(), request]));
+        var detection = session["audio"]!["input"]!["turn_detection"]!;
+        Assert.Equal("server_vad", detection["type"]!.GetValue<string>());
+        Assert.True(detection["create_response"]!.GetValue<bool>());
+        Assert.False(detection["interrupt_response"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void Direct_webrtc_session_does_not_let_provider_acoustic_onset_cancel_output()
+    {
+        var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "BuildSession" && x.GetParameters()[1].ParameterType == typeof(RealtimeAgentSessionCreateRequest));
+        var request = new RealtimeAgentSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "webrtc", "Handle turns.", "offer-sdp", [], TimeSpan.FromMinutes(5));
+        var session = Assert.IsType<JsonObject>(method.Invoke(null, [new SharedRealtimeAgentOptions(), request]));
+        var detection = session["audio"]!["input"]!["turn_detection"]!;
+
+        Assert.Equal("server_vad", detection["type"]!.GetValue<string>());
+        Assert.False(detection["create_response"]!.GetValue<bool>());
+        Assert.False(detection["interrupt_response"]!.GetValue<bool>());
+    }
+
     [Theory]
     [InlineData(null, "marin")]
     [InlineData("cedar", "cedar")]

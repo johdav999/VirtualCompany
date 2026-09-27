@@ -8,7 +8,7 @@ public sealed record ApprovedSpeechProfile(bool Available, string Model, string 
 public sealed record ApprovedSpeechRequest(Guid CompanyId, Guid UserId, Guid AgentId, string Text,
     string Language, string Voice, string ConfigurationVersion, string OperationId);
 public sealed record ApprovedSpeechResult(byte[] Pcm, string Transcript, string Model, string ProviderResponseId,
-    int InputTokens, int OutputTokens, string UsageJson, bool ContentMatches);
+    int InputTokens, int OutputTokens, string UsageJson, bool ContentMatches, string? FailureCode = null);
 
 /// <summary>Shared, bounded synthesis of reviewed text. No tools or microphone input.</summary>
 public interface IApprovedSpeechGateway

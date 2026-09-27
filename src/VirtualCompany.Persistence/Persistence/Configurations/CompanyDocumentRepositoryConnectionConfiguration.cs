@@ -136,7 +136,8 @@ internal sealed class CompanyDocumentRepositoryProvisioningConfiguration : IEnti
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.HasIndex(x => x.OnboardingSessionId).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.NextAttemptUtc });
-        builder.HasIndex(x => x.ConnectionId).IsUnique().HasFilter("[connection_id] IS NOT NULL");
+        // Reauthorization creates a new setup history entry for the same connection.
+        builder.HasIndex(x => x.ConnectionId).HasFilter("[connection_id] IS NOT NULL");
         builder.HasOne(x => x.OnboardingSession).WithMany().HasForeignKey(x => x.OnboardingSessionId).OnDelete(DeleteBehavior.Restrict);
     }
 }

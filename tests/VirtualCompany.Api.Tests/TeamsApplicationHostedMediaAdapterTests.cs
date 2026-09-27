@@ -83,6 +83,25 @@ public sealed class TeamsApplicationHostedMediaAdapterTests
         Assert.Equal(640, second[0].Length);
     }
 
+    [Fact]
+    public void Teams_bridge_rejects_late_audio_and_duplicate_interruption_until_a_new_response()
+    {
+        using var response = new TeamsBridgeResponseState();
+        response.ResponseCreated();
+        Assert.True(response.MaySendAudio());
+        Assert.True(response.TryInterrupt(out var cancelProvider));
+        Assert.True(cancelProvider);
+        Assert.False(response.TryInterrupt(out _));
+        Assert.False(response.MaySendAudio());
+        response.ResponseDone();
+        Assert.False(response.MaySendAudio());
+
+        response.ResponseCreated();
+        Assert.True(response.MaySendAudio());
+        Assert.True(response.TryInterrupt(out cancelProvider));
+        Assert.True(cancelProvider);
+    }
+
     private static TeamsPresenterOptions ReadyOptions() => new()
     {
         Enabled = true, AudioEnabled = true, CallControlEnabled = true,

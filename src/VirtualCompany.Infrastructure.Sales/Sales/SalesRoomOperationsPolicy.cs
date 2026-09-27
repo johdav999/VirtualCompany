@@ -4,6 +4,17 @@ namespace VirtualCompany.Infrastructure.Sales;
 
 internal static class SalesRoomOperationsPolicy
 {
+    internal static string? AudioLimitProblem(SalesBrowserRoom room, SalesRoomAgentOptions options)
+    {
+        var input = room.AgentForwardedAudioMilliseconds >= options.MaximumInputAudioSeconds * 1000L;
+        var output = room.AgentOutputAudioMilliseconds >= options.MaximumOutputAudioSeconds * 1000L;
+        if (!input && !output) return null;
+        var used = input ? room.AgentForwardedAudioMilliseconds : room.AgentOutputAudioMilliseconds;
+        var limit = input ? options.MaximumInputAudioSeconds : options.MaximumOutputAudioSeconds;
+        var kind = input ? "microphone input" : "spoken output";
+        return FormattableString.Invariant($"This room has used {used / 60000m:0.0} minutes of AI {kind}, reaching its {limit / 60m:0.0}-minute allowance. Usage includes earlier runs in this room; restarting Alex does not reset it. Ask an operator to review the allowance. Human calling and manual slides remain available.");
+    }
+
     internal static string? ConfigurationProblem(SalesRoomAgentOptions options, DateTime nowUtc)
     {
         if (!options.Enabled) return null;

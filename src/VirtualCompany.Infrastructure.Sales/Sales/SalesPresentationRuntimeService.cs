@@ -130,7 +130,8 @@ public sealed class SalesPresentationRuntimeService(
                 : request.ResumeMarker;
             session.ApplyPresentationCommand(
                 commandType, request.CommandId, request.Sequence, request.ExpectedVersion,
-                target, request.TalkingPointIndex, marker, userId, UtcNow());
+                target, request.TalkingPointIndex, marker, userId, UtcNow(),
+                allowInterruptedNavigation: actorType == SalesPresentationCommandActorTypes.Human);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
         {

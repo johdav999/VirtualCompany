@@ -3,7 +3,7 @@ namespace VirtualCompany.Domain.Enums;
 public enum SalesMeetingSpeakerType { Host, Customer, Agent, Unknown }
 public enum SalesMeetingInputSource { Typed, HostMediated, TranscriptAdapter, Voice, BrowserRoom }
 public enum SalesMeetingReviewState { Unreviewed, Reviewed, Rejected }
-public enum SalesMeetingQuestionStatus { Pending, Answering, Completed, Unverified, Failed, Cancelled }
+public enum SalesMeetingQuestionStatus { Pending, Answering, Completed, Unverified, Failed, Cancelled, PartiallySupported }
 public enum SalesMeetingAnswerVisibility { Private, ApprovedForStage }
 public enum SalesMeetingObservationCategory
 {
@@ -80,6 +80,7 @@ public static class SalesMeetingCaptureEnumValues
         SalesMeetingQuestionStatus.Pending => "pending",
         SalesMeetingQuestionStatus.Answering => "answering",
         SalesMeetingQuestionStatus.Completed => "completed",
+        SalesMeetingQuestionStatus.PartiallySupported => "partially_supported",
         SalesMeetingQuestionStatus.Unverified => "unverified",
         SalesMeetingQuestionStatus.Failed => "failed",
         SalesMeetingQuestionStatus.Cancelled => "cancelled",
@@ -91,6 +92,7 @@ public static class SalesMeetingCaptureEnumValues
         "pending" => SalesMeetingQuestionStatus.Pending,
         "answering" => SalesMeetingQuestionStatus.Answering,
         "completed" => SalesMeetingQuestionStatus.Completed,
+        "partially_supported" => SalesMeetingQuestionStatus.PartiallySupported,
         "unverified" => SalesMeetingQuestionStatus.Unverified,
         "failed" => SalesMeetingQuestionStatus.Failed,
         "cancelled" => SalesMeetingQuestionStatus.Cancelled,

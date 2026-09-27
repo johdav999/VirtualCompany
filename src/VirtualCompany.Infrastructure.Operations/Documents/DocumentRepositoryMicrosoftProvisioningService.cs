@@ -262,9 +262,14 @@ internal sealed partial class DocumentRepositoryMicrosoftOnboardingService : IDo
             await db.SaveChangesAsync(ct);
             await WriteProvisioningAudit(session, AuditEventActions.DocumentRepositoryProvisioningFailed, AuditEventOutcomes.Failed, exception.SafeMessage, ct); ObserveProvisioning(operation, "validation_pending");
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or DbUpdateConcurrencyException)
+        catch (Exception exception) when (!ct.IsCancellationRequested && exception is HttpRequestException or TaskCanceledException or DbUpdateException)
         {
             logger.LogWarning(exception, "Repository provisioning {ProvisioningId} requires reconciliation.", operation.Id);
+            // A failed save can leave connection/import changes tracked. Persist recovery
+            // from a fresh operation instead of repeating the same failed batch.
+            db.ChangeTracker.Clear();
+            operation = await db.CompanyDocumentRepositoryProvisionings.IgnoreQueryFilters()
+                .SingleAsync(x => x.CompanyId == operation.CompanyId && x.Id == candidate, ct);
             if (cleanup) operation.FailCleanup("cleanup_outcome_ambiguous", "Repository permission cleanup has an ambiguous result and requires reconciliation.", operation.AttemptCount < 8, clock.GetUtcNow().UtcDateTime);
             else operation.Fail("provisioning_outcome_ambiguous", "Repository provisioning has an ambiguous result and requires reconciliation.", operation.AttemptCount < 8, clock.GetUtcNow().UtcDateTime);
             await db.SaveChangesAsync(ct); ObserveProvisioning(operation, cleanup ? "cleanup_reconciliation_required" : "reconciliation_required");
@@ -307,15 +312,24 @@ internal sealed partial class DocumentRepositoryMicrosoftOnboardingService : IDo
     private static void ObserveProvisioning(CompanyDocumentRepositoryProvisioning operation, string outcome) { TagList tags = default; tags.Add("outcome", outcome); ProvisioningOutcomes.Add(1, tags); ProvisioningAge.Record(Math.Max(0, (DateTime.UtcNow - operation.CreatedUtc).TotalSeconds), tags); }
 }
 
-internal sealed class DocumentRepositoryProvisioningWorker(IServiceScopeFactory scopes, IOptions<Microsoft365DocumentOnboardingOptions> options) : BackgroundService
+internal sealed class DocumentRepositoryProvisioningWorker(IServiceScopeFactory scopes, IOptions<Microsoft365DocumentOnboardingOptions> options,
+    ILogger<DocumentRepositoryProvisioningWorker> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(Math.Clamp(options.Value.ProvisioningPollIntervalSeconds, 2, 60)));
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
-            using var scope = scopes.CreateScope();
-            await scope.ServiceProvider.GetRequiredService<IDocumentRepositoryProvisioningProcessor>().ProcessPendingAsync(stoppingToken);
+            try
+            {
+                using var scope = scopes.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<IDocumentRepositoryProvisioningProcessor>().ProcessPendingAsync(stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Repository provisioning poll failed; the API remains available. Inspect provisioning state before retrying.");
+            }
         }
     }
 }

@@ -122,6 +122,36 @@ The wizard previously stopped polling after six seconds, leaving Verifying Micro
 
 Verification: 17 focused web repository tests passed, including resumed provisioning automatically reaching connected and notifying the parent once. Tenant consent and a successful live import remain blocked: Azure CLI access to the document tenant requires interactive administrator authentication (AADSTS530035 security defaults). These checks use component/API/HTTP evidence, not a completed browser journey.
 
+### UAT-012-15 — repeated setup crashed API; queued sync workers disabled
+
+P1, local OneDrive setup/sync. User screenshot showed API unreachable. Runtime log in `.codex-build/api-runs/20260922142957301/api.stdout.log` proved SQL error 2601 on the provisioning connection_id unique index escaped the background worker and stopped the host. A second setup session legitimately reused the saved connection. Changed that history index to nonunique via AllowRepeatedRepositoryProvisioning migration, preserving the unique onboarding-session index. Persistence failures reload clean operation state before recording reconciliation; the worker logs unexpected failures without stopping the API.
+
+20 onboarding tests passed, including two sessions completing against one connection. API build passed; EF reports no pending model changes. The migration applied successfully on local SQL Server (same provider as Docker deployment). The exact abandoned operation 0cc3c933-7623-4f74-81d4-4d170d09815e was conditionally requeued without deleting state; live provisioning subsequently returned connected and the existing connection active. Production defaults remain unchanged; Development now enables import and synchronization workers, which previously left jobs queued indefinitely.
+
+### UAT-012-16 — valid Graph delta cursor rejected due to URL encoding
+
+P1, folder synchronization. Live Graph response returned the approved drive/root delta URL with literal ! in its drive ID, while cursor validation expected percent-encoding. Compare exact decoded path segments instead of a raw prefix. Cross-host, cross-drive, wrong-root, and endpoint-suffix rejection remain enforced. 23 Graph adapter tests passed, including encoded/unencoded IDs and boundary rejection; API rebuilt and restarted.
+
+Remaining blocker: live import discovered company-policies.md and product-catalog.md, but both were safely rejected with virus_scanner_unavailable because ClamAV is not configured. No scanner bypass was introduced. Full document ingestion/indexing remains unverified pending provision of a real malware-scanning service. Evidence uses live API/SQL/provider checks plus regression tests, not browser automation.
+
+### UAT-012-17 — local ClamAV dependency and response framing
+
+With explicit user approval, added the official ClamAV Docker service with persistent signatures, a 4 GB memory limit, automatic restart, and host binding restricted to 127.0.0.1:3310. Start only the scanner with `docker compose up -d --no-deps clamav`; this does not restart SQL Server. Development enables CompanyDocumentVirusScanner at that endpoint; production settings are unchanged. Installed scanner reports ClamAV 1.5.4 and healthy.
+
+A live clean stream returned `stream: OK` followed by NUL. The adapter requested z-framing but read a newline-framed response, so real clean files were rejected. Changed the command to nINSTREAM with newline framing, matching the existing line reader, and require the exact clean response. Four focused protocol tests pass for clean, malware-found, scanner-error, and malformed NOT OK responses. API rebuilt and restarted successfully; no malware-scanning bypass or broad filesystem mounts were introduced. The existing failed-files recovery job was retained for its scheduled retry.
+
+Live follow-up: both repository files passed ClamAV scanning (runtime evidence `.codex-build/api-runs/20260922165818841/api.stdout.log`) and produced 12 and 8 text chunks respectively. Four scanner tests and 26 ingestion/repository integration tests passed. Indexing remains blocked by the existing embedding configuration: Provider=deterministic but AllowDeterministic=false. No production embedding provider is configured in the inspected knowledge settings, and test embeddings were not silently enabled. No documents are yet confirmed searchable. Choosing/configuring a real embedding provider is the remaining user decision, separate from the completed scanner installation.
+
+### UAT-012-18 — Alex could not retrieve indexed OneDrive documents
+
+P1, agent knowledge retrieval; local Development, 2026-09-22. Reused the existing product profile and tested the trusted agent execution endpoint for Alex in the configured company. The safe substitute for a conversational/browser test was the actual policy-enforced documents.list, documents.read and knowledge.search pipeline, with live Microsoft Graph validation. No document content was copied into this evidence record.
+
+Before: documents.list returned source_unavailable and no items; reads of both indexed documents returned source_unavailable and no content. Graph item requests returned HTTP 200. Root cause: GetItemAsync used a $select projection that omitted eTag and cTag, although the availability gate requires the current version to match the indexed version. It also omitted parsed source-link and file metadata. Added those fields to the projection; the fail-closed freshness, grant and folder-boundary checks remain unchanged.
+
+Regression: two parameterized field-selection tests (eTag and cTag fallback) failed before the fix and passed afterward. All 37 MicrosoftGraphDocumentRepositoryAdapterTests and CompanyDocumentRepositoryIntegrationTests passed, including access/revocation and repository tool coverage. API build succeeded and the local API restarted; existing unrelated build warnings remain.
+
+Live acceptance passed on runtime .codex-build/api-runs/20260922173550799: Alex listed both company-policies and product-catalog (12 and 8 active chunks), read 1,000 characters from each with citations and continuation cursors, and searched successfully with both sources classified microsoft365_repository. Execution IDs: list 94f27b82-b73f-446e-b949-1f8dd4ca3281; reads 3d3cfd11-4106-4e30-8704-43c4fbe88cd0 and 21e8185a-6e06-4683-9a92-76b5b9d370b7; search c676ff91-8e6e-44c9-a361-9946aac14a63. No consent changes, re-import or re-index were needed. Status: verified through live agent tools; free-form chat generation and browser rendering were not exercised in this slice. Historical sync-health warning cleanup remains outside this fix.
+
 ## Verification results
 
 - `dotnet test tests/VirtualCompany.Web.Tests/VirtualCompany.Web.Tests.csproj --no-restore --filter "FullyQualifiedName~DocumentRepository"`: 14 passed.

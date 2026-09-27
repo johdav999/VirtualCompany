@@ -13,6 +13,8 @@ public sealed class ApprovedSpeechGateway(IRealtimeAgentSessionGateway health, I
     {
         var h = await health.GetHealthAsync(ct);
         var o = options.Value;
+        // Preserve the identity of already reviewed assets. The generation ceiling is
+        // an operational bound, not a change to their model, voice or approved text.
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"approved-text-v1|{o.BaseUrl}|{o.Model}|{o.Voice}|pcm24000|1200"))).ToLowerInvariant();
         // Built-in Realtime voices; surfaced by the shared provider, not hard-coded in the UI.
@@ -55,7 +57,7 @@ public sealed class ApprovedSpeechGateway(IRealtimeAgentSessionGateway health, I
                     requested = true;
                     await pcm.SendClientEventAsync(id, JsonSerializer.Serialize(new {
                         type = "response.create", response = new {
-                            conversation = "none", output_modalities = new[] { "audio" }, max_output_tokens = 1200,
+                            conversation = "none", output_modalities = new[] { "audio" }, max_output_tokens = 4096,
                             input = new[] { new { type = "message", role = "user", content = new[] {
                                 new { type = "input_text", text = "Read this script verbatim:\n" + request.Text } } } } }
                     }), timeout.Token);
@@ -66,10 +68,10 @@ public sealed class ApprovedSpeechGateway(IRealtimeAgentSessionGateway health, I
                 if (type != "response.done") continue;
                 var response = e.GetProperty("response");
                 var usage = response.GetProperty("usage");
+                var failure = FailureCode(response.GetProperty("status").GetString(), audio.Length, transcript, request.Text);
                 return new(audio.ToArray(), transcript, session.Model, response.GetProperty("id").GetString() ?? "",
                     usage.GetProperty("input_tokens").GetInt32(), usage.GetProperty("output_tokens").GetInt32(),
-                    usage.GetRawText(), response.GetProperty("status").GetString() == "completed" &&
-                    audio.Length > 0 && Normalize(transcript) == Normalize(request.Text));
+                    usage.GetRawText(), failure is null, failure);
             }
             throw new InvalidOperationException("Speech ended without a completed response and usage receipt.");
         }
@@ -83,6 +85,13 @@ public sealed class ApprovedSpeechGateway(IRealtimeAgentSessionGateway health, I
         }
     }
 
+    internal static string? FailureCode(string? status, long audioLength, string transcript, string script) =>
+        status != "completed" ? "speech_incomplete" : audioLength == 0 ? "speech_empty" :
+        Normalize(transcript) != Normalize(script) ? "speech_content_mismatch" : null;
+
+    // Orthographic hyphens between letters are not spoken. Keep numeric signs/ranges
+    // and word boundaries strict; this is not a fuzzy or semantic content check.
     public static string Normalize(string text) => string.Join(" ", System.Text.RegularExpressions.Regex.Matches(
-        text.Normalize(NormalizationForm.FormKC).ToLowerInvariant(), @"[\p{L}\p{N}]+(?:[.,][0-9]+)?|[%+−$/€£-]").Select(x => x.Value));
+        System.Text.RegularExpressions.Regex.Replace(text.Normalize(NormalizationForm.FormKC).ToLowerInvariant(),
+            @"(?<=\p{L})[-‐‑](?=\p{L})", " "), @"[\p{L}\p{N}]+(?:[.,][0-9]+)?|[%+−$/€£-]").Select(x => x.Value));
 }

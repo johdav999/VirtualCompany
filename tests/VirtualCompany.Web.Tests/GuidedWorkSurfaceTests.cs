@@ -298,6 +298,31 @@ public sealed class GuidedWorkSurfaceTests
     }
 
     [Fact]
+    public void Guided_voice_does_not_cancel_agent_output_on_provider_acoustic_onset_alone()
+    {
+        var realtime = Read("src", "VirtualCompany.Web", "wwwroot", "js", "guided-realtime.js");
+        Assert.Contains("state.speechStartDeferred = agentActive", realtime, StringComparison.Ordinal);
+        Assert.Contains("if (!agentActive && !state.localSpeechConfirmed) await state.turnController.speechStarted()", realtime, StringComparison.Ordinal);
+        Assert.Contains("if (state.speechStartDeferred)", realtime, StringComparison.Ordinal);
+        Assert.Contains("conversation.item.input_audio_transcription.completed", realtime, StringComparison.Ordinal);
+        Assert.Contains("createBrowserSpeechDetector(state.media", realtime, StringComparison.Ordinal);
+        Assert.Contains("OnVoiceDetectionDegraded", realtime, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Guided_browser_speech_model_is_pinned_and_self_hosted()
+    {
+        var assets = Path.Combine(RepositoryRoot(), "src", "VirtualCompany.Web", "wwwroot", "lib", "speech-vad");
+        foreach (var name in new[] { "bundle.min.js", "vad.worklet.bundle.min.js", "ort.wasm.min.js",
+                     "ort-wasm-simd-threaded.mjs", "ort-wasm-simd-threaded.wasm", "silero_vad_v5.onnx",
+                     "THIRD-PARTY-NOTICES.md" })
+            Assert.True(File.Exists(Path.Combine(assets, name)), $"Missing browser speech model asset: {name}");
+        var modelHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            File.ReadAllBytes(Path.Combine(assets, "silero_vad_v5.onnx"))));
+        Assert.Equal("2623A2953F6FF3D2C1E61740C6CDB7168133479B267DFEF114A4A3CC5BDD788F", modelHash);
+    }
+
+    [Fact]
     public void Guided_voice_uses_one_durable_agent_response_and_suspends_queued_input()
     {
         var page=Read("src","VirtualCompany.Web","Pages","GuidedWorkSession.razor");

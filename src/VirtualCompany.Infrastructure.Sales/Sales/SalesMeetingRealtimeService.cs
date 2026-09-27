@@ -30,6 +30,26 @@ public sealed class SalesMeetingRealtimeService(
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private const string TypedFallback = "Voice is unavailable. Typed questions, slides, capture, closing, review, and approval remain available.";
 
+    public async Task ConfirmSpeechInterruptionAsync(Guid companyId, Guid userId, Guid sessionId,
+        Guid voiceSessionId, string interruptionId, CancellationToken ct)
+    {
+        EnsureIds(companyId, userId, sessionId, voiceSessionId);
+        if (string.IsNullOrWhiteSpace(interruptionId) || interruptionId.Length > 128)
+            throw new ArgumentException("A bounded interruption ID is required.", nameof(interruptionId));
+        await RequireMemberAsync(companyId, userId, ct);
+        var voice = await FindVoiceAsync(companyId, userId, sessionId, voiceSessionId, ct);
+        if (voice is null || voice.ProviderSessionId is null || voice.EndedUtc.HasValue ||
+            voice.Status != SalesMeetingVoiceSessionStatus.Active || voice.ExpiresUtc <= Now() ||
+            voice.MediaRoute != "teams_application_hosted") return;
+        var meeting = await db.SalesMeetingSessions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == sessionId, ct);
+        if (meeting is null || meeting.ConsentStatus != SalesMeetingConsentStatus.Granted ||
+            meeting.Status != SalesMeetingSessionStatus.Presenting) return;
+        meeting.TransitionTo(SalesMeetingSessionStatus.Interrupted, meeting.CurrentSlideIndex,
+            meeting.CurrentTalkingPointIndex, Marker(meeting, interruptionId),
+            "Participant speech confirmed by the media classifier.", userId, Now());
+        await SaveAsync(ct);
+    }
+
     public async Task<SalesMeetingRealtimeStatusDto?> GetStatusAsync(Guid companyId, Guid userId, Guid sessionId, CancellationToken ct)
     {
         await RequireMemberAsync(companyId, userId, ct);
@@ -184,7 +204,7 @@ public sealed class SalesMeetingRealtimeService(
                 voice.MarkConnected(Now());
                 break;
             case RealtimeAgentEventTypes.ParticipantSpeechStarted:
-                if (meeting.Status == SalesMeetingSessionStatus.Presenting)
+                if (voice.MediaRoute != "teams_application_hosted" && meeting.Status == SalesMeetingSessionStatus.Presenting)
                     meeting.TransitionTo(SalesMeetingSessionStatus.Interrupted, meeting.CurrentSlideIndex,
                         meeting.CurrentTalkingPointIndex, Marker(meeting, value.EventId), "Participant interruption detected.", userId, Now());
                 break;
@@ -445,7 +465,7 @@ public sealed class SalesMeetingRealtimeService(
 
     internal static string Instructions() =>
         "You are Alex, the company's Sales meeting sidekick. Speak concisely. Use only the supplied meeting state and exact presentation.* tool names; never invent JavaScript calls such as nextSlide(). " +
-        "For factual product, pricing, policy, customer, promise, discount, or contractual questions, call ask_grounded_question and use its result. " +
+        "For factual questions, including questions about documents in connected OneDrive or SharePoint folders, call ask_grounded_question and use its result. It searches current indexed company documents granted to you, not just the presentation slides. Never claim to have read an unavailable or unindexed document. " +
         "Never invent facts, execute changes, make commitments, modify sales records, send messages, or bypass review, approval, and outbox controls. " +
         "When interrupted, stop speaking immediately. Typed and host-mediated controls are always the fallback.";
 

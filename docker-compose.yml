@@ -1,4 +1,14 @@
 services:
+  clamav:
+    image: clamav/clamav:stable
+    container_name: virtualcompany-clamav
+    ports:
+      - "127.0.0.1:3310:3310"
+    volumes:
+      - clamav-data:/var/lib/clamav
+    mem_limit: 4g
+    restart: unless-stopped
+
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: virtualcompany-sqlserver
@@ -13,4 +23,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  clamav-data:
   sqlserver-data:

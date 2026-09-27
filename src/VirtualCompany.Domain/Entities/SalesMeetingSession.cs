@@ -274,7 +274,8 @@ public sealed class SalesMeetingSession : ICompanyOwnedEntity
         int? targetTalkingPointIndex,
         string? resumeMarker,
         Guid actorUserId,
-        DateTime occurredUtc)
+        DateTime occurredUtc,
+        bool allowInterruptedNavigation = false)
     {
         EnsureId(commandId, nameof(commandId));
         EnsureId(actorUserId, nameof(actorUserId));
@@ -289,7 +290,8 @@ public sealed class SalesMeetingSession : ICompanyOwnedEntity
             case SalesPresentationCommandType.Next:
             case SalesPresentationCommandType.Previous:
             case SalesPresentationCommandType.Goto:
-                if (Status is not (SalesMeetingSessionStatus.Ready or SalesMeetingSessionStatus.Presenting))
+                if (Status is not (SalesMeetingSessionStatus.Ready or SalesMeetingSessionStatus.Presenting) &&
+                    !(allowInterruptedNavigation && Status == SalesMeetingSessionStatus.Interrupted))
                     throw new InvalidOperationException("Slides can only be changed while the meeting is ready or presenting.");
                 if (targetSlideIndex is null or < 1)
                     throw new ArgumentOutOfRangeException(nameof(targetSlideIndex), "A valid target slide is required.");
@@ -297,6 +299,7 @@ public sealed class SalesMeetingSession : ICompanyOwnedEntity
                     throw new ArgumentOutOfRangeException(nameof(targetTalkingPointIndex));
                 CurrentSlideIndex = targetSlideIndex.Value;
                 CurrentTalkingPointIndex = targetTalkingPointIndex ?? 0;
+                ResumeMarker = null;
                 Status = SalesMeetingSessionStatus.Presenting;
                 break;
             case SalesPresentationCommandType.Pause:
@@ -336,6 +339,25 @@ public sealed class SalesMeetingSession : ICompanyOwnedEntity
         UpdatedUtc = now;
         StatusReason = null;
         EndedUtc = null;
+        ConcurrencyVersion++;
+    }
+
+    public void ResumeBrowserNarration(long expectedVersion, int slideNumber, int talkingPointIndex,
+        string? resumeMarker, Guid actorUserId, DateTime occurredUtc)
+    {
+        EnsureId(actorUserId, nameof(actorUserId));
+        if (expectedVersion != ConcurrencyVersion || slideNumber != CurrentSlideIndex || talkingPointIndex < 0)
+            throw new InvalidOperationException("The presentation changed before narration could resume.");
+        if (Status is not (SalesMeetingSessionStatus.Ready or SalesMeetingSessionStatus.Presenting or
+            SalesMeetingSessionStatus.Interrupted or SalesMeetingSessionStatus.Answering))
+            throw new InvalidOperationException("This meeting cannot resume narration.");
+        var now = Utc(occurredUtc, nameof(occurredUtc));
+        CurrentTalkingPointIndex = talkingPointIndex;
+        ResumeMarker = Optional(resumeMarker, nameof(resumeMarker), 1000);
+        Status = SalesMeetingSessionStatus.Presenting;
+        StatusReason = null;
+        UpdatedByUserId = actorUserId;
+        UpdatedUtc = now;
         ConcurrencyVersion++;
     }
 

@@ -66,6 +66,35 @@ public sealed class SalesMeetingRealtimeServiceTests
     }
 
     [Fact]
+    public async Task Teams_provider_noise_cannot_interrupt_until_shared_classifier_confirms_speech()
+    {
+        await using var fixture = await Fixture.CreateAsync(presenting: true, mediaRoute: "teams_application_hosted");
+        var now = DateTime.UtcNow;
+        var voiceId = Guid.NewGuid();
+        var voice = new SalesMeetingVoiceSession(voiceId, fixture.CompanyId, fixture.SessionId,
+            fixture.AgentId, fixture.UserId, "teams_application_hosted", now.AddMinutes(30), now);
+        voice.Activate("test", "call_teams_test", "test-realtime", "pcm", now.AddMinutes(30), now);
+        fixture.Db.SalesMeetingVoiceSessions.Add(voice);
+        await fixture.Db.SaveChangesAsync();
+
+        await fixture.EventAsync(voiceId, "provider-noise", 1, new { type = "speech_started" });
+        Assert.Equal(SalesMeetingSessionStatus.Presenting,
+            (await fixture.Db.SalesMeetingSessions.SingleAsync()).Status);
+
+        await fixture.Service.ConfirmSpeechInterruptionAsync(fixture.CompanyId, fixture.UserId,
+            fixture.SessionId, voiceId, "confirmed-1", CancellationToken.None);
+        var meeting = await fixture.Db.SalesMeetingSessions.SingleAsync();
+        Assert.Equal(SalesMeetingSessionStatus.Interrupted, meeting.Status);
+        Assert.Equal("voice:3:2:confirmed-1", meeting.ResumeMarker);
+        await fixture.Service.ConfirmSpeechInterruptionAsync(fixture.CompanyId, fixture.UserId,
+            fixture.SessionId, voiceId, "confirmed-1", CancellationToken.None);
+        Assert.Equal("voice:3:2:confirmed-1", meeting.ResumeMarker);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => fixture.Service.ConfirmSpeechInterruptionAsync(
+            fixture.CompanyId, Guid.NewGuid(), fixture.SessionId, voiceId, "other-tenant", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Unsupported_tools_and_reordered_events_have_no_side_effects()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -140,7 +169,8 @@ public sealed class SalesMeetingRealtimeServiceTests
         public FakeQuestions Questions { get; }
 
         public static async Task<Fixture> CreateAsync(bool enabled = true,
-            SalesMeetingConsentStatus consent = SalesMeetingConsentStatus.Granted, bool presenting = false)
+            SalesMeetingConsentStatus consent = SalesMeetingConsentStatus.Granted, bool presenting = false,
+            string mediaRoute = "browser_webrtc")
         {
             var companyId = Guid.NewGuid(); var userId = Guid.NewGuid(); var sessionId = Guid.NewGuid();
             var agentId = Guid.NewGuid(); var customerId = Guid.NewGuid(); var now = DateTime.UtcNow;
@@ -162,7 +192,7 @@ public sealed class SalesMeetingRealtimeServiceTests
             await db.SaveChangesAsync();
             var options = Options.Create(new SalesMeetingVoiceOptions
             {
-                Enabled = enabled, PilotApproved = enabled, MediaRoute = "browser_webrtc",
+                Enabled = enabled, PilotApproved = enabled, MediaRoute = mediaRoute,
                 MaximumSessionMinutes = 30, MaximumReconnects = 2, MaximumAudioSeconds = 1800,
                 MaximumInputTokens = 50_000, MaximumOutputTokens = 10_000
             });

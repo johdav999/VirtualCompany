@@ -1,4 +1,5 @@
 import { createConversationTurnController, parseTurnIntentResponse } from "./conversation-turn-controller.mjs?v=20260820-turn-control-v2";
+import { createBrowserSpeechDetector } from "./speech-aware-browser-interruption.mjs?v=20260922-speech-v1";
 
 const sessions = new Map();
 const starts = new Map();
@@ -56,9 +57,10 @@ async function startCore(dotnet, companyId, sessionId, reconnectAttempt) {
     audio.setAttribute("aria-hidden", "true");
     document.body.appendChild(audio);
     for (const track of media.getTracks()) pc.addTrack(track, media);
-    const state = { pc, media, audio, companyId, sessionId, dotnet, reconnectAttempt, bindingId: null, channel: null, muted: false, inputSuspended: false, toolContinuationPending: false, toolWorkActive: false, toolName: null, interrupted: false, speechStartedAt: null, speechStoppedAt: null, responseCreatedAt: null, audioStartedAt: null, lastSpeechDurationMs: 0, ending: false, responseId: null, responseInProgress: false, outputAudioActive: false, speakingLogged: false, agentTranscript: "", agentTranscriptResponseId: null, agentTranscriptUpdateTimer: null, reconnectScheduled: false, reconnectTimer: null, pageHideHandler: null, inputDiagnosticsTimer: null, lastOutboundBytes: null, lastInputEnergy: null, inputSignalDetected: false, silentDiagnosticsCount: 0, turnController: null, classificationRequests: new Map(), classificationResponseIds: new Map(), ignoredResponseIds: new Set() };
+    const state = { pc, media, audio, companyId, sessionId, dotnet, reconnectAttempt, bindingId: null, channel: null, muted: false, inputSuspended: false, toolContinuationPending: false, toolWorkActive: false, toolName: null, interrupted: false, speechStartedAt: null, speechStoppedAt: null, speechStartDeferred: false, localSpeechConfirmed: false, speechDetector: null, speechDetectorGeneration: 0, responseCreatedAt: null, audioStartedAt: null, lastSpeechDurationMs: 0, ending: false, responseId: null, responseInProgress: false, outputAudioActive: false, speakingLogged: false, agentTranscript: "", agentTranscriptResponseId: null, agentTranscriptUpdateTimer: null, reconnectScheduled: false, reconnectTimer: null, pageHideHandler: null, inputDiagnosticsTimer: null, lastOutboundBytes: null, lastInputEnergy: null, inputSignalDetected: false, silentDiagnosticsCount: 0, turnController: null, classificationRequests: new Map(), classificationResponseIds: new Map(), ignoredResponseIds: new Set() };
     state.turnController = createConversationTurnController(createTurnAdapter(state));
     sessions.set(sessionId, state);
+    await startSpeechDetector(state);
 
     const microphoneTrack = media.getAudioTracks()[0];
     observeMicrophoneTrack(state, microphoneTrack);
@@ -380,6 +382,30 @@ function isIgnoredResponse(state, payload) {
     return !!responseId && state.ignoredResponseIds.has(responseId);
 }
 
+async function confirmLocalSpeech(state, decision, generation) {
+    if (state.ending || state.muted || sessions.get(state.sessionId) !== state || generation !== state.speechDetectorGeneration || state.localSpeechConfirmed) return;
+    const agentActive = state.responseInProgress || state.outputAudioActive || state.toolWorkActive || state.classificationRequests.size > 0;
+    if (!agentActive) return;
+    state.localSpeechConfirmed = true;
+    state.speechStartDeferred = false;
+    debug(state, "local_speech_confirmed", { confidence: decision.confidence, policy: decision.policy });
+    await state.turnController.speechStarted({ agentActive: true });
+}
+
+async function startSpeechDetector(state) {
+    const generation = ++state.speechDetectorGeneration;
+    try {
+        state.speechDetector = await createBrowserSpeechDetector(state.media, decision => {
+            void confirmLocalSpeech(state, decision, generation).catch(error => warn(state, "local_speech_confirmation_failed", error));
+        });
+    } catch (error) {
+        state.speechDetector = null;
+        warn(state, "speech_detector_unavailable", error);
+        await state.dotnet.invokeMethodAsync("OnVoiceDetectionDegraded",
+            "Speech-aware interruption is unavailable. Use Interrupt or type your question; voice replies continue.");
+    }
+}
+
 async function handleProviderEvent(state, raw) {
     try {
         const payload = JSON.parse(raw);
@@ -391,18 +417,21 @@ async function handleProviderEvent(state, raw) {
                 outputAudioActive: state.outputAudioActive,
                 audioPlaybackMs: state.audioStartedAt == null ? null : elapsedMs(state.audioStartedAt)
             });
-            await state.turnController.speechStarted({
-                agentActive: state.responseInProgress || state.outputAudioActive || state.toolWorkActive || state.classificationRequests.size > 0
-            });
+            const agentActive = state.responseInProgress || state.outputAudioActive || state.toolWorkActive || state.classificationRequests.size > 0;
+            // Provider acoustic onset is not proof of human speech. Until a local
+            // classifier is available, keep narration playing and wait for text.
+            state.speechStartDeferred = agentActive && !state.localSpeechConfirmed;
+            if (!agentActive && !state.localSpeechConfirmed) await state.turnController.speechStarted();
         } else if (payload.type === "input_audio_buffer.speech_stopped") {
             state.speechStoppedAt = performance.now();
+            state.localSpeechConfirmed = false;
             state.lastSpeechDurationMs = state.speechStartedAt == null ? 0 : elapsedMs(state.speechStartedAt);
             debug(state, "input_speech_stopped", {
                 speechDurationMs: state.lastSpeechDurationMs,
                 responseId: state.responseId,
                 outputAudioActive: state.outputAudioActive
             });
-            state.turnController.speechStopped();
+            if (!state.speechStartDeferred) state.turnController.speechStopped();
         } else if (payload.type === "response.function_call_arguments.done") {
             if (!state.turnController.toolStarted()) {
                 const staleResponseId = responseIdFrom(payload) ?? state.responseId;
@@ -563,6 +592,12 @@ async function handleProviderEvent(state, raw) {
         }
         else if (payload.type === "conversation.item.input_audio_transcription.completed" && payload.transcript?.trim()) {
             const durationMs = state.lastSpeechDurationMs;
+            if (state.speechStartDeferred) {
+                state.speechStartDeferred = false;
+                await state.turnController.speechStarted({
+                    agentActive: state.responseInProgress || state.outputAudioActive || state.toolWorkActive || state.classificationRequests.size > 0
+                });
+            }
             debug(state, "input_transcription_completed", {
                 speechDurationMs: durationMs,
                 transcriptionDelayMs: state.speechStoppedAt == null ? null : elapsedMs(state.speechStoppedAt)
@@ -706,6 +741,11 @@ export async function changeMicrophone(sessionId, deviceId) {
         current.media = replacement;
         replacement = null;
         previous.getTracks().forEach(track => track.stop());
+        current.speechDetectorGeneration += 1;
+        await current.speechDetector?.dispose();
+        current.speechDetector = null;
+        current.localSpeechConfirmed = false;
+        await startSpeechDetector(current);
         current.lastOutboundBytes = null;
         current.lastInputEnergy = null;
         current.inputSignalDetected = false;
@@ -728,6 +768,7 @@ export async function setMuted(sessionId, muted) {
     const current = sessions.get(sessionId);
     if (!current) return false;
     current.muted = !!muted;
+    if (current.muted) current.speechDetector?.reset();
     current.media.getAudioTracks().forEach(track => { track.enabled = !current.muted; });
     await current.dotnet.invokeMethodAsync("OnVoiceState", current.muted ? "muted" : "listening", null);
     return current.muted;
@@ -784,6 +825,10 @@ export async function stop(sessionId, reconnecting = false) {
 
 async function cleanup(current, notifyServer) {
     current.ending = true;
+    current.speechDetectorGeneration += 1;
+    current.speechStartDeferred = false;
+    await current.speechDetector?.dispose();
+    current.speechDetector = null;
     current.turnController?.dispose();
     current.audio.muted = false;
     debug(current, "voice_cleanup", { notifyServer, connectionState: current.pc?.connectionState ?? null });

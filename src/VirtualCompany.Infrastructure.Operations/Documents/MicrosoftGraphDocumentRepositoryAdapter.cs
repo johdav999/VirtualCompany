@@ -449,7 +449,7 @@ internal sealed class MicrosoftGraphDocumentRepositoryAdapter(
 
     private async Task<GraphItem> GetItemAsync(GraphRepositoryContext context, string itemId, CancellationToken cancellationToken)
     {
-        using var document = await SendAsync(context, $"drives/{Escape(context.DriveId)}/items/{Escape(itemId)}?$select=id,name,size,lastModifiedDateTime,parentReference,folder,package,remoteItem", cancellationToken);
+        using var document = await SendAsync(context, $"drives/{Escape(context.DriveId)}/items/{Escape(itemId)}?$select=id,name,size,lastModifiedDateTime,parentReference,folder,package,remoteItem,eTag,cTag,webUrl,file", cancellationToken);
         return ParseItem(document.RootElement);
     }
 
@@ -524,9 +524,11 @@ internal sealed class MicrosoftGraphDocumentRepositoryAdapter(
         if (!Uri.TryCreate(cursor, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) throw BoundaryViolation();
         var configured = new Uri(_options.BaseUrl, UriKind.Absolute);
         if (!string.Equals(uri.Host, configured.Host, StringComparison.OrdinalIgnoreCase) || uri.Port != configured.Port || !uri.AbsolutePath.StartsWith(configured.AbsolutePath, StringComparison.Ordinal)) throw BoundaryViolation();
-        var expected = $"drives/{Escape(context.DriveId)}/items/{Escape(context.RootItemId)}/delta";
-        var relative = uri.PathAndQuery[configured.AbsolutePath.Length..];
-        if (!relative.StartsWith(expected, StringComparison.Ordinal)) throw BoundaryViolation();
+        var segments = uri.AbsolutePath[configured.AbsolutePath.Length..].Split('/').Select(Uri.UnescapeDataString).ToArray();
+        if (!string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Fragment) ||
+            segments.Length != 5 || segments[0] != "drives" || segments[1] != context.DriveId ||
+            segments[2] != "items" || segments[3] != context.RootItemId || segments[4] != "delta")
+            throw BoundaryViolation();
         return uri.ToString();
     }
 

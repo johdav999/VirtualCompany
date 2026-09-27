@@ -298,6 +298,36 @@ public sealed class DocumentRepositoryMicrosoftOnboardingTests
         Assert.Equal(DocumentRepositoryProvisioningStatuses.CleanupQueued, operation.Status);
     }
 
+    [Fact]
+    public async Task Separate_setup_sessions_can_complete_against_the_same_saved_connection()
+    {
+        using var factory = new OnboardingFactory(configured: true);
+        var seed = await Seed(factory, includeOtherCompany: false);
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var user = await db.Users.SingleAsync(x => x.Email == seed.Email);
+        var now = DateTime.UtcNow;
+        var connectionId = Guid.NewGuid();
+        for (var i = 0; i < 2; i++)
+        {
+            var session = new CompanyDocumentRepositoryOnboardingSession(seed.CompanyId, user.Id,
+                new string((char)('a' + i), 64), new string((char)('c' + i), 64),
+                "protected-material", "/settings/document-repositories", "test", now, now.AddMinutes(20));
+            db.CompanyDocumentRepositoryOnboardingSessions.Add(session);
+            var operation = new CompanyDocumentRepositoryProvisioning(seed.CompanyId, session.Id, user.Id,
+                DocumentRepositoryProviderKinds.OneDriveForBusiness, OnboardingFactory.ProviderTenantId,
+                null, "drive-1", "folder-1", "OneDrive", "Approved folder", false, null, null, "test", now);
+            operation.Complete(connectionId, now);
+            db.CompanyDocumentRepositoryProvisionings.Add(operation);
+            await db.SaveChangesAsync();
+        }
+        Assert.Equal(2, await db.CompanyDocumentRepositoryProvisionings.IgnoreQueryFilters()
+            .CountAsync(x => x.CompanyId == seed.CompanyId && x.ConnectionId == connectionId));
+        var entity = db.Model.FindEntityType(typeof(CompanyDocumentRepositoryProvisioning))!;
+        Assert.False(entity.GetIndexes().Single(x => x.Properties.Count == 1 && x.Properties[0].Name == "ConnectionId").IsUnique);
+        Assert.True(entity.GetIndexes().Single(x => x.Properties.Count == 1 && x.Properties[0].Name == "OnboardingSessionId").IsUnique);
+    }
+
     private static async Task<SeedData> Seed(TestWebApplicationFactory factory, bool includeOtherCompany)
     {
         var userId = Guid.NewGuid(); var companyId = Guid.NewGuid(); var otherCompanyId = Guid.NewGuid();

@@ -1,4 +1,5 @@
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Agents;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
@@ -22,8 +23,6 @@ public sealed class SalesRoomAgentOptions
     public int ReconciliationIntervalSeconds { get; set; } = 10;
     public int MaximumActiveAgentsGlobal { get; set; } = 50;
     public int MaximumActiveAgentsPerCompany { get; set; } = 2;
-    public int SpeechRmsThreshold { get; set; } = 320;
-    public int SpeechPeakThreshold { get; set; } = 700;
     public decimal MaximumInputTokenCostPerMillionUsd { get; set; }
     public decimal MaximumOutputTokenCostPerMillionUsd { get; set; }
     public decimal TranscriptionCostPerMinuteUsd { get; set; }
@@ -38,31 +37,47 @@ public sealed class SalesRoomAgentOptions
 internal interface ILocalVoiceActivityDetector
 {
     bool IsSpeech(ReadOnlySpan<short> samples, int sampleRate);
+    bool HasSpeechLikeOnset => true;
+    ILocalVoiceActivityDetector CreateForTrack() => this;
+    void Dispose() { }
 }
 
-internal sealed class EnergyLocalVoiceActivityDetector(Microsoft.Extensions.Options.IOptions<SalesRoomAgentOptions> configured)
+internal sealed class SpeechAwareLocalVoiceActivityDetector(ISpeechFrameClassifierFactory factory)
     : ILocalVoiceActivityDetector
 {
-    public bool IsSpeech(ReadOnlySpan<short> samples, int sampleRate)
-    {
-        var (rms, peak) = Measure(samples, sampleRate);
-        return peak >= configured.Value.SpeechPeakThreshold && rms >= configured.Value.SpeechRmsThreshold;
-    }
+    public bool IsSpeech(ReadOnlySpan<short> samples, int sampleRate) =>
+        throw new InvalidOperationException("A speech detector must be created for a track.");
 
-    internal static (double Rms, double Peak) Measure(ReadOnlySpan<short> samples, int sampleRate)
+    public ILocalVoiceActivityDetector CreateForTrack() => new TrackDetector(factory.Create());
+
+    private sealed class TrackDetector(ISpeechFrameClassifier classifier) : ILocalVoiceActivityDetector
     {
-        if (sampleRate != 24_000 || samples.IsEmpty) throw new SalesRoomVadException("vad_input_invalid");
-        // A microphone's DC bias is not audible speech. Measure only the varying signal.
-        double mean = 0;
-        foreach (var sample in samples) mean += sample;
-        mean /= samples.Length;
-        double sum = 0, peak = 0;
-        foreach (var sample in samples)
+        private readonly Queue<double> recentEnergy = new();
+        public bool HasSpeechLikeOnset
         {
-            var value = Math.Abs(sample - mean); peak = Math.Max(peak, value); sum += value * value;
+            get
+            {
+                // WebRTC VAD can mistake a steady broadband fan for speech. Human speech
+                // has a changing syllabic envelope; a stationary motor does not.
+                if (recentEnergy.Count < 12) return false;
+                var last = recentEnergy.TakeLast(16).ToArray();
+                return last.Max() >= (last.Min() + 1) * 2.5;
+            }
         }
-        var rms = Math.Sqrt(sum / samples.Length);
-        return (rms, peak);
+        public bool IsSpeech(ReadOnlySpan<short> samples, int sampleRate)
+        {
+            var speech = classifier.IsSpeech(samples, sampleRate);
+            for (var offset = 0; offset < samples.Length; offset += 240)
+            {
+                var chunk = samples.Slice(offset, Math.Min(240, samples.Length - offset));
+                double energy = 0;
+                foreach (var sample in chunk) energy += (double)sample * sample;
+                recentEnergy.Enqueue(Math.Sqrt(energy / chunk.Length));
+                while (recentEnergy.Count > 24) recentEnergy.Dequeue();
+            }
+            return speech;
+        }
+        public void Dispose() => classifier.Dispose();
     }
 }
 
@@ -76,10 +91,19 @@ internal sealed class SalesRoomVoiceActivitySegmenter(
     ILocalVoiceActivityDetector detector)
 {
     private readonly Dictionary<(Guid ParticipantId, string TrackId, long Generation), TrackState> tracks = new();
+    private readonly Dictionary<Guid, long> latestGenerations = new();
     private readonly object gate = new();
     public long ReceivedMilliseconds { get; private set; }
     public long DetectedSpeechMilliseconds { get; private set; }
     public long ForwardedMilliseconds { get; private set; }
+    public bool HasActiveSpeech { get { lock (gate) return tracks.Values.Any(x => x.Active); } }
+
+    public bool IsCurrentTrack(Guid participantId, string trackId, long generation)
+    {
+        lock (gate)
+            return latestGenerations.TryGetValue(participantId, out var latest) && latest == generation &&
+                tracks.ContainsKey((participantId, trackId, generation));
+    }
 
     public SalesRoomVadResult Push(SalesRoomAudioFrame frame)
     {
@@ -93,7 +117,22 @@ internal sealed class SalesRoomVoiceActivitySegmenter(
         if (duration is < 1 or > 100) throw new SalesRoomVadException("vad_frame_duration_invalid");
         ReceivedMilliseconds += duration;
         var key = (frame.ParticipantId, frame.TrackId, frame.TrackGeneration);
-        if (!tracks.TryGetValue(key, out var state)) tracks[key] = state = new TrackState();
+        if (latestGenerations.TryGetValue(frame.ParticipantId, out var latestGeneration) &&
+            frame.TrackGeneration < latestGeneration) return new(false, null);
+        latestGenerations[frame.ParticipantId] = frame.TrackGeneration;
+        if (!tracks.TryGetValue(key, out var state))
+        {
+            // A replaced microphone gets a fresh adaptive model, and stale generations
+            // cannot retain audio/classifier state for the rest of a long meeting.
+            foreach (var stale in tracks.Keys.Where(x => x.ParticipantId == frame.ParticipantId &&
+                         x.Generation != frame.TrackGeneration).ToArray())
+            {
+                tracks[stale].Detector?.Dispose(); tracks.Remove(stale);
+            }
+            if (tracks.Count >= 32) throw new SalesRoomVadException("vad_track_limit");
+            tracks[key] = state = new TrackState
+                { Detector = detector.CreateForTrack(), Onset = new SpeechOnsetPolicy(options.MinimumSpeechMilliseconds) };
+        }
         if (state.LastSequence is long lastSequence && frame.Sequence <= lastSequence)
             return new(false, null);
         if (!state.Active && state.LastReceivedAt is { } lastReceived &&
@@ -101,36 +140,15 @@ internal sealed class SalesRoomVoiceActivitySegmenter(
              frame.Sequence != state.LastSequence + 1))
         {
             // DTX, mute and packet gaps must not combine isolated noises into a speech onset.
-            state.ConsecutiveSpeechMilliseconds = 0;
+            state.Onset!.Reset();
             state.PreRoll.Clear(); state.PreRollMilliseconds = 0;
         }
         state.LastSequence = frame.Sequence;
         state.LastReceivedAt = frame.ReceivedAt;
         bool speech;
-        try { speech = detector.IsSpeech(frame.Samples.Span, frame.SampleRate); }
+        try { speech = state.Detector!.IsSpeech(frame.Samples.Span, frame.SampleRate); }
         catch (SalesRoomVadException) { throw; }
         catch { throw new SalesRoomVadException("vad_detector_failed"); }
-
-        if (detector is EnergyLocalVoiceActivityDetector)
-        {
-            var (rms, _) = EnergyLocalVoiceActivityDetector.Measure(frame.Samples.Span, frame.SampleRate);
-            // Calibrate each microphone independently before accepting its first onset.
-            // A steady fan can exceed the absolute threshold: speech must also rise above
-            // the ambient floor. Do not learn an active speaker as background noise.
-            if (state.CalibrationMilliseconds < 300)
-            {
-                state.NoiseRms = (state.NoiseRms * state.CalibrationMilliseconds + rms * duration) /
-                    (state.CalibrationMilliseconds + duration);
-                state.CalibrationMilliseconds += duration;
-                speech = false;
-            }
-            else
-            {
-                speech = speech && rms >= state.NoiseRms * 2.5;
-                if (!state.Active && !speech)
-                    state.NoiseRms += (rms - state.NoiseRms) * 0.05;
-            }
-        }
 
         if (!state.Active)
         {
@@ -138,9 +156,13 @@ internal sealed class SalesRoomVoiceActivitySegmenter(
             state.PreRollMilliseconds += duration;
             while (state.PreRollMilliseconds > Math.Max(options.PreRollMilliseconds, options.MinimumSpeechMilliseconds) && state.PreRoll.TryDequeue(out var old))
                 state.PreRollMilliseconds -= old.DurationMilliseconds;
-            state.ConsecutiveSpeechMilliseconds = speech ? state.ConsecutiveSpeechMilliseconds + duration : 0;
-            if (state.ConsecutiveSpeechMilliseconds < options.MinimumSpeechMilliseconds)
+            if (!state.Onset!.Observe(speech, duration))
                 return new(false, null);
+            if (!state.Detector!.HasSpeechLikeOnset)
+            {
+                state.Onset.Reset();
+                return new(false, null);
+            }
             state.Active = true; state.Overlapped = tracks.Values.Any(x => !ReferenceEquals(x, state) && x.Active);
             state.Frames.AddRange(state.PreRoll); state.PreRoll.Clear(); state.PreRollMilliseconds = 0;
             state.SpeechMilliseconds = state.Frames.Where(x => x.Speech).Sum(x => x.DurationMilliseconds);
@@ -171,20 +193,25 @@ internal sealed class SalesRoomVoiceActivitySegmenter(
     public void Clear(Guid participantId)
     {
         lock (gate)
-            foreach (var key in tracks.Keys.Where(x => x.ParticipantId == participantId).ToArray()) tracks.Remove(key);
+        {
+            latestGenerations.Remove(participantId);
+            foreach (var key in tracks.Keys.Where(x => x.ParticipantId == participantId).ToArray())
+            {
+                tracks[key].Detector?.Dispose(); tracks.Remove(key);
+            }
+        }
     }
-    public void ClearAll() { lock (gate) tracks.Clear(); }
+    public void ClearAll() { lock (gate) { foreach (var track in tracks.Values) track.Detector?.Dispose(); tracks.Clear(); latestGenerations.Clear(); } }
 
     private SalesRoomDetectedUtterance? CompleteIfBounded((Guid ParticipantId, string TrackId, long Generation) key, TrackState state) =>
         state.Frames.Sum(x => x.DurationMilliseconds) >= options.MaximumUtteranceSeconds * 1000 ? Complete(key, state) : null;
     private SalesRoomDetectedUtterance? Complete((Guid ParticipantId, string TrackId, long Generation) key, TrackState state)
     {
         var frames = state.Frames.ToArray();
-        // Keep the microphone's ambient estimate between utterances; recalibrating
-        // on the next spoken word would incorrectly learn that word as noise.
         tracks[key] = new TrackState
         {
-            NoiseRms = state.NoiseRms, CalibrationMilliseconds = state.CalibrationMilliseconds,
+            Detector = state.Detector,
+            Onset = new SpeechOnsetPolicy(options.MinimumSpeechMilliseconds),
             LastSequence = state.LastSequence, LastReceivedAt = state.LastReceivedAt
         };
         if (state.SpeechMilliseconds < options.MinimumSpeechMilliseconds || frames.Length == 0) return null;
@@ -203,12 +230,12 @@ internal sealed class SalesRoomVoiceActivitySegmenter(
     {
         public Queue<BufferedFrame> PreRoll { get; } = new();
         public List<BufferedFrame> Frames { get; } = [];
-        public int PreRollMilliseconds, ConsecutiveSpeechMilliseconds, SpeechMilliseconds, TrailingMilliseconds;
+        public int PreRollMilliseconds, SpeechMilliseconds, TrailingMilliseconds;
         public bool Active, Overlapped;
-        public int CalibrationMilliseconds;
-        public double NoiseRms;
         public long? LastSequence;
         public DateTimeOffset? LastReceivedAt;
+        public ILocalVoiceActivityDetector? Detector;
+        public SpeechOnsetPolicy? Onset;
     }
 }
 

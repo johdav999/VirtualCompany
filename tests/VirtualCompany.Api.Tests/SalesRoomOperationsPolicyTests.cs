@@ -1,10 +1,37 @@
 using VirtualCompany.Infrastructure.Sales;
+using VirtualCompany.Domain.Entities;
 
 namespace VirtualCompany.Api.Tests;
 
 public sealed class SalesRoomOperationsPolicyTests
 {
     private static readonly DateTime Now = new(2026, 9, 10, 8, 0, 0, DateTimeKind.Utc);
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Audio_limit_is_cumulative_across_restarts_and_enforced_at_boundary(bool input)
+    {
+        var organizer = Guid.NewGuid(); var owner = Guid.NewGuid();
+        var room = new SalesBrowserRoom(Guid.NewGuid(), Guid.NewGuid(), organizer, Now.AddHours(1), Now);
+        room.Provisioned("fixture"); room.Start(Now, 60);
+        room.StartAgent(Guid.NewGuid(), organizer, owner, Now.AddSeconds(30), Now);
+        var options = Valid(); options.MaximumInputAudioSeconds = options.MaximumOutputAudioSeconds = 60;
+        if (input) room.RecordAgentAudio(owner, room.AgentGeneration, 60_000, 60_000, 59_999, 0, 0, 0);
+        else room.AgentSpeechCompleted(owner, room.AgentGeneration, 59_999);
+        Assert.Null(SalesRoomOperationsPolicy.AudioLimitProblem(room, options));
+        if (input) room.RecordAgentAudio(owner, room.AgentGeneration, 1, 1, 1, 0, 0, 0);
+        else room.AgentSpeechCompleted(owner, room.AgentGeneration, 1);
+        var problem = SalesRoomOperationsPolicy.AudioLimitProblem(room, options);
+        Assert.Contains(input ? "microphone input" : "spoken output", problem);
+        Assert.Contains("earlier runs", problem);
+        room.StopAgent("quota_exceeded", problem, Now);
+        room.StartAgent(Guid.NewGuid(), organizer, Guid.NewGuid(), Now.AddSeconds(30), Now);
+        Assert.Equal(problem, SalesRoomOperationsPolicy.AudioLimitProblem(room, options));
+        if (input) options.MaximumInputAudioSeconds = 120;
+        else options.MaximumOutputAudioSeconds = 120;
+        Assert.Null(SalesRoomOperationsPolicy.AudioLimitProblem(room, options));
+    }
 
     [Fact]
     public void Spend_uses_provider_billed_audio_and_reported_tokens()

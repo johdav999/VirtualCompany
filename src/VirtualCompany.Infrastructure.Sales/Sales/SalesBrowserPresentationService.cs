@@ -104,7 +104,8 @@ public sealed class SalesBrowserPresentationService(
         ValidateActor(access, request.ActorType, request.ActorId, request.ActorGeneration);
         var result = await runtime.ExecuteAsync(companyId, userId, access.SessionId, toolName, request,
             correlationId, cancellationToken) ?? throw new SalesRoomAccessException("presentation_unavailable", 404);
-        if (toolName is SalesPresentationToolNames.Next or SalesPresentationToolNames.Previous or SalesPresentationToolNames.Goto)
+        if (result.Disposition == "accepted" &&
+            toolName is SalesPresentationToolNames.Next or SalesPresentationToolNames.Previous or SalesPresentationToolNames.Goto)
         {
             var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
                 x.CompanyId == companyId && x.RoomId == roomId, cancellationToken);

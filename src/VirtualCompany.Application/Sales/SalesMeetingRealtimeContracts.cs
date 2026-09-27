@@ -90,6 +90,8 @@ public interface IMeetingMediaAdapter
 
 public interface ISalesMeetingRealtimeService
 {
+    Task ConfirmSpeechInterruptionAsync(Guid companyId, Guid userId, Guid sessionId,
+        Guid voiceSessionId, string interruptionId, CancellationToken cancellationToken);
     Task<SalesMeetingRealtimeStatusDto?> GetStatusAsync(Guid companyId, Guid userId, Guid sessionId, CancellationToken cancellationToken);
     Task<SalesMeetingRealtimeStartResult?> StartAsync(Guid companyId, Guid userId, Guid sessionId,
         StartSalesMeetingRealtimeRequest request, string? correlationId, CancellationToken cancellationToken);

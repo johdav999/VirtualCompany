@@ -12,6 +12,31 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class SalesPresentationRuntimeServiceTests
 {
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task Human_restart_from_interrupted_resets_to_first_point_and_is_idempotent(int previousSlide)
+    {
+        await using var f = await Fixture.CreateAsync();
+        await f.Service.ExecuteAsync(f.CompanyId, f.UserId, f.SessionId, SalesPresentationToolNames.Goto,
+            new(Guid.NewGuid(), 1, 1, previousSlide, 8), null, default);
+        await f.Service.ExecuteAsync(f.CompanyId, f.UserId, f.SessionId, SalesPresentationToolNames.Pause,
+            new(Guid.NewGuid(), 2, 2, TalkingPointIndex: 8), null, default);
+        var command = new SalesPresentationCommandRequest(Guid.NewGuid(), 3, 3, 1, 1);
+        var result = await f.Service.ExecuteAsync(f.CompanyId, f.UserId, f.SessionId,
+            SalesPresentationToolNames.Goto, command, null, default);
+        Assert.Equal("presenting", result!.Snapshot.Stage.SessionStatus);
+        Assert.Equal(1, result.Snapshot.Stage.SlideNumber);
+        Assert.Equal(1, result.Snapshot.Private.TalkingPointIndex);
+        Assert.Null(result.Snapshot.Private.ResumeMarker);
+        var duplicate = await f.Service.ExecuteAsync(f.CompanyId, f.UserId, f.SessionId,
+            SalesPresentationToolNames.Goto, command, null, default);
+        Assert.Equal("duplicate", duplicate!.Disposition);
+        Assert.Equal(result.Snapshot.Stage.Version, duplicate.Snapshot.Stage.Version);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => f.Service.ExecuteAsync(Guid.NewGuid(),
+            f.UserId, f.SessionId, SalesPresentationToolNames.Goto, command, null, default));
+    }
+
     [Fact]
     public async Task Commands_are_idempotent_ordered_and_resume_from_the_persisted_marker()
     {

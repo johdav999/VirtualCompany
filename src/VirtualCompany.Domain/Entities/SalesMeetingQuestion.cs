@@ -56,16 +56,18 @@ public sealed class SalesMeetingQuestion : ICompanyOwnedEntity
     public SalesPresentationSlide? VisibleSlide { get; private set; }
     public ICollection<SalesMeetingQuestionEvidence> Evidence { get; } = new List<SalesMeetingQuestionEvidence>();
 
-    public void MarkAnswering(DateTime nowUtc) { Status = SalesMeetingQuestionStatus.Answering; FailureCode = null; FailureSummary = null; Touch(nowUtc); }
-    public void Complete(string answer, decimal confidence, bool followUpRequired, Guid runId, bool verified, DateTime nowUtc)
+    public void MarkAnswering(DateTime nowUtc) { ResetApproval(); Status = SalesMeetingQuestionStatus.Answering; FailureCode = null; FailureSummary = null; Touch(nowUtc); }
+    public void Complete(string answer, decimal confidence, bool followUpRequired, Guid runId, bool verified, DateTime nowUtc, bool partiallySupported = false)
     {
         AnswerText = SalesMeetingTranscriptSegment.Required(answer, nameof(answer), 8000);
-        Confidence = SalesMeetingTranscriptSegment.ConfidenceValue(confidence); FollowUpRequired = followUpRequired;
-        AiRunId = runId == Guid.Empty ? null : runId; Status = verified ? SalesMeetingQuestionStatus.Completed : SalesMeetingQuestionStatus.Unverified;
+        Confidence = SalesMeetingTranscriptSegment.ConfidenceValue(confidence); FollowUpRequired = followUpRequired || partiallySupported;
+        AiRunId = runId == Guid.Empty ? null : runId; Status = partiallySupported ? SalesMeetingQuestionStatus.PartiallySupported : verified ? SalesMeetingQuestionStatus.Completed : SalesMeetingQuestionStatus.Unverified;
+        ResetApproval();
         AnsweredUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); FailureCode = null; FailureSummary = null; Touch(nowUtc);
     }
     public void Fail(string code, string summary, bool cancelled, DateTime nowUtc)
     {
+        ResetApproval();
         FailureCode = SalesMeetingTranscriptSegment.Required(code, nameof(code), 100);
         FailureSummary = SalesMeetingTranscriptSegment.Required(summary, nameof(summary), 1000);
         Status = cancelled ? SalesMeetingQuestionStatus.Cancelled : SalesMeetingQuestionStatus.Failed;
@@ -74,7 +76,8 @@ public sealed class SalesMeetingQuestion : ICompanyOwnedEntity
     public void ApproveForStage(Guid actorUserId, long expectedVersion, DateTime nowUtc)
     {
         if (expectedVersion != ConcurrencyVersion) throw new InvalidOperationException("The question changed after it was opened.");
-        if (Status != SalesMeetingQuestionStatus.Completed) throw new InvalidOperationException("Only a verified completed answer can be shared to the stage.");
+        if (Status is not (SalesMeetingQuestionStatus.Completed or SalesMeetingQuestionStatus.PartiallySupported)) throw new InvalidOperationException("Only a supported answer can be shared to the stage.");
+        if (string.IsNullOrWhiteSpace(AnswerText)) throw new InvalidOperationException("An answer is required for approval.");
         SalesMeetingTranscriptSegment.EnsureIds(actorUserId); Visibility = SalesMeetingAnswerVisibility.ApprovedForStage;
         ReviewState = SalesMeetingReviewState.Reviewed; StageApprovedByUserId = actorUserId;
         StageApprovedUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); Touch(nowUtc);
@@ -85,6 +88,7 @@ public sealed class SalesMeetingQuestion : ICompanyOwnedEntity
         QuestionText = "[Expired meeting evidence]"; AnswerText = null; AskerLabel = null; FailureSummary = null;
         Visibility = SalesMeetingAnswerVisibility.Private; Evidence.Clear(); Touch(nowUtc);
     }
+    private void ResetApproval() { Visibility = SalesMeetingAnswerVisibility.Private; ReviewState = SalesMeetingReviewState.Unreviewed; StageApprovedByUserId = null; StageApprovedUtc = null; }
     private void Touch(DateTime nowUtc) { UpdatedUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); ConcurrencyVersion++; }
 }
 

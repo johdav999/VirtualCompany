@@ -122,6 +122,27 @@ public sealed class MicrosoftGraphDocumentRepositoryAdapterTests
         Assert.Equal("https://tenant.sharepoint.com/policy.pdf", file.WebUrl);
     }
 
+    [Theory]
+    [InlineData("eTag")]
+    [InlineData("cTag")]
+    public async Task Item_validation_requests_version_and_source_metadata(string versionProperty)
+    {
+        var handler = new SequenceHandler(Json(HttpStatusCode.OK,
+            $$$"""{"id":"file-1","name":"Policy.md","size":42,"{{{versionProperty}}}":"v1","webUrl":"https://tenant.sharepoint.com/policy.md","file":{"mimeType":"text/markdown"},"parentReference":{"driveId":"drive-1","id":"root-1"}}"""));
+        var adapter = CreateAdapter(handler, out _);
+
+        var result = await adapter.ValidateItemAsync(Context, "file-1", default);
+
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(Assert.Single(handler.Requests).Query);
+        var selectedFields = query["$select"].ToString().Split(',');
+        foreach (var field in new[] { "eTag", "cTag", "webUrl", "file", "parentReference", "remoteItem" })
+            Assert.Contains(field, selectedFields);
+        Assert.True(result.IsAvailable);
+        Assert.Equal("v1", result.RemoteVersion);
+        Assert.Equal("text/markdown", result.ContentType);
+        Assert.Equal("https://tenant.sharepoint.com/policy.md", result.WebUrl);
+    }
+
     [Fact]
     public async Task Delta_page_returns_lasting_opaque_cursors_and_deleted_items()
     {
@@ -134,6 +155,32 @@ public sealed class MicrosoftGraphDocumentRepositoryAdapterTests
         Assert.Equal(2, page.Changes.Count);
         Assert.True(page.Changes.Single(x => x.ItemId == "file-2").IsDeleted);
         Assert.Contains("$skiptoken=opaque", page.NextCursor, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("b!drive", "root-1", "delta", true)]
+    [InlineData("b%21drive", "root-1", "delta", true)]
+    [InlineData("b!other", "root-1", "delta", false)]
+    [InlineData("b!drive", "root-2", "delta", false)]
+    [InlineData("b!drive", "root-1", "delta/children", false)]
+    [InlineData("b!drive", "root-1", "deltaOther", false)]
+    public async Task Delta_cursor_compares_exact_decoded_resource_segments(string drive, string root, string endpoint, bool allowed)
+    {
+        var context = Context with { DriveId = "b!drive" };
+        var handler = new SequenceHandler(Json(HttpStatusCode.OK, "{\"value\":[]}"));
+        var adapter = CreateAdapter(handler, out _);
+        var cursor = $"https://graph.microsoft.com/v1.0/drives/{drive}/items/{root}/{endpoint}?token=opaque";
+        if (allowed)
+        {
+            await adapter.ReadDeltaPageAsync(context, cursor, default);
+            Assert.Single(handler.Requests);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<DocumentRepositoryUnavailableException>(() => adapter.ReadDeltaPageAsync(context, cursor, default));
+            Assert.Equal(DocumentRepositoryValidationCodes.BoundaryViolation, error.Code);
+            Assert.Empty(handler.Requests);
+        }
     }
 
     [Fact]

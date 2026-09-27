@@ -9,6 +9,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using StackExchange.Redis;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Companies;
@@ -36,6 +37,8 @@ public static class PlatformModuleRegistration
 
         services.TryAddSingleton<IHostEnvironment, ProductionInfrastructureHostEnvironment>();
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.AddSingleton<ISpeechFrameClassifierFactory, WebRtcSpeechFrameClassifierFactory>();
+        services.AddHealthChecks().AddCheck<SpeechInterruptionHealthCheck>("speech-interruption", tags: ["ready"]);
         services.AddDataProtection();
         services.TryAddSingleton<IFieldEncryptionService, DataProtectionFieldEncryptionService>();
         services.AddPlatformSecretStore(configuration);

@@ -14897,7 +14897,6 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ConnectionId")
-                        .IsUnique()
                         .HasFilter("[connection_id] IS NOT NULL");
 
                     b.HasIndex("OnboardingSessionId")

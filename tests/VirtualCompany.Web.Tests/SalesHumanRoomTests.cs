@@ -117,8 +117,12 @@ public sealed class SalesHumanRoomTests
         cut.FindAll("button").Single(b => b.TextContent == "Admit").Click();
         cut.WaitForAssertion(() => Assert.True(admitted)); Assert.Contains("Remove", cut.Markup);
     }
-    [Fact]
-    public void Host_agent_panel_shows_consent_health_private_evidence_and_honest_billing_state()
+    [Theory]
+    [InlineData("completed", "assisted")]
+    [InlineData("partially_supported", "assisted")]
+    [InlineData("partially_supported", "manual")]
+    [InlineData("partially_supported", "autonomous")]
+    public void Host_agent_panel_shows_consent_health_private_evidence_and_honest_billing_state(string answerStatus, string mode)
     {
         var presentation = PresentationFixture();
         var hostParticipant = Guid.NewGuid();
@@ -132,8 +136,8 @@ public sealed class SalesHumanRoomTests
             8_000, 4_200, 5_600, null, "provider_duration_not_reported", 2_400, 31, 5, 0.0132m,
             "transcription_unavailable", "Speech transcription failed. AI is paused; use typed questions while the human call continues.", 5,
             new(question, "What supports the delivery date?", "The approved implementation plan and signed scope support it.",
-                "completed", "private_host", 2, [new("scope-1", "document", "Signed implementation scope")]), [],
-            new("pending", "Casey Wang", guestParticipant, "assisted", Guid.NewGuid(), guestParticipant,
+                answerStatus, "private_host", 2, [new("scope-1", "document", "Signed implementation scope")]), [],
+            new("pending", "Casey Wang", guestParticipant, mode, Guid.NewGuid(), guestParticipant,
                 "Casey Wang", question, "confirmation_required", true, false, 9, 4, 9, 2, 1,
                 "slide:2:talking-point:1", 1420, null, 7,
                 new(Guid.NewGuid(), "waiting", 2, 1, DateTime.UtcNow.AddMilliseconds(-320),
@@ -158,6 +162,12 @@ public sealed class SalesHumanRoomTests
         Assert.Contains("2 of 2 consented", cut.Markup);
         Assert.Contains("Voice unavailable", cut.Markup);
         Assert.Contains("Signed implementation scope", cut.Markup);
+        if (answerStatus == "partially_supported") Assert.Contains("Partially supported", cut.Markup);
+        if (answerStatus == "partially_supported" && mode == "autonomous")
+            Assert.Contains("autonomous answers include the verified information", cut.Markup);
+        else if (answerStatus == "partially_supported")
+            Assert.Contains("review the answer and its limitations before approving speech", cut.Markup);
+        Assert.Contains("Approve and speak", cut.Markup);
         Assert.Contains("Provider billed", cut.Markup);
         Assert.Contains("Not reported", cut.Markup);
         Assert.Contains("Human call and manual slides stay available", cut.Markup);
@@ -166,8 +176,8 @@ public sealed class SalesHumanRoomTests
         Assert.Contains("Needs host confirmation", cut.Markup);
         Assert.Contains("Approve answer", cut.Markup);
         Assert.Contains("1 of 2 clients acknowledged", cut.Markup);
-        Assert.Contains("Present this slide", cut.Markup);
-        Assert.Contains("Speaks the rest of this slide", cut.Markup);
+        Assert.Contains(mode switch { "assisted" => "Present this slide", "autonomous" => "Present full deck from start", _ => "Present this point" }, cut.Markup);
+        Assert.Contains(mode == "autonomous" ? "answers grounded questions automatically" : "Answers require your approval before speech", cut.Markup);
         Export("host-agent", cut.Markup);
     }
     [Fact]
@@ -245,6 +255,59 @@ public sealed class SalesHumanRoomTests
         Assert.DoesNotContain("Only you can see this", cut.Markup);
         Assert.Empty(cut.FindAll("[aria-label='Private presentation controls']"));
         Export("guest-presentation", cut.Markup);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Full_deck_restart_resets_slide_and_point_before_requesting_fresh_narration(int oldSlide)
+    {
+        var f = PresentationFixture();
+        var stage = f.Host.Presentation.Stage with { SessionStatus = "interrupted", SlideNumber = oldSlide };
+        var host = f.Host with { Presentation = new(stage, f.Host.Presentation.Private with { Stage = stage, TalkingPointIndex = 8 }) };
+        var firstSegment = Guid.NewGuid(); var oldSegment = Guid.NewGuid();
+        var floor = new BrowserRoomFloor("paused", "No one", null, "autonomous", null, null, null, null,
+            "none", false, false, 2, 4, stage.Version, oldSlide, 8, "saved-point-8", 1420, null, 7,
+            new(null, "none", 0, 0, null, null, null));
+        var status = new BrowserRoomAgentStatus(Room, Guid.NewGuid(), "Alex", "ready", "healthy", 1, 2,
+            2, 2, true, null, null, Guid.NewGuid(), oldSegment, "ready", 0, 0, 0, null, "not_reported", 0,
+            0, 0, 0m, null, null, 5, null, [], floor);
+        var calls = new List<string>();
+        using var context = Context(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/presentation/commands/presentation.goto"))
+            {
+                var json = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()).RootElement;
+                Assert.Equal(1, json.GetProperty("slideNumber").GetInt32());
+                Assert.Equal(1, json.GetProperty("talkingPointIndex").GetInt32());
+                calls.Add("goto");
+                stage = stage with { SessionStatus = "presenting", SlideNumber = 1, Version = stage.Version + 1 };
+                host = host with { Presentation = new(stage, host.Presentation.Private with { Stage = stage, TalkingPointIndex = 1 }) };
+                status = status with { NarrationSegmentId = firstSegment, RoomVersion = 6 };
+                return Ok(new SalesPresentationCommandResultViewModel("accepted", null, host.Presentation));
+            }
+            if (path.EndsWith("/agent/narration"))
+            {
+                Assert.Equal(new[] { "goto" }, calls);
+                var json = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()).RootElement;
+                Assert.Equal(firstSegment, json.GetProperty("segmentId").GetGuid());
+                Assert.Equal(6, json.GetProperty("expectedVersion").GetInt64());
+                calls.Add("narration"); return Ok(status);
+            }
+            if (path.EndsWith("/agent")) return Ok(status);
+            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.Contains("/presentation/decks/")) return SlideImage();
+            if (path.EndsWith("/presentation")) return Ok(host);
+            return Ok(f.Room);
+        });
+        var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
+        var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
+        cut.WaitForAssertion(() => Assert.False(cut.Find(".room-join").HasAttribute("disabled")));
+        cut.Find(".room-join").Click();
+        cut.WaitForAssertion(() => Assert.Contains("Present full deck from start", cut.Markup));
+        cut.FindAll("button").Single(b => b.TextContent == "Present full deck from start").Click();
+        cut.WaitForAssertion(() => Assert.Equal(new[] { "goto", "narration" }, calls));
     }
 
     private static (BrowserRoomSnapshot Room, BrowserGuestSnapshot GuestRoom,

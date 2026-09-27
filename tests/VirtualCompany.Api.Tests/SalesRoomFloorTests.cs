@@ -198,6 +198,17 @@ public sealed class SalesRoomFloorTests
         control.EndResponse(response);
         Assert.False(control.CancelResponse());
     }
+    [Theory]
+    [InlineData(false, SalesRoomFloorStates.Agent, true)]
+    [InlineData(true, SalesRoomFloorStates.Agent, false)]
+    [InlineData(false, SalesRoomFloorStates.Host, false)]
+    [InlineData(false, SalesRoomFloorStates.Human, false)]
+    public void Queued_answer_keeps_its_floor_until_audio_actually_needs_preemption(
+        bool interruptedOutput, string floorState, bool defer)
+    {
+        Assert.Equal(defer, SalesRoomAgentWorker.ShouldDeferHumanFloorTransition(
+            interruptedOutput, floorState));
+    }
     [Fact]
     public void Transcript_correlation_completes_when_commit_arrives_first()
     {
@@ -223,6 +234,71 @@ public sealed class SalesRoomFloorTests
         Assert.Equal("What is the price?", text);
         Assert.False(correlation.Complete("item-1", "duplicate", out _, out _));
         Assert.Equal(0, correlation.PendingCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Empty_final_transcript_consumes_candidate_without_creating_an_interruption(bool completionFirst)
+    {
+        var correlation = new SalesRoomTranscriptCorrelation<string>();
+        correlation.Enqueue("noise candidate");
+        if (completionFirst)
+        {
+            Assert.False(correlation.Complete("item-noise", "", out _, out _));
+            Assert.True(correlation.Commit("item-noise", out var context, out var text));
+            Assert.Equal("noise candidate", context);
+            Assert.Equal("", text);
+        }
+        else
+        {
+            Assert.False(correlation.Commit("item-noise", out _, out _));
+            Assert.True(correlation.Complete("item-noise", "", out var context, out var text));
+            Assert.Equal("noise candidate", context);
+            Assert.Equal("", text);
+        }
+        Assert.Equal(0, correlation.PendingCount);
+        Assert.False(correlation.Complete("item-noise", "late speech", out _, out _));
+    }
+
+    [Fact]
+    public void Unconfirmed_candidate_times_out_without_a_provider_completion()
+    {
+        var correlation = new SalesRoomTranscriptCorrelation<string>();
+        var submitted = new DateTime(2026, 9, 23, 8, 0, 0, DateTimeKind.Utc);
+        correlation.Enqueue("candidate", submitted);
+        Assert.False(correlation.HasTimedOut(submitted.AddSeconds(11), TimeSpan.FromSeconds(12)));
+        Assert.True(correlation.HasTimedOut(submitted.AddSeconds(12), TimeSpan.FromSeconds(12)));
+        Assert.False(correlation.Commit("item-1", out _, out _));
+        Assert.True(correlation.HasTimedOut(submitted.AddSeconds(13), TimeSpan.FromSeconds(12)));
+    }
+
+    [Fact]
+    public void Out_of_order_completions_remain_bound_to_their_committed_participants()
+    {
+        var correlation = new SalesRoomTranscriptCorrelation<string>();
+        correlation.Enqueue("participant A");
+        correlation.Enqueue("participant B");
+        Assert.False(correlation.Complete("item-B", "Alex, what is the price?", out _, out _));
+        Assert.False(correlation.Commit("item-A", out _, out _));
+        Assert.True(correlation.Commit("item-B", out var b, out var bText));
+        Assert.Equal("participant B", b);
+        Assert.Equal("Alex, what is the price?", bText);
+        Assert.True(correlation.Complete("item-A", "", out var a, out var aText));
+        Assert.Equal("participant A", a);
+        Assert.Equal("", aText);
+        Assert.Equal(0, correlation.PendingCount);
+    }
+
+    [Fact]
+    public void Confirmed_interruption_fences_speech_that_has_not_started_yet()
+    {
+        var control = new SalesRoomAgentRunControl();
+        var version = control.InterruptionVersion;
+        control.CancelResponse();
+        using var response = control.BeginResponse(CancellationToken.None, version);
+        Assert.True(response.IsCancellationRequested);
+        control.EndResponse(response);
     }
     [Theory]
     [InlineData(41, 42, true)]

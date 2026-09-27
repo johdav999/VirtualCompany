@@ -32,7 +32,8 @@ public sealed class ClamAvCompanyDocumentVirusScanner(ICompanyDocumentStorage st
             using var client = new TcpClient();
             await client.ConnectAsync(_options.Host, _options.Port, timeout.Token);
             await using var network = client.GetStream();
-            await network.WriteAsync(Encoding.ASCII.GetBytes("zINSTREAM\0"), timeout.Token);
+            // Request newline framing to match ReadLineAsync for the response.
+            await network.WriteAsync(Encoding.ASCII.GetBytes("nINSTREAM\n"), timeout.Token);
             await using var input = await storage.OpenReadAsync(request.StorageKey, timeout.Token);
             var buffer = new byte[Math.Clamp(_options.ChunkBytes, 4096, 1024 * 1024)];
             var header = new byte[4];
@@ -50,7 +51,7 @@ public sealed class ClamAvCompanyDocumentVirusScanner(ICompanyDocumentStorage st
 
             using var reader = new StreamReader(network, Encoding.UTF8, false, leaveOpen: true);
             var response = await reader.ReadLineAsync(timeout.Token) ?? string.Empty;
-            if (response.EndsWith("OK", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(response, "stream: OK", StringComparison.Ordinal))
                 return new CompanyDocumentVirusScanResult(CompanyDocumentVirusScanOutcome.Clean, "clamav", null, DateTime.UtcNow);
             if (response.Contains("FOUND", StringComparison.OrdinalIgnoreCase))
                 return CompanyDocumentVirusScanResult.Blocked("clamav", null, "malware_detected", "Malware was detected and the document was blocked.");

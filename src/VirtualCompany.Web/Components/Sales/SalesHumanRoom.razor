@@ -166,7 +166,13 @@
                         <details class="room-agent__evidence" open>
                             <summary>Private evidence</summary>
                             <strong>@answer.Question</strong>
-                            <p>@(answer.Answer ?? "Alex is checking approved sources…")</p>
+                            @if (answer.Status == "partially_supported")
+                            { <p role="status">@(agent.Floor?.ControlMode == "autonomous"
+                                ? "Partially supported — autonomous answers include the verified information and its limitations."
+                                : "Partially supported — review the answer and its limitations before approving speech.")</p> }
+                            else if (answer.Status == "failed")
+                            { <p role="status">Answer generation failed. Retry the question; this does not mean the sources are missing.</p> }
+                            <p>@(answer.Answer ?? (answer.Status == "failed" ? "Please retry the question." : "Alex is checking approved sources…"))</p>
                             @foreach (var source in answer.Evidence)
                             { <div class="room-agent__source"><span>@source.SourceTitle</span><small>@SourceLabel(source.SourceType)</small></div> }
                             <button type="button" class="room-primary room-agent__wide"
@@ -526,15 +532,15 @@
     }
     private void PresentationImageFailed()
     { pendingPresentationAck = null; presentationError = "The shared slide image could not be displayed."; }
-    private async Task PresentationCommand(string toolName, int? slideNumber = null)
+    private async Task PresentationCommand(string toolName, int? slideNumber = null, int? talkingPoint = null)
     {
         if (HostCompanyId is not Guid company || presentationStage is null || presentationPrivate is null || presentationBusy) return;
         presentationBusy = true; presentationError = null;
         try
         {
             var command = new SalesPresentationCommandViewModel(Guid.NewGuid(), presentationStage.Sequence + 1,
-                presentationStage.Version, slideNumber, presentationPrivate.TalkingPointIndex,
-                presentationPrivate.ResumeMarker, "human", presentationStage.DeckId,
+                presentationStage.Version, slideNumber, talkingPoint ?? presentationPrivate.TalkingPointIndex,
+                talkingPoint.HasValue ? null : presentationPrivate.ResumeMarker, "human", presentationStage.DeckId,
                 hostPresentationParticipantId, presentationStage.DeckVersion, hostPresentationGeneration);
             var result = await Hosts.PresentationCommandAsync(company, RoomId, toolName, command, lifetime.Token);
             presentationPrivate = result.Snapshot.Private;
@@ -582,9 +588,9 @@
     private static string ModeLabel(string mode) => char.ToUpperInvariant(mode[0]) + mode[1..];
     private static string ModeBehavior(string mode) => mode switch
     {
-        "assisted" => "Speaks the rest of this slide, then returns control to you.",
-        "autonomous" => "Continues through the remaining deck until interrupted.",
-        _ => "Speaks one talking point, then returns control to you."
+        "assisted" => "Speaks the rest of this slide. Answers require your approval before speech.",
+        "autonomous" => "Continues through the deck and answers grounded questions automatically, including any limitations.",
+        _ => "Speaks one talking point. Answers require your approval before speech."
     };
     private string NarrationActionLabel => agent?.Floor?.ControlMode switch
     {
@@ -604,31 +610,36 @@
     });
     private async Task AgentCommand(Func<Guid, BrowserRoomAgentStatus, CancellationToken, Task<BrowserRoomAgentStatus>> action)
     {
-        if (HostCompanyId is not Guid company || agent is null || agentBusy) return;
+        if (HostCompanyId is not Guid company || agent is null || agentBusy || !await commandGate.WaitAsync(0)) return;
         agentBusy = true; agentError = null;
         try { agent = await action(company, agent, lifetime.Token); }
         catch (BrowserRoomRequestException ex) { agentError = ex.Message; }
-        finally { agentBusy = false; await Refresh(); await InvokeAsync(StateHasChanged); }
+        finally
+        {
+            try { await Refresh(); }
+            finally { agentBusy = false; commandGate.Release(); await InvokeAsync(StateHasChanged); }
+        }
     }
     private Task StartAgent() => AgentCommand((company, state, ct) => Hosts.StartAgentAsync(company, RoomId, state.RoomVersion, ct));
     private Task StopAgent() => AgentCommand((company, state, ct) => Hosts.StopAgentAsync(company, RoomId, state.RoomVersion, ct));
-    private async Task Narrate()
+    private Task Narrate() => AgentCommand(async (company, state, ct) =>
     {
-        if (agent?.Floor?.ControlMode == "autonomous" && presentationStage is { SlideNumber: > 1 })
+        if (state.Floor?.ControlMode == "autonomous")
         {
-            await PresentationCommand("presentation.goto", 1);
-            if (presentationError is not null) return;
-            await Refresh();
+            // Always restart at the first point, including when paused partway through slide 1.
+            await ReloadPresentation();
+            await PresentationCommand("presentation.goto", 1, 1);
+            if (presentationError is not null) return state;
+            state = await Hosts.AgentAsync(company, RoomId, ct);
         }
-        if (agent is not { NarrationRevisionId: Guid revisionId, NarrationSegmentId: Guid segmentId })
+        if (state is not { NarrationRevisionId: Guid revisionId, NarrationSegmentId: Guid segmentId })
         {
             agentError = "The current presentation has no approved narration for this slide. Prepare and approve its audio in the presentation preset library.";
-            await InvokeAsync(StateHasChanged);
-            return;
+            return state;
         }
-        await AgentCommand((company, state, ct) => Hosts.InvokeNarrationAsync(company, RoomId, state.RoomVersion,
-            revisionId, segmentId, ct));
-    }    private async Task AskAgent()
+        return await Hosts.InvokeNarrationAsync(company, RoomId, state.RoomVersion, revisionId, segmentId, ct);
+    });
+    private async Task AskAgent()
     {
         var question = agentQuestion?.Trim();
         if (string.IsNullOrWhiteSpace(question)) return;
@@ -671,7 +682,7 @@
         _ => state.Replace('_', ' ')
     };
     private bool CanSpeakAnswer(BrowserRoomAgentAnswer answer) => !agentBusy && agent?.State is "ready" or "paused" &&
-        answer.Status == "completed" && answer.Evidence.Count > 0;
+        answer.Status is "completed" or "partially_supported" && answer.Evidence.Count > 0;
     private static string SourceLabel(string value) => value.Replace('_', ' ');
     private static string FormatDuration(long milliseconds) => TimeSpan.FromMilliseconds(Math.Max(0, milliseconds)).ToString(@"mm\:ss");
     private Task Decide(Guid participant, string decision) => Run(async () =>
@@ -736,8 +747,5 @@
         // Do not await the polling loop on the circuit renderer; cancellation ends its bounded request.
     }
 }
-
-
-
 
 

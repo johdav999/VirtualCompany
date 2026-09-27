@@ -329,7 +329,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 ["input"] = new JsonObject
                 {
                     ["transcription"] = new JsonObject { ["model"] = options.TranscriptionModel },
-                    ["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = false, ["interrupt_response"] = true }
+                    ["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = false, ["interrupt_response"] = false }
                 },
                 ["output"] = new JsonObject { ["voice"] = options.Voice }
             },
@@ -354,7 +354,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
         if (request.ManualInputCommit)
             input["turn_detection"] = null;
         else
-            input["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = true, ["interrupt_response"] = true };
+            input["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = true, ["interrupt_response"] = false };
         return new JsonObject
         {
             ["type"] = "realtime",

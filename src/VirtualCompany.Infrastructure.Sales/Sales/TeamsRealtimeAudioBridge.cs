@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
@@ -16,16 +15,16 @@ internal sealed class TeamsRealtimeAudioBridge(
     IRealtimeAgentPcmSessionGateway pcmGateway,
     IRealtimeAgentSessionGateway eventGateway,
     IServiceScopeFactory scopes,
+    ISpeechFrameClassifierFactory speechClassifiers,
     ILogger<TeamsRealtimeAudioBridge> logger) : ITeamsRealtimeAudioBridge
 {
-    private readonly ConcurrentDictionary<string, byte> _cancelledSpeechEvents = new(StringComparer.Ordinal);
-
     public async Task RunAsync(TeamsMeetingMediaBinding binding, string realtimeProviderSessionId, CancellationToken ct)
     {
         var userId = await LoadIdentityAsync(binding, ct);
+        using var response = new TeamsBridgeResponseState();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var input = PumpParticipantAudioAsync(binding, realtimeProviderSessionId, linked.Token);
-        var output = PumpAgentOutputAsync(binding, userId, realtimeProviderSessionId, linked.Token);
+        var input = PumpParticipantAudioAsync(binding, userId, realtimeProviderSessionId, response, linked.Token);
+        var output = PumpAgentOutputAsync(binding, userId, realtimeProviderSessionId, response, linked.Token);
         try
         {
             await Task.WhenAny(input, output);
@@ -43,27 +42,82 @@ internal sealed class TeamsRealtimeAudioBridge(
         }
         finally
         {
-            _cancelledSpeechEvents.Clear();
             await teamsMedia.TerminateAsync(binding.VoiceSessionId, "realtime_bridge_stopped", CancellationToken.None);
             await pcmGateway.TerminatePcmSessionAsync(realtimeProviderSessionId, CancellationToken.None);
         }
     }
 
-    private async Task PumpParticipantAudioAsync(TeamsMeetingMediaBinding binding, string providerSessionId, CancellationToken ct)
+    private async Task PumpParticipantAudioAsync(TeamsMeetingMediaBinding binding, Guid userId,
+        string providerSessionId, TeamsBridgeResponseState response, CancellationToken ct)
     {
-        await foreach (var frame in teamsMedia.ReceiveAudioAsync(binding.VoiceSessionId, ct))
+        var tracks = new Dictionary<string, TeamsSpeechTrack>(StringComparer.Ordinal);
+        try
         {
-            using (var scope = scopes.CreateScope())
-                await scope.ServiceProvider.GetRequiredService<ITeamsMeetingMediaBindingAuthorizer>()
-                    .AuthorizeAsync(binding, ct);
-            // Teams is PCM16/16 kHz; the shared Realtime WebSocket PCM contract is PCM16/24 kHz.
-            var pcm24 = Pcm16SampleRateConverter.From16KhzTo24Khz(frame.Data.Span);
-            await pcmGateway.SendInputAudioAsync(providerSessionId, pcm24, ct);
+            await foreach (var frame in teamsMedia.ReceiveAudioAsync(binding.VoiceSessionId, ct))
+            {
+                using (var scope = scopes.CreateScope())
+                    await scope.ServiceProvider.GetRequiredService<ITeamsMeetingMediaBindingAuthorizer>()
+                        .AuthorizeAsync(binding, ct);
+                if (frame.Format != TeamsAudioFormat.Pcm16KMono20Ms || frame.Data.Length != 640)
+                    throw new InvalidDataException("Teams speech classification requires 20 ms mono PCM16 at 16 kHz.");
+                var participant = string.IsNullOrWhiteSpace(frame.ParticipantId) ? "mixed" : frame.ParticipantId;
+                if (!tracks.TryGetValue(participant, out var track))
+                {
+                    if (tracks.Count >= 32) throw new InvalidDataException("Teams speech track limit exceeded.");
+                    tracks[participant] = track = new TeamsSpeechTrack(speechClassifiers.Create());
+                }
+                if (track.LastTimestampUtc is { } previous && frame.TimestampUtc - previous > TimeSpan.FromMilliseconds(100))
+                    track.Onset.Reset();
+                track.LastTimestampUtc = frame.TimestampUtc;
+                // Teams is PCM16/16 kHz; the shared classifier and Realtime PCM contract use 24 kHz.
+                var pcm24 = Pcm16SampleRateConverter.From16KhzTo24Khz(frame.Data.Span);
+                var samples = new short[pcm24.Length / 2];
+                Buffer.BlockCopy(pcm24, 0, samples, 0, pcm24.Length);
+                var speech = track.Classifier.IsSpeech(samples, 24_000);
+                if (speech) track.QuietMilliseconds = 0;
+                else if ((track.QuietMilliseconds += 20) >= 600) track.Onset.Reset();
+                if (track.Onset.Observe(speech, 20))
+                {
+                    var firstInterruption = false;
+                    await response.PlaybackGate.WaitAsync(ct);
+                    try
+                    {
+                        if (response.TryInterrupt(out var providerActive))
+                        {
+                            firstInterruption = true;
+                            if (providerActive)
+                                await pcmGateway.CancelPcmResponseAsync(providerSessionId, null, ct);
+                            await teamsMedia.CancelResponseAsync(binding.VoiceSessionId, ct);
+                        }
+                    }
+                    finally { response.PlaybackGate.Release(); }
+                    if (firstInterruption)
+                    {
+                        using var scope = scopes.CreateScope();
+                        await scope.ServiceProvider.GetRequiredService<ISalesMeetingRealtimeService>()
+                            .ConfirmSpeechInterruptionAsync(binding.CompanyId, userId,
+                                binding.MeetingSessionId, binding.VoiceSessionId, $"local-{frame.Sequence}", ct);
+                    }
+                }
+                await pcmGateway.SendInputAudioAsync(providerSessionId, pcm24, ct);
+            }
+        }
+        finally
+        {
+            foreach (var track in tracks.Values) track.Classifier.Dispose();
         }
     }
 
+    private sealed class TeamsSpeechTrack(ISpeechFrameClassifier classifier)
+    {
+        public ISpeechFrameClassifier Classifier { get; } = classifier;
+        public SpeechOnsetPolicy Onset { get; } = new(240);
+        public DateTime? LastTimestampUtc { get; set; }
+        public int QuietMilliseconds { get; set; }
+    }
+
     private async Task PumpAgentOutputAsync(TeamsMeetingMediaBinding binding, Guid userId,
-        string providerSessionId, CancellationToken ct)
+        string providerSessionId, TeamsBridgeResponseState response, CancellationToken ct)
     {
         var packetizer = new TeamsPcmPacketizer();
         long audioSequence = 0;
@@ -73,27 +127,33 @@ internal sealed class TeamsRealtimeAudioBridge(
             {
                 foreach (var pcm16 in packetizer.Append24Khz(output.Audio.Span))
                 {
-                    await teamsMedia.SendAudioAsync(new TeamsAudioFrame(binding.VoiceSessionId,
-                        Interlocked.Increment(ref audioSequence), output.TimestampUtc,
-                        TeamsAudioFormat.Pcm16KMono20Ms, pcm16, false), ct);
+                    await response.PlaybackGate.WaitAsync(ct);
+                    try
+                    {
+                        if (!response.MaySendAudio()) { packetizer.Clear(); break; }
+                        await teamsMedia.SendAudioAsync(new TeamsAudioFrame(binding.VoiceSessionId,
+                            Interlocked.Increment(ref audioSequence), output.TimestampUtc,
+                            TeamsAudioFormat.Pcm16KMono20Ms, pcm16, false), ct);
+                    }
+                    finally { response.PlaybackGate.Release(); }
                 }
                 continue;
             }
             if (string.IsNullOrWhiteSpace(output.ProviderEventId) || string.IsNullOrWhiteSpace(output.ProviderEventJson))
                 continue;
 
+            using (var eventDocument = JsonDocument.Parse(output.ProviderEventJson))
+            {
+                var kind = eventDocument.RootElement.TryGetProperty("type", out var type) ? type.GetString() : null;
+                if (kind == "response.created") { packetizer.Clear(); response.ResponseCreated(); }
+                else if (kind == "response.done") response.ResponseDone();
+            }
+
             var envelope = new RealtimeAgentProviderEvent(providerSessionId, output.ProviderEventId,
                 output.Sequence, output.ProviderEventJson);
             RealtimeAgentEvent normalized;
             try { normalized = await eventGateway.NormalizeEventAsync(envelope, ct); }
             catch (RealtimeAgentEventException exception) when (exception.Code == "unsupported_event") { continue; }
-
-            if (normalized.Type == RealtimeAgentEventTypes.ParticipantSpeechStarted &&
-                _cancelledSpeechEvents.TryAdd(output.ProviderEventId, 0))
-            {
-                await pcmGateway.CancelPcmResponseAsync(providerSessionId, normalized.ResponseId, ct);
-                await teamsMedia.CancelResponseAsync(binding.VoiceSessionId, ct);
-            }
 
             SalesMeetingRealtimeEventResult? processed;
             using (var scope = scopes.CreateScope())
@@ -143,6 +203,54 @@ internal sealed class TeamsRealtimeAudioBridge(
     }
 }
 
+internal sealed class TeamsBridgeResponseState : IDisposable
+{
+    private readonly object gate = new();
+    private long generation;
+    private long interruptedGeneration = -1;
+    private bool providerActive;
+    private bool providerCompleted;
+
+    // Held across an output send or playback cancellation, so a late packet
+    // cannot be queued after the cancellation has acknowledged.
+    public SemaphoreSlim PlaybackGate { get; } = new(1, 1);
+
+    public void ResponseCreated()
+    {
+        lock (gate) { generation++; providerActive = true; providerCompleted = false; }
+    }
+
+    public void ResponseDone()
+    {
+        lock (gate) { providerActive = false; providerCompleted = true; }
+    }
+
+    public bool MaySendAudio()
+    {
+        lock (gate)
+        {
+            if (interruptedGeneration == generation) return false;
+            if (!providerCompleted) providerActive = true;
+            return true;
+        }
+    }
+
+    public bool TryInterrupt(out bool cancelProvider)
+    {
+        lock (gate)
+        {
+            cancelProvider = false;
+            if (interruptedGeneration == generation) return false;
+            interruptedGeneration = generation;
+            cancelProvider = providerActive;
+            providerActive = false;
+            return true;
+        }
+    }
+
+    public void Dispose() => PlaybackGate.Dispose();
+}
+
 internal static class Pcm16SampleRateConverter
 {
     public static byte[] From16KhzTo24Khz(ReadOnlySpan<byte> source)
@@ -189,6 +297,8 @@ internal static class Pcm16SampleRateConverter
 internal sealed class TeamsPcmPacketizer
 {
     private readonly List<byte> _pending = [];
+
+    public void Clear() => _pending.Clear();
 
     public IReadOnlyList<ReadOnlyMemory<byte>> Append24Khz(ReadOnlySpan<byte> source)
     {
