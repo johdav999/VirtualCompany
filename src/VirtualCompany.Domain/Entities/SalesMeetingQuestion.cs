@@ -4,6 +4,7 @@ namespace VirtualCompany.Domain.Entities;
 
 public sealed class SalesMeetingQuestion : ICompanyOwnedEntity
 {
+    public const string SafeNoEvidenceLimitation = "I couldn't verify that detail from the approved meeting sources. I've marked it for follow-up.";
     private SalesMeetingQuestion() { }
     public SalesMeetingQuestion(Guid id, Guid companyId, Guid sessionId, Guid clientQuestionId, long sequence,
         Guid agentId, string questionText, SalesMeetingSpeakerType askerType, string? askerLabel,
@@ -81,6 +82,16 @@ public sealed class SalesMeetingQuestion : ICompanyOwnedEntity
         SalesMeetingTranscriptSegment.EnsureIds(actorUserId); Visibility = SalesMeetingAnswerVisibility.ApprovedForStage;
         ReviewState = SalesMeetingReviewState.Reviewed; StageApprovedByUserId = actorUserId;
         StageApprovedUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); Touch(nowUtc);
+    }
+    public bool IsSafeNoEvidenceLimitation => Status == SalesMeetingQuestionStatus.Unverified &&
+        AnswerText == SafeNoEvidenceLimitation && Evidence.Count == 0 && AnsweredUtc.HasValue && FailureCode is null;
+    public void ApproveSafeLimitationForStage(Guid actorUserId, long expectedVersion, DateTime nowUtc)
+    {
+        if (expectedVersion != ConcurrencyVersion || !IsSafeNoEvidenceLimitation)
+            throw new InvalidOperationException("Only the exact no-evidence limitation can use this release policy.");
+        SalesMeetingTranscriptSegment.EnsureIds(actorUserId);
+        Visibility = SalesMeetingAnswerVisibility.ApprovedForStage; ReviewState = SalesMeetingReviewState.Reviewed;
+        StageApprovedByUserId = actorUserId; StageApprovedUtc = SalesMeetingTranscriptSegment.Utc(nowUtc); Touch(nowUtc);
     }
     public void ExpireBrowserContent(DateTime nowUtc)
     {

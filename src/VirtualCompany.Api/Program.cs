@@ -51,7 +51,8 @@ if (!string.IsNullOrWhiteSpace(monitoringConnection))
         "VirtualCompany.Teams.CallControl",
         "VirtualCompany.Sales.TeamsMedia",
         "VirtualCompany.Sales.TeamsMediaHost",
-        SalesRoomBenchmarkTelemetry.MeterName));
+        SalesRoomBenchmarkTelemetry.MeterName,
+        VirtualCompany.Infrastructure.Companies.RealtimeConversationTelemetry.MeterName));
 }
 
 var dataProtectionKeyRing = DataProtectionKeyRingConfiguration.Configure(

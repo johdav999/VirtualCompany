@@ -101,6 +101,13 @@
                         <div><span class="room-eyebrow">Agent</span><h3 id="room-agent-title">@((agent?.AgentName ?? "Alex") + " · Sales agent")</h3><p>@AgentStateLabel</p></div>
                         <span class="room-agent__state room-agent__state--@(agent?.State ?? "not-started")">@AgentStateLabel</span>
                     </div>
+                    @if (agent?.Conversation is { } conversation)
+                    {
+                        <div class="room-conversation" role="status" aria-live="polite">
+                            <strong>@ConversationLabel(conversation)</strong>
+                            <p>@ConversationDetail(conversation)</p>
+                        </div>
+                    }
                     @if (agent?.Floor is { } floor)
                     {
                         <div class="room-floor" role="status" aria-live="polite">
@@ -118,7 +125,7 @@
                                 <button type="button" class="room-primary" disabled="@(!CanResumeFloor)" @onclick="ResumeFloor">Resume from current point</button>
                                 <button type="button" class="room-danger" disabled="@(!CanTakeOver)" @onclick="TakeOver">Take over</button>
                             </div>
-                            <small>@ModeBehavior(floor.ControlMode)</small>
+                            <small>@ModeBehavior(floor.ControlMode, agent.Conversation)</small>
                         </div>
                         @if (floor.PendingTurnId.HasValue)
                         {
@@ -153,9 +160,9 @@
                         <p class="room-alert" role="status">This presentation has no approved narration for the current slide. Prepare and approve its audio in the presentation preset library.</p>
                     }
                     <button type="button" class="room-danger room-agent__wide" disabled="@(!CanStopAgent)" @onclick="StopAgent">Stop AI</button>
-                    @if (agent?.State == "paused" || agent?.LastErrorSummary is not null)
+                    @if (agent?.State == "paused" || agent?.LastErrorCode == "conversation_disabled" || agent?.Conversation?.Phase is "expired" or "unavailable")
                     {
-                        <div class="room-agent__paused" role="status"><strong>AI paused</strong><p>@(agent.LastErrorSummary ?? "Review consent and start the agent when ready.")</p><small>Human call and manual slides stay available.</small></div>
+                        <div class="room-agent__paused" role="status"><strong>@(agent.Conversation?.Phase == "expired" ? "Meeting ended" : agent.Conversation?.Phase == "unavailable" ? "Realtime conversation unavailable" : agent.LastErrorCode == "conversation_disabled" ? "Realtime conversation turned off" : "AI paused")</strong><p>@(agent.Conversation?.Reason ?? agent.LastErrorSummary ?? "Review consent and start the agent when ready.")</p><small>Human call and manual slides stay available.</small></div>
                     }
                     <label class="room-field" for="room-agent-question">Ask a typed question
                         <textarea id="room-agent-question" rows="3" maxlength="2000" @bind="agentQuestion" placeholder="Type your customer question…"></textarea>
@@ -175,10 +182,13 @@
                             <p>@(answer.Answer ?? (answer.Status == "failed" ? "Please retry the question." : "Alex is checking approved sources…"))</p>
                             @foreach (var source in answer.Evidence)
                             { <div class="room-agent__source"><span>@source.SourceTitle</span><small>@SourceLabel(source.SourceType)</small></div> }
-                            <button type="button" class="room-primary room-agent__wide"
-                                disabled="@(!CanSpeakAnswer(answer))" @onclick="() => SpeakAnswer(answer)">
-                                @(answer.Visibility == "approved_for_stage" ? "Speak approved answer" : "Approve and speak")
-                            </button>
+                            @if (ShowSpeakAnswer)
+                            {
+                                <button type="button" class="room-primary room-agent__wide"
+                                    disabled="@(!CanSpeakAnswer(answer))" @onclick="() => SpeakAnswer(answer)">
+                                    @(answer.Visibility == "approved_for_stage" ? "Speak approved answer" : "Approve and speak")
+                                </button>
+                            }
                         </details>
                     }
                     @if (agent is not null)
@@ -293,8 +303,8 @@
     private SalesPresentationPrivateSnapshotViewModel? presentationPrivate;
     private SalesBrowserPresentationReadinessViewModel? readiness;
     private BrowserRoomAgentStatus? agent;
-    private string? presentationImage, presentationImageKey, presentationError, agentError, agentQuestion, guestAgentQuestion;
-    private bool presentationBusy, presentationLoading, agentBusy;
+    private string? presentationImage, presentationImageKey, presentationError, agentError, agentQuestion, guestAgentQuestion, finishedReason;
+    private bool presentationBusy, presentationLoading, agentBusy, agentErrorFromPoll;
     private string? credential, secret, error, mediaError, invitationUrl;
     private string displayName = "";
     private bool initialized, busy, joined, finished, canJoin, confirmEnd, disposed;
@@ -334,7 +344,7 @@
     public sealed record Entry(string Secret, string Credential);
     private bool ConnectionAllowed => host?.ConnectionAllowed ?? guest?.ConnectionAllowed ?? true;
     private DateTime? OpensUtc => host?.OpensUtc ?? guest?.OpensUtc;
-    private string StatusText => !finished && host?.State is "provisioning" or "reconciliation_required" ? "The host room is being prepared. Admission is unavailable until preparation is confirmed." : finished ? "You have left, or the meeting has ended." : !ConnectionAllowed && OpensUtc is DateTime opens && opens > DateTime.UtcNow ? $"This meeting opens at {opens.ToLocalTime():HH:mm} local time, 15 minutes before the scheduled start." : !ConnectionAllowed ? "This meeting is not available to join." : guest?.AdmissionState == "lobby" ? "Waiting for the host to admit you. Nothing is published." : media.Status switch
+    private string StatusText => !finished && host?.State is "provisioning" or "reconciliation_required" ? "The host room is being prepared. Admission is unavailable until preparation is confirmed." : finished ? finishedReason ?? "You have left, or the meeting has ended." : !ConnectionAllowed && OpensUtc is DateTime opens && opens > DateTime.UtcNow ? $"This meeting opens at {opens.ToLocalTime():HH:mm} local time, 15 minutes before the scheduled start." : !ConnectionAllowed ? "This meeting is not available to join." : guest?.AdmissionState == "lobby" ? "Waiting for the host to admit you. Nothing is published." : media.Status switch
     {
         "connecting" => "Connecting your audio and video…", "connected" => "Connected", "reconnecting" => "The media connection was interrupted. Reconnecting…",
         "disconnected" => "Media disconnected. Reconnect to check admission and restore your place.", "provider_unavailable" => "The audio/video service could not be reached. Check your network and retry.",
@@ -386,15 +396,22 @@
             if (HostCompanyId is Guid company)
             {
                 host = await Hosts.StatusAsync(company, RoomId, deadline.Token);
-                try { agent = await Hosts.AgentAsync(company, RoomId, deadline.Token); }
-                catch (BrowserRoomRequestException ex) { agentError = ex.Message; }
-                if (host.State is "ending" or "ended" || host.ExpiresUtc <= DateTime.UtcNow) { await Finish(); return; }
+                try
+                {
+                    agent = await Hosts.AgentAsync(company, RoomId, deadline.Token);
+                    if (agentErrorFromPoll) { agentError = null; agentErrorFromPoll = false; }
+                }
+                catch (BrowserRoomRequestException ex) { agentError = ex.Message; agentErrorFromPoll = true; }
+                if (host.State is "ending" or "ended" || host.ExpiresUtc <= DateTime.UtcNow)
+                { finishedReason = "This meeting has ended. Book a new meeting to continue."; await Finish(); return; }
                 canJoin = host.ConnectionAllowed && host.State is ("lobby" or "live");
                 await module.InvokeVoidAsync("heartbeat", (object)host.Participants.Where(x => x.State == "admitted").Select(x => new BrowserRoomAudience(x.Id, x.DisplayName, x.MediaIdentity)).ToArray());
             }
             else if (credential is not null)
             {
                 guest = await Guests.StatusAsync(RoomId, credential, deadline.Token);
+                if (guest.RoomState is "ending" or "ended" || guest.ExpiresUtc <= DateTime.UtcNow)
+                { finishedReason = "This meeting has ended. Ask the host for a new invitation."; await Finish(); return; }
                 canJoin = guest.ConnectionAllowed && guest.AdmissionState == "admitted";
                 await module.InvokeVoidAsync("heartbeat", guest.Participants);
             }
@@ -562,6 +579,7 @@
                 hostPresentationParticipantId, hostPresentationGeneration, lifetime.Token);
             await ReloadPresentation();
             await Refresh();
+            if (agent?.LastErrorCode is null) { agentError = null; agentErrorFromPoll = false; }
         }
         catch (Exception ex) when (RecoverablePresentation(ex))
         { presentationError = "The presentation mode could not be changed. Review the current state and retry."; }
@@ -586,11 +604,45 @@
         await RenderPresentation(current.Presentation.Stage);
     }
     private static string ModeLabel(string mode) => char.ToUpperInvariant(mode[0]) + mode[1..];
-    private static string ModeBehavior(string mode) => mode switch
+    private static string ModeBehavior(string mode, BrowserRoomConversationStatus? conversation) => mode switch
     {
         "assisted" => "Speaks the rest of this slide. Answers require your approval before speech.",
-        "autonomous" => "Continues through the deck and answers grounded questions automatically, including any limitations.",
+        "autonomous" when conversation?.Availability == "available" => "Alex can answer grounded questions, ask a follow-up and resume after a clear reply without a routine approval click. You can take over at any time.",
+        "autonomous" => "Deck control is autonomous, but Realtime conversation is not available. Use the approved-answer and manual recovery controls.",
         _ => "Speaks one talking point. Answers require your approval before speech."
+    };
+    private bool ShowSpeakAnswer => agent?.Floor?.ControlMode != "autonomous" ||
+        agent?.Conversation?.Availability != "available" || agent?.State == "paused" ||
+        agent?.Conversation?.Phase == "awaiting_recovery";
+    private string ConversationLabel(BrowserRoomConversationStatus status) => status.Phase switch
+    {
+        "listening_for_reply" => media.Microphone ? "Listening for your reply" : "Waiting for your reply — microphone muted",
+        "checking_sources" => "Checking approved sources",
+        "answering" => "Answering",
+        "awaiting_approval" => "Awaiting host approval",
+        "awaiting_recovery" => "Answer needs host recovery",
+        "resuming" => "Resuming presentation — queued",
+        "presenting" => "Presenting",
+        "paused" => "Conversation paused",
+        "expired" => "Meeting ended",
+        "unavailable" => "Realtime conversation unavailable",
+        "legacy" => "Approved-answer mode",
+        "not_started" => "Ready to start",
+        "connecting" => "Connecting agent voice",
+        _ => "Ready for a question"
+    };
+    private static string ConversationDetail(BrowserRoomConversationStatus status) => status.Phase switch
+    {
+        "listening_for_reply" => "Alex has finished the follow-up. A clear reply can continue the conversation; silence will not resume the presentation.",
+        "checking_sources" => "Alex is verifying the question against approved meeting sources.",
+        "answering" => "A released answer is being prepared or spoken. Wait for the voice track before continuing.",
+        "awaiting_approval" => "Review the private evidence below and approve speech; Alex will not speak this answer automatically in this mode.",
+        "awaiting_recovery" => status.Reason ?? "Review the answer and use the host recovery control.",
+        "resuming" => "The server accepted the continuation. Waiting for approved narration to begin; the slide has not been confirmed as played yet.",
+        "presenting" => "Approved presentation audio is in progress.",
+        "paused" or "expired" or "unavailable" or "legacy" => status.Reason ?? "Human calling and manual slides remain available.",
+        "not_started" or "connecting" => status.Reason ?? "Wait for the agent to be ready.",
+        _ => "Alex is ready when the microphone is on and all participants have consented."
     };
     private string NarrationActionLabel => agent?.Floor?.ControlMode switch
     {
@@ -611,9 +663,9 @@
     private async Task AgentCommand(Func<Guid, BrowserRoomAgentStatus, CancellationToken, Task<BrowserRoomAgentStatus>> action)
     {
         if (HostCompanyId is not Guid company || agent is null || agentBusy || !await commandGate.WaitAsync(0)) return;
-        agentBusy = true; agentError = null;
+        agentBusy = true; agentError = null; agentErrorFromPoll = false;
         try { agent = await action(company, agent, lifetime.Token); }
-        catch (BrowserRoomRequestException ex) { agentError = ex.Message; }
+        catch (BrowserRoomRequestException ex) { agentError = ex.Message; agentErrorFromPoll = false; }
         finally
         {
             try { await Refresh(); }
@@ -714,7 +766,7 @@
         var entry = await module.InvokeAsync<Entry>("entry", RoomId.ToString("D"));
         if (string.IsNullOrEmpty(entry.Secret)) return;
         secret = entry.Secret;
-        if (credential is null) { finished = false; joined = false; guest = null; error = null; canJoin = true; }
+        if (credential is null) { finished = false; finishedReason = null; joined = false; guest = null; error = null; canJoin = true; }
         await InvokeAsync(StateHasChanged);
     }
     [JSInvokable] public Task MediaChanged(RoomMediaState value)

@@ -177,8 +177,114 @@ public sealed class SalesHumanRoomTests
         Assert.Contains("Approve answer", cut.Markup);
         Assert.Contains("1 of 2 clients acknowledged", cut.Markup);
         Assert.Contains(mode switch { "assisted" => "Present this slide", "autonomous" => "Present full deck from start", _ => "Present this point" }, cut.Markup);
-        Assert.Contains(mode == "autonomous" ? "answers grounded questions automatically" : "Answers require your approval before speech", cut.Markup);
+        Assert.Contains(mode == "autonomous" ? "Realtime conversation is not available" : "Answers require your approval before speech", cut.Markup);
         Export("host-agent", cut.Markup);
+    }
+
+    [Theory]
+    [InlineData("listening_for_reply", "Waiting for your reply — microphone muted")]
+    [InlineData("checking_sources", "Checking approved sources")]
+    [InlineData("answering", "Answering")]
+    [InlineData("awaiting_approval", "Awaiting host approval")]
+    [InlineData("awaiting_recovery", "Answer needs host recovery")]
+    [InlineData("resuming", "Resuming presentation — queued")]
+    [InlineData("paused", "Conversation paused")]
+    [InlineData("unavailable", "Realtime conversation unavailable")]
+    [InlineData("legacy", "Approved-answer mode")]
+    public void Host_sees_authoritative_conversation_phase_without_exposing_it_to_guests(string phase, string label)
+    {
+        var fixture = PresentationFixture();
+        var floor = new BrowserRoomFloor("host", "Organizer", fixture.Room.Participants[0].Id,
+            "autonomous", null, null, null, null, "none", false, false, 2, 4, 9, 2, 1, null, 0,
+            null, 7, new(null, "none", 0, 0, null, null, null));
+        var availability = phase switch
+        { "unavailable" => "configuration", "legacy" => "off", _ => "available" };
+        var status = new BrowserRoomAgentStatus(Room, Guid.NewGuid(), "Alex", "ready", "healthy", 3, 2,
+            1, 1, true, DateTime.UtcNow, DateTime.UtcNow.AddMinutes(2), null, null, "ready",
+            0, 0, 0, null, "not_reported", 0, 0, 0, 0, null, null, 5, null, [], floor,
+            new(phase, availability, phase == "unavailable" ? "Realtime voice is not configured." : null));
+        using var context = Context(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/agent")) return Ok(status);
+            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.Contains("/presentation/decks/")) return SlideImage();
+            if (path.EndsWith("/presentation")) return Ok(fixture.Host);
+            return Ok(fixture.Room);
+        });
+        var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
+        var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
+        cut.WaitForAssertion(() => Assert.Contains(label, cut.Find(".room-conversation strong").TextContent));
+        Assert.Equal(phase == "legacy" ? "Approved-answer mode" : label, cut.Find(".room-conversation strong").TextContent);
+        Assert.Contains("Only you can see this", cut.Markup);
+        Assert.True(cut.Find(".room-agent__wide.room-primary").HasAttribute("disabled"));
+        Assert.Contains("Unmute", cut.Markup);
+        Assert.Contains("Enable sound", cut.Markup);
+        Assert.Contains("Microphone", cut.Markup);
+        Assert.Contains("Manual", cut.Markup);
+    }
+
+    [Fact]
+    public async Task Host_client_reads_conversation_status_without_leaking_it_through_guest_contract()
+    {
+        var status = new BrowserRoomAgentStatus(Room, Guid.NewGuid(), "Alex", "ready", "healthy", 1, 1,
+            1, 1, true, null, null, null, null, "not_prepared", 0, 0, 0, null,
+            "not_reported", 0, 0, 0, 0, null, null, 1, null, [],
+            Conversation: new("listening_for_reply", "available", null));
+        using var http = new HttpClient(new Handler(request =>
+        {
+            Assert.Equal(Company.ToString(), Assert.Single(request.Headers.GetValues("X-Company-Id")));
+            Assert.EndsWith("/agent", request.RequestUri!.AbsolutePath);
+            return Ok(status);
+        })) { BaseAddress = new("https://api.example.test/") };
+        var client = new SalesBrowserRoomApiClient(new CompanyApiTransport(http), false);
+        Assert.Equal("listening_for_reply", (await client.AgentAsync(Company, Room, default)).Conversation?.Phase);
+        Assert.Null(typeof(BrowserGuestSnapshot).GetProperty("Conversation"));
+    }
+
+    [Theory]
+    [InlineData("autonomous", false)]
+    [InlineData("autonomous_recovery", true)]
+    [InlineData("assisted", true)]
+    [InlineData("manual", true)]
+    public void Automatic_conversation_hides_routine_answer_click_but_other_modes_keep_approval(string mode, bool approvalVisible)
+    {
+        var fixture = PresentationFixture();
+        var floorMode = mode == "autonomous_recovery" ? "autonomous" : mode;
+        var answer = new BrowserRoomAgentAnswer(Guid.NewGuid(), "What is onboarding?", "Approved details.",
+            "completed", "private_host", 1, [new("source", "document", "Approved source")]);
+        var floor = new BrowserRoomFloor("host", "Organizer", fixture.Room.Participants[0].Id,
+            floorMode, null, null, null, null, "none", false, false, 2, 4, 9, 2, 1, null, 0,
+            null, 7, new(null, "none", 0, 0, null, null, null));
+        var status = new BrowserRoomAgentStatus(Room, Guid.NewGuid(), "Alex", "ready", "healthy", 3, 2,
+            1, 1, true, DateTime.UtcNow, DateTime.UtcNow.AddMinutes(2), null, null, "ready",
+            0, 0, 0, null, "not_reported", 0, 0, 0, 0, null, null, 5, answer, [], floor,
+            new(mode == "autonomous" ? "answering" : mode == "autonomous_recovery" ? "awaiting_recovery" : "awaiting_approval", "available", null));
+        using var context = Context(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/agent")) return Ok(status);
+            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.Contains("/presentation/decks/")) return SlideImage();
+            if (path.EndsWith("/presentation")) return Ok(fixture.Host);
+            return Ok(fixture.Room);
+        });
+        var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
+        var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
+        cut.WaitForAssertion(() => Assert.Contains("Approved source", cut.Markup));
+        Assert.Equal(approvalVisible, cut.FindAll(".room-agent__evidence button").Count > 0);
+        Assert.Contains(floorMode == "autonomous" ? "without a routine approval click" : "Answers require your approval", cut.Markup);
+    }
+
+    [Theory]
+    [InlineData("sales.room_agent.quota_exceeded", "room AI limit")]
+    [InlineData("sales.room_agent.unavailable", "voice is unavailable")]
+    [InlineData("conversation_unavailable", "Realtime conversation is unavailable")]
+    public void Host_client_explains_actionable_failures_without_provider_body(string code, string message)
+    {
+        var exception = new BrowserRoomRequestException(409, code);
+        Assert.Contains(message, exception.Message);
+        Assert.DoesNotContain(code, exception.Message);
     }
     [Fact]
     public void Denied_session_stops_media_and_clears_browser_credential()

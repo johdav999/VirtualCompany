@@ -86,6 +86,56 @@ public sealed class OpenAiRealtimeAgentSessionGatewayTests
     }
 
     [Fact]
+    public void Conversational_pcm_profile_keeps_application_turn_ownership_and_far_field_noise_processing()
+    {
+        var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "BuildSession" && x.GetParameters()[1].ParameterType == typeof(RealtimeAgentPcmSessionCreateRequest));
+        var request = new RealtimeAgentPcmSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "sales_conversation", "Listen only to committed turns.", [], TimeSpan.FromMinutes(5),
+            ConversationProfile: true);
+        var session = Assert.IsType<JsonObject>(method.Invoke(null, [new SharedRealtimeAgentOptions(), request]));
+        var input = session["audio"]!["input"]!;
+
+        Assert.Null(input["turn_detection"]);
+        Assert.Equal("far_field", input["noise_reduction"]!["type"]!.GetValue<string>());
+        Assert.Equal(256, session["max_output_tokens"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public async Task Completed_function_call_item_is_normalized_without_using_streamed_fragments()
+    {
+        var gateway = Create(new RecordingHandler());
+        var completed = await gateway.NormalizeEventAsync(new("call_test_123", "evt-tool", 1,
+            "{\"type\":\"response.output_item.done\",\"response_id\":\"resp_one\",\"item\":{\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call_one\",\"name\":\"read_state\",\"arguments\":\"{\\\"id\\\":1}\"}}"), CancellationToken.None);
+
+        Assert.Equal(RealtimeAgentEventTypes.ToolInvocation, completed.Type);
+        Assert.Equal("resp_one", completed.ResponseId);
+        Assert.Equal("call_one", completed.ToolCallId);
+        Assert.Equal("{\"id\":1}", completed.ToolArgumentsJson);
+        await Assert.ThrowsAsync<RealtimeAgentEventException>(() => gateway.NormalizeEventAsync(new("call_test_123",
+            "evt-delta", 2, "{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\\\"id\\\"\"}"), CancellationToken.None));
+    }
+
+    [Fact]
+    public void Cancellation_truncates_only_identified_default_conversation_audio_actually_received()
+    {
+        var outOfBand = OpenAiRealtimeAgentSessionGateway.BuildCancellationEvents("resp_one", null, 100,
+            false, 4_800);
+        Assert.Single(outOfBand);
+        Assert.Equal("response.cancel", outOfBand[0]["type"]!.GetValue<string>());
+
+        var retained = OpenAiRealtimeAgentSessionGateway.BuildCancellationEvents("resp_one", "item_one", 100,
+            true, 4_800);
+        Assert.Equal(2, retained.Count);
+        Assert.Equal("conversation.item.truncate", retained[1]["type"]!.GetValue<string>());
+        Assert.Equal(100, retained[1]["audio_end_ms"]!.GetValue<int>());
+        Assert.Throws<RealtimeAgentEventException>(() => OpenAiRealtimeAgentSessionGateway.BuildCancellationEvents(
+            "resp_one", "item_one", 101, true, 4_800));
+        Assert.Throws<RealtimeAgentEventException>(() => OpenAiRealtimeAgentSessionGateway.BuildCancellationEvents(
+            "resp_one", null, 100, true, 4_800));
+    }
+
+    [Fact]
     public void Direct_webrtc_session_does_not_let_provider_acoustic_onset_cancel_output()
     {
         var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)

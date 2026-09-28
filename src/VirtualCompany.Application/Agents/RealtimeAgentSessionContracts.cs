@@ -49,7 +49,8 @@ public sealed record RealtimeAgentPcmSessionCreateRequest(
     TimeSpan MaximumDuration,
     string? CorrelationId = null,
     bool ManualInputCommit = false,
-    string? Voice = null);
+    string? Voice = null,
+    bool ConversationProfile = false);
 
 public sealed record RealtimeAgentPcmSessionConnection(
     string Provider,
@@ -64,7 +65,32 @@ public sealed record RealtimeAgentPcmOutput(
     DateTime TimestampUtc,
     ReadOnlyMemory<byte> Audio,
     string? ProviderEventId = null,
-    string? ProviderEventJson = null);
+    string? ProviderEventJson = null,
+    string? ResponseId = null,
+    string? ItemId = null,
+    Guid? TurnId = null);
+
+public sealed record RealtimeConversationResponseRequest(Guid TurnId, bool Audio, int MaximumOutputTokens = 256,
+    bool KeepProviderContext = false, string? RequiredToolName = null);
+
+/// <summary>
+/// Stateful, server-side conversation operations. The caller supplies only confirmed, consented
+/// text and records assistant text after it was actually played. Generated PCM never bypasses
+/// the meeting's authorized playback publisher.
+/// </summary>
+public interface IRealtimeAgentConversationGateway
+{
+    Task AddConfirmedTurnAsync(string providerSessionId, Guid turnId, string text, CancellationToken cancellationToken);
+    Task RecordPlayedResponseAsync(string providerSessionId, Guid turnId, string text, CancellationToken cancellationToken);
+    Task RecordPlayedFollowUpAsync(string providerSessionId, Guid originatingTurnId, Guid followUpId,
+        string text, CancellationToken cancellationToken);
+    Task RequestResponseAsync(string providerSessionId, RealtimeConversationResponseRequest request, CancellationToken cancellationToken);
+    Task SubmitToolResultAsync(string providerSessionId, string callId, string outputJson, CancellationToken cancellationToken);
+    Task ContinueAfterToolAsync(string providerSessionId, RealtimeConversationResponseRequest request,
+        CancellationToken cancellationToken);
+    Task CancelAndTruncateAsync(string providerSessionId, string? responseId, string? itemId,
+        int playedMilliseconds, CancellationToken cancellationToken);
+}
 
 public sealed record RealtimeAgentProviderEvent(
     string ProviderSessionId,

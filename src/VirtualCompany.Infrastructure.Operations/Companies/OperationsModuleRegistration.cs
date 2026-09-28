@@ -266,6 +266,8 @@ public static class OperationsModuleRegistration
             provider.GetRequiredService<OpenAiRealtimeAgentSessionGateway>());
         services.AddSingleton<IRealtimeAgentPcmSessionGateway>(provider =>
             provider.GetRequiredService<OpenAiRealtimeAgentSessionGateway>());
+        services.AddSingleton<IRealtimeAgentConversationGateway>(provider =>
+            provider.GetRequiredService<OpenAiRealtimeAgentSessionGateway>());
         services.AddHealthChecks().AddCheck<RealtimeAgentGatewayHealthCheck>("shared-realtime-agent", tags: ["ready"]);
         services.AddOptions<AgentMemoryCandidateExpiryOptions>()
             .Bind(configuration.GetSection(AgentMemoryCandidateExpiryOptions.SectionName));

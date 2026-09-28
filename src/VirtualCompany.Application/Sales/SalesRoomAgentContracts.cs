@@ -34,6 +34,9 @@ public sealed record SalesRoomFloorView(string State, string OwnerLabel, Guid? O
     long PresentationVersion, int SlideNumber, int TalkingPointIndex, string? ResumeMarker,
     int ResumeOffsetMilliseconds, Guid? PreauthorizedCoHostParticipantId, long Version,
     SalesRoomPlaybackStopView PlaybackStop);
+// A host-only observation of durable room state. This is not an authorization token or a
+// replacement for the versioned floor/room policy checks on commands and playback.
+public sealed record SalesRoomConversationStatusView(string Phase, string Availability, string? Reason);
 public sealed record SalesRoomAgentStatusView(Guid RoomId, Guid? AgentId, string AgentName, string State,
     string VoiceHealth, long Generation, long TurnGeneration, int ConsentedParticipants, int RequiredParticipants,
     bool AllParticipantsConsented, DateTime? StartedUtc, DateTime? LeaseExpiresUtc,
@@ -42,7 +45,7 @@ public sealed record SalesRoomAgentStatusView(Guid RoomId, Guid? AgentId, string
     long? ProviderBilledAudioMilliseconds, string BillingEvidenceState, long OutputAudioMilliseconds,
     int InputTokens, int OutputTokens, decimal EstimatedSpendUsd, string? LastErrorCode, string? LastErrorSummary,
     long RoomVersion, SalesRoomAgentAnswerView? LatestAnswer, IReadOnlyList<SalesRoomAgentSpeechView> RecentSpeech,
-    SalesRoomFloorView? Floor = null);
+    SalesRoomFloorView? Floor = null, SalesRoomConversationStatusView? Conversation = null);
 public sealed record SalesRoomAgentWorkItem(Guid CompanyId, Guid RoomId, Guid LeaseOwnerId, long Generation, string Action);
 public interface ISalesRoomAgentCommandSink { ValueTask SignalAsync(SalesRoomAgentWorkItem work, CancellationToken ct); }
 public sealed record SalesRoomPlaybackStopRequest(Guid RoomId, Guid StopId, long ResponseGeneration, DateTime DeadlineUtc);

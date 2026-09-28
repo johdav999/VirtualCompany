@@ -8,6 +8,52 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class SalesRoomCaptureTests
 {
+    [Theory]
+    [InlineData("valid")][InlineData("invented")][InlineData("expired")]
+    [InlineData("speaker")][InlineData("consent")][InlineData("owner")]
+    [InlineData("track")][InlineData("participant_generation")][InlineData("overlap")]
+    [InlineData("company")][InlineData("session")][InlineData("changed_segment")]
+    public async Task Assembled_browser_question_requires_exact_matching_retained_fragments(string change)
+    {
+        await using var f = await RoomFixture.Create();
+        var input = (await Input(f)) with { Text = "A question how" };
+        var capture = new SalesRoomCaptureService(f.Db, f.Clock);
+        var first = (await capture.RetainAsync(input, default))!.Value;
+        var second = (await capture.RetainAsync(input with { Text = "does onboarding work?",
+            StartedUtc = input.StartedUtc.AddSeconds(4), EndedUtc = input.EndedUtc.AddSeconds(4) }, default))!.Value;
+        await using var scopedDb = new VirtualCompany.Infrastructure.Persistence.VirtualCompanyDbContext(
+            new DbContextOptionsBuilder<VirtualCompany.Infrastructure.Persistence.VirtualCompanyDbContext>()
+                .UseSqlite(f.Db.Database.GetDbConnection()).Options,
+            new SalesNarrationTests.NarrationContext(f.Company, f.Actor));
+        var raw = await scopedDb.SalesRoomAgentTranscripts.SingleAsync(x => x.Id == first);
+        if (change == "speaker")
+        {
+            var other = new SalesRoomParticipant(f.Company, f.Room, "Another participant", null, f.Clock.Now.AddHours(1));
+            scopedDb.SalesRoomParticipants.Add(other);
+            scopedDb.Entry(raw).Property(x => x.ParticipantId).CurrentValue = other.Id;
+        }
+        if (change == "consent") scopedDb.Entry(raw).Property(x => x.ParticipantConsentVersion).CurrentValue++;
+        if (change == "owner") scopedDb.Entry(raw).Property(x => x.AgentGeneration).CurrentValue++;
+        if (change == "track") scopedDb.Entry(raw).Property(x => x.TrackGeneration).CurrentValue++;
+        if (change == "participant_generation") scopedDb.Entry(raw).Property(x => x.ParticipantGeneration).CurrentValue++;
+        if (change == "overlap") scopedDb.Entry(raw).Property(x => x.Overlapped).CurrentValue = true;
+        if (change == "expired") scopedDb.Entry(raw).Property(x => x.EndedUtc).CurrentValue = input.EndedUtc.AddSeconds(-20);
+        if (change == "changed_segment")
+            scopedDb.Entry(await scopedDb.SalesMeetingTranscriptSegments.SingleAsync(x => x.Id == first))
+                .Property(x => x.Content).CurrentValue = "Different retained words";
+        await scopedDb.SaveChangesAsync();
+        var answering = new SalesMeetingQuestionAnsweringService(scopedDb, null!, null!, null!, f.Clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SalesMeetingQuestionAnsweringService>.Instance);
+        var company = change == "company" ? Guid.NewGuid() : f.Company;
+        var session = change == "session" ? Guid.NewGuid() : f.Meeting;
+        Assert.Equal(change == "valid", await answering.HasRetainedBrowserQuestionAsync(company, session, second,
+            change == "invented" ? "A question why does onboarding work?" : "A question how does onboarding work?", default));
+        Assert.True(await answering.HasRetainedBrowserQuestionAsync(f.Company, f.Meeting, second,
+            "does onboarding work?", default));
+        Assert.False(await answering.HasRetainedBrowserQuestionAsync(f.Company, f.Meeting, Guid.NewGuid(),
+            "A question how does onboarding work?", default));
+    }
+
     [Fact]
     public async Task Capture_is_atomic_deduplicated_and_preserves_browser_provenance()
     {

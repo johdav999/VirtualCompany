@@ -1,4 +1,5 @@
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Domain.Entities;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
@@ -21,7 +22,7 @@ internal static class SalesMeetingAnswerGrounding
         }
         var partial = result.Status == AgentAiRunStatuses.NeedsReview || result.MissingEvidence.Count > 0 ||
             result.Uncertainty.Count > 0 || claims.Count != result.Claims.Count;
-        if (claims.Count == 0) return new("I couldn't verify that detail from the approved meeting sources. I've marked it for follow-up.", claims, false);
+        if (claims.Count == 0) return new(SalesMeetingQuestion.SafeNoEvidenceLimitation, claims, false);
         var text = string.Join(" ", claims.Select(x => x.Text.Trim()));
         if (partial)
         {

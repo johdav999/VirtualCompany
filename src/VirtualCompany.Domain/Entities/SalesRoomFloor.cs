@@ -64,10 +64,16 @@ public sealed class SalesRoomFloor : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public long Version { get; private set; }
 
-    public void SetMode(string mode, long presentationVersion, DateTime nowUtc)
+    public void SetMode(string mode, long presentationVersion, DateTime nowUtc, bool fenceConversation = false)
     {
         if (presentationVersion < 1) throw new ArgumentOutOfRangeException(nameof(presentationVersion));
-        ControlMode = Mode(mode); PresentationVersion = presentationVersion; Touch(nowUtc);
+        var next = Mode(mode);
+        if (fenceConversation && ControlMode != next)
+        {
+            ResponseGeneration++; ClearPending();
+            State = SalesRoomFloorStates.Host; FloorOwnerParticipantId = HostParticipantId;
+        }
+        ControlMode = next; PresentationVersion = presentationVersion; Touch(nowUtc);
     }
     public void AuthorizeCoHost(Guid? participantId, DateTime nowUtc)
     { if (participantId == Guid.Empty || participantId == HostParticipantId) throw new ArgumentException("Choose another admitted member."); PreauthorizedCoHostParticipantId = participantId; Touch(nowUtc); }
@@ -127,7 +133,8 @@ public sealed class SalesRoomFloor : ICompanyOwnedEntity
         TurnGeneration = turnGeneration; ResponseGeneration++; State = SalesRoomFloorStates.Agent;
         FloorOwnerParticipantId = null; Overlap = false; Touch(nowUtc);
     }
-    public void AgentCompleted(Guid returnToParticipantId, DateTime nowUtc, int? nextTalkingPointIndex = null)
+    public void AgentCompleted(Guid returnToParticipantId, DateTime nowUtc, int? nextTalkingPointIndex = null,
+        bool preserveNarrationCheckpoint = false)
     {
         RequireController(returnToParticipantId);
         if (nextTalkingPointIndex is < 0) throw new ArgumentOutOfRangeException(nameof(nextTalkingPointIndex));
@@ -137,7 +144,10 @@ public sealed class SalesRoomFloor : ICompanyOwnedEntity
             TalkingPointIndex = nextTalkingPointIndex.Value;
             ResumeMarker = $"slide:{SlideNumber}:talking-point:{TalkingPointIndex}";
         }
-        ClearPending(); ResumeOffsetMilliseconds = 0; Touch(nowUtc);
+        // Answers and conversational bridges do not advance the interrupted narration cursor.
+        ClearPending();
+        if (!preserveNarrationCheckpoint) ResumeOffsetMilliseconds = 0;
+        Touch(nowUtc);
     }
     public void AgentAdvanced(long presentationVersion, int slideNumber, int talkingPointIndex,
         string? resumeMarker, long turnGeneration, DateTime nowUtc)

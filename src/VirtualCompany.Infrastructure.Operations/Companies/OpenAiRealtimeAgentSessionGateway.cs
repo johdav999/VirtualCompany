@@ -29,10 +29,11 @@ public sealed class SharedRealtimeAgentOptions
 public sealed class OpenAiRealtimeAgentSessionGateway(
     IHttpClientFactory clients,
     IOptions<SharedRealtimeAgentOptions> configured,
-    ILogger<OpenAiRealtimeAgentSessionGateway> logger) : IRealtimeAgentSessionGateway, IRealtimeAgentPcmSessionGateway, IDisposable
+    ILogger<OpenAiRealtimeAgentSessionGateway> logger) : IRealtimeAgentSessionGateway, IRealtimeAgentPcmSessionGateway,
+    IRealtimeAgentConversationGateway, IDisposable
 {
     public const string ClientName = "shared-realtime-agent";
-    private const int MaximumSocketMessageBytes = 128_000;
+    private const int MaximumSocketMessageBytes = 160_000;
     private readonly ConcurrentDictionary<string, PcmSocketSession> pcmSessions = new(StringComparer.Ordinal);
 
     public Task<RealtimeAgentHealth> GetHealthAsync(CancellationToken cancellationToken)
@@ -129,8 +130,9 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 ["type"] = "session.update",
                 ["session"] = session
             }.ToJsonString(), ct);
-            var maximum = TimeSpan.FromMinutes(Math.Clamp(request.MaximumDuration.TotalMinutes, 1, 120));
-            var state = new PcmSocketSession(socket, DateTime.UtcNow.Add(maximum));
+            var maximum = TimeSpan.FromMinutes(Math.Clamp(request.MaximumDuration.TotalMinutes, 1, 60));
+            var state = new PcmSocketSession(socket, DateTime.UtcNow.Add(maximum),
+                request.ConversationProfile ? new OpenAiRealtimeConversationState(request.Tools) : null);
             if (!pcmSessions.TryAdd(providerSessionId, state))
                 throw new RealtimeAgentUnavailableException("provider_unavailable", "Realtime PCM session allocation failed.");
             return new("openai", providerSessionId, options.Model, 24_000, state.ExpiresUtc);
@@ -143,6 +145,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             logger.LogWarning(ex, "OpenAI Realtime server-side PCM connection failed safely.");
             throw new RealtimeAgentUnavailableException("provider_unavailable", "Realtime voice is unreachable; use typed meeting controls.");
         }
+        catch { socket.Dispose(); throw; }
     }
 
     public async Task SendInputAudioAsync(string providerSessionId, ReadOnlyMemory<byte> pcm24KhzMono, CancellationToken ct)
@@ -166,7 +169,14 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
         using var message = new MemoryStream();
         while (!ct.IsCancellationRequested && state.Socket.State == WebSocketState.Open && DateTime.UtcNow < state.ExpiresUtc)
         {
-            var result = await state.Socket.ReceiveAsync(buffer, ct);
+            using var receiveDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            receiveDeadline.CancelAfter(state.ExpiresUtc - DateTime.UtcNow);
+            WebSocketReceiveResult result;
+            try { result = await state.Socket.ReceiveAsync(buffer, receiveDeadline.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new RealtimeAgentUnavailableException("session_expired", "The realtime session expired; start the agent again if the room is still live.");
+            }
             if (result.MessageType == WebSocketMessageType.Close) yield break;
             if (result.MessageType != WebSocketMessageType.Text) continue;
             message.Write(buffer, 0, result.Count);
@@ -180,6 +190,36 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             var type = String(root, "type") ?? string.Empty;
             var sequence = Interlocked.Increment(ref state.ReceiveSequence);
             var eventId = String(root, "event_id") ?? $"server_{sequence}";
+            if (!state.AcceptEventId(eventId)) continue;
+            if (state.Conversation is { } conversation)
+            {
+                // Argument completion precedes item completion and is not an executable call.
+                // Publish only the fully validated output_item.done once AcceptTool owns it.
+                if (type == "response.function_call_arguments.done") continue;
+                if (type == "response.created")
+                    conversation.ObserveResponse(NestedString(root, "response", "id") ?? "",
+                        NestedString(root, "response", "metadata", "turn_id"));
+                if (type == "response.done" && NestedString(root, "response", "status") == "cancelled" &&
+                    NestedString(root, "response", "id") is { } cancelled)
+                    conversation.Cancel(cancelled);
+                if (type == "response.done" && NestedString(root, "response", "id") is { } completed)
+                    conversation.Complete(completed);
+                if (type == "response.done" && NestedString(root, "response", "status") is "failed" or "incomplete")
+                {
+                    logger.LogWarning("Realtime response did not complete. Status={Status} Reason={Reason} Code={Code}",
+                        NestedString(root, "response", "status"), NestedString(root, "response", "status_details", "reason"),
+                        NestedString(root, "response", "status_details", "error", "code"));
+                    throw new RealtimeAgentEventException("response_failed", "The realtime provider could not complete the response.");
+                }
+                if (type == "response.output_item.done" && root.TryGetProperty("item", out var item) &&
+                    String(item, "type") == "function_call")
+                {
+                    if (String(item, "status") != "completed")
+                        throw new RealtimeAgentEventException("tool_incomplete", "The provider tool call was incomplete.");
+                    if (!conversation.AcceptTool(String(root, "response_id") ?? "", String(item, "call_id") ?? "",
+                            String(item, "name") ?? "", String(item, "arguments") ?? "")) continue;
+                }
+            }
             if (type is "response.output_audio.delta" or "response.audio.delta")
             {
                 var delta = String(root, "delta");
@@ -189,11 +229,16 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 catch (FormatException) { throw new RealtimeAgentEventException("invalid_audio", "The realtime provider returned invalid audio."); }
                 if (audio.Length == 0 || audio.Length > 96_000 || audio.Length % 2 != 0)
                     throw new RealtimeAgentEventException("invalid_audio", "The realtime provider returned an invalid PCM block.");
-                yield return new(providerSessionId, sequence, DateTime.UtcNow, audio);
+                var responseId = String(root, "response_id"); var itemId = String(root, "item_id");
+                var turnId = state.Conversation?.AcceptAudio(responseId ?? "", itemId ?? "", audio.Length);
+                if (state.Conversation is not null && turnId is null) continue; // late or unrequested output
+                yield return new(providerSessionId, sequence, DateTime.UtcNow, audio,
+                    ResponseId: responseId, ItemId: itemId, TurnId: turnId);
             }
             else
             {
-                yield return new(providerSessionId, sequence, DateTime.UtcNow, ReadOnlyMemory<byte>.Empty, eventId, json);
+                yield return new(providerSessionId, sequence, DateTime.UtcNow, ReadOnlyMemory<byte>.Empty, eventId, json,
+                    TurnId: state.Conversation?.ResponseTurn(String(root, "response_id") ?? NestedString(root, "response", "id") ?? ""));
             }
         }
     }
@@ -204,14 +249,111 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             throw new ArgumentException("A bounded client event is required.", nameof(clientEventJson));
         try { _ = JsonNode.Parse(clientEventJson) ?? throw new JsonException(); }
         catch (JsonException) { throw new ArgumentException("The client event must be valid JSON.", nameof(clientEventJson)); }
-        return SendSocketJsonAsync(Pcm(providerSessionId), clientEventJson, ct);
+        var state = Pcm(providerSessionId);
+        if (state.Conversation is not null)
+        {
+            using var document = JsonDocument.Parse(clientEventJson);
+            if (String(document.RootElement, "type") is not ("input_audio_buffer.commit" or "input_audio_buffer.clear"))
+                throw new RealtimeAgentEventException("conversation_event_denied", "Use the conversation operations for responses and tools.");
+        }
+        return SendSocketJsonAsync(state, clientEventJson, ct);
+    }
+
+    public Task AddConfirmedTurnAsync(string providerSessionId, Guid turnId, string text, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested(); Conversation(providerSessionId).AddConfirmed(turnId, text); return Task.CompletedTask;
+    }
+
+    public Task RecordPlayedResponseAsync(string providerSessionId, Guid turnId, string text, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested(); Conversation(providerSessionId).RecordPlayed(turnId, text); return Task.CompletedTask;
+    }
+
+    public Task RecordPlayedFollowUpAsync(string providerSessionId, Guid originatingTurnId, Guid followUpId,
+        string text, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested(); Conversation(providerSessionId).RecordPlayedFollowUp(originatingTurnId, followUpId, text);
+        return Task.CompletedTask;
+    }
+
+    public async Task RequestResponseAsync(string providerSessionId, RealtimeConversationResponseRequest request, CancellationToken ct)
+    {
+        var state = Pcm(providerSessionId);
+        var payload = (state.Conversation ?? throw new RealtimeAgentEventException("conversation_unavailable", "The session is not conversational."))
+            .CreateResponse(request);
+        try { await SendSocketJsonAsync(state, payload.ToJsonString(), ct); }
+        catch { await TerminatePcmSessionAsync(providerSessionId, CancellationToken.None); throw; }
+    }
+
+    public Task SubmitToolResultAsync(string providerSessionId, string callId, string outputJson, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var state = Pcm(providerSessionId);
+        var conversation = state.Conversation ?? throw new RealtimeAgentEventException("conversation_unavailable", "The session is not conversational.");
+        conversation.ReserveToolResult(callId, outputJson);
+        conversation.CompleteToolResult(callId);
+        return Task.CompletedTask; // Sent with its originating call in the explicit continuation input.
+    }
+
+    public async Task ContinueAfterToolAsync(string providerSessionId, RealtimeConversationResponseRequest request,
+        CancellationToken ct)
+    {
+        var state = Pcm(providerSessionId);
+        var payload = (state.Conversation ?? throw new RealtimeAgentEventException("conversation_unavailable", "The session is not conversational."))
+            .CreateToolContinuation(request);
+        try { await SendSocketJsonAsync(state, payload.ToJsonString(), ct); }
+        catch { await TerminatePcmSessionAsync(providerSessionId, CancellationToken.None); throw; }
+    }
+
+    public async Task CancelAndTruncateAsync(string providerSessionId, string? responseId, string? itemId,
+        int playedMilliseconds, CancellationToken ct)
+    {
+        var state = Pcm(providerSessionId);
+        var conversation = state.Conversation ?? throw new RealtimeAgentEventException("conversation_unavailable", "The session is not conversational.");
+        if (playedMilliseconds < 0) throw new ArgumentOutOfRangeException(nameof(playedMilliseconds));
+        if (!OpenAiRealtimeConversationState.ValidId(responseId))
+            throw new RealtimeAgentEventException("response_uncorrelated", "The response cannot be cancelled without an ID.");
+        var cancelled = conversation.Cancel(responseId!, itemId, playedMilliseconds);
+        if (cancelled is null) throw new RealtimeAgentEventException("response_uncorrelated", "The response is not part of this session.");
+        foreach (var payload in BuildCancellationEvents(responseId!, itemId, playedMilliseconds,
+                     cancelled.Value.KeepContext, cancelled.Value.AudioBytes))
+        {
+            try { await SendSocketJsonAsync(state, payload.ToJsonString(), ct); }
+            catch { await TerminatePcmSessionAsync(providerSessionId, CancellationToken.None); throw; }
+        }
+    }
+
+    internal static IReadOnlyList<JsonObject> BuildCancellationEvents(string responseId, string? itemId,
+        int playedMilliseconds, bool keepProviderContext, int receivedAudioBytes)
+    {
+        if (!OpenAiRealtimeConversationState.ValidId(responseId) || playedMilliseconds < 0 ||
+            receivedAudioBytes < 0 || keepProviderContext &&
+            (!OpenAiRealtimeConversationState.ValidId(itemId) || playedMilliseconds > receivedAudioBytes / 48))
+            throw new RealtimeAgentEventException("playback_uncorrelated", "The provider playback position is not verified.");
+        var events = new List<JsonObject>
+        {
+            new() { ["event_id"] = $"evt_{Guid.NewGuid():N}", ["type"] = "response.cancel", ["response_id"] = responseId }
+        };
+        // Out-of-band responses never enter history. Default-conversation audio must be cut
+        // at the position actually played, not at the full generated duration.
+        if (keepProviderContext)
+            events.Add(new JsonObject { ["event_id"] = $"evt_{Guid.NewGuid():N}",
+                ["type"] = "conversation.item.truncate", ["item_id"] = itemId,
+                ["content_index"] = 0, ["audio_end_ms"] = playedMilliseconds });
+        return events;
     }
 
     public async Task<RealtimeAgentControlResult> CancelPcmResponseAsync(string providerSessionId, string? responseId, CancellationToken ct)
     {
+        var state = Pcm(providerSessionId);
+        if (state.Conversation is not null)
+        {
+            if (!OpenAiRealtimeConversationState.ValidId(responseId) || state.Conversation.Cancel(responseId!) is null)
+                throw new RealtimeAgentEventException("response_uncorrelated", "Only an identified conversation response can be cancelled.");
+        }
         var payload = new JsonObject { ["event_id"] = $"evt_{Guid.NewGuid():N}", ["type"] = "response.cancel" };
         if (!string.IsNullOrWhiteSpace(responseId)) payload["response_id"] = responseId.Trim();
-        await SendSocketJsonAsync(Pcm(providerSessionId), payload.ToJsonString(), ct);
+        await SendSocketJsonAsync(state, payload.ToJsonString(), ct);
         return new(true);
     }
 
@@ -244,6 +386,11 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 "response.function_call_arguments.done" => Event(RealtimeAgentEventTypes.ToolInvocation,
                     toolCallId: String(root, "call_id") ?? String(root, "item_id"), toolName: String(root, "name"),
                     toolArguments: String(root, "arguments")),
+                "response.output_item.done" when root.TryGetProperty("item", out var item) &&
+                    String(item, "type") == "function_call" && String(item, "status") == "completed" =>
+                    Event(RealtimeAgentEventTypes.ToolInvocation, toolCallId: String(item, "call_id"),
+                        toolName: String(item, "name"), toolArguments: String(item, "arguments"),
+                        responseId: String(root, "response_id")),
                 "response.done" => NormalizeResponseDone(),
                 "error" => Event(RealtimeAgentEventTypes.ProviderError,
                     errorCode: NestedString(root, "error", "code") ?? "provider_error",
@@ -351,10 +498,12 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24_000 },
             ["transcription"] = new JsonObject { ["model"] = options.TranscriptionModel }
         };
-        if (request.ManualInputCommit)
+        if (request.ManualInputCommit || request.ConversationProfile)
             input["turn_detection"] = null;
         else
             input["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = true, ["interrupt_response"] = false };
+        if (request.ConversationProfile)
+            input["noise_reduction"] = new JsonObject { ["type"] = "far_field" };
         return new JsonObject
         {
             ["type"] = "realtime",
@@ -371,7 +520,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             },
             ["tools"] = JsonSerializer.SerializeToNode(tools),
             ["tool_choice"] = "auto",
-            ["max_output_tokens"] = 1200
+            ["max_output_tokens"] = request.ConversationProfile ? 256 : 1200
         };
     }
 
@@ -403,11 +552,17 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
     private PcmSocketSession Pcm(string providerSessionId)
     {
         EnsureProviderId(providerSessionId);
-        return pcmSessions.TryGetValue(providerSessionId, out var state) && state.Socket.State == WebSocketState.Open &&
-               DateTime.UtcNow < state.ExpiresUtc
-            ? state
-            : throw new RealtimeAgentUnavailableException("session_unavailable", "The realtime PCM session is not active.");
+        if (pcmSessions.TryGetValue(providerSessionId, out var state))
+        {
+            if (state.Socket.State == WebSocketState.Open && DateTime.UtcNow < state.ExpiresUtc) return state;
+            if (pcmSessions.TryRemove(providerSessionId, out var expired)) expired.Dispose();
+        }
+        throw new RealtimeAgentUnavailableException("session_unavailable", "The realtime PCM session is not active.");
     }
+
+    private OpenAiRealtimeConversationState Conversation(string providerSessionId) =>
+        Pcm(providerSessionId).Conversation ??
+        throw new RealtimeAgentEventException("conversation_unavailable", "The session is not conversational.");
 
     private static Uri RealtimeSocketUri(SharedRealtimeAgentOptions options)
     {
@@ -454,12 +609,24 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
         pcmSessions.Clear();
     }
 
-    private sealed class PcmSocketSession(ClientWebSocket socket, DateTime expiresUtc) : IDisposable
+    private sealed class PcmSocketSession(ClientWebSocket socket, DateTime expiresUtc,
+        OpenAiRealtimeConversationState? conversation) : IDisposable
     {
+        private readonly HashSet<string> receivedEventIds = new(StringComparer.Ordinal);
+        private readonly Queue<string> eventIdOrder = new();
         public ClientWebSocket Socket { get; } = socket;
         public DateTime ExpiresUtc { get; } = expiresUtc;
+        public OpenAiRealtimeConversationState? Conversation { get; } = conversation;
         public SemaphoreSlim SendLock { get; } = new(1, 1);
         public long ReceiveSequence;
+        public bool AcceptEventId(string eventId)
+        {
+            if (eventId.Length > 200) throw new RealtimeAgentEventException("invalid_event", "The provider event ID is invalid.");
+            if (!receivedEventIds.Add(eventId)) return false;
+            eventIdOrder.Enqueue(eventId);
+            if (eventIdOrder.Count > 4096) receivedEventIds.Remove(eventIdOrder.Dequeue());
+            return true;
+        }
         public async Task DisposeAsync(CancellationToken ct)
         {
             try

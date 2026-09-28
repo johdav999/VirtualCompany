@@ -16,6 +16,7 @@ using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Domain.Agents;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 
@@ -124,9 +125,15 @@ internal sealed class SalesRoomAgentCoordinator(
             {
                 var code = stopAll ? configured.CurrentValue.EmergencyDisabled ? "emergency_disabled" : "deployment_draining"
                     : "worker_lease_expired";
+                var priorFailure = PreservePausedFailure(room, stopAll);
+                if (priorFailure) code = room.AgentLastErrorCode!;
                 room.StopAgent(code,
-                    stopAll ? "Room AI stopped because an operator disabled or drained the service."
+                    priorFailure ? room.AgentLastErrorSummary ?? "Room AI paused after an error. Restart the agent to retry."
+                    : stopAll ? "Room AI stopped because an operator disabled or drained the service."
                         : "The agent stopped after its worker lease expired. The host must explicitly start it again.", now);
+                var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+                    x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+                floor?.PauseAt(floor.ResumeOffsetMilliseconds, room.AgentTurnGeneration, now);
                 var pending = await db.SalesRoomAgentSpeech.IgnoreQueryFilters().Where(x => x.CompanyId == room.CompanyId &&
                     x.RoomId == room.Id && (x.Status == SalesRoomAgentSpeechStates.Queued ||
                     x.Status == SalesRoomAgentSpeechStates.Processing)).ToListAsync(ct);
@@ -145,6 +152,10 @@ internal sealed class SalesRoomAgentCoordinator(
         }
         catch (Exception ex) { logger.LogWarning(ex, "Could not reconcile browser room agent leases."); }
     }
+
+    internal static bool PreservePausedFailure(SalesBrowserRoom room, bool stopAll) =>
+        !stopAll && room.AgentHealth == SalesRoomAgentHealthStates.Paused &&
+        !string.IsNullOrWhiteSpace(room.AgentLastErrorCode);
 
     internal static bool ShouldStopForReconciliation(SalesBrowserRoom room, bool stopAll, DateTime nowUtc) =>
         room.AgentLeaseOwnerId is not null && (stopAll || room.AgentLeaseExpiresUtc <= nowUtc) &&
@@ -198,6 +209,7 @@ internal sealed class SalesRoomAgentCoordinator(
 
 internal sealed class SalesRoomAgentRunControl
 {
+    internal SalesRoomConversationTiming Timing { get; } = new();
     private readonly object gate = new();
     private ISalesRoomMediaConnection? media;
     private CancellationTokenSource? response;
@@ -295,15 +307,17 @@ internal sealed class SalesRoomTranscriptCorrelation<TContext> where TContext : 
         return false;
     }
 }
-internal sealed class SalesRoomAgentWorker(
+internal sealed partial class SalesRoomAgentWorker(
     VirtualCompanyDbContext db,
     IServiceScopeFactory captureScopes,
     ICompanyExecutionScopeFactory executionScopes,
     ISalesRoomMediaTransport mediaTransport,
     IRealtimeAgentPcmSessionGateway pcm,
     IRealtimeAgentSessionGateway realtime,
+    IRealtimeAgentConversationGateway realtimeConversation,
     ISalesNarrationService narration,
     IApprovedSpeechGateway speech,
+    ISalesRoomConversationReasoner conversationReasoner,
     ISalesMeetingPresentationConductor conductor,
     ISalesMeetingQuestionAnsweringService questions,
     ISalesRoomFloorEventPublisher floorEvents,
@@ -365,6 +379,12 @@ internal sealed class SalesRoomAgentWorker(
         ISalesRoomMediaConnection? media = null; string? providerSession = null;
         IDisposable? benchmarkSession = null;
         Task? activeSpeech = null;
+        var confirmedConversationTurns = new HashSet<Guid>();
+        var playedConversationTurns = new HashSet<Guid>();
+        DateTime? awaitingContextualReplyUntil = null;
+        (Guid SpeechId, AgentConversationBinding Binding, long FloorVersion)? completedReplyContext = null;
+        (SalesRoomConversationTurn Turn, UtteranceContext Input, string Text, bool Retained, DateTime? ReplyDeadline)? pendingTool = null;
+        Guid? toolResultAwaitingResponseEnd = null;
         // Each event may carry a full bounded PCM utterance; keep queued audio bounded too.
         var events = Channel.CreateBounded<RuntimeEvent>(new BoundedChannelOptions(8)
             { FullMode = BoundedChannelFullMode.Wait, SingleReader = true, SingleWriter = false });
@@ -382,6 +402,7 @@ internal sealed class SalesRoomAgentWorker(
                 await StopForPolicyAsync(room, work, configured.CurrentValue.EmergencyDisabled ? "emergency_disabled" : "deployment_draining");
                 return;
             }
+            var conversationProfile = Options.HybridConversationEnabled;
             var connectStarted = Stopwatch.GetTimestamp();
             var provider = await RunWithLeaseRenewalAsync(work, async startupToken =>
             {
@@ -391,12 +412,21 @@ internal sealed class SalesRoomAgentWorker(
                 control.Attach(media);
                 await AlignOutputGenerationAsync(media, room.AgentTurnGeneration, startupToken);
                 return await pcm.CreatePcmSessionAsync(new(room.CompanyId, room.OrganizerUserId, agentId,
-                    "sales_browser_room_segmented_transcription",
-                    "Transcribe each explicitly committed utterance exactly and preserve interrogative wording. " +
+                    conversationProfile ? "sales_browser_room_conversation" : "sales_browser_room_segmented_transcription",
+                    (conversationProfile
+                        ? "Transcribe each explicitly committed utterance exactly. Never create a response on your own. " +
+                          "Only respond to an explicit application response.create. Keep conversational output concise; " +
+                          "do not invent product facts, commitments, or tool results. For each requested reply, choose exactly " +
+                          "one available tool with empty arguments, based only on the latest confirmed turn and actually " +
+                          "played follow-up. A new question takes priority over continuation. An ambiguous yes after " +
+                          "multiple questions means wait. Never speak or announce continuation before backend acceptance. "
+                        : "Transcribe each explicitly committed utterance exactly and preserve interrogative wording. " +
+                          "Do not answer, speak, call tools, or infer speaker identity. ") +
                     "Meeting vocabulary can include Virtual Company, Alex, finance agent, sales agent, marketing agent, " +
-                    "support agent, and questions about what those agents can do. Do not answer, speak, call tools, or infer speaker identity.",
-                    [], TimeSpan.FromMinutes(Math.Min(Options.MaximumSessionMinutes,
-                        Math.Max(1, (room.ExpiresUtc - Now).TotalMinutes))), work.RoomId.ToString("N"), true), startupToken);
+                    "support agent, and questions about what those agents can do.",
+                    conversationProfile ? SalesRoomConversationTools.Definitions : [], TimeSpan.FromMinutes(Math.Min(Options.MaximumSessionMinutes,
+                    Math.Max(1, (room.ExpiresUtc - Now).TotalMinutes))), work.RoomId.ToString("N"), true,
+                    ConversationProfile: conversationProfile), startupToken);
             }, ct);
             providerSession = provider.ProviderSessionId;
             db.ChangeTracker.Clear();
@@ -412,6 +442,8 @@ internal sealed class SalesRoomAgentWorker(
             var inputTask = ReadInputAsync(media!, segmenter, events.Writer, runtimeStop.Token);
             var providerTask = ReadProviderAsync(providerSession, events.Writer, runtimeStop.Token);
             var transcriptCorrelation = new SalesRoomTranscriptCorrelation<UtteranceContext>();
+            var turnBuffer = new AgentSpeechTurnBuffer();
+            (UtteranceContext Context, Guid RetainedId)? deferredCompleteTurn = null;
             var candidateSnapshots = new Dictionary<(Guid ParticipantId, string TrackId, long TrackGeneration), CandidateSnapshot>();
             var lastReceived = 0L; var lastDetected = 0L; var lastForwarded = 0L;
             var pendingProviderAudio = 0L; var pendingInputTokens = 0; var pendingOutputTokens = 0;
@@ -423,12 +455,85 @@ internal sealed class SalesRoomAgentWorker(
                 await Task.Delay(200, ct);
                 db.ChangeTracker.Clear();
                 room = await RoomAsync(work, ct);
+                turnBuffer.Expire(Now);
+                if (conversationProfile != Options.HybridConversationEnabled)
+                {
+                    await CancelActiveSpeechAsync();
+                    await StopForPolicyAsync(room, work, Options.HybridConversationEnabled
+                        ? "conversation_restart_required" : "conversation_disabled",
+                        "Realtime conversation settings changed. Restart the agent to apply them.");
+                    break;
+                }
                 if (activeSpeech is { IsCompleted: true })
                 {
                     await activeSpeech;
                     activeSpeech = null;
                     db.ChangeTracker.Clear();
                     room = await RoomAsync(work, ct);
+                    if (Options.HybridConversationEnabled && providerSession is not null)
+                    {
+                        var playedAnswers = await db.SalesRoomAgentSpeech.IgnoreQueryFilters().AsNoTracking()
+                            .Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
+                                x.AgentGeneration == work.Generation &&
+                                (x.Kind == SalesRoomAgentSpeechKinds.Answer || x.Kind == SalesRoomAgentSpeechKinds.Bridge) &&
+                                x.Status == SalesRoomAgentSpeechStates.Spoken && x.CompletedUtc > Now.AddMinutes(-2))
+                            .OrderByDescending(x => x.CompletedUtc).ThenByDescending(x => x.Kind).Take(8).ToListAsync(ct);
+                        foreach (var played in playedAnswers.OrderBy(x => x.CompletedUtc).ThenBy(x => x.Kind))
+                        {
+                            if (playedConversationTurns.Contains(played.Id) || string.IsNullOrWhiteSpace(played.ReleasedText)) continue;
+                            try
+                            {
+                                if (played.Kind == SalesRoomAgentSpeechKinds.Answer)
+                                {
+                                    if (!confirmedConversationTurns.Contains(played.CommandId)) continue;
+                                    await realtimeConversation.RecordPlayedResponseAsync(providerSession, played.CommandId,
+                                        played.ReleasedText[..Math.Min(2000, played.ReleasedText.Length)], ct);
+                                }
+                                else if (ReadBridgeEvidence(played)?.ReplyTurnId is Guid replyTurn)
+                                {
+                                    if (!confirmedConversationTurns.Contains(replyTurn)) continue;
+                                    await realtimeConversation.RecordPlayedResponseAsync(providerSession, replyTurn,
+                                        played.ReleasedText[..Math.Min(2000, played.ReleasedText.Length)], ct);
+                                }
+                                else if (played.QuestionId is Guid answeredId)
+                                {
+                                    var originatingTurn = await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking()
+                                        .Where(x => x.CompanyId == room.CompanyId && x.Id == answeredId)
+                                        .Select(x => x.ClientQuestionId).SingleOrDefaultAsync(ct);
+                                    if (!confirmedConversationTurns.Contains(originatingTurn)) continue;
+                                    await realtimeConversation.RecordPlayedFollowUpAsync(providerSession, originatingTurn,
+                                        played.Id, played.ReleasedText[..Math.Min(2000, played.ReleasedText.Length)], ct);
+                                }
+                            }
+                            catch (RealtimeAgentEventException ex)
+                            {
+                                // Provider context is auxiliary; room speech already completed. A
+                                // rolled-over/trimmed context must not replay or stop the meeting.
+                                logger.LogInformation("Played speech could not enter bounded provider context for room {RoomId}: {Code}.",
+                                    room.Id, ex.Code);
+                                playedConversationTurns.Add(played.Id);
+                                continue;
+                            }
+                            playedConversationTurns.Add(played.Id);
+                            // An answer establishes context even when the model elects not to
+                            // ask a follow-up. Only completed, current playback can open listening.
+                            {
+                                var completedFloor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking()
+                                    .SingleAsync(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+                                var completedAuthority = await SalesRoomConversationPolicy.LoadAsync(db, Options,
+                                    room.CompanyId, room.Id, completedFloor.HostParticipantId, Now, ct);
+                                if (completedAuthority is not null && completedFloor.State == SalesRoomFloorStates.Host &&
+                                    completedAuthority.Binding.TurnGeneration == played.TurnGeneration &&
+                                    completedAuthority.Binding.ResponseGeneration == played.ResponseGeneration)
+                                {
+                                    completedReplyContext = (played.Id, completedAuthority.Binding, completedFloor.Version);
+                                    awaitingContextualReplyUntil = played.CompletedUtc!.Value.AddSeconds(45);
+                                    if (played.QuestionId is Guid timedQuestion)
+                                        control.Timing.Complete("answer_complete_to_listening", timedQuestion);
+                                }
+                            }
+                        }
+                    }
                 }
                 if (!room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) ||
                     room.State != SalesBrowserRoomStates.Live) break;
@@ -492,6 +597,8 @@ internal sealed class SalesRoomAgentWorker(
                 {
                     if (runtime.Kind is RuntimeEventKind.DetectorFailure or RuntimeEventKind.ProviderFailure)
                     {
+                        SalesRoomBenchmarkTelemetry.RecordConversationFailure(runtime.Kind == RuntimeEventKind.ProviderFailure
+                            ? "transcription_unavailable" : "vad_failed");
                         await CancelActiveSpeechAsync();
                         var detectorFailed = runtime.Kind == RuntimeEventKind.DetectorFailure;
                         room.PauseAgent(work.LeaseOwnerId, work.Generation,
@@ -570,9 +677,10 @@ internal sealed class SalesRoomAgentWorker(
                         catch (RealtimeAgentEventException) { continue; }
                         if (normalized.Type == RealtimeAgentEventTypes.ProviderError)
                         {
+                            logger.LogWarning("Room realtime provider rejected an event. RoomId={RoomId} Code={Code}", room.Id, normalized.ErrorCode);
                             await CancelActiveSpeechAsync();
-                            room.PauseAgent(work.LeaseOwnerId, work.Generation, "transcription_unavailable",
-                                "Speech transcription failed. AI is paused; use typed questions while the human call continues.");
+                            room.PauseAgent(work.LeaseOwnerId, work.Generation, "realtime_provider_error",
+                                "The realtime conversation provider rejected a request. Restart the agent to retry; the human call remains available.");
                             await db.SaveChangesAsync(CancellationToken.None);
                             runtimeStop.Cancel(); await AwaitQuietly(inputTask, providerTask); return;
                         }
@@ -585,6 +693,76 @@ internal sealed class SalesRoomAgentWorker(
                             if (itemId is not null &&
                                 transcriptCorrelation.Complete(itemId, normalized.Text ?? "", out var completedContext, out var completedText))
                                 await ProcessTranscriptAsync(completedContext!, completedText!);
+                        }
+                        if (Options.HybridConversationEnabled && normalized.Type == RealtimeAgentEventTypes.ToolInvocation)
+                        {
+                            var result = new SalesRoomConversationToolResult(false, "conversation_stale",
+                                "This proposal has no current confirmed participant turn.");
+                            Guid? resultTurn = null;
+                            if (pendingTool is { } pending && runtime.ProviderTurnId == pending.Turn.HeardTurnId)
+                            {
+                                pendingTool = null; // One proposal per input; later/parallel calls cannot act.
+                                resultTurn = pending.Turn.HeardTurnId;
+                                var authority = await SalesRoomConversationPolicy.LoadAsync(db, Options, room.CompanyId,
+                                    room.Id, pending.Turn.Binding.ParticipantId, Now, ct);
+                                var toolFloor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+                                    x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+                                var allowed = authority is not null && pending.Turn.ExpiresUtc > Now && activeSpeech is null &&
+                                    transcriptCorrelation.PendingCount == 0 &&
+                                    toolFloor is { State: SalesRoomFloorStates.Host, Overlap: false } &&
+                                    toolFloor.Version == pending.Turn.FloorVersion &&
+                                    media.IsParticipantConnected(pending.Turn.Binding.ParticipantId) &&
+                                    new AgentConversation(pending.Turn.Binding, AgentConversationPhase.Interpreting)
+                                        .Check(authority, Now).Allowed &&
+                                    SalesRoomConversationTools.Matches(normalized.ToolName, normalized.ToolArgumentsJson, pending.Turn.Intent);
+                                if (allowed && normalized.ToolName == SalesRoomConversationTools.Continue)
+                                {
+                                    await using var commandScope = captureScopes.CreateAsyncScope();
+                                    var service = (SalesRoomAgentService)commandScope.ServiceProvider.GetRequiredService<ISalesRoomAgentService>();
+                                    result = await service.ContinueConversationAsync(pending.Turn, ct);
+                                }
+                                else if (allowed && normalized.ToolName == SalesRoomConversationTools.Question)
+                                {
+                                    var speaker = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
+                                        x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.Id == pending.Turn.Binding.ParticipantId, ct);
+                                    await HandleTranscriptAsync(room, speaker, pending.Input.Value, pending.Text,
+                                        false, pending.Retained, media, work, floorEvents, questions, ct, semanticQuestion: true);
+                                    var processed = await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                                        x.CompanyId == room.CompanyId && x.SessionId == pending.Turn.Binding.SessionId &&
+                                        x.ClientQuestionId == pending.Turn.HeardTurnId, ct);
+                                    result = new(processed, processed ? "question_processed" : "question_not_accepted",
+                                        processed ? "The grounded question workflow processed the request; existing release controls apply."
+                                            : "The question could not be accepted. The host can retry using typed questions.");
+                                }
+                                else if (allowed && normalized.ToolName == SalesRoomConversationTools.Wait)
+                                    result = pending.Turn.Intent == AgentConversationIntent.Acknowledgement
+                                        ? await AcknowledgeConversationAsync(pending.Turn, pending.Text, work, ct)
+                                        : new(true, "waiting", "The presentation remains paused. Host controls remain available.");
+                                if (!allowed)
+                                    logger.LogWarning("Room conversation proposal rejected. RoomId={RoomId} Intent={Intent} Tool={Tool} ActiveSpeech={ActiveSpeech} PendingTranscripts={PendingTranscripts} FloorMatches={FloorMatches}",
+                                        room.Id, pending.Turn.Intent, normalized.ToolName, activeSpeech is not null,
+                                        transcriptCorrelation.PendingCount, toolFloor?.Version == pending.Turn.FloorVersion);
+                                awaitingContextualReplyUntil = ReplyDeadlineAfterTool(result.Accepted,
+                                    normalized.ToolName, pending.ReplyDeadline, Now);
+                                if (awaitingContextualReplyUntil is null) completedReplyContext = null;
+                                db.ChangeTracker.Clear(); room = await RoomAsync(work, ct);
+                            }
+                            if (normalized.ToolCallId is { } callId)
+                            {
+                                await realtimeConversation.SubmitToolResultAsync(providerSession, callId,
+                                    JsonSerializer.Serialize(result), ct);
+                                toolResultAwaitingResponseEnd = resultTurn;
+                            }
+                            // No generated success speech: only the accepted, approved narration owns audio.
+                        }
+                        if (normalized.Type == RealtimeAgentEventTypes.UsageUpdated &&
+                            toolResultAwaitingResponseEnd is Guid completedTurn && runtime.ProviderTurnId == completedTurn)
+                        {
+                            // response.output_item.done may precede response.done. Starting another
+                            // response before that fence produces a provider response-already-active error.
+                            toolResultAwaitingResponseEnd = null;
+                            await realtimeConversation.ContinueAfterToolAsync(providerSession,
+                                new(completedTurn, false, 512, KeepProviderContext: true), ct);
                         }
                         if (normalized.InputTokens > 0 || normalized.OutputTokens > 0 || normalized.AudioDurationMilliseconds > 0)
                         {
@@ -668,6 +846,16 @@ internal sealed class SalesRoomAgentWorker(
                 }
                 // A local candidate (including fan noise) cannot stall the next talking point.
                 // Only a confirmed, authorized question changes the floor and cancels output.
+                if (deferredCompleteTurn is { } deferred &&
+                    turnBuffer.ReleaseComplete(Now, segmenter.HasActiveSpeech || transcriptCorrelation.PendingCount > 0 ||
+                        events.Reader.TryPeek(out _)) is { } releasedText)
+                {
+                    // Usage is saved above before re-entering code that reloads the room.
+                    // Recheck consent/track/ownership without retaining duplicate evidence.
+                    deferredCompleteTurn = null;
+                    await ProcessTranscriptAsync(deferred.Context, releasedText, deferred.RetainedId);
+                    continue; // Reload speech/floor after the newly accepted turn.
+                }
                 if (queued is not null && activeSpeech is null)
                     activeSpeech = SpeakInOwnScopeAsync(queued.Id, media, work, control,
                         control.InterruptionVersion, ct);
@@ -678,8 +866,10 @@ internal sealed class SalesRoomAgentWorker(
 
             async Task CancelActiveSpeechAsync(long? confirmedResponseGeneration = null)
             {
+                var stopStarted = Stopwatch.GetTimestamp();
                 control.CancelResponse(confirmedResponseGeneration);
                 await media.CancelSpeechAsync(CancellationToken.None);
+                SalesRoomBenchmarkTelemetry.RecordLatency("cancellation_to_transport_stopped", Stopwatch.GetElapsedTime(stopStarted));
                 if (activeSpeech is null) return;
                 await activeSpeech;
                 activeSpeech = null;
@@ -687,13 +877,16 @@ internal sealed class SalesRoomAgentWorker(
                 room = await RoomAsync(work, CancellationToken.None);
             }
 
-            async Task ProcessTranscriptAsync(UtteranceContext context, string text)
+            async Task ProcessTranscriptAsync(UtteranceContext context, string text, Guid? previouslyRetained = null)
             {
                 // An empty final result is noise, not a provisional interrupt. The provider's
                 // completion is the only confirmation signal; local VAD never stops playback.
                 if (string.IsNullOrWhiteSpace(text)) return;
+                deferredCompleteTurn = null;
+                pendingTool = null; // Any newer confirmed utterance invalidates an older model proposal.
+                toolResultAwaitingResponseEnd = null;
                 await using var captureScope = captureScopes.CreateAsyncScope();
-                var retained = await captureScope.ServiceProvider.GetRequiredService<ISalesRoomCaptureService>().RetainAsync(
+                var retained = previouslyRetained ?? await captureScope.ServiceProvider.GetRequiredService<ISalesRoomCaptureService>().RetainAsync(
                     new(room.CompanyId, room.Id, context.Value.ParticipantId, context.ConsentVersion, context.Retain,
                         work.Generation, work.LeaseOwnerId, context.Value.TrackId, context.Value.TrackGeneration,
                         context.Value.StartedAt.UtcDateTime, context.Value.EndedAt.UtcDateTime, context.Value.Overlapped, text), ct);
@@ -709,7 +902,36 @@ internal sealed class SalesRoomAgentWorker(
                     fence.State != SalesBrowserRoomStates.Live || fence.AgentTurnGeneration != context.TurnGeneration ||
                     !fence.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) ||
                     context.Retain && !retained.HasValue)
+                {
+                    turnBuffer.Clear();
                     return;
+                }
+
+                if (Options.HybridConversationEnabled && retained.HasValue && !context.Value.Overlapped)
+                {
+                    var scope = new AgentSpeechTurnScope(room.CompanyId, room.Id, current.Id,
+                        current.Generation, current.Version, context.Value.TrackId, context.Value.TrackGeneration,
+                        work.Generation, context.TurnGeneration);
+                    var combined = turnBuffer.Take(scope, text, Now);
+                    if (combined is null) return;
+                    var completionFloor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
+                        x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+                    var completionContext = new SalesRoomConversationContext(room.CompanyId, agentId, room.Id,
+                        sessionId, current.Id, Guid.NewGuid(), "", "", false,
+                        completionFloor.SlideNumber, completionFloor.TalkingPointIndex, completionFloor.ControlMode);
+                    var complete = await RunWithLeaseRenewalAsync(work,
+                        token => conversationReasoner.IsCompleteAsync(completionContext, combined, token), ct);
+                    if (!complete || segmenter.HasActiveSpeech || transcriptCorrelation.PendingCount > 0)
+                    {
+                        turnBuffer.Hold(scope, combined, Now, complete);
+                        if (complete) deferredCompleteTurn = (context, retained.Value);
+                        logger.LogInformation("Room turn held for more speech. RoomId={RoomId} Complete={Complete} ActiveSpeech={ActiveSpeech} PendingTranscripts={PendingTranscripts}",
+                            room.Id, complete, segmenter.HasActiveSpeech, transcriptCorrelation.PendingCount);
+                        return;
+                    }
+                    text = combined;
+                }
+                else turnBuffer.Clear();
 
                 var interruptedAgent = activeSpeech is { IsCompleted: false };
                 var questionDuringPresentation = interruptedAgent || context.BeganDuringPresentation;
@@ -729,7 +951,19 @@ internal sealed class SalesRoomAgentWorker(
                 }
                 var addressed = explicitlyAddressed || ShouldTreatInterruptedSpeechAsAddressedQuestion(
                     text, questionDuringPresentation, connectedHumans, context.Value.Overlapped);
-                if (!addressed) return;
+                var contextualReply = ShouldRouteContextualReply(Options.HybridConversationEnabled,
+                    explicitlyAddressed, awaitingContextualReplyUntil > Now, context.Value.Overlapped,
+                    connectedHumans, text);
+                if (!addressed && !contextualReply) return;
+                var confirmedQuestion = false;
+                if (Options.HybridConversationEnabled && addressed && !contextualReply && retained.HasValue)
+                {
+                    confirmedQuestion = await IsSubstantiveQuestionAsync(room, current.Id, text, work, ct, completenessConfirmed: true);
+                    if (!confirmedQuestion) return;
+                }
+                control.Timing.Begin("confirmed_input_to_first_answer_frame", StableTurnId(room.Id, current.Id,
+                    context.Value.TrackId, context.Value.TrackGeneration, context.Value.StartedAt));
+                if (addressed && !contextualReply) { awaitingContextualReplyUntil = null; completedReplyContext = null; }
                 if (interruptedAgent)
                 {
                     var beforeStop = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
@@ -765,9 +999,11 @@ internal sealed class SalesRoomAgentWorker(
                             "Confirmed participant speech stopped the agent turn.", Now);
                     var meeting = await db.SalesMeetingSessions.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
                         x.CompanyId == room.CompanyId && x.Id == sessionId, ct);
+                    if (meeting.ConcurrencyVersion != floor.PresentationVersion || meeting.CurrentSlideIndex != floor.SlideNumber)
+                        return;
                     floor.HumanStarted(current.Id, current.Generation, false, room.AgentTurnGeneration,
-                        meeting.ConcurrencyVersion, Math.Max(1, meeting.CurrentSlideIndex),
-                        meeting.CurrentTalkingPointIndex, meeting.ResumeMarker, Now);
+                        floor.PresentationVersion, floor.SlideNumber,
+                        floor.TalkingPointIndex, floor.ResumeMarker, Now);
                     var stopId = Guid.NewGuid();
                     var required = await db.SalesRoomParticipants.IgnoreQueryFilters().AsNoTracking().CountAsync(x =>
                         x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
@@ -783,8 +1019,84 @@ internal sealed class SalesRoomAgentWorker(
                     if (stopLatency >= TimeSpan.Zero && stopLatency <= TimeSpan.FromMinutes(1))
                         SalesRoomBenchmarkTelemetry.RecordLatency("candidate_to_playback_stop_request", stopLatency);
                 }
+                if (Options.HybridConversationEnabled && context.Retain && retained.HasValue &&
+                    providerSession is not null && text.Length <= 2000)
+                {
+                    var turnId = StableTurnId(room.Id, current.Id, context.Value.TrackId,
+                        context.Value.TrackGeneration, context.Value.StartedAt);
+                    if (await SalesRoomConversationPolicy.BeginInputAsync(db, Options, room.CompanyId,
+                            room.Id, current.Id, turnId, Now, ct) is not null)
+                    {
+                        await realtimeConversation.AddConfirmedTurnAsync(providerSession, turnId, text, ct);
+                        confirmedConversationTurns.Add(turnId);
+                    }
+                }
+                if (contextualReply)
+                {
+                    var latest = await db.SalesRoomAgentSpeech.IgnoreQueryFilters().AsNoTracking()
+                        .Where(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
+                            x.Kind == SalesRoomAgentSpeechKinds.Answer && x.Status == SalesRoomAgentSpeechStates.Spoken &&
+                            x.QuestionId != null).OrderByDescending(x => x.CompletedUtc).FirstOrDefaultAsync(ct);
+                    if (latest?.QuestionId is not Guid answeredId || room.AgentId is not Guid conversationalAgent)
+                        return;
+                    var answered = await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking()
+                        .SingleOrDefaultAsync(x => x.CompanyId == room.CompanyId && x.Id == answeredId, ct);
+                    if (answered?.AnswerText is null) return;
+                    var replyFloor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking()
+                        .SingleOrDefaultAsync(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+                    if (replyFloor is null) return;
+                    var replyBinding = completedReplyContext;
+                    if (replyBinding is null) return;
+                    var playedContext = await db.SalesRoomAgentSpeech.IgnoreQueryFilters().AsNoTracking()
+                        .SingleOrDefaultAsync(x => x.CompanyId == room.CompanyId && x.RoomId == room.Id &&
+                            x.Id == replyBinding.Value.SpeechId && x.Status == SalesRoomAgentSpeechStates.Spoken, ct);
+                    if (playedContext is null) return;
+                    var replyAuthority = await SalesRoomConversationPolicy.LoadAsync(db, Options, room.CompanyId,
+                        room.Id, current.Id, Now, ct);
+                    if (replyAuthority is null) return;
+                    var capturedBinding = replyBinding.Value.Binding with
+                        { ParticipantId = current.Id, ParticipantGeneration = current.Generation };
+                    if (capturedBinding != replyAuthority.Binding ||
+                        replyBinding.Value.FloorVersion != replyFloor.Version) return;
+                    var replyContext = new SalesRoomConversationContext(room.CompanyId, conversationalAgent, room.Id,
+                        sessionId, current.Id, answeredId, answered.QuestionText, answered.AnswerText,
+                        answered.Status == SalesMeetingQuestionStatus.PartiallySupported,
+                        replyFloor.SlideNumber, replyFloor.TalkingPointIndex, replyFloor.ControlMode,
+                        playedContext.Kind == SalesRoomAgentSpeechKinds.Bridge ? playedContext.ReleasedText : null);
+                    AgentConversationIntent intent;
+                    try { intent = await RunWithLeaseRenewalAsync(work,
+                        token => conversationReasoner.InterpretAsync(replyContext, text, token), ct); }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogWarning(ex, "Contextual turn interpretation failed for room {RoomId}.", room.Id);
+                        return;
+                    }
+                    var heardTurn = StableTurnId(room.Id, current.Id, context.Value.TrackId,
+                        context.Value.TrackGeneration, context.Value.StartedAt);
+                    if (!confirmedConversationTurns.Contains(heardTurn) || providerSession is null) return;
+                    // The shared reasoner already classified this complete turn. A second model
+                    // must not veto factual retrieval by proposing a different tool. Execution
+                    // still rechecks current tenant, consent, floor and release policy below.
+                    if (intent == AgentConversationIntent.Question)
+                    {
+                        awaitingContextualReplyUntil = null; completedReplyContext = null;
+                        db.ChangeTracker.Clear(); room = await RoomAsync(work, ct);
+                        await HandleTranscriptAsync(room, current, context.Value, text, false, retained.HasValue,
+                            media, work, floorEvents, questions, ct, semanticQuestion: true);
+                        return;
+                    }
+                    var turn = new SalesRoomConversationTurn(capturedBinding, heardTurn, playedContext.Id,
+                        replyFloor.Version, Now.AddSeconds(15), intent);
+                    pendingTool = (turn, context, text, retained.HasValue, awaitingContextualReplyUntil);
+                    awaitingContextualReplyUntil = null;
+                    await realtimeConversation.RequestResponseAsync(providerSession,
+                        new(heardTurn, false, 512, KeepProviderContext: true,
+                            RequiredToolName: SalesRoomConversationTools.ForIntent(intent)), ct);
+                    db.ChangeTracker.Clear(); room = await RoomAsync(work, ct);
+                    return;
+                }
                 await HandleTranscriptAsync(room, current, context.Value, text,
-                    questionDuringPresentation, retained.HasValue, media, work, floorEvents, questions, ct);
+                    questionDuringPresentation, retained.HasValue, media, work, floorEvents, questions, ct, confirmedQuestion);
             }
         }
 
@@ -836,11 +1148,19 @@ internal sealed class SalesRoomAgentWorker(
                 if (!value.Audio.IsEmpty) { await writer.WriteAsync(new(RuntimeEventKind.UnexpectedProviderAudio), ct); continue; }
                 if (value.ProviderEventJson is not null)
                     await writer.WriteAsync(new(RuntimeEventKind.ProviderEvent, ProviderJson: value.ProviderEventJson,
-                        ProviderEventId: value.ProviderEventId, ProviderSequence: value.Sequence), ct);
+                        ProviderEventId: value.ProviderEventId, ProviderSequence: value.Sequence, ProviderTurnId: value.TurnId), ct);
             }
+            // A closed/expired socket is not silence. Stop the AI lane so a new host-started
+            // session cannot inherit old provider context, usage, or a stale answer.
+            if (!ct.IsCancellationRequested) await writer.WriteAsync(new(RuntimeEventKind.ProviderFailure), ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch { writer.TryWrite(new(RuntimeEventKind.ProviderFailure)); }
+        catch (Exception ex)
+        {
+            logger.LogWarning("Room realtime stream ended. FailureType={FailureType} Code={Code}", ex.GetType().Name,
+                ex is RealtimeAgentEventException provider ? provider.Code : "provider_stream_failed");
+            writer.TryWrite(new(RuntimeEventKind.ProviderFailure));
+        }
     }
 
     private async Task SpeakInOwnScopeAsync(Guid speechId, ISalesRoomMediaConnection media,
@@ -876,6 +1196,10 @@ internal sealed class SalesRoomAgentWorker(
         var inputTokens = 0; var outputTokens = 0;
         var generatedMilliseconds = 0;
         var published = 0;
+        var playbackCompleted = false;
+        AgentConversation? conversation = null;
+        ValidatedConversationBridge? proposedBridge = null;
+        SalesMeetingQuestion? answeredForBridge = null;
         try
         {
             if (db.Entry(room).State == EntityState.Detached)
@@ -884,8 +1208,25 @@ internal sealed class SalesRoomAgentWorker(
                 await db.Entry(room).ReloadAsync(responseCt);
             if (!room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) || item.TurnGeneration != room.AgentTurnGeneration)
                 throw new WithheldSpeech("turn_fenced", "The requested speech belongs to an obsolete room turn.");
+            if (item.Kind == SalesRoomAgentSpeechKinds.Bridge && !Options.HybridConversationEnabled)
+                throw new WithheldSpeech("conversation_disabled", "Realtime conversation was turned off before the follow-up could play.");
             await EnsureFloorAsync(room, item, responseCt);
             await EnsureConsentAsync(room, responseCt);
+            if (Options.HybridConversationEnabled)
+            {
+                var floor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
+                    x.CompanyId == room.CompanyId && x.RoomId == room.Id, responseCt);
+                var authority = await SalesRoomConversationPolicy.LoadAsync(db, Options, room.CompanyId, room.Id,
+                    floor.PendingParticipantId ?? floor.HostParticipantId, Now, responseCt)
+                    ?? throw new WithheldSpeech("conversation_unavailable", "Conversation access changed before playback.");
+                conversation = new(authority.Binding, item.Kind switch
+                {
+                    SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Limitation => AgentConversationPhase.SpeakingAnswer,
+                    SalesRoomAgentSpeechKinds.Bridge => AgentConversationPhase.WaitingForReply,
+                    _ => AgentConversationPhase.Presenting
+                });
+                await EnsureConversationAsync(conversation, room, item, responseCt);
+            }
             if (item.Kind == SalesRoomAgentSpeechKinds.Narration)
             {
                 var plan = await conductor.PrepareAsync(new(room.CompanyId, room.OrganizerUserId, item.SessionId,
@@ -908,10 +1249,13 @@ internal sealed class SalesRoomAgentWorker(
                     throw new WithheldSpeech("narration_slide_changed", "The approved narration does not match the customer-visible slide.");
                 bytes = playback.Pcm;
             }
-            else
+            else if (item.Kind is SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Limitation)
             {
                 var question = await ReleasedQuestionAsync(room, item, responseCt);
-                text = QuestionAcknowledgement + question.AnswerText!;
+                if (item.Kind == SalesRoomAgentSpeechKinds.Answer) answeredForBridge = question;
+                text = item.Kind == SalesRoomAgentSpeechKinds.Limitation
+                    ? question.AnswerText!
+                    : Options.HybridConversationEnabled ? question.AnswerText! : QuestionAcknowledgement + question.AnswerText!;
                 evidence = JsonSerializer.Serialize(question.Evidence.Select(x => new { x.SourceId, x.SourceType, x.SourceTitle }).Distinct());
                 var profile = await speech.GetProfileAsync(responseCt);
                 if (!profile.Available) throw new WithheldSpeech("voice_unavailable", "Approved-text speech is unavailable.");
@@ -934,6 +1278,33 @@ internal sealed class SalesRoomAgentWorker(
                 bytes = generated.Pcm; response = generated.ProviderResponseId;
                 inputTokens = generated.InputTokens; outputTokens = generated.OutputTokens;
             }
+            else if (item.Kind == SalesRoomAgentSpeechKinds.Bridge)
+            {
+                var question = await ReleasedQuestionAsync(room, item, responseCt);
+                var validation = ReadBridgeEvidence(item);
+                if (validation is null || validation.AnswerVersion != question.ConcurrencyVersion ||
+                    validation.AnswerHash != HashAnswer(question.AnswerText!) ||
+                    !ConversationBridgePolicy.IsStructurallySafe(item.ReleasedText))
+                    throw new WithheldSpeech("bridge_release_changed", "The conversational follow-up is no longer valid.");
+                text = item.ReleasedText;
+                evidence = item.EvidenceJson;
+                var profile = await speech.GetProfileAsync(responseCt);
+                if (!profile.Available) throw new WithheldSpeech("voice_unavailable", "Conversational speech is unavailable.");
+                var generated = await speech.GenerateAsync(new(room.CompanyId, item.RequestedByUserId, item.AgentId,
+                    text!, "en", profile.Voice, profile.ConfigurationVersion, item.Id.ToString("N")), responseCt);
+                if (!generated.ContentMatches)
+                    throw new WithheldSpeech(generated.FailureCode ?? "bridge_speech_mismatch",
+                        "Generated audio did not match the validated conversational follow-up.");
+                db.ChangeTracker.Clear(); room = await RoomAsync(work, responseCt);
+                question = await ReleasedQuestionAsync(room, item, responseCt);
+                if (validation.AnswerVersion != question.ConcurrencyVersion ||
+                    validation.AnswerHash != HashAnswer(question.AnswerText!))
+                    throw new WithheldSpeech("bridge_release_changed", "The grounded answer changed before follow-up playback.");
+                await EnsureFloorAsync(room, item, responseCt);
+                bytes = generated.Pcm; response = generated.ProviderResponseId;
+                inputTokens = generated.InputTokens; outputTokens = generated.OutputTokens;
+            }
+            else throw new WithheldSpeech("speech_kind_unknown", "This speech lane is not authorized.");
             if (bytes.Length == 0 || bytes.Length % 2 != 0 || bytes.Length > 24_000 * 2 * 120)
                 throw new WithheldSpeech("invalid_approved_audio", "The approved audio was empty or outside the room limit.");
             var samples = MemoryMarshal.Cast<byte, short>(bytes).ToArray();
@@ -959,6 +1330,13 @@ internal sealed class SalesRoomAgentWorker(
             await AlignOutputGenerationAsync(media, item.TurnGeneration, responseCt);
             for (var offset = 0; offset < samples.Length; offset += 480)
             {
+                // Recheck the durable floor/consent while streaming, not just after a long
+                // generation or at end-of-playback. Never let mode downgrade drain old audio.
+                if (conversation is not null && offset % 4800 == 0)
+                {
+                    await EnsureFloorAsync(room, item, responseCt);
+                    await EnsureConversationAsync(conversation, room, item, responseCt);
+                }
                 var length = Math.Min(480, samples.Length - offset);
                 ReadOnlyMemory<short> frame = samples.AsMemory(offset, length);
                 if (length < 480)
@@ -971,14 +1349,49 @@ internal sealed class SalesRoomAgentWorker(
                     throw new WithheldSpeech("speech_interrupted", "Agent speech was stopped before completion.");
                 }
                 published += length;
+                if (offset == 0 && item.Kind is SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Limitation)
+                    control.Timing.Complete("confirmed_input_to_first_answer_frame", item.CommandId);
+            }
+            if (conversation is not null)
+            {
+                await EnsureFloorAsync(room, item, responseCt);
+                await EnsureConversationAsync(conversation, room, item, responseCt);
             }
             if (!await media.CompleteSpeechAsync(item.TurnGeneration, responseCt))
             {
                 responseCt.ThrowIfCancellationRequested();
                 throw new WithheldSpeech("speech_interrupted", "Agent speech was stopped before completion.");
             }
+            playbackCompleted = true;
+            if (item.Kind == SalesRoomAgentSpeechKinds.Answer && item.QuestionId is Guid timingQuestion)
+                control.Timing.Begin("answer_complete_to_listening", timingQuestion);
             var duration = checked((int)(published * 1000L / 24_000));
             SalesRoomBenchmarkTelemetry.RecordOutput(item.Kind, generatedMilliseconds, duration, 0);
+            if (item.Kind == SalesRoomAgentSpeechKinds.Answer && Options.HybridConversationEnabled &&
+                answeredForBridge is not null)
+            {
+                try
+                {
+                    var bridgeFloor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+                        x.CompanyId == room.CompanyId && x.RoomId == room.Id, responseCt);
+                    if (bridgeFloor is { State: SalesRoomFloorStates.Agent,
+                            ControlMode: SalesPresentationControlModes.Autonomous } &&
+                        bridgeFloor.ResponseGeneration == item.ResponseGeneration &&
+                        bridgeFloor.PendingParticipantId is Guid bridgeParticipant)
+                    {
+                        var bridgeContext = new SalesRoomConversationContext(room.CompanyId, item.AgentId,
+                            room.Id, item.SessionId, bridgeParticipant, answeredForBridge.Id,
+                            answeredForBridge.QuestionText, answeredForBridge.AnswerText!,
+                            answeredForBridge.Status == SalesMeetingQuestionStatus.PartiallySupported,
+                            bridgeFloor.SlideNumber, bridgeFloor.TalkingPointIndex, bridgeFloor.ControlMode);
+                        proposedBridge = await conversationReasoner.ProposeBridgeAsync(bridgeContext, responseCt);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "Conversational bridge generation failed safely for room {RoomId}.", room.Id);
+                }
+            }
             // Retry only persistence, never audio. The input loop must keep renewing ownership
             // while a long narration is playing, so its original room version is obsolete.
             for (var attempt = 0; ; attempt++)
@@ -1011,6 +1424,34 @@ internal sealed class SalesRoomAgentWorker(
                 var continueDeck = floor is not null && floor.ResponseGeneration == item.ResponseGeneration &&
                     item.Kind == SalesRoomAgentSpeechKinds.Narration && nextSegment is null &&
                     floor.ControlMode == SalesPresentationControlModes.Autonomous;
+                var queueBridge = proposedBridge is not null && floor is not null &&
+                    floor.ResponseGeneration == item.ResponseGeneration && floor.State == SalesRoomFloorStates.Agent &&
+                    floor.ControlMode == SalesPresentationControlModes.Autonomous &&
+                    floor.PendingParticipantId is Guid bridgeParticipantId &&
+                    item.Kind == SalesRoomAgentSpeechKinds.Answer && item.QuestionId is Guid questionId;
+                if (queueBridge)
+                {
+                    var answer = await ReleasedQuestionAsync(room, item, responseCt);
+                    var authority = await SalesRoomConversationPolicy.LoadAsync(db, Options, room.CompanyId, room.Id,
+                        floor!.PendingParticipantId!.Value, Now, responseCt);
+                    var decision = authority is null ? new AgentConversationDecision(false, "conversation_unavailable") :
+                        new AgentConversation(authority.Binding, AgentConversationPhase.WaitingForReply)
+                            .Authorize(authority, AgentConversationAction.SpeakBridge, Now, bridgeValidated: true);
+                    queueBridge = decision.Allowed && answeredForBridge?.ConcurrencyVersion == answer.ConcurrencyVersion &&
+                        answeredForBridge.AnswerText == answer.AnswerText &&
+                        ConversationBridgePolicy.IsStructurallySafe(proposedBridge!.Text);
+                    if (queueBridge)
+                    {
+                        var followUp = new SalesRoomAgentSpeech(Guid.NewGuid(), room.CompanyId, room.Id,
+                            item.SessionId, Guid.NewGuid(), item.AgentId, work.Generation, room.AgentTurnGeneration,
+                            SalesRoomAgentSpeechKinds.Bridge, item.RequestedByUserId, Now, questionId: item.QuestionId!.Value,
+                            responseGeneration: floor!.ResponseGeneration);
+                        followUp.PrepareBridge(proposedBridge!.Text, JsonSerializer.Serialize(new BridgeEvidence(
+                            proposedBridge.ProposalRunId, proposedBridge.ValidationRunId,
+                            answer.ConcurrencyVersion, HashAnswer(answer.AnswerText!))), Now);
+                        db.SalesRoomAgentSpeech.Add(followUp);
+                    }
+                }
                 if (floor is not null && floor.ResponseGeneration == item.ResponseGeneration)
                 {
                     if (continueCurrentSlide)
@@ -1024,15 +1465,22 @@ internal sealed class SalesRoomAgentWorker(
                             SalesRoomAgentSpeechKinds.Narration, item.RequestedByUserId, Now,
                             item.NarrationRevisionId, nextSegment.Id, responseGeneration: floor.ResponseGeneration));
                     }
-                    else if (!continueDeck)
+                    else if (!continueDeck && !queueBridge)
                     {
-                        floor.AgentCompleted(floor.HostParticipantId, Now, nextSegment?.TalkingPoint);
+                        floor.AgentCompleted(floor.HostParticipantId, Now, nextSegment?.TalkingPoint,
+                            preserveNarrationCheckpoint: item.Kind != SalesRoomAgentSpeechKinds.Narration);
                     }
                 }
                 db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), room.CompanyId, AuditActorTypes.User, item.RequestedByUserId,
                     "sales.browser_room.agent_spoke", "sales_room_agent_speech", item.Id.ToString("D"), AuditEventOutcomes.Succeeded,
                     "The room agent published one release-checked speech item to its shared voice track.",
-                    item.Kind == SalesRoomAgentSpeechKinds.Answer ? ["released answer", "question evidence"] : ["approved narration asset", "audience binding"],
+                    item.Kind switch
+                    {
+                        SalesRoomAgentSpeechKinds.Answer => ["released answer", "question evidence"],
+                        SalesRoomAgentSpeechKinds.Bridge => ["validated bridge", "released answer binding"],
+                        SalesRoomAgentSpeechKinds.Limitation => ["safe limitation", "no factual claims"],
+                        _ => ["approved narration asset", "audience binding"]
+                    },
                     new Dictionary<string, string?> { ["roomId"] = room.Id.ToString("D"), ["kind"] = item.Kind,
                         ["questionId"] = item.QuestionId?.ToString("D"), ["segmentId"] = item.NarrationSegmentId?.ToString("D") },
                     item.CommandId.ToString("N"), Now));
@@ -1048,6 +1496,12 @@ internal sealed class SalesRoomAgentWorker(
         }
         catch (OperationCanceledException) when (responseCt.IsCancellationRequested && !ct.IsCancellationRequested)
         {
+            if (playbackCompleted)
+            {
+                await PersistCompletedPlaybackAsync(item, work, text, evidence, response,
+                    checked((int)(published * 1000L / 24_000)));
+                return;
+            }
             var played = checked((int)(published * 1000L / 24_000));
             SalesRoomBenchmarkTelemetry.RecordOutput(item.Kind, generatedMilliseconds, played,
                 Math.Max(0, generatedMilliseconds - played));
@@ -1065,13 +1519,21 @@ internal sealed class SalesRoomAgentWorker(
                 floor.State == SalesRoomFloorStates.Agent && floor.TurnGeneration == item.TurnGeneration &&
                 room.AgentTurnGeneration == item.TurnGeneration && room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now);
             if (handoff)
-                floor!.PauseAt(duration, room.AgentTurnGeneration, Now);
+                floor!.PauseAt(item.Kind == SalesRoomAgentSpeechKinds.Narration ? duration : floor.ResumeOffsetMilliseconds,
+                    room.AgentTurnGeneration, Now);
             await db.SaveChangesAsync(CancellationToken.None);
             if (handoff) control.RecordConfirmedHandoff(responseStop, item.ResponseGeneration, floor!.ResponseGeneration);
         }
         catch (Exception error) when (error is WithheldSpeech or SalesNarrationException)
         {
             var ex = error as WithheldSpeech ?? new WithheldSpeech("narration_release_invalid", error.Message);
+            SalesRoomBenchmarkTelemetry.RecordConversationFailure(ex.Code);
+            if (playbackCompleted)
+            {
+                await PersistCompletedPlaybackAsync(item, work, text, evidence, response,
+                    checked((int)(published * 1000L / 24_000)));
+                return;
+            }
             var played = checked((int)(published * 1000L / 24_000));
             SalesRoomBenchmarkTelemetry.RecordOutput(item.Kind, generatedMilliseconds, played,
                 Math.Max(0, generatedMilliseconds - played));
@@ -1081,19 +1543,56 @@ internal sealed class SalesRoomAgentWorker(
             if (item.Status != SalesRoomAgentSpeechStates.Processing) return;
             item.Fail(ex.Code == "speech_interrupted" ? SalesRoomAgentSpeechStates.Interrupted : SalesRoomAgentSpeechStates.Withheld,
                 ex.Code, ex.Message, Now);
-            if (room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now))
+            var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+                x.CompanyId == work.CompanyId && x.RoomId == work.RoomId, CancellationToken.None);
+            // An obsolete narration/answer may finish its failure handler after a new
+            // question has claimed the floor. Withhold only that old item: pausing the
+            // room or cancelling its shared track would fence the new response too.
+            var ownsTurn = room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) &&
+                item.AgentGeneration == room.AgentGeneration && item.TurnGeneration == room.AgentTurnGeneration;
+            var ownsResponse = ownsTurn &&
+                floor is not null && floor.TurnGeneration == item.TurnGeneration &&
+                floor.ResponseGeneration == item.ResponseGeneration;
+            // A mode downgrade returns this same turn to the host. It must discard
+            // buffered audio even though it has fenced the old floor response.
+            var returnedToHost = ownsTurn && floor is { State: SalesRoomFloorStates.Host } &&
+                floor.ControlMode != SalesPresentationControlModes.Autonomous;
+            if (conversation is not null && published > 0 && (ownsResponse || returnedToHost))
+                await media.CancelSpeechAsync(CancellationToken.None);
+            if (ownsResponse)
             {
                 room.PauseAgent(work.LeaseOwnerId, work.Generation, ex.Code, ex.Message,
                     ex.Code == "voice_unavailable" ? "degraded" : room.AgentVoiceHealth);
-                var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
-                    x.CompanyId == room.CompanyId && x.RoomId == room.Id, CancellationToken.None);
-                if (floor is not null && floor.ResponseGeneration == item.ResponseGeneration &&
-                    floor.State == SalesRoomFloorStates.Agent)
-                    floor.PauseAt(item.OffsetMilliseconds + checked((int)(published * 1000L / 24_000)),
+                if (floor!.State == SalesRoomFloorStates.Agent)
+                    floor.PauseAt(item.Kind == SalesRoomAgentSpeechKinds.Narration
+                            ? item.OffsetMilliseconds + checked((int)(published * 1000L / 24_000)) : floor.ResumeOffsetMilliseconds,
                         room.AgentTurnGeneration, Now);
             }
         }
         finally { control.EndResponse(responseStop); }
+    }
+
+    private async Task PersistCompletedPlaybackAsync(SalesRoomAgentSpeech item, SalesRoomAgentWorkItem work,
+        string? text, string? evidence, string? providerResponse, int duration)
+    {
+        // A bridge proposal can be cancelled after the answer has audibly finished. Do not
+        // rewrite that released answer as withheld or interrupted when only the next lane
+        // lost authority. The bridge remains unqueued.
+        db.ChangeTracker.Clear();
+        var completed = await db.SalesRoomAgentSpeech.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+            x.CompanyId == work.CompanyId && x.RoomId == work.RoomId && x.Id == item.Id, CancellationToken.None);
+        if (completed is null || completed.Status != SalesRoomAgentSpeechStates.Processing) return;
+        completed.Complete(text, evidence, providerResponse, duration, Now);
+        var currentRoom = await RoomAsync(work, CancellationToken.None);
+        if (currentRoom.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now))
+            currentRoom.AgentSpeechCompleted(work.LeaseOwnerId, work.Generation, duration);
+        var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+            x.CompanyId == work.CompanyId && x.RoomId == work.RoomId, CancellationToken.None);
+        if (floor is not null && floor.State == SalesRoomFloorStates.Agent &&
+            floor.TurnGeneration == completed.TurnGeneration && floor.ResponseGeneration == completed.ResponseGeneration)
+            floor.AgentCompleted(floor.HostParticipantId, Now,
+                preserveNarrationCheckpoint: completed.Kind != SalesRoomAgentSpeechKinds.Narration);
+        await db.SaveChangesAsync(CancellationToken.None);
     }
 
     private async Task EnsureFloorAsync(SalesBrowserRoom room, SalesRoomAgentSpeech item, CancellationToken ct)
@@ -1103,7 +1602,60 @@ internal sealed class SalesRoomAgentWorker(
         if (floor is null || floor.State != SalesRoomFloorStates.Agent ||
             floor.TurnGeneration != item.TurnGeneration || floor.ResponseGeneration != item.ResponseGeneration)
             throw new WithheldSpeech("floor_fenced", "The floor changed before this response could be published.");
+        if ((!Options.HybridConversationEnabled || floor.ControlMode != "autonomous") &&
+            await db.SalesRoomOperations.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.CommandId == item.CommandId &&
+                x.Action == "conversation_resume", ct))
+            throw new WithheldSpeech("host_approval_required", "Automatic continuation is paused. Use the host controls to resume.");
     }
+
+    private async Task EnsureConversationAsync(AgentConversation conversation, SalesBrowserRoom room,
+        SalesRoomAgentSpeech item, CancellationToken ct)
+    {
+        var current = await SalesRoomConversationPolicy.LoadAsync(db, Options, room.CompanyId, room.Id,
+            conversation.Binding.ParticipantId, Now, ct);
+        var decision = current is null ? new AgentConversationDecision(false, "conversation_unavailable") : conversation.Check(current, Now);
+        if (decision.Allowed && item.Kind is SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Limitation)
+        {
+            var question = await ReleasedQuestionAsync(room, item, ct);
+            decision = conversation.Authorize(current!, AgentConversationAction.SpeakAnswer, Now,
+                SalesRoomConversationPolicy.Supported(question), SalesRoomConversationPolicy.Released(question));
+        }
+        if (decision.Allowed && item.Kind == SalesRoomAgentSpeechKinds.Bridge)
+        {
+            var question = await ReleasedQuestionAsync(room, item, ct);
+            var validation = ReadBridgeEvidence(item);
+            var validated = validation is not null && validation.AnswerVersion == question.ConcurrencyVersion &&
+                validation.AnswerHash == HashAnswer(question.AnswerText!) &&
+                ConversationBridgePolicy.IsStructurallySafe(item.ReleasedText) &&
+                await db.SalesRoomAgentSpeech.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                    x.CompanyId == room.CompanyId && x.RoomId == room.Id && x.SessionId == item.SessionId &&
+                    x.QuestionId == question.Id && x.Kind == SalesRoomAgentSpeechKinds.Answer &&
+                    x.Status == SalesRoomAgentSpeechStates.Spoken && x.AgentGeneration == item.AgentGeneration &&
+                    x.TurnGeneration == item.TurnGeneration && x.ResponseGeneration == item.ResponseGeneration &&
+                    x.CompletedUtc <= item.CreatedUtc && x.ReleasedText != null, ct);
+            decision = conversation.Authorize(current!, AgentConversationAction.SpeakBridge, Now,
+                bridgeValidated: validated);
+        }
+        if (!decision.Allowed) throw new WithheldSpeech(decision.Code, "Conversation authorization changed. Review the room before speaking again.");
+    }
+
+    private sealed record BridgeEvidence(Guid ProposalRunId, Guid ValidationRunId, long AnswerVersion, string AnswerHash,
+        Guid? ReplyTurnId = null);
+
+    private static BridgeEvidence? ReadBridgeEvidence(SalesRoomAgentSpeech item)
+    {
+        if (item.Kind != SalesRoomAgentSpeechKinds.Bridge || string.IsNullOrWhiteSpace(item.EvidenceJson)) return null;
+        try
+        {
+            var evidence = JsonSerializer.Deserialize<BridgeEvidence>(item.EvidenceJson);
+            return evidence is not null && evidence.ProposalRunId != Guid.Empty && evidence.ValidationRunId != Guid.Empty &&
+                evidence.AnswerVersion > 0 && evidence.AnswerHash is { Length: 64 } ? evidence : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    private static string HashAnswer(string text) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
     private async Task ContinueAutonomousDeckAsync(Guid companyId, Guid roomId, SalesRoomAgentSpeech completed,
         SalesRoomAgentWorkItem work, CancellationToken ct)
@@ -1184,10 +1736,10 @@ internal sealed class SalesRoomAgentWorker(
             new(roomId, floor.ResponseGeneration), ct);
     }
 
-    private async Task HandleTranscriptAsync(SalesBrowserRoom room, SalesRoomParticipant participant,
+    internal async Task HandleTranscriptAsync(SalesBrowserRoom room, SalesRoomParticipant participant,
         SalesRoomDetectedUtterance utterance, string transcript, bool interruptedAgent, bool transcriptRetained,
         ISalesRoomMediaConnection media, SalesRoomAgentWorkItem work, ISalesRoomFloorEventPublisher publisher,
-        ISalesMeetingQuestionAnsweringService answering, CancellationToken ct)
+        ISalesMeetingQuestionAnsweringService answering, CancellationToken ct, bool semanticQuestion = false)
     {
         var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
             x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
@@ -1206,7 +1758,7 @@ internal sealed class SalesRoomAgentWorker(
                 .Select(x => x.Id).ToListAsync(ct);
             connectedHumans = CountConnectedHumans(admitted, participant.Id, media.IsParticipantConnected);
         }
-        var addressed = explicitlyAddressed || ShouldTreatInterruptedSpeechAsAddressedQuestion(
+        var addressed = semanticQuestion || explicitlyAddressed || ShouldTreatInterruptedSpeechAsAddressedQuestion(
             transcript, interruptedAgent, connectedHumans, utterance.Overlapped);
         if (!addressed && !utterance.Overlapped)
         {
@@ -1229,21 +1781,65 @@ internal sealed class SalesRoomAgentWorker(
             return;
         }
         Guid? questionId = null;
+        if (Options.HybridConversationEnabled && addressed && transcriptRetained && !semanticQuestion &&
+            !await IsSubstantiveQuestionAsync(room, participant.Id, transcript, work, ct)) return;
         var commandId = StableTurnId(room.Id, participant.Id, utterance.TrackId, utterance.TrackGeneration, utterance.StartedAt);
+        AgentConversation? conversation = null;
         if (addressed && !utterance.Overlapped && transcriptRetained && room.AgentId is Guid selectedAgent &&
             room.MeetingSessionId is Guid sessionId)
         {
+            conversation = await SalesRoomConversationPolicy.BeginInputAsync(db, Options, room.CompanyId,
+                room.Id, participant.Id, commandId, Now, ct);
             var sequence = (await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking().Where(x =>
                 x.CompanyId == room.CompanyId && x.SessionId == sessionId).MaxAsync(x => (long?)x.Sequence, ct) ?? 0) + 1;
-            var answer = await RunWithLeaseRenewalAsync(work, answerToken => answering.AskAsync(room.CompanyId, room.OrganizerUserId, sessionId,
-                new(commandId, sequence, selectedAgent, transcript.Trim(), "customer", participant.DisplayName, "browser_room"),
-                commandId.ToString("N"), answerToken), ct);
+            SalesMeetingQuestionDto? answer;
+            try
+            {
+                answer = await RunWithLeaseRenewalAsync(work, answerToken => answering.AskAsync(room.CompanyId, room.OrganizerUserId, sessionId,
+                    new(commandId, sequence, selectedAgent, transcript.Trim(), "customer", participant.DisplayName, "browser_room"),
+                    commandId.ToString("N"), answerToken), ct);
+            }
+            catch (Exception ex) when (ex is SalesMeetingCaptureValidationException or SalesMeetingCaptureConflictException)
+            {
+                // A rejected question is not a failed media session. Withhold this turn,
+                // retain the lease and microphone connection, and allow a fresh question.
+                // Cancellation, storage failures and transport failures still propagate.
+                logger.LogWarning("Question withheld without leaving room {RoomId}: {FailureType}.",
+                    work.RoomId, ex.GetType().Name);
+                db.ChangeTracker.Clear();
+                room = await RoomAsync(work, ct);
+                if (!room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now) ||
+                    room.State != SalesBrowserRoomStates.Live || !await HasAllConsentAsync(room, ct)) return;
+                room.AgentTurnFailed(work.LeaseOwnerId, work.Generation, "question_rejected",
+                    "That question could not be processed. Alex is still connected; please ask again.");
+                floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleAsync(x =>
+                    x.CompanyId == work.CompanyId && x.RoomId == work.RoomId, ct);
+                floor.AgentCompleted(floor.HostParticipantId, Now, preserveNarrationCheckpoint: true);
+                floor.PauseAt(floor.ResumeOffsetMilliseconds, room.AgentTurnGeneration, Now);
+                var pending = await db.SalesRoomAgentSpeech.IgnoreQueryFilters().Where(x =>
+                    x.CompanyId == work.CompanyId && x.RoomId == work.RoomId && x.AgentGeneration == work.Generation &&
+                    (x.Status == SalesRoomAgentSpeechStates.Queued || x.Status == SalesRoomAgentSpeechStates.Processing)).ToListAsync(ct);
+                foreach (var item in pending)
+                    item.Fail(SalesRoomAgentSpeechStates.Interrupted, "question_rejected", "Question processing was rejected; speech was withheld.", Now);
+                await db.SaveChangesAsync(ct);
+                await media.CancelSpeechAsync(ct);
+                return;
+            }
             questionId = answer?.Id;
             db.ChangeTracker.Clear();
             room = await RoomAsync(work, ct);
             if (!room.IsAgentOwner(work.LeaseOwnerId, work.Generation, Now)) return;
             floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleAsync(x =>
                 x.CompanyId == room.CompanyId && x.RoomId == room.Id, ct);
+        }
+        if (conversation is not null)
+        {
+            var decision = await SalesRoomConversationPolicy.RecheckAsync(db, Options, conversation, Now, ct);
+            if (!decision.Allowed)
+            {
+                logger.LogInformation("Conversation release withheld for room {RoomId}: {Reason}.", room.Id, decision.Code);
+                return;
+            }
         }
         floor.ProposeTurn(participant.Id, participant.Generation, addressed, utterance.Overlapped, questionId, Now);
         await db.SaveChangesAsync(ct);
@@ -1253,16 +1849,31 @@ internal sealed class SalesRoomAgentWorker(
         var question = await db.SalesMeetingQuestions.IgnoreQueryFilters().Include(x => x.Evidence).SingleAsync(x =>
             x.CompanyId == room.CompanyId && x.Id == questionId, ct);
         if (!CanAutomaticallyRelease(question, floor.ControlMode)) return;
+        if (Options.HybridConversationEnabled)
+        {
+            var authority = await SalesRoomConversationPolicy.LoadAsync(db, Options, room.CompanyId, room.Id, participant.Id, Now, ct);
+            if (authority is null) return;
+            var turn = new AgentConversation(authority.Binding, AgentConversationPhase.Retrieving);
+            if (!turn.AnswerReady(turn.Version, authority, Now, SalesRoomConversationPolicy.Supported(question), false).Allowed) return;
+        }
         if (question.Visibility != SalesMeetingAnswerVisibility.ApprovedForStage)
-            question.ApproveForStage(room.OrganizerUserId, question.ConcurrencyVersion, Now);
+        {
+            if (question.IsSafeNoEvidenceLimitation)
+                question.ApproveSafeLimitationForStage(room.OrganizerUserId, question.ConcurrencyVersion, Now);
+            else question.ApproveForStage(room.OrganizerUserId, question.ConcurrencyVersion, Now);
+        }
         room.ResumeAgent(owner, work.Generation);
         floor.AuthorizeAgentResponse(floor.HostParticipantId, room.AgentTurnGeneration, Now);
         db.SalesRoomAgentSpeech.Add(new SalesRoomAgentSpeech(Guid.NewGuid(), room.CompanyId, room.Id, meetingId,
-            commandId, agent, work.Generation, room.AgentTurnGeneration, SalesRoomAgentSpeechKinds.Answer,
+            commandId, agent, work.Generation, room.AgentTurnGeneration,
+            question.IsSafeNoEvidenceLimitation ? SalesRoomAgentSpeechKinds.Limitation : SalesRoomAgentSpeechKinds.Answer,
             room.OrganizerUserId, Now, questionId: questionId, responseGeneration: floor.ResponseGeneration));
         await db.SaveChangesAsync(ct);
         await publisher.AllowPlaybackAsync(room.CompanyId, meetingId, new(room.Id, floor.ResponseGeneration), ct);
     }
+
+    internal static DateTime? ReplyDeadlineAfterTool(bool accepted, string? tool, DateTime? originalDeadline, DateTime now) =>
+        accepted && tool == SalesRoomConversationTools.Wait && originalDeadline > now ? originalDeadline : null;
 
     internal static bool IsAddressedQuestion(string text, string agentName)
     {
@@ -1298,6 +1909,11 @@ internal sealed class SalesRoomAgentWorker(
             RegexOptions.CultureInvariant);
     }
 
+    internal static bool ShouldRouteContextualReply(bool enabled, bool explicitlyAddressed, bool awaitingReply,
+        bool overlapped, int connectedHumanCount, string text) =>
+        enabled && awaitingReply && !overlapped && (explicitlyAddressed || connectedHumanCount == 1) &&
+        !string.IsNullOrWhiteSpace(text) && text.Length <= 2000;
+
     internal static bool CanReceiveSpeech(SalesRoomParticipant? participant, bool mediaConnected, DateTime now) =>
         participant is { State: SalesRoomParticipantStates.Admitted, AiProcessingAllowed: true } &&
         participant.ExpiresUtc > now && mediaConnected;
@@ -1325,16 +1941,20 @@ internal sealed class SalesRoomAgentWorker(
 
     internal static bool CanAutomaticallyRelease(SalesMeetingQuestion question, string controlMode) =>
         controlMode == SalesPresentationControlModes.Autonomous &&
-        question.Status is (SalesMeetingQuestionStatus.Completed or SalesMeetingQuestionStatus.PartiallySupported) &&
-        !string.IsNullOrWhiteSpace(question.AnswerText) && question.Evidence.Count > 0;
+        (question.IsSafeNoEvidenceLimitation ||
+         question.Status is (SalesMeetingQuestionStatus.Completed or SalesMeetingQuestionStatus.PartiallySupported) &&
+         !string.IsNullOrWhiteSpace(question.AnswerText) && question.Evidence.Count > 0);
 
     private async Task<SalesMeetingQuestion> ReleasedQuestionAsync(SalesBrowserRoom room, SalesRoomAgentSpeech item, CancellationToken ct)
     {
         var question = await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking().Include(x => x.Evidence).SingleOrDefaultAsync(x =>
             x.CompanyId == room.CompanyId && x.SessionId == item.SessionId && x.Id == item.QuestionId && x.AgentId == item.AgentId, ct);
-        if (question is null || question.Status is not (SalesMeetingQuestionStatus.Completed or SalesMeetingQuestionStatus.PartiallySupported) ||
+        if (question is null ||
             question.Visibility != SalesMeetingAnswerVisibility.ApprovedForStage || question.StageApprovedUtc is null ||
-            string.IsNullOrWhiteSpace(question.AnswerText) || question.Evidence.Count == 0)
+            (item.Kind == SalesRoomAgentSpeechKinds.Limitation
+                ? !question.IsSafeNoEvidenceLimitation
+                : question.Status is not (SalesMeetingQuestionStatus.Completed or SalesMeetingQuestionStatus.PartiallySupported) ||
+                  string.IsNullOrWhiteSpace(question.AnswerText) || question.Evidence.Count == 0))
             throw new WithheldSpeech("answer_not_released", "The answer is no longer approved for customer-visible speech.");
         return question;
     }
@@ -1414,6 +2034,9 @@ internal sealed class SalesRoomAgentWorker(
             {
                 room.PauseAgent(work.LeaseOwnerId, work.Generation, code,
                     "Room AI paused safely. The human call, manual slides, and typed questions remain available.");
+                var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+                    x.CompanyId == work.CompanyId && x.RoomId == work.RoomId, CancellationToken.None);
+                floor?.PauseAt(floor.ResumeOffsetMilliseconds, room.AgentTurnGeneration, Now);
                 await db.SaveChangesAsync(CancellationToken.None);
             }
         }
@@ -1433,9 +2056,9 @@ internal sealed class SalesRoomAgentWorker(
             "emergency_disabled" => "Room AI stopped immediately because the emergency disable was activated.",
             "duration_limit" => "Room AI stopped at the configured call-duration limit.",
             "spend_limit" => "Room AI stopped at the configured spend limit.",
+            "conversation_disabled" => "Realtime conversation was turned off. Restart the agent to use the approved-answer mode; human calling and manual slides remain available.",
             _ => "Room AI stopped during an operational drain. Human calling and typed controls remain available."
         }), Now);
-        if (code == "quota_exceeded")
         {
             var floor = await db.SalesRoomFloors.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
                 x.CompanyId == room.CompanyId && x.RoomId == room.Id, CancellationToken.None);
@@ -1479,7 +2102,7 @@ internal sealed class SalesRoomAgentWorker(
     private enum RuntimeEventKind { CandidateStarted, Utterance, ProviderEvent, DetectorFailure, ProviderFailure, UnexpectedProviderAudio }
     private sealed record RuntimeEvent(RuntimeEventKind Kind, SalesRoomDetectedUtterance? Utterance = null,
         string? ProviderJson = null, string? ProviderEventId = null, long ProviderSequence = 0,
-        Guid? ParticipantId = null, string? TrackId = null, long TrackGeneration = 0);
+        Guid? ParticipantId = null, string? TrackId = null, long TrackGeneration = 0, Guid? ProviderTurnId = null);
     private sealed record CandidateSnapshot(long ConsentVersion, long ParticipantGeneration,
         long TurnGeneration, long? ResponseGeneration, bool BeganDuringPresentation, DateTime StartedUtc);
     private sealed record UtteranceContext(SalesRoomDetectedUtterance Value, long ConsentVersion, bool Retain,

@@ -16,7 +16,8 @@ public sealed class SalesBrowserPresentationService(
     ISalesPresentationRuntimeService runtime,
     ICompanyDocumentStorage storage,
     IOptions<SalesPresentationConductorOptions> configured,
-    TimeProvider clock) : ISalesBrowserPresentationService
+    TimeProvider clock,
+    IOptionsMonitor<SalesRoomAgentOptions>? conversationOptions = null) : ISalesBrowserPresentationService
 {
     private DateTime Now => clock.GetUtcNow().UtcDateTime;
 
@@ -134,7 +135,7 @@ public sealed class SalesBrowserPresentationService(
             x.CompanyId == companyId && x.RoomId == roomId, cancellationToken);
         if (floor is not null)
         {
-            floor.SetMode(result.Mode, result.Version, Now);
+            floor.SetMode(result.Mode, result.Version, Now, conversationOptions?.CurrentValue.HybridConversationEnabled == true);
             await db.SaveChangesAsync(cancellationToken);
         }
         return result;

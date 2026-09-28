@@ -36,6 +36,7 @@ public static class SalesModuleRegistration
                 SalesRoomOperationsPolicy.ConfigurationProblem(x, DateTime.UtcNow) is null,
                 "Browser room agent limits are outside supported safety boundaries.").ValidateOnStart();
         services.AddScoped<SalesRoomAgentWorker>();
+        services.AddScoped<ISalesRoomConversationReasoner, SalesRoomConversationReasoner>();
         services.AddScoped<ISalesRoomAgentService, SalesRoomAgentService>();
         services.AddSingleton<SalesRoomAgentCoordinator>();
         services.AddSingleton<ISalesRoomAgentCommandSink>(p => p.GetRequiredService<SalesRoomAgentCoordinator>());

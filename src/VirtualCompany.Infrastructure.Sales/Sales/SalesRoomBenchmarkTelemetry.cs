@@ -20,6 +20,7 @@ public static class SalesRoomBenchmarkTelemetry
     internal static readonly Counter<long> Lifecycle = Meter.CreateCounter<long>("sales.browser_room.lifecycle");
     internal static readonly Counter<long> Ownership = Meter.CreateCounter<long>("sales.browser_room.agent.ownership");
     internal static readonly Counter<long> Quotas = Meter.CreateCounter<long>("sales.browser_room.quota");
+    private static readonly Counter<long> ConversationFailures = Meter.CreateCounter<long>("sales.browser_room.conversation.failures");
     internal static readonly Histogram<double> Latency = Meter.CreateHistogram<double>("sales.browser_room.latency", "ms");
     internal static readonly Histogram<long> EstimatedSpend = Meter.CreateHistogram<long>("sales.browser_room.estimated_spend", "usd-micro");
 
@@ -57,7 +58,8 @@ public static class SalesRoomBenchmarkTelemetry
 
     internal static void RecordOutput(string kind, int generated, int played, int cancelled)
     {
-        if (kind == SalesRoomAgentSpeechKinds.Answer) AddAudio(generated, "generated", kind);
+        if (kind is SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Bridge or SalesRoomAgentSpeechKinds.Limitation)
+            AddAudio(generated, "generated", kind);
         AddAudio(played, "played", kind);
         AddAudio(cancelled, "cancelled", kind);
     }
@@ -84,6 +86,23 @@ public static class SalesRoomBenchmarkTelemetry
 
     internal static void RecordQuota(string kind) =>
         Quotas.Add(1, new KeyValuePair<string, object?>("kind", kind));
+
+    internal static void RecordConversationFailure(string code)
+    {
+        // Never let provider/user text or unconstrained error codes become metric labels.
+        var reason = code switch
+        {
+            "conversation_stale" or "turn_fenced" or "conversation_changed" => "stale",
+            "consent_required" or "participant_denied" => "access",
+            "budget_exhausted" or "quota_exceeded" => "budget",
+            "conversation_disabled" => "rollback",
+            "voice_unavailable" or "transcription_unavailable" or "response_failed" => "provider",
+            "evidence_required" or "bridge_release_changed" or "narration_release_invalid" => "release",
+            "speech_interrupted" => "interruption",
+            _ => "other"
+        };
+        ConversationFailures.Add(1, new KeyValuePair<string, object?>("reason", reason));
+    }
 
     internal static void RecordLatency(string operation, TimeSpan elapsed) =>
         Latency.Record(elapsed.TotalMilliseconds, new KeyValuePair<string, object?>("operation", operation));

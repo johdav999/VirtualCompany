@@ -103,6 +103,12 @@ public sealed class SalesBrowserRoom : ICompanyOwnedEntity
     }
     public void ResumeAgent(Guid ownerId, long generation)
     { RequireAgentOwner(ownerId, generation); AgentTurnGeneration++; AgentHealth = SalesRoomAgentHealthStates.Ready; AgentLastErrorCode = null; AgentLastErrorSummary = null; Touch(); }
+    public void AgentTurnFailed(Guid ownerId, long generation, string code, string summary)
+    {
+        RequireAgentOwner(ownerId, generation);
+        AgentTurnGeneration++; AgentHealth = SalesRoomAgentHealthStates.Ready;
+        AgentLastErrorCode = code; AgentLastErrorSummary = summary; Touch();
+    }
     public void PauseAgent(Guid ownerId, long generation, string code, string summary, string voiceHealth = "degraded")
     { RequireAgentOwner(ownerId, generation); AgentTurnGeneration++; AgentHealth = SalesRoomAgentHealthStates.Paused; AgentVoiceHealth = voiceHealth; AgentLastErrorCode = code; AgentLastErrorSummary = summary; Touch(); }
     public void StopAgent(string? code, string? summary, DateTime nowUtc)

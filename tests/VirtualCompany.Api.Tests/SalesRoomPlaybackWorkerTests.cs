@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Domain.Agents;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -13,8 +14,355 @@ namespace VirtualCompany.Api.Tests;
 
 // Real relational persistence and the production playback worker, with deterministic media.
 // The media hook changes room state in a SECOND DbContext while the first is playing.
-public sealed class SalesRoomPlaybackWorkerTests
+public sealed partial class SalesRoomPlaybackWorkerTests
 {
+    [Fact]
+    public async Task Obsolete_narration_failure_cannot_pause_the_new_autonomous_answer()
+    {
+        await using var f = await Fixture.Create(true);
+        var room = await f.Db.SalesBrowserRooms.SingleAsync();
+        room.PreemptAgent(f.Work.LeaseOwnerId, f.Work.Generation, "Customer asked a question");
+        var floor = await f.Db.SalesRoomFloors.SingleAsync();
+        floor.PauseAt(250, room.AgentTurnGeneration, f.Source.Clock.Now);
+        await f.Db.SaveChangesAsync();
+        await f.Ask("How does onboarding work?", new GroundedAcceptanceAnswer(f));
+        var answer = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Kind == SalesRoomAgentSpeechKinds.Answer);
+        var answerTurn = answer.TurnGeneration;
+        var response = answer.ResponseGeneration;
+
+        // Reproduce the old playback task failing after the new answer was queued.
+        await f.Play(f.First.Id);
+        f.Db.ChangeTracker.Clear();
+        room = await f.Db.SalesBrowserRooms.SingleAsync();
+        floor = await f.Db.SalesRoomFloors.SingleAsync();
+        Assert.Equal(SalesRoomAgentHealthStates.Ready, room.AgentHealth);
+        Assert.Equal(answerTurn, room.AgentTurnGeneration);
+        Assert.Equal(response, floor.ResponseGeneration);
+        Assert.Equal(SalesRoomFloorStates.Agent, floor.State);
+        Assert.Equal(0, f.Media.Cancellations);
+        Assert.Equal(SalesRoomAgentSpeechStates.Withheld,
+            (await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == f.First.Id)).Status);
+        await f.Play(answer.Id);
+        f.Db.ChangeTracker.Clear();
+        Assert.Equal(SalesRoomAgentSpeechStates.Spoken,
+            (await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == answer.Id)).Status);
+        Assert.False(f.Media.Disposed);
+    }
+
+    [Fact]
+    public async Task Obsolete_response_in_same_turn_cannot_pause_current_narration_floor()
+    {
+        await using var f = await Fixture.Create(true);
+        var floor = await f.Db.SalesRoomFloors.SingleAsync();
+        floor.AgentAdvanced(floor.PresentationVersion, floor.SlideNumber, 2, "point:2",
+            floor.TurnGeneration, f.Source.Clock.Now);
+        var version = floor.Version;
+        await f.Db.SaveChangesAsync();
+        await f.Play(f.First.Id);
+        f.Db.ChangeTracker.Clear();
+        Assert.Equal(SalesRoomAgentHealthStates.Ready, (await f.Db.SalesBrowserRooms.SingleAsync()).AgentHealth);
+        floor = await f.Db.SalesRoomFloors.SingleAsync();
+        Assert.Equal(SalesRoomFloorStates.Agent, floor.State);
+        Assert.Equal(version, floor.Version);
+        Assert.Equal(0, f.Media.Cancellations);
+    }
+
+    [Fact]
+    public async Task Old_playback_failure_does_not_cancel_the_new_turn_shared_track()
+    {
+        await using var f = await Fixture.Create(true);
+        long turn = 0;
+        var cancellationsAtHandoff = 0;
+        f.Media.OnSend = async () =>
+        {
+            cancellationsAtHandoff = f.Media.Cancellations;
+            await using var other = f.OtherDb();
+            var room = await other.SalesBrowserRooms.SingleAsync();
+            room.ResumeAgent(f.Work.LeaseOwnerId, f.Work.Generation);
+            turn = room.AgentTurnGeneration;
+            var floor = await other.SalesRoomFloors.SingleAsync();
+            floor.AgentClaim(floor.ResponseGeneration, turn, f.Source.Clock.Now);
+            await other.SaveChangesAsync();
+        };
+        await f.Play(f.First.Id);
+        f.Db.ChangeTracker.Clear();
+        Assert.Equal(cancellationsAtHandoff, f.Media.Cancellations);
+        var room = await f.Db.SalesBrowserRooms.SingleAsync();
+        Assert.Equal(turn, room.AgentTurnGeneration);
+        Assert.Equal(SalesRoomAgentHealthStates.Ready, room.AgentHealth);
+        Assert.Equal(SalesRoomFloorStates.Agent, (await f.Db.SalesRoomFloors.SingleAsync()).State);
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rejected_question_keeps_agent_lease_and_media_and_accepts_next_question(bool conflict)
+    {
+        await using var f = await Fixture.Create(true);
+        f.Reasoner.Intent = AgentConversationIntent.Question;
+        var answering = new GroundedAcceptanceAnswer(f) { Failure = conflict
+            ? new SalesMeetingCaptureConflictException("capture_changed", "Capture changed")
+            : new SalesMeetingCaptureValidationException(new Dictionary<string, string[]>()) };
+        await f.Ask("How does onboarding work?", answering);
+        f.Db.ChangeTracker.Clear();
+        var room = await f.Db.SalesBrowserRooms.SingleAsync();
+        Assert.Equal(SalesRoomAgentHealthStates.Ready, room.AgentHealth);
+        Assert.Equal("healthy", room.AgentVoiceHealth);
+        Assert.True(room.IsAgentOwner(f.Work.LeaseOwnerId, f.Work.Generation, f.Source.Clock.Now));
+        Assert.Null(room.AgentStoppedUtc);
+        Assert.False(f.Media.Disposed);
+        Assert.Equal("question_rejected", room.AgentLastErrorCode);
+        Assert.Equal(SalesRoomFloorStates.Paused, (await f.Db.SalesRoomFloors.SingleAsync()).State);
+        answering.Failure = null;
+        await f.Ask("How does onboarding work?", answering);
+        Assert.Equal(2, answering.Calls);
+        Assert.Contains(await f.Db.SalesRoomAgentSpeech.ToListAsync(), x =>
+            x.Kind == SalesRoomAgentSpeechKinds.Answer && x.Status == SalesRoomAgentSpeechStates.Queued);
+    }
+
+    [Fact]
+    public async Task Question_cancellation_is_not_converted_to_a_recoverable_turn()
+    {
+        await using var f = await Fixture.Create(true);
+        f.Reasoner.Intent = AgentConversationIntent.Question;
+        await Assert.ThrowsAsync<OperationCanceledException>(() => f.Ask("How does onboarding work?",
+            new GroundedAcceptanceAnswer(f) { Failure = new OperationCanceledException() }));
+    }
+    [Fact]
+    public async Task Autonomous_no_evidence_uses_only_exact_safe_limitation_lane()
+    {
+        await using var f = await Fixture.Create(true);
+        var question = new SalesMeetingQuestion(Guid.NewGuid(), f.Source.Company, f.Source.Session, Guid.NewGuid(), 1,
+            f.First.AgentId, "What is the unverified timeline?", SalesMeetingSpeakerType.Customer, "Host",
+            SalesMeetingInputSource.BrowserRoom, null, 1, f.Source.Actor, f.Source.Clock.Now);
+        question.Complete(SalesMeetingQuestion.SafeNoEvidenceLimitation, 0m, true, Guid.Empty, false,
+            f.Source.Clock.Now);
+        Assert.True(question.IsSafeNoEvidenceLimitation);
+        Assert.True(SalesRoomAgentWorker.CanAutomaticallyRelease(question, "autonomous"));
+        Assert.False(SalesRoomAgentWorker.CanAutomaticallyRelease(question, "assisted"));
+        question.ApproveSafeLimitationForStage(f.Source.Actor, question.ConcurrencyVersion, f.Source.Clock.Now);
+        f.Db.SalesMeetingQuestions.Add(question);
+        var item = new SalesRoomAgentSpeech(Guid.NewGuid(), f.Source.Company, f.Work.RoomId, f.Source.Session,
+            question.ClientQuestionId, f.First.AgentId, f.Work.Generation, f.First.TurnGeneration,
+            SalesRoomAgentSpeechKinds.Limitation, f.Source.Actor, f.Source.Clock.Now,
+            questionId: question.Id, responseGeneration: f.First.ResponseGeneration);
+        f.Db.SalesRoomAgentSpeech.Add(item); await f.Db.SaveChangesAsync();
+        await f.Play(item.Id); f.Db.ChangeTracker.Clear();
+        var spoken = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == item.Id);
+        Assert.Equal(SalesRoomAgentSpeechStates.Spoken, spoken.Status);
+        Assert.Equal(SalesMeetingQuestion.SafeNoEvidenceLimitation, spoken.ReleasedText);
+        Assert.Empty(await f.Db.SalesRoomAgentSpeech.Where(x => x.Kind == SalesRoomAgentSpeechKinds.Bridge).ToListAsync());
+    }
+
+    [Fact]
+    public void An_unverified_model_claim_or_provider_failure_cannot_impersonate_safe_limitation()
+    {
+        var now = DateTime.UtcNow;
+        var question = new SalesMeetingQuestion(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1,
+            Guid.NewGuid(), "Question", SalesMeetingSpeakerType.Customer, "Host", SalesMeetingInputSource.BrowserRoom,
+            null, 1, Guid.NewGuid(), now);
+        question.Complete("We guarantee the result.", 0m, true, Guid.Empty, false, now);
+        Assert.False(question.IsSafeNoEvidenceLimitation);
+        Assert.False(SalesRoomAgentWorker.CanAutomaticallyRelease(question, "autonomous"));
+        Assert.Throws<InvalidOperationException>(() => question.ApproveSafeLimitationForStage(
+            Guid.NewGuid(), question.ConcurrencyVersion, now));
+        question.Fail("provider_unavailable", "Provider failed", false, now);
+        Assert.False(question.IsSafeNoEvidenceLimitation);
+    }
+
+    [Theory]
+    [InlineData("played")]
+    [InlineData("downgraded")]
+    [InlineData("answer_changed")]
+    [InlineData("consent_revoked")]
+    [InlineData("flag_disabled")]
+    [InlineData("downgrade_during_proposal")]
+    public async Task Autonomous_grounded_answer_queues_separate_validated_bridge_and_plays_it(
+        string scenario)
+    {
+        await using var f = await Fixture.Create(true);
+        var question = new SalesMeetingQuestion(Guid.NewGuid(), f.Source.Company, f.Source.Session, Guid.NewGuid(), 1,
+            f.First.AgentId, "How does onboarding work?", SalesMeetingSpeakerType.Customer, "Host",
+            SalesMeetingInputSource.BrowserRoom, null, 1, f.Source.Actor, f.Source.Clock.Now);
+        question.Complete("Company setup starts onboarding. Timing needs confirmation.", .9m, true,
+            Guid.Empty, true, f.Source.Clock.Now, true);
+        question.ApproveForStage(f.Source.Actor, question.ConcurrencyVersion, f.Source.Clock.Now);
+        question.Evidence.Add(new(Guid.NewGuid(), f.Source.Company, question.Id, 0, "Company setup", "fact", .9m,
+            "source", "document", "Approved knowledge", f.Source.Clock.Now));
+        f.Db.SalesMeetingQuestions.Add(question);
+        var floor = await f.Db.SalesRoomFloors.SingleAsync();
+        floor.ProposeTurn(f.Participant.Id, f.Participant.Generation, true, false, question.Id, f.Source.Clock.Now);
+        floor.AuthorizeAgentResponse(f.Participant.Id, f.First.TurnGeneration, f.Source.Clock.Now);
+        var answer = new SalesRoomAgentSpeech(Guid.NewGuid(), f.Source.Company, f.Work.RoomId, f.Source.Session,
+            question.ClientQuestionId, f.First.AgentId, f.Work.Generation, f.First.TurnGeneration,
+            SalesRoomAgentSpeechKinds.Answer, f.Source.Actor, f.Source.Clock.Now,
+            questionId: question.Id, responseGeneration: floor.ResponseGeneration);
+        f.Db.SalesRoomAgentSpeech.Add(answer); await f.Db.SaveChangesAsync();
+        f.Reasoner.Bridge = new("Would you like to explore the remaining details?", Guid.NewGuid(), Guid.NewGuid());
+        if (scenario == "downgrade_during_proposal")
+            f.Reasoner.BeforeReturn = async () =>
+            {
+                await using var other = f.OtherDb();
+                var currentFloor = await other.SalesRoomFloors.SingleAsync();
+                currentFloor.SetMode("manual", currentFloor.PresentationVersion + 1, f.Source.Clock.Now, true);
+                await other.SaveChangesAsync();
+            };
+
+        await f.Play(answer.Id); f.Db.ChangeTracker.Clear();
+        var savedAnswer = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == answer.Id);
+        if (scenario == "downgrade_during_proposal")
+        {
+            Assert.Equal(SalesRoomAgentSpeechStates.Spoken, savedAnswer.Status);
+            Assert.Empty(await f.Db.SalesRoomAgentSpeech.Where(x => x.Kind == SalesRoomAgentSpeechKinds.Bridge).ToListAsync());
+            Assert.Equal(1, f.Media.Completions);
+            return;
+        }
+        var bridge = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Kind == SalesRoomAgentSpeechKinds.Bridge);
+        Assert.Equal(SalesRoomAgentSpeechStates.Spoken, savedAnswer.Status);
+        Assert.Equal(SalesRoomAgentSpeechStates.Queued, bridge.Status);
+        Assert.Equal(question.Id, bridge.QuestionId);
+        Assert.Equal(SalesRoomFloorStates.Agent, (await f.Db.SalesRoomFloors.SingleAsync()).State);
+        Assert.DoesNotContain("Would you like", savedAnswer.ReleasedText);
+
+        if (scenario == "flag_disabled") f.Options.HybridConversationEnabled = false;
+        if (scenario is not ("played" or "flag_disabled"))
+            f.Source.Speech.BeforeReturn = async () =>
+            {
+                await using var other = f.OtherDb();
+                if (scenario == "downgraded")
+                {
+                    var currentFloor = await other.SalesRoomFloors.SingleAsync();
+                    currentFloor.SetMode("manual", currentFloor.PresentationVersion + 1, f.Source.Clock.Now, true);
+                }
+                else if (scenario == "answer_changed")
+                {
+                    var currentQuestion = await other.SalesMeetingQuestions.SingleAsync(x => x.Id == question.Id);
+                    currentQuestion.Complete("A different approved answer.", .9m, false,
+                        Guid.Empty, true, f.Source.Clock.Now);
+                    currentQuestion.ApproveForStage(f.Source.Actor, currentQuestion.ConcurrencyVersion, f.Source.Clock.Now);
+                }
+                else
+                {
+                    var currentParticipant = await other.SalesRoomParticipants.SingleAsync(x => x.Id == f.Participant.Id);
+                    currentParticipant.Consent("ai_processing", false);
+                }
+                await other.SaveChangesAsync();
+            };
+        await f.Play(bridge.Id); f.Db.ChangeTracker.Clear();
+        var spokenBridge = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == bridge.Id);
+        Assert.Equal(scenario == "played" ? SalesRoomAgentSpeechStates.Spoken : SalesRoomAgentSpeechStates.Withheld,
+            spokenBridge.Status);
+        if (scenario == "flag_disabled") Assert.Equal("conversation_disabled", spokenBridge.FailureCode);
+        if (scenario == "played") Assert.Equal(f.Reasoner.Bridge.Text, spokenBridge.ReleasedText);
+        if (scenario is "played" or "downgraded")
+            Assert.Equal(SalesRoomFloorStates.Host, (await f.Db.SalesRoomFloors.SingleAsync()).State);
+        Assert.Equal(scenario == "played" ? 2 : 1, f.Media.Completions);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Hybrid_policy_fences_speech_when_mode_changes_during_generation(bool enabled)
+    {
+        await using var f = await Fixture.Create(enabled);
+        var question = new SalesMeetingQuestion(Guid.NewGuid(), f.Source.Company, f.Source.Session, Guid.NewGuid(), 1,
+            f.First.AgentId, "How does onboarding work?", SalesMeetingSpeakerType.Customer, "Host",
+            SalesMeetingInputSource.BrowserRoom, null, 1, f.Source.Actor, f.Source.Clock.Now);
+        question.Complete("Company setup starts onboarding. Timing needs follow-up.", .9m, true, Guid.Empty, true, f.Source.Clock.Now, true);
+        question.ApproveForStage(f.Source.Actor, question.ConcurrencyVersion, f.Source.Clock.Now);
+        question.Evidence.Add(new(Guid.NewGuid(), f.Source.Company, question.Id, 0, "Company setup", "fact", .9m,
+            "source", "document", "Approved knowledge", f.Source.Clock.Now));
+        f.Db.SalesMeetingQuestions.Add(question);
+        var answer = new SalesRoomAgentSpeech(Guid.NewGuid(), f.Source.Company, f.Work.RoomId, f.Source.Session,
+            Guid.NewGuid(), f.First.AgentId, f.Work.Generation, f.First.TurnGeneration, SalesRoomAgentSpeechKinds.Answer,
+            f.Source.Actor, f.Source.Clock.Now, questionId: question.Id, responseGeneration: f.First.ResponseGeneration);
+        f.Db.SalesRoomAgentSpeech.Add(answer); await f.Db.SaveChangesAsync();
+        f.Source.Speech.BeforeReturn = async () =>
+        {
+            await using var other = f.OtherDb();
+            var floor = await other.SalesRoomFloors.SingleAsync();
+            floor.SetMode("manual", 2, f.Source.Clock.Now, enabled);
+            await other.SaveChangesAsync();
+        };
+        await f.Play(answer.Id); f.Db.ChangeTracker.Clear();
+        var saved = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == answer.Id);
+        Assert.Equal(enabled ? SalesRoomAgentSpeechStates.Withheld : SalesRoomAgentSpeechStates.Spoken, saved.Status);
+        Assert.Equal(enabled ? 0 : 1, f.Media.Completions);
+    }
+
+    [Fact]
+    public async Task Hybrid_input_policy_rechecks_database_authority_and_rejects_foreign_company_and_takeover()
+    {
+        await using var f = await Fixture.Create(true);
+        var turn = await SalesRoomConversationPolicy.BeginInputAsync(f.Db, f.Options, f.Source.Company, f.Work.RoomId,
+            f.Participant.Id, Guid.NewGuid(), f.Source.Clock.Now, default);
+        Assert.NotNull(turn);
+        Assert.True((await SalesRoomConversationPolicy.RecheckAsync(f.Db, f.Options, turn!, f.Source.Clock.Now, default)).Allowed);
+        await Assert.ThrowsAsync<SalesRoomAgentException>(() => SalesRoomConversationPolicy.BeginInputAsync(f.Db, f.Options,
+            Guid.NewGuid(), f.Work.RoomId, f.Participant.Id, Guid.NewGuid(), f.Source.Clock.Now, default));
+        await using (var other = f.OtherDb())
+        {
+            var room = await other.SalesBrowserRooms.SingleAsync();
+            room.TakeOverAgent("Host took over"); await other.SaveChangesAsync();
+        }
+        Assert.False((await SalesRoomConversationPolicy.RecheckAsync(f.Db, f.Options, turn!, f.Source.Clock.Now, default)).Allowed);
+        f.Options.HybridConversationEnabled = false;
+        Assert.Null(await SalesRoomConversationPolicy.BeginInputAsync(f.Db, f.Options, Guid.NewGuid(), Guid.NewGuid(),
+            Guid.NewGuid(), Guid.NewGuid(), f.Source.Clock.Now, default));
+    }
+
+    [Fact]
+    public async Task Disabling_conversation_stops_lease_and_queued_speech_without_ending_human_room()
+    {
+        await using var f = await Fixture.Create(true);
+        f.Options.HybridConversationEnabled = false;
+        var room = await f.Db.SalesBrowserRooms.SingleAsync();
+        await f.StopForRollback(room);
+        f.Db.ChangeTracker.Clear();
+        var saved = await f.Db.SalesBrowserRooms.SingleAsync();
+        var speech = await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == f.First.Id);
+        var floor = await f.Db.SalesRoomFloors.SingleAsync();
+        Assert.Equal(SalesBrowserRoomStates.Live, saved.State);
+        Assert.Equal(SalesRoomAgentHealthStates.Stopped, saved.AgentHealth);
+        Assert.Equal("conversation_disabled", saved.AgentLastErrorCode);
+        Assert.Equal(SalesRoomAgentSpeechStates.Interrupted, speech.Status);
+        Assert.Equal(SalesRoomFloorStates.Paused, floor.State);
+        Assert.Equal(0, saved.AgentForwardedAudioMilliseconds);
+    }
+
+    [Fact]
+    public async Task Hybrid_policy_rejects_removed_participant_for_existing_and_new_turns()
+    {
+        await using var f = await Fixture.Create(true);
+        var turn = await SalesRoomConversationPolicy.BeginInputAsync(f.Db, f.Options, f.Source.Company, f.Work.RoomId,
+            f.Participant.Id, Guid.NewGuid(), f.Source.Clock.Now, default);
+        await using (var other = f.OtherDb())
+        {
+            var participant = await other.SalesRoomParticipants.SingleAsync();
+            participant.Revoke(); await other.SaveChangesAsync();
+        }
+        Assert.False((await SalesRoomConversationPolicy.RecheckAsync(f.Db, f.Options, turn!, f.Source.Clock.Now, default)).Allowed);
+        await Assert.ThrowsAsync<SalesRoomAgentException>(() => SalesRoomConversationPolicy.BeginInputAsync(f.Db, f.Options,
+            f.Source.Company, f.Work.RoomId, f.Participant.Id, Guid.NewGuid(), f.Source.Clock.Now, default));
+    }
+
+    [Fact]
+    public async Task Hybrid_playback_rechecks_mode_while_audio_is_streaming()
+    {
+        await using var f = await Fixture.Create(true);
+        var cancellationsBeforeModeChange = 0;
+        f.Media.OnSend = async () =>
+        {
+            cancellationsBeforeModeChange = f.Media.Cancellations;
+            await using var other = f.OtherDb();
+            var floor = await other.SalesRoomFloors.SingleAsync();
+            floor.SetMode("manual", 2, f.Source.Clock.Now, true); await other.SaveChangesAsync();
+        };
+        await f.Play(f.First.Id); f.Db.ChangeTracker.Clear();
+        Assert.Equal(SalesRoomAgentSpeechStates.Withheld, (await f.Db.SalesRoomAgentSpeech.SingleAsync(x => x.Id == f.First.Id)).Status);
+        Assert.Equal(0, f.Media.Completions);
+        Assert.Equal(cancellationsBeforeModeChange + 1, f.Media.Cancellations);
+    }
+
     [Fact]
     public async Task Slow_provider_operation_renews_lease_and_loss_cancels_pending_work()
     {
@@ -138,13 +486,17 @@ public sealed class SalesRoomPlaybackWorkerTests
     }
 
     [Theory]
-    [InlineData(false, true, false)]
-    [InlineData(true, true, false)]
-    [InlineData(true, false, false)]
-    [InlineData(true, true, true)]
-    public async Task Released_answer_is_spoken_and_completed_after_generation_clears_the_tracking_scope(bool partial, bool approved, bool changed)
+    [InlineData(false, true, false, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, false, false, false)]
+    [InlineData(true, true, true, false)]
+    [InlineData(false, true, false, true)]
+    [InlineData(true, true, false, true)]
+    [InlineData(true, false, false, true)]
+    [InlineData(true, true, true, true)]
+    public async Task Released_answer_is_spoken_and_completed_after_generation_clears_the_tracking_scope(bool partial, bool approved, bool changed, bool hybrid)
     {
-        await using var f = await Fixture.Create();
+        await using var f = await Fixture.Create(hybrid);
         var question = new SalesMeetingQuestion(Guid.NewGuid(), f.Source.Company, f.Source.Session, Guid.NewGuid(), 1,
             f.First.AgentId, "What are the customer goals?", SalesMeetingSpeakerType.Customer, "Host",
             SalesMeetingInputSource.BrowserRoom, null, 1, f.Source.Actor, f.Source.Clock.Now);
@@ -282,6 +634,8 @@ public sealed class SalesRoomPlaybackWorkerTests
         public SalesRoomParticipant Participant = null!;
         public SalesRoomAgentRunControl Control = new();
         public Media Media = new();
+        public SalesRoomAgentOptions Options = new() { RenewalSeconds = 1, LeaseSeconds = 30 };
+        public ConversationReasoner Reasoner = new();
         private SalesRoomAgentWorker worker = null!;
         private ServiceProvider scopes = null!;
         public Task<T> RenewDuring<T>(Func<CancellationToken, Task<T>> operation, CancellationToken ct) =>
@@ -289,11 +643,24 @@ public sealed class SalesRoomPlaybackWorkerTests
         public VirtualCompanyDbContext OtherDb() => new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlite(Db.Database.GetDbConnection()).Options, new SalesNarrationTests.NarrationContext(Source.Company, Source.Actor));
         public Task Play(Guid id) => worker.SpeakQueuedAsync(id, Media, Work, Control, Control.InterruptionVersion, default);
+        public Task<SalesRoomConversationToolResult> Acknowledge(SalesRoomConversationTurn turn, string text) =>
+            worker.AcknowledgeConversationAsync(turn, text, Work, default);
+        public async Task Ask(string text, ISalesMeetingQuestionAnsweringService answering)
+        {
+            Db.ChangeTracker.Clear();
+            var room = await Db.SalesBrowserRooms.SingleAsync();
+            await worker.HandleTranscriptAsync(room, await Db.SalesRoomParticipants.SingleAsync(),
+                new(Participant.Id, "test-mic", 1, Source.Clock.GetUtcNow(), Source.Clock.GetUtcNow(), false, 500, 500, ReadOnlyMemory<short>.Empty),
+                text, true, true, Media, Work, new Publisher(), answering, default);
+        }
         public Task StopForQuota(SalesBrowserRoom room, SalesRoomAgentWorkItem work, string summary) =>
             worker.StopForPolicyAsync(room, work, "quota_exceeded", summary);
-        public static async Task<Fixture> Create()
+        public Task StopForRollback(SalesBrowserRoom room) =>
+            worker.StopForPolicyAsync(room, Work, "conversation_disabled");
+        public static async Task<Fixture> Create(bool hybrid = false)
         {
             var f = new Fixture { Source = await SalesNarrationTests.Fixture.Create() };
+            f.Options.HybridConversationEnabled = hybrid;
             var source = f.Source;
             var revision = await source.Prepare(); await source.Approve(revision); await source.Generate();
             var agent = await f.Db.Agents.SingleAsync();
@@ -323,13 +690,28 @@ public sealed class SalesRoomPlaybackWorkerTests
             f.Db.SalesRoomAgentSpeech.Add(f.First); await f.Db.SaveChangesAsync();
             var context = new SalesNarrationTests.NarrationContext(source.Company, source.Actor);
             f.scopes = new ServiceCollection().AddScoped(_ => f.OtherDb()).BuildServiceProvider();
-            f.worker = new(f.Db, f.scopes.GetRequiredService<IServiceScopeFactory>(), new CompanyExecutionScopeFactory(context), null!, null!, null!, source.Service,
-                source.Speech, new Conductor(source.Session, deck.Id), null!, new Publisher(),
-                Options.Create(new SalesRoomAgentOptions { RenewalSeconds = 1, LeaseSeconds = 30 }).ToMonitor(), Options.Create(new SalesRoomLifecycleOptions()).ToMonitor(),
+            f.worker = new(f.Db, f.scopes.GetRequiredService<IServiceScopeFactory>(), new CompanyExecutionScopeFactory(context), null!, null!, null!, null!, source.Service,
+                source.Speech, f.Reasoner, new Conductor(source.Session, deck.Id), null!, new Publisher(),
+                Microsoft.Extensions.Options.Options.Create(f.Options).ToMonitor(), Microsoft.Extensions.Options.Options.Create(new SalesRoomLifecycleOptions()).ToMonitor(),
                 null!, source.Clock, NullLogger<SalesRoomAgentWorker>.Instance);
             return f;
         }
         public async ValueTask DisposeAsync() { await scopes.DisposeAsync(); await Source.DisposeAsync(); }
+    }
+    private sealed class ConversationReasoner : ISalesRoomConversationReasoner
+    {
+        public AgentConversationIntent Intent = AgentConversationIntent.Question;
+        public bool Complete = true;
+        public Task<bool> IsCompleteAsync(SalesRoomConversationContext context, string heard, CancellationToken ct) => Task.FromResult(Complete);
+        public ValidatedConversationBridge? Bridge;
+        public Func<Task>? BeforeReturn;
+        public async Task<ValidatedConversationBridge?> ProposeBridgeAsync(SalesRoomConversationContext context, CancellationToken ct)
+        {
+            if (BeforeReturn is { } action) await action();
+            return Bridge;
+        }
+        public Task<AgentConversationIntent> InterpretAsync(SalesRoomConversationContext context, string heard,
+            CancellationToken ct) => Task.FromResult(Intent);
     }
     private sealed class Conductor(Guid session, Guid deck) : ISalesMeetingPresentationConductor
     {
@@ -355,6 +737,7 @@ public sealed class SalesRoomPlaybackWorkerTests
     {
         public Func<Task>? OnSend;
         public int Completions;
+        public int Cancellations;
         private long generation = 1;
         public async Task<bool> SendAsync(long turn, int rate, ReadOnlyMemory<short> samples, CancellationToken ct)
         {
@@ -362,11 +745,12 @@ public sealed class SalesRoomPlaybackWorkerTests
             return !ct.IsCancellationRequested && turn == generation;
         }
         public Task<bool> CompleteSpeechAsync(long turn, CancellationToken ct) { Completions++; return Task.FromResult(!ct.IsCancellationRequested); }
-        public Task<long> CancelSpeechAsync(CancellationToken ct) => Task.FromResult(++generation);
+        public Task<long> CancelSpeechAsync(CancellationToken ct) { Cancellations++; return Task.FromResult(++generation); }
         public Task RevokeInputAsync(Guid participant, CancellationToken ct) => Task.CompletedTask;
         public bool IsParticipantConnected(Guid participant) => true;
         public SalesRoomMediaStatistics GetStatistics() => new("connected", 0, 0, 0, 0, generation);
         public IAsyncEnumerable<SalesRoomAudioFrame> ReceiveAsync(CancellationToken ct) => throw new NotSupportedException();
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public bool Disposed;
+        public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
     }
 }

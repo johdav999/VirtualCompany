@@ -4,6 +4,18 @@ Revision inspected: `d195b91f` plus the scoped uncommitted changes. Environment:
 
 ## Integration inventory
 
+### VOICE-18 — Hybrid conversation state and authorization, Prompt 1 (2026-09-27)
+
+Scope: reusable versioned controller and sales profile behind default-off `SalesRoomAgent:HybridConversationEnabled`. Existing room/floor/session state remains authoritative; no schema migration, meeting reset, consent change, usage reset, microphone activation or running-service restart. Implementation and recovery details: [conversation policy](../../sales-realtime-conversation-policy.md).
+
+The UAT workflow guided deterministic acceptance cases at the real backend boundaries. Confirmed spoken and typed input bind authority before retrieval and recheck afterward. Answer/playback release uses current mode, evidence, consent, participant and generation bindings. Mode changes fence queued speech. Playback checks include a final-frame boundary and cancel buffered output on rejection. Tools remain unregistered and denied in this stage.
+
+Acceptance verified with the strongest safe substitute: production playback worker and relational SQLite fixtures with mode/participant changes made through a second DbContext, plus pure controller transitions. Autonomous partial-answer policy is permitted with evidence; assisted/manual require host authorization and cannot automatically bridge/resume. New questions invalidate old reply context. Silence, unknown intent/mode, expired proposals, takeover, foreign company/session, removed participants, stale generations and recreated controllers cannot authorize continuation. Disabled-path regressions remain passing.
+
+Final verification: 20 `AgentConversationTests` passed in SalesSource.Tests; 75 playback/floor/lease/presentation-runtime tests passed in Api.Tests. Infrastructure.Sales and API compiled successfully, and Web build passed with zero errors (existing warnings remain). `git diff --check` passed. Initial failures exposed the short-clip completion fence, now covered; a subsequent cancellation-count assertion was corrected to distinguish initial generation alignment from rejection-triggered cancellation.
+
+Status: Prompt 1 deterministic acceptance complete. No live provider/browser audio evaluation was attempted: this stage does not deliver generated bridges, contextual reply interpretation or conversational presentation tools. Runtime transport and end-to-end conversation acceptance belong to later prompts. No wall-clock interruption-latency claim is made; the enabled playback policy adds relational checks every 200 ms of submitted PCM and at completion. Pending conversational proposals are intentionally discarded on worker replacement, not recovered as implied permission.
+
 ### VOICE-16 / VOICE-17 — Mode-based answers and concise sales speech (2026-09-27)
 
 P1/P2 enhancements from organizer screenshot of room af4dc01c-d832-4be9-a87c-4a41134a8196: the supported onboarding answer required a click in autonomous mode and recited a lengthy setup checklist. Scope: voice and typed question release, sales answer composition, existing private evidence panel. Existing local Web/API product profile applies; no layout redesign.

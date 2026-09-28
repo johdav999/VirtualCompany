@@ -40,6 +40,7 @@ public sealed record BrowserRoomFloor(string State, string OwnerLabel, Guid? Own
     long PresentationVersion, int SlideNumber, int TalkingPointIndex, string? ResumeMarker,
     int ResumeOffsetMilliseconds, Guid? PreauthorizedCoHostParticipantId, long Version,
     BrowserRoomPlaybackStop PlaybackStop);
+public sealed record BrowserRoomConversationStatus(string Phase, string Availability, string? Reason);
 public sealed record BrowserRoomAgentStatus(Guid RoomId, Guid? AgentId, string AgentName, string State,
     string VoiceHealth, long Generation, long TurnGeneration, int ConsentedParticipants, int RequiredParticipants,
     bool AllParticipantsConsented, DateTime? StartedUtc, DateTime? LeaseExpiresUtc,
@@ -48,7 +49,7 @@ public sealed record BrowserRoomAgentStatus(Guid RoomId, Guid? AgentId, string A
     long? ProviderBilledAudioMilliseconds, string BillingEvidenceState, long OutputAudioMilliseconds,
     int InputTokens, int OutputTokens, decimal EstimatedSpendUsd, string? LastErrorCode, string? LastErrorSummary,
     long RoomVersion, BrowserRoomAgentAnswer? LatestAnswer, IReadOnlyList<BrowserRoomAgentSpeech> RecentSpeech,
-    BrowserRoomFloor? Floor = null);
+    BrowserRoomFloor? Floor = null, BrowserRoomConversationStatus? Conversation = null);
 public sealed record BrowserRoomCaptureReview(Guid RoomId, Guid SessionId, Guid? AgentId, string State,
     long SessionVersion, long CaptureVersion, Guid? CaptureCheckpointId, DateTime RetentionUntilUtc,
     string Coverage, IReadOnlyList<SalesMeetingTranscriptSegmentViewModel> Segments,
@@ -65,6 +66,9 @@ public sealed class BrowserRoomRequestException(int status, string code) : Excep
         "invitation_unavailable" => "This invitation is expired or already used. Ask the host for a new link.",
         "sales.room_agent.floor_conflict" => "The room floor changed. Review the current speaker and try again.",
         "sales.room_agent.floor_not_ready" => "The agent is waiting for the current slide and audience to be ready.",
+        "sales.room_agent.quota_exceeded" or "sales.room_agent.spend_limit" => "The room AI limit was reached. Human calling and manual slides remain available; start a new eligible meeting or ask an operator to review usage.",
+        "sales.room_agent.unavailable" => "Room AI voice is unavailable. Keep the human call and manual slides running, then retry when the provider is healthy.",
+        "conversation_unavailable" => "Realtime conversation is unavailable. Use the approved-answer and manual presentation controls.",
         _ => status switch
         {
             401 or 403 => "Meeting access is no longer available. You may have been denied or removed. Ask the host for a new invitation; organizers should check their sign-in.",

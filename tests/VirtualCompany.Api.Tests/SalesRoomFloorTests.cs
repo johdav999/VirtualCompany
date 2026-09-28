@@ -159,6 +159,23 @@ public sealed class SalesRoomFloorTests
         Assert.Equal(expected, SalesRoomAgentWorker.ShouldTreatInterruptedSpeechAsAddressedQuestion(
             text, interruptedAgent, connectedHumans, overlapped));
 
+    [Theory]
+    [InlineData("Yes", true, false, true, false, 1, true)]
+    [InlineData("Please continue", true, false, true, false, 1, true)]
+    [InlineData("No", true, false, false, false, 1, false)]
+    [InlineData("Yes", false, false, true, false, 1, false)]
+    [InlineData("Alex, can you continue presenting?", true, true, true, false, 2, true)]
+    [InlineData("Can you continue presenting?", true, false, true, false, 1, true)]
+    [InlineData("What about onboarding?", true, false, true, false, 1, true)]
+    [InlineData("Thank you", true, false, true, false, 1, true)]
+    [InlineData("Yes", true, false, true, true, 1, false)]
+    [InlineData("Yes", true, false, true, false, 2, false)]
+    [InlineData(" ", true, false, true, false, 1, false)]
+    public void Contextual_short_replies_reach_the_controller_only_while_one_human_reply_is_awaited(
+        string text, bool enabled, bool explicitlyAddressed, bool awaiting, bool overlapped, int humans, bool expected) =>
+        Assert.Equal(expected, SalesRoomAgentWorker.ShouldRouteContextualReply(
+            enabled, explicitlyAddressed, awaiting, overlapped, humans, text));
+
     [Fact]
     public void Active_microphone_speaker_counts_as_connected_when_durable_presence_is_stale()
     {

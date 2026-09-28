@@ -61,9 +61,8 @@ public sealed class SalesMeetingQuestionAnsweringService(
         if (session is null) return null;
         if (ParseInput(request.InputSource) == SalesMeetingInputSource.BrowserRoom &&
             (session.RetentionUntilUtc <= timeProvider.GetUtcNow().UtcDateTime ||
-             !await db.SalesMeetingTranscriptSegments.AsNoTracking().AnyAsync(x => x.CompanyId == companyId &&
-                 x.SessionId == sessionId && x.Id == request.ClientQuestionId &&
-                 x.InputSource == SalesMeetingInputSource.BrowserRoom && x.Content == request.Question.Trim(), cancellationToken)))
+             !await HasRetainedBrowserQuestionAsync(companyId, sessionId, request.ClientQuestionId,
+                 request.Question.Trim(), cancellationToken)))
             throw Validation(nameof(request.InputSource), "A browser question requires retained meeting evidence.");
         var membership = await db.CompanyMemberships.AsNoTracking().SingleAsync(x => x.CompanyId == companyId && x.UserId == userId && x.Status == CompanyMembershipStatus.Active, cancellationToken);
         var agent = await db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == request.AgentId, cancellationToken)
@@ -171,6 +170,45 @@ public sealed class SalesMeetingQuestionAnsweringService(
         try { await db.SaveChangesAsync(cancellationToken); }
         catch (DbUpdateConcurrencyException) { throw new SalesMeetingCaptureConflictException(SalesMeetingCaptureProblemCodes.Conflict, "The question changed after it was opened. Refresh before approving it."); }
         return ToDto(question);
+    }
+
+    internal async Task<bool> HasRetainedBrowserQuestionAsync(Guid companyId, Guid sessionId,
+        Guid lastSegmentId, string text, CancellationToken ct)
+    {
+        if (await db.SalesMeetingTranscriptSegments.AsNoTracking().AnyAsync(x => x.CompanyId == companyId &&
+            x.SessionId == sessionId && x.Id == lastSegmentId &&
+            x.InputSource == SalesMeetingInputSource.BrowserRoom && x.Content == text, ct)) return true;
+
+        // Turn assembly may join speech across pauses. Its last segment is still the
+        // idempotency anchor; every word must come from matching retained evidence.
+        var anchor = await db.SalesRoomAgentTranscripts.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.CompanyId == companyId && x.Id == lastSegmentId, ct);
+        if (anchor is null || anchor.Overlapped || anchor.AgentGeneration is null ||
+            anchor.ParticipantGeneration is null) return false;
+        var fragments = await (from raw in db.SalesRoomAgentTranscripts.AsNoTracking()
+            join segment in db.SalesMeetingTranscriptSegments.AsNoTracking()
+                on raw.TranscriptSegmentId equals (Guid?)segment.Id
+            where raw.CompanyId == companyId && segment.CompanyId == companyId &&
+                segment.SessionId == sessionId && segment.InputSource == SalesMeetingInputSource.BrowserRoom &&
+                raw.RoomId == anchor.RoomId && raw.ParticipantId == anchor.ParticipantId &&
+                raw.ParticipantConsentVersion == anchor.ParticipantConsentVersion &&
+                raw.ParticipantGeneration == anchor.ParticipantGeneration &&
+                raw.AgentGeneration == anchor.AgentGeneration && raw.TrackIdHash == anchor.TrackIdHash &&
+                raw.TrackGeneration == anchor.TrackGeneration && !raw.Overlapped &&
+                raw.StartedUtc <= anchor.StartedUtc && raw.Text == segment.Content
+            orderby raw.StartedUtc descending
+            select raw).Take(64).ToListAsync(ct);
+        if (fragments.Count == 0 || fragments[0].Id != lastSegmentId) return false;
+        var combined = fragments[0].Text;
+        for (var i = 1; i < fragments.Count && combined.Length < text.Length; i++)
+        {
+            // Match the ephemeral buffer's bounded pause window. No paraphrased,
+            // fabricated, expired, overlapping or foreign text establishes evidence.
+            if (fragments[i - 1].StartedUtc - fragments[i].EndedUtc > TimeSpan.FromSeconds(12)) return false;
+            combined = fragments[i].Text + " " + combined;
+            if (combined == text) return true;
+        }
+        return false;
     }
 
     private async Task<Dictionary<string, GroundingSource>> BuildSourcesAsync(SalesMeetingSession session, CompanyMembership membership,

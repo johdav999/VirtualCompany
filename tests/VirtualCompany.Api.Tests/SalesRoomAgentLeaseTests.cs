@@ -75,6 +75,19 @@ public sealed class SalesRoomAgentLeaseTests
         Assert.True(SalesRoomAgentCoordinator.ShouldStopForReconciliation(room, true, now.AddSeconds(5)));
     }
 
+    [Fact]
+    public void Lease_cleanup_preserves_the_original_paused_failure_but_not_operator_shutdown()
+    {
+        var now = DateTime.UtcNow;
+        var organizer = Guid.NewGuid(); var owner = Guid.NewGuid();
+        var room = LiveRoom(organizer, now);
+        room.StartAgent(Guid.NewGuid(), organizer, owner, now.AddSeconds(30), now);
+        Assert.False(SalesRoomAgentCoordinator.PreservePausedFailure(room, false));
+        room.PauseAgent(owner, room.AgentGeneration, "realtime_provider_error", "Realtime request rejected.");
+        Assert.True(SalesRoomAgentCoordinator.PreservePausedFailure(room, false));
+        Assert.False(SalesRoomAgentCoordinator.PreservePausedFailure(room, true));
+    }
+
     private static SalesBrowserRoom LiveRoom(Guid organizer, DateTime now)
     {
         var room = new SalesBrowserRoom(Guid.NewGuid(), Guid.NewGuid(), organizer, now.AddHours(1), now);

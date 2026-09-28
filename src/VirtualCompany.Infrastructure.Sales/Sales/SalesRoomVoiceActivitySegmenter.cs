@@ -7,6 +7,8 @@ public sealed class SalesRoomAgentOptions
 {
     public const string SectionName = "SalesRoomAgent";
     public bool Enabled { get; set; }
+    // Opt-in hybrid conversation; factual speech still uses the approved audio lane.
+    public bool HybridConversationEnabled { get; set; }
     public bool EmergencyDisabled { get; set; }
     public bool DrainEnabled { get; set; }
     public int LeaseSeconds { get; set; } = 30;
