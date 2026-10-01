@@ -123,12 +123,13 @@ public sealed class SalesRoomCaptureService(VirtualCompanyDbContext db, TimeProv
                 var questions = await db.SalesMeetingQuestions.IgnoreQueryFilters().Include(x => x.Evidence).Where(x =>
                     x.CompanyId == room.CompanyId && x.SessionId == session.Id && x.InputSource == SalesMeetingInputSource.BrowserRoom).ToListAsync(ct);
                 var runIds = questions.Where(x => x.AiRunId.HasValue).Select(x => x.AiRunId!.Value).ToArray();
+                var questionCorrelations = questions.Select(x => x.Id.ToString("N")).ToArray();
                 foreach (var question in questions.Where(q => q.QuestionText != "[Expired meeting evidence]" || q.AnswerText != null || q.Evidence.Count > 0)) question.ExpireBrowserContent(now);
                 foreach (var speech in await db.SalesRoomAgentSpeech.IgnoreQueryFilters().Where(x =>
                     x.CompanyId == room.CompanyId && x.RoomId == room.Id && (x.ReleasedText != null || x.EvidenceJson != null || x.FailureSummary != null)).ToListAsync(ct))
                     speech.ExpireContent();
                 foreach (var run in await db.AgentOrchestrationRuns.IgnoreQueryFilters().Where(x =>
-                    x.CompanyId == room.CompanyId && (runIds.Contains(x.Id) || x.CorrelationId == "browser-closing:" + session.Id.ToString("N")) &&
+                    x.CompanyId == room.CompanyId && (runIds.Contains(x.Id) || questionCorrelations.Contains(x.CorrelationId!) || x.CorrelationId == "browser-closing:" + session.Id.ToString("N")) &&
                     (x.ResultJson != null || x.Summary != null || x.FailureMessage != null)).ToListAsync(ct))
                     run.ExpireContent();
                 var browserMinutes = await db.SalesMeetingMinutes.IgnoreQueryFilters().Include(x => x.Items).Where(x =>

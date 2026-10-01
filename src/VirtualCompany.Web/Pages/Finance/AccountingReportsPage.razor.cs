@@ -11,7 +11,10 @@ public partial class AccountingReportsPage : FinancePageBase
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
     [SupplyParameterFromQuery(Name = "view")] public string? RequestedView { get; set; }
     [SupplyParameterFromQuery(Name = "runId")] public Guid? RequestedRunId { get; set; }
+    [SupplyParameterFromQuery(Name = "periodId")] public Guid? RequestedPeriodId { get; set; }
+    [SupplyParameterFromQuery(Name = "accountId")] public Guid? RequestedAccountId { get; set; }
     private List<AccountingPeriodResponse> Periods { get; set; } = [];
+    private Guid? PeriodCompanyId;
     private Guid SelectedPeriodId { get; set; }
     private AccountingPeriodResponse? SelectedPeriod => Periods.FirstOrDefault(x => x.Id == SelectedPeriodId);
     private TrialBalanceReportResponse? TrialBalance { get; set; }
@@ -33,6 +36,8 @@ public partial class AccountingReportsPage : FinancePageBase
     private Guid? SelectedAccountId { get; set; }
     private GeneralLedgerAccountResponse? SelectedLedgerAccount { get; set; }
     private string View { get; set; } = "trial";
+    private bool IsStatementView => View is "profit-loss" or "balance-sheet";
+    private static string StatementLabel(string sv, string en) => System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "sv" ? sv : en;
     private bool IsReportLoading { get; set; }
     private bool IsActing { get; set; }
     private string CloseReason { get; set; } = string.Empty;
@@ -50,6 +55,7 @@ public partial class AccountingReportsPage : FinancePageBase
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
+        if (RequestedView is "profit-loss" or "balance-sheet" or "trial" or "ledger" or "tax") View = RequestedView;
         if (string.Equals(RequestedView, "vat", StringComparison.OrdinalIgnoreCase)) View = "vat";
         else if (string.Equals(RequestedView, "revaluation", StringComparison.OrdinalIgnoreCase)) View = "revaluation";
         else if (string.Equals(RequestedView, "dimensions", StringComparison.OrdinalIgnoreCase)) View = "dimensions";
@@ -57,12 +63,19 @@ public partial class AccountingReportsPage : FinancePageBase
         else if (string.Equals(RequestedView, "assets", StringComparison.OrdinalIgnoreCase)) View = "assets";
         if (string.IsNullOrWhiteSpace(CloseReason)) CloseReason = FinanceText["DefaultCloseReason"];
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
+        if (PeriodCompanyId != companyId) { Periods = []; SelectedPeriodId = Guid.Empty; ActionError = null; PeriodCompanyId = companyId; }
         try
         {
             var years = await FinanceApiClient.GetAccountingFiscalYearsAsync(companyId);
             Periods = years.SelectMany(x => x.Periods).OrderByDescending(x => x.StartDate).ToList();
-            SelectedPeriodId = Periods.FirstOrDefault(x => !x.IsClosed)?.Id ?? Periods.FirstOrDefault()?.Id ?? Guid.Empty;
-            if (SelectedPeriodId != Guid.Empty) await LoadReportsAsync(companyId);
+            SelectedPeriodId = RequestedPeriodId is Guid requested && Periods.Any(p => p.Id == requested) ? requested :
+                Periods.Any(p => p.Id == SelectedPeriodId) ? SelectedPeriodId :
+                Periods.FirstOrDefault(x => !x.IsClosed)?.Id ?? Periods.FirstOrDefault()?.Id ?? Guid.Empty;
+            if (SelectedPeriodId != Guid.Empty && !IsStatementView)
+            {
+                await LoadReportsAsync(companyId);
+                if (RequestedAccountId is Guid account) await SelectAccountAsync(account);
+            }
         }
         catch (FinanceApiException exception) { ActionError = exception.Message; }
     }

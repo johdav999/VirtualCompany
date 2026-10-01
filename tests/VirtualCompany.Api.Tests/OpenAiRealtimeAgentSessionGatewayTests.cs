@@ -11,6 +11,58 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class OpenAiRealtimeAgentSessionGatewayTests
 {
+    [Theory]
+    [InlineData("low")]
+    [InlineData("medium")]
+    [InlineData("high")]
+    [InlineData("auto")]
+    public void Semantic_profile_leaves_completion_to_provider_and_responses_to_application(string eagerness)
+    {
+        var method = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "BuildSession" && x.GetParameters()[1].ParameterType == typeof(RealtimeAgentPcmSessionCreateRequest));
+        var request = new RealtimeAgentPcmSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "conversation", "Transcribe full turns", [], TimeSpan.FromMinutes(5),
+            ConversationProfile: true, SemanticVadEagerness: eagerness);
+        var options = new SharedRealtimeAgentOptions();
+        var session = Assert.IsType<JsonObject>(method.Invoke(null, [options, request]));
+        var vad = session["audio"]!["input"]!["turn_detection"]!;
+        Assert.Equal("semantic_vad", vad["type"]!.GetValue<string>());
+        Assert.Equal(eagerness, vad["eagerness"]!.GetValue<string>());
+        Assert.False(vad["create_response"]!.GetValue<bool>());
+        Assert.False(vad["interrupt_response"]!.GetValue<bool>());
+        Assert.Equal(options.Model, session["model"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData(true, true, "low")]
+    [InlineData(false, false, "low")]
+    [InlineData(true, false, "unknown")]
+    public void Invalid_semantic_profile_is_rejected_before_connecting(bool conversation, bool manual, string eagerness)
+    {
+        var validate = typeof(OpenAiRealtimeAgentSessionGateway).GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .Single(x => x.Name == "Validate" && x.GetParameters()[0].ParameterType == typeof(RealtimeAgentPcmSessionCreateRequest));
+        var request = new RealtimeAgentPcmSessionCreateRequest(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "conversation", "Transcribe", [], TimeSpan.FromMinutes(5), ManualInputCommit: manual,
+            ConversationProfile: conversation, SemanticVadEagerness: eagerness);
+        Assert.IsType<ArgumentException>(Assert.Throws<TargetInvocationException>(() => validate.Invoke(null, [request])).InnerException);
+    }
+
+    [Theory]
+    [InlineData("input_audio_buffer.speech_started", RealtimeAgentEventTypes.ParticipantSpeechStarted)]
+    [InlineData("input_audio_buffer.speech_stopped", RealtimeAgentEventTypes.ParticipantSpeechStopped)]
+    [InlineData("input_audio_buffer.committed", RealtimeAgentEventTypes.InputCommitted)]
+    [InlineData("conversation.item.input_audio_transcription.completed", RealtimeAgentEventTypes.ParticipantTranscriptCompleted)]
+    [InlineData("conversation.item.input_audio_transcription.failed", RealtimeAgentEventTypes.ParticipantTranscriptFailed)]
+    public async Task Semantic_events_keep_item_identity_and_session_audio_offsets(string providerType, string type)
+    {
+        var gateway = Create(new RecordingHandler());
+        var result = await gateway.NormalizeEventAsync(new("call_test_123", "evt", 1,
+            $$"""{"type":"{{providerType}}","item_id":"item-1","audio_start_ms":25,"audio_end_ms":1400,"transcript":"How do you onboard?"}"""), default);
+        Assert.Equal(type, result.Type); Assert.Equal("item-1", result.ItemId);
+        if (type == RealtimeAgentEventTypes.ParticipantSpeechStarted) Assert.Equal(25, result.AudioStartMilliseconds);
+        if (type == RealtimeAgentEventTypes.ParticipantSpeechStopped) Assert.Equal(1400, result.AudioEndMilliseconds);
+    }
+
     [Fact]
     public async Task Session_creation_keeps_server_secret_out_of_the_client_contract()
     {

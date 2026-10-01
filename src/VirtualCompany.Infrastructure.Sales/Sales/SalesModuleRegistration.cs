@@ -33,6 +33,7 @@ public static class SalesModuleRegistration
                 x.PlaybackStopAcknowledgementTimeoutMilliseconds is >= 100 and <= 5000 &&
                 x.OrganizerDisconnectGraceSeconds is >= 0 and <= 60 &&
                 x.ReconciliationIntervalSeconds is >= 2 and <= 60 &&
+                x.DialogueConfigurationProblem is null &&
                 SalesRoomOperationsPolicy.ConfigurationProblem(x, DateTime.UtcNow) is null,
                 "Browser room agent limits are outside supported safety boundaries.").ValidateOnStart();
         services.AddScoped<SalesRoomAgentWorker>();

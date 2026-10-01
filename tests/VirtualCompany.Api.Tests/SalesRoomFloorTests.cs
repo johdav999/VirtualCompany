@@ -171,10 +171,10 @@ public sealed class SalesRoomFloorTests
     [InlineData("Yes", true, false, true, true, 1, false)]
     [InlineData("Yes", true, false, true, false, 2, false)]
     [InlineData(" ", true, false, true, false, 1, false)]
-    public void Contextual_short_replies_reach_the_controller_only_while_one_human_reply_is_awaited(
-        string text, bool enabled, bool explicitlyAddressed, bool awaiting, bool overlapped, int humans, bool expected) =>
+    public void Fresh_autonomous_turns_need_addressing_and_no_overlap_but_no_prior_answer(
+        string text, bool enabled, bool explicitlyAddressed, bool autonomous, bool overlapped, int humans, bool expected) =>
         Assert.Equal(expected, SalesRoomAgentWorker.ShouldRouteContextualReply(
-            enabled, explicitlyAddressed, awaiting, overlapped, humans, text));
+            enabled, explicitlyAddressed, autonomous, overlapped, humans, text));
 
     [Fact]
     public void Active_microphone_speaker_counts_as_connected_when_durable_presence_is_stale()

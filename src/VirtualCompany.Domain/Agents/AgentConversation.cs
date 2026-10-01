@@ -3,7 +3,7 @@ namespace VirtualCompany.Domain.Agents;
 public enum AgentConversationPhase
 {
     Presenting, Interpreting, Retrieving, AwaitingApproval, SpeakingAnswer,
-    SpeakingBridge, WaitingForReply, Paused, Stopped
+    SpeakingBridge, WaitingForReply, Paused, Stopped, Listening
 }
 public enum AgentConversationAction { Interpret, Retrieve, SpeakAnswer, SpeakBridge, Resume, DispatchTool }
 public enum AgentConversationIntent { Unknown, Question, Continue, Wait, Acknowledgement }

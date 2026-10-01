@@ -226,10 +226,11 @@ public sealed partial class SalesRoomPlaybackWorkerTests
         return new(authority!.Binding, Guid.NewGuid(), contextSpeech.Id, floor.Version, now.AddSeconds(15), AgentConversationIntent.Continue);
     }
 
-    private static SalesRoomAgentService ConversationService(Fixture f, VirtualCompanyDbContext db) =>
+    private static SalesRoomAgentService ConversationService(Fixture f, VirtualCompanyDbContext db,
+        IEnumerable<ISalesPresentationEventPublisher>? events = null) =>
         new(db, new Sink(), new ConversationHealth(), null!, null!, null!, new Publisher(), Options.Create(f.Options).ToMonitor(),
             Options.Create(new SalesRoomLifecycleOptions { Enabled = true }).ToMonitor(), f.Source.Clock,
-            new SalesPresentationRuntimeService(db, f.Source.Clock, [], NullLogger<SalesPresentationRuntimeService>.Instance), []);
+            new SalesPresentationRuntimeService(db, f.Source.Clock, [], NullLogger<SalesPresentationRuntimeService>.Instance), events ?? []);
 
     private sealed class ConversationHealth : IRealtimeAgentSessionGateway
     {

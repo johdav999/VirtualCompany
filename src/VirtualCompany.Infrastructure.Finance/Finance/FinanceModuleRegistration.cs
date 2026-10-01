@@ -699,6 +699,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
         services.AddScoped<ICurrencyRevaluationService, CurrencyRevaluationService>();
         services.AddScoped<IAccountingReportingService, AccountingReportingService>();
+        services.AddScoped<IFinancialStatementWorkspaceService, FinancialStatementWorkspaceService>();
         services.AddScoped<IFinancialReportSuiteService, FinancialReportSuiteService>();
         services.AddScoped<IReportDefinitionService, ReportDefinitionService>();
         services.AddScoped<IFinanceLedgerAgentReadService, FinanceLedgerAgentReadService>();

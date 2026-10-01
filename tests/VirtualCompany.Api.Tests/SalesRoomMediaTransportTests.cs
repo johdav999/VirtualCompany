@@ -129,6 +129,20 @@ public sealed class SalesRoomMediaTransportTests
 public sealed class SalesRoomAudioOutputTests
 {
     [Fact]
+    public async Task Interruption_receipt_excludes_queued_audio_and_survives_flush_and_new_generation()
+    {
+        var sink = new Sink(); await using var output = new SalesRoomAudioOutput(sink);
+        Assert.True(await output.SendAsync(1, 24000, new short[480], default));
+        Assert.True(await output.SendAsync(1, 24000, new short[480], default));
+        sink.QueuedSeconds = .015;
+        Assert.Equal(25, output.DeliveredMilliseconds(1));
+        await output.CancelAsync(); sink.QueuedSeconds = 0;
+        Assert.Equal(25, output.DeliveredMilliseconds(1));
+        Assert.True(await output.SendAsync(2, 24000, new short[480], default));
+        Assert.Equal(20, output.DeliveredMilliseconds(2));
+        Assert.Equal(25, output.DeliveredMilliseconds(1));
+    }
+    [Fact]
     public async Task Takeover_cancels_inflight_write_flushes_queue_and_rejects_late_frames()
     {
         var sink = new Sink { Block = true };
@@ -161,6 +175,7 @@ public sealed class SalesRoomAudioOutputTests
     }
     private sealed class Sink : ISalesRoomAudioSink
     {
+        public double QueuedSeconds { get; set; }
         public bool Block, Disposed; public int Clears, Writes, Completions;
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public async Task WriteAsync(int rate, ReadOnlyMemory<short> samples, CancellationToken ct)

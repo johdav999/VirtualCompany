@@ -122,9 +122,16 @@ public sealed partial class SalesRoomPlaybackWorkerTests
         public int Calls;
         public Exception? Failure;
         public Func<Task>? BeforeReturn;
+        public bool EvidenceValid = true;
+        public bool Partial;
+        public bool ProviderFailed;
+        public ISalesMeetingQuestionAnsweringService? RealService;
+        public Task<bool> ValidateEvidenceAsync(Guid c, Guid u, Guid s, Guid q, long v, CancellationToken ct) =>
+            RealService?.ValidateEvidenceAsync(c, u, s, q, v, ct) ?? Task.FromResult(EvidenceValid);
         public async Task<SalesMeetingQuestionDto?> AskAsync(Guid company, Guid user, Guid session,
             AskSalesMeetingQuestionRequest request, string? correlation, CancellationToken ct)
         {
+            if (RealService is not null) return await RealService.AskAsync(company, user, session, request, correlation, ct);
             Assert.Equal(f.Source.Company, company); Assert.Equal(f.Source.Session, session);
             Calls++;
             if (Failure is not null) throw Failure;
@@ -133,7 +140,8 @@ public sealed partial class SalesRoomPlaybackWorkerTests
             var q = new SalesMeetingQuestion(Guid.NewGuid(), company, session, request.ClientQuestionId,
                 request.Sequence, request.AgentId, request.Question, SalesMeetingSpeakerType.Customer, "Host",
                 SalesMeetingInputSource.BrowserRoom, null, 1, user, now);
-            q.Complete("The finance agent prepares work for human review.", .9m, false, Guid.NewGuid(), true, now);
+            q.Complete("The finance agent prepares work for human review.", .9m, Partial, Guid.NewGuid(), true, now, Partial);
+            if (ProviderFailed) q.Fail("provider_unavailable", "Grounded provider unavailable.", false, now);
             q.Evidence.Add(new(Guid.NewGuid(), company, q.Id, 0, "Prepares work", "fact", .9m,
                 "approved-test-source", "document", "Finance", now));
             db.SalesMeetingQuestions.Add(q); await db.SaveChangesAsync(ct);

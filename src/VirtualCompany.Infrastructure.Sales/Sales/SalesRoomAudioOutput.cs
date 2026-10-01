@@ -7,6 +7,7 @@ internal interface ISalesRoomAudioSink : IDisposable
     Task WriteAsync(int sampleRate, ReadOnlyMemory<short> samples, CancellationToken cancellationToken);
     Task CompleteAsync(CancellationToken cancellationToken);
     void Clear();
+    double QueuedSeconds => 0;
 }
 
 // Serializes the provider queue with cancellation; never accumulates producer tasks.
@@ -18,6 +19,14 @@ internal sealed class SalesRoomAudioOutput(ISalesRoomAudioSink sink) : IAsyncDis
     private long generation = 1;
     private bool closed;
     private int flushing;
+    private double submittedMilliseconds;
+    private readonly Dictionary<long, int> stoppedReceipts = [];
+    public int DeliveredMilliseconds(long expected)
+    {
+        lock (sync)
+            return stoppedReceipts.TryGetValue(expected, out var stopped) ? stopped :
+                expected == generation ? Math.Max(0, (int)(submittedMilliseconds - sink.QueuedSeconds * 1000)) : 0;
+    }
     public long Generation => Interlocked.Read(ref generation);
     public async Task<bool> SendAsync(long expected, int rate, ReadOnlyMemory<short> samples, CancellationToken ct)
     {
@@ -35,9 +44,14 @@ internal sealed class SalesRoomAudioOutput(ISalesRoomAudioSink sink) : IAsyncDis
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, turnToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             try { await sink.WriteAsync(rate, samples, timeout.Token); }
-            catch (OperationCanceledException) { sink.Clear(); return false; }
-            catch { sink.Clear(); throw new SalesRoomMediaException("audio_publication_failed"); }
-            return expected == Generation;
+            catch (OperationCanceledException) { SaveReceipt(expected); sink.Clear(); return false; }
+            catch { SaveReceipt(expected); sink.Clear(); throw new SalesRoomMediaException("audio_publication_failed"); }
+            lock (sync)
+            {
+                if (expected != generation) return false;
+                submittedMilliseconds += samples.Length * 1000d / rate;
+                return true;
+            }
         }
         finally { gate.Release(); }
     }
@@ -55,8 +69,8 @@ internal sealed class SalesRoomAudioOutput(ISalesRoomAudioSink sink) : IAsyncDis
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, turnToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(2));
             try { await sink.CompleteAsync(timeout.Token); }
-            catch (OperationCanceledException) { sink.Clear(); return false; }
-            catch { sink.Clear(); throw new SalesRoomMediaException("audio_drain_failed"); }
+            catch (OperationCanceledException) { SaveReceipt(expected); sink.Clear(); return false; }
+            catch { SaveReceipt(expected); sink.Clear(); throw new SalesRoomMediaException("audio_drain_failed"); }
             return expected == Generation;
         }
         finally { gate.Release(); }
@@ -69,6 +83,9 @@ internal sealed class SalesRoomAudioOutput(ISalesRoomAudioSink sink) : IAsyncDis
         {
             if (closed) return generation;
             flushing++;
+            SaveReceipt(generation);
+            while (stoppedReceipts.Count > 8) stoppedReceipts.Remove(stoppedReceipts.Keys.Min());
+            submittedMilliseconds = 0;
             next = Interlocked.Increment(ref generation);
             old = turn; turn = new CancellationTokenSource(); old.Cancel();
         }
@@ -76,6 +93,12 @@ internal sealed class SalesRoomAudioOutput(ISalesRoomAudioSink sink) : IAsyncDis
         try { lock (sync) { if (!closed) sink.Clear(); } }
         finally { lock (sync) flushing--; gate.Release(); old.Dispose(); }
         return next;
+    }
+    private void SaveReceipt(long expected)
+    {
+        lock (sync)
+            if (expected == generation && !stoppedReceipts.ContainsKey(expected))
+                stoppedReceipts[expected] = Math.Max(0, (int)(submittedMilliseconds - sink.QueuedSeconds * 1000));
     }
     public async ValueTask DisposeAsync()
     {
@@ -88,6 +111,7 @@ internal sealed class SalesRoomAudioOutput(ISalesRoomAudioSink sink) : IAsyncDis
 
 internal sealed class LiveKitSalesRoomAudioSink : ISalesRoomAudioSink
 {
+    public double QueuedSeconds => Source.QueuedDuration;
     public LiveKit.Rtc.AudioSource Source { get; } = new(48000, 1, 100);
     private LiveKit.Rtc.AudioResampler? resampler;
     private int previousRate;

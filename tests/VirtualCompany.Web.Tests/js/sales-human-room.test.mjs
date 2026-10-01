@@ -32,6 +32,32 @@ function setup() {
     return { media, environment, reports, grid, video, selects, storage, tick: () => tick() };
 }
 const token = { identity: 'human-local', url: 'wss://test.example', token: 'synthetic' };
+test('agent waiting tile never opens audio and is replaced by the real media participant', async () => {
+    const f = setup();
+    f.media.setAgentPresence({ name: 'Alex', status: 'Waiting for consent' });
+    assert.equal(f.media.attachments.size, 0); // No tile/media before joining.
+    await f.media.connect(token);
+    const placeholder = f.media.attachments.get('agent-standby:person');
+    assert.ok(placeholder.label.textContent.includes('Waiting for consent'));
+    assert.equal(placeholder.tracks.size, 0);
+    f.media.setAgentPresence({ name: 'Alex', status: 'Connecting' });
+    assert.equal(f.media.attachments.size, 1);
+    const audio = track();
+    f.media.room.remoteParticipants.set('agent-1-4', {
+        identity: 'agent-1-4', trackPublications: new Map([['audio', { source: 'microphone', trackSid: 'audio', track: audio }]])
+    });
+    f.media.sync();
+    assert.equal(f.media.attachments.size, 1);
+    assert.ok(placeholder.tile.removed);
+    assert.equal(f.media.attachments.get('agent-1-4:person').tracks.size, 1);
+    f.media.room.remoteParticipants.clear();
+    f.media.setAgentPresence({ name: 'Alex', status: 'Stopped' });
+    assert.equal(f.media.attachments.get('agent-standby:person').tracks.size, 0);
+    assert.ok(f.media.attachments.get('agent-standby:person').label.textContent.includes('Stopped'));
+    await f.media.disconnect();
+    assert.equal(f.media.attachments.size, 0);
+    await f.media.dispose();
+});
 test('applied device choices are restored and unavailable hardware falls back safely', async () => {
     const f = setup();
     let devices = [
@@ -97,6 +123,17 @@ test('takeover detaches agent audio and only a current response generation can r
 test('control watchdog stops media independently of a lost Blazor callback', async () => {
     const f = setup(); await f.media.connect(token); const room = f.media.room; f.media.lastPulse = Date.now() - 16000;
     f.tick(); await Promise.resolve(); assert.equal(f.media.room, null); assert.ok(room.disconnected); assert.ok(f.reports.some(x => x.status === 'control_lost')); await f.media.dispose();
+});
+test('listening agent tile survives paused audio but leaves on actual media disconnection', async () => {
+    const f = setup(); await f.media.connect(token); const room = f.media.room;
+    room.remoteParticipants.set('agent-1-4', { identity: 'agent-1-4', trackPublications: new Map() });
+    f.media.sync();
+    assert.ok(f.media.attachments.has('agent-1-4:person'));
+    f.media.stopAgentPlayback(9); f.media.sync();
+    assert.ok(f.media.attachments.has('agent-1-4:person'));
+    room.remoteParticipants.delete('agent-1-4'); room.handlers.get('ParticipantDisconnected')();
+    assert.equal(f.media.attachments.has('agent-1-4:person'), false);
+    await f.media.dispose();
 });
 test('a stale connection completion after leave cannot publish', async () => {
     const f = setup(); let finish; const original = f.media.sdk.Room.prototype.connect;

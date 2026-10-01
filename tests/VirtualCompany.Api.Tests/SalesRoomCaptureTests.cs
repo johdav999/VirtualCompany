@@ -129,6 +129,10 @@ public sealed class SalesRoomCaptureTests
         var run = new AgentOrchestrationRun(f.Company,agent.Id,f.Actor,"test","v1","v1","v1","browser-closing:"+f.Meeting.ToString("N"));
         run.Complete("completed","test","test",1m,"Retained summary","{}","[]",1,1,1);
         f.Db.AgentOrchestrationRuns.Add(run);
+        var claimValidation = new AgentOrchestrationRun(f.Company, agent.Id, f.Actor, "test", "v1", "v1", "v1",
+            question.Id.ToString("N"));
+        claimValidation.Complete("completed", "test", "test", 1m, "Retained claim validation", "{}", "[]", 1, 1, 1);
+        f.Db.AgentOrchestrationRuns.Add(claimValidation);
         var room = await f.Db.SalesBrowserRooms.IgnoreQueryFilters().SingleAsync(); room.Ended();
         await f.Db.SaveChangesAsync();
         Assert.Equal(0,await service.PurgeExpiredAsync(default));
@@ -138,10 +142,14 @@ public sealed class SalesRoomCaptureTests
         Assert.Equal(graph.Id,(await f.Db.SalesMeetingTranscriptSegments.IgnoreQueryFilters().SingleAsync()).Id);
         Assert.Equal("expired",(await service.GetReviewAsync(f.Company,f.Actor,f.Room,default)).Coverage);
         Assert.Equal("[Expired meeting evidence]", (await f.Db.SalesMeetingQuestions.IgnoreQueryFilters().SingleAsync()).QuestionText);
+        Assert.Null((await f.Db.AgentOrchestrationRuns.IgnoreQueryFilters().SingleAsync(x => x.Id == claimValidation.Id)).Summary);
         Assert.Null((await f.Db.SalesRoomAgentSpeech.IgnoreQueryFilters().SingleAsync()).ReleasedText);
         Assert.Null((await f.Db.SalesRoomAgentSpeech.IgnoreQueryFilters().SingleAsync()).EvidenceJson);
-        Assert.Null((await f.Db.AgentOrchestrationRuns.IgnoreQueryFilters().SingleAsync()).ResultJson);
-        Assert.Null((await f.Db.AgentOrchestrationRuns.IgnoreQueryFilters().SingleAsync()).Summary);
+        Assert.All(await f.Db.AgentOrchestrationRuns.IgnoreQueryFilters().ToListAsync(), expiredRun =>
+        {
+            Assert.Null(expiredRun.ResultJson);
+            Assert.Null(expiredRun.Summary);
+        });
     }
     [Fact]
     public async Task Ending_with_two_command_ids_schedules_one_end_and_one_closing_transition()

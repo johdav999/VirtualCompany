@@ -1,7 +1,7 @@
 namespace VirtualCompany.Domain.Entities;
 
 public static class SalesRoomAgentSpeechKinds
-{ public const string Narration = "narration", Answer = "answer", Bridge = "bridge", Limitation = "limitation"; }
+{ public const string Narration = "narration", Answer = "answer", Bridge = "bridge", Limitation = "limitation", Conversation = "conversation"; }
 public static class SalesRoomAgentSpeechStates
 { public const string Queued = "queued", Processing = "processing", Spoken = "spoken", Interrupted = "interrupted", Failed = "failed", Withheld = "withheld"; }
 
@@ -19,7 +19,8 @@ public sealed class SalesRoomAgentSpeech : ICompanyOwnedEntity
         if (kind == SalesRoomAgentSpeechKinds.Narration && (narrationRevisionId is null || narrationSegmentId is null || questionId is not null) ||
             kind is (SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Bridge or SalesRoomAgentSpeechKinds.Limitation) &&
                 (questionId is null || narrationRevisionId is not null || narrationSegmentId is not null) ||
-            kind is not (SalesRoomAgentSpeechKinds.Narration or SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Bridge or SalesRoomAgentSpeechKinds.Limitation) || offsetMilliseconds < 0)
+            kind == SalesRoomAgentSpeechKinds.Conversation && (questionId is not null || narrationRevisionId is not null || narrationSegmentId is not null) ||
+            kind is not (SalesRoomAgentSpeechKinds.Narration or SalesRoomAgentSpeechKinds.Answer or SalesRoomAgentSpeechKinds.Bridge or SalesRoomAgentSpeechKinds.Limitation or SalesRoomAgentSpeechKinds.Conversation) || offsetMilliseconds < 0)
             throw new ArgumentException("The room speech source is invalid.");
         Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = companyId; RoomId = roomId; SessionId = sessionId;
         CommandId = commandId; AgentId = agentId; AgentGeneration = agentGeneration; TurnGeneration = turnGeneration;

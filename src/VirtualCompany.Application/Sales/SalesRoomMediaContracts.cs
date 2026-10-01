@@ -50,6 +50,9 @@ public interface ISalesRoomMediaConnection : IAsyncDisposable
         CancellationToken cancellationToken);
     Task<bool> CompleteSpeechAsync(long turnGeneration, CancellationToken cancellationToken);
     Task<long> CancelSpeechAsync(CancellationToken cancellationToken);
+    // Cumulative delivered milliseconds for this generation, including after cancellation.
+    // Null means the transport has no playout receipt; callers must not claim it was heard.
+    int? DeliveredMilliseconds(long turnGeneration) => null;
     Task RevokeInputAsync(Guid participantId, CancellationToken cancellationToken);
     bool IsParticipantConnected(Guid participantId);
     SalesRoomMediaStatistics GetStatistics();

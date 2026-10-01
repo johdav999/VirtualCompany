@@ -12,12 +12,16 @@ internal static class SalesMeetingAnswerGrounding
         var claims = new List<AgentAiClaim>();
         var length = 0;
         var words = 0;
+        // Reserve room for the qualification instead of appending another paragraph.
+        var needsQualification = result.Status == AgentAiRunStatuses.NeedsReview ||
+            result.MissingEvidence.Count > 0 || result.Uncertainty.Count > 0;
+        var claimBudget = needsQualification ? 45 : 60;
         foreach (var claim in result.Claims)
         {
             if (string.IsNullOrWhiteSpace(claim.Text) || claim.SourceIds.Count == 0 ||
                 !claim.SourceIds.All(sourceIds.Contains) || claim.Type is not ("confirmed_fact" or "fact") ||
                 length + claim.Text.Length + 1 > 650 || claims.Count >= 3 ||
-                words + WordCount(claim.Text) > 65) continue;
+                words + WordCount(claim.Text) > claimBudget) continue;
             claims.Add(claim); length += claim.Text.Length + 1; words += WordCount(claim.Text);
         }
         var partial = result.Status == AgentAiRunStatuses.NeedsReview || result.MissingEvidence.Count > 0 ||
@@ -31,10 +35,10 @@ internal static class SalesMeetingAnswerGrounding
             // Whole bounded descriptions only: never cut a qualifier out of a sentence.
             var selected = new List<string>(); var gapLength = 0; var gapWords = 0;
             foreach (var gap in gaps)
-                if (selected.Count < 2 && gapLength + gap.Length + 2 <= 180 && gapWords + WordCount(gap) <= 20)
+                if (selected.Count < 1 && gapLength + gap.Length + 2 <= 120 && gapWords + WordCount(gap) <= 10)
                 { selected.Add(gap.Trim().TrimEnd('.')); gapLength += gap.Length + 2; gapWords += WordCount(gap); }
             text += selected.Count > 0
-                ? " Still to confirm: " + string.Join("; ", selected) + ". Other unverified details require follow-up."
+                ? " Still to confirm: " + string.Join("; ", selected) + "; unverified details need follow-up."
                 : " I can't verify the remaining details; they need follow-up.";
         }
         return new(text, claims, partial);

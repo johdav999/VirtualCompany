@@ -3,6 +3,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Auth;
+using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Domain.Agents;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -627,6 +630,9 @@ public sealed partial class SalesRoomPlaybackWorkerTests
 
     private sealed class Fixture : IAsyncDisposable
     {
+        public StageRecorder StageEvents { get; } = new();
+        public Task<SalesRoomConversationToolResult> PlaybackCommand(SalesRoomDialogueTurn turn, string action) =>
+            worker.ExecuteDialoguePlaybackCommandAsync(turn, action, default);
         public SalesNarrationTests.Fixture Source = null!;
         public VirtualCompanyDbContext Db => Source.Db;
         public SalesRoomAgentWorkItem Work = null!;
@@ -636,10 +642,29 @@ public sealed partial class SalesRoomPlaybackWorkerTests
         public Media Media = new();
         public SalesRoomAgentOptions Options = new() { RenewalSeconds = 1, LeaseSeconds = 30 };
         public ConversationReasoner Reasoner = new();
+        public ConversationGateway Conversation = new();
+        public LifetimePcm Pcm = new();
+        public LifetimeTransport Transport = null!;
+        public GroundedAcceptanceAnswer Answerer = null!;
+        public readonly TraceLogger Trace = new();
+        public RecoveryPresenter Presenter = null!;
         private SalesRoomAgentWorker worker = null!;
         private ServiceProvider scopes = null!;
         public Task<T> RenewDuring<T>(Func<CancellationToken, Task<T>> operation, CancellationToken ct) =>
             worker.RunWithLeaseRenewalAsync(Work, operation, ct);
+        public Task Run(CancellationToken ct) => worker.RunAsync(Work, Control, ct);
+        public Task<bool> Recover(SalesRoomAgentWorkItem? work = null) => worker.PrepareProviderRecoveryAsync(work ?? Work, default);
+        public Task<RealtimeConversationResponseRequest> PlaybackRequest(SalesRoomDialogueTurn turn) => worker.DialogueRequestAsync(turn, default);
+        public Task Dialogue(SalesRoomDialogueTurn turn, string contentClass = SalesRoomDialoguePolicy.Social) =>
+            worker.SpeakDialogueAsync(turn, "Welcome Alex", contentClass, "test-session", Media, Work, Control, Control.InterruptionVersion, default);
+        public async Task<SalesRoomAgentWorker.FreshConversationInput?> FreshInput(string text, AgentConversationSession? session = null)
+        {
+            Db.ChangeTracker.Clear();
+            var room = await Db.SalesBrowserRooms.SingleAsync();
+            session ??= new(room.CompanyId, room.AgentId!.Value, room.Id, room.MeetingSessionId!.Value,
+                Work.LeaseOwnerId, Work.Generation);
+            return await worker.PrepareConversationInputAsync(session, Work, Participant.Id, Guid.NewGuid(), text, "test-session", default);
+        }
         public VirtualCompanyDbContext OtherDb() => new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlite(Db.Database.GetDbConnection()).Options, new SalesNarrationTests.NarrationContext(Source.Company, Source.Actor));
         public Task Play(Guid id) => worker.SpeakQueuedAsync(id, Media, Work, Control, Control.InterruptionVersion, default);
@@ -657,13 +682,24 @@ public sealed partial class SalesRoomPlaybackWorkerTests
             worker.StopForPolicyAsync(room, work, "quota_exceeded", summary);
         public Task StopForRollback(SalesBrowserRoom room) =>
             worker.StopForPolicyAsync(room, Work, "conversation_disabled");
-        public static async Task<Fixture> Create(bool hybrid = false)
+        public static async Task<Fixture> Create(bool hybrid = false, bool semantic = false)
         {
             var f = new Fixture { Source = await SalesNarrationTests.Fixture.Create() };
+            f.Answerer = new(f);
             f.Options.HybridConversationEnabled = hybrid;
+            f.Options.SemanticConversationInputEnabled = semantic;
+            f.Options.Enabled = true;
+            f.Options.MaximumInputTokenCostPerMillionUsd = 1;
+            f.Options.MaximumOutputTokenCostPerMillionUsd = 1;
+            f.Options.TranscriptionCostPerMinuteUsd = 1;
+            f.Options.MaximumSpendPerCallUsd = 10;
+            f.Options.MaximumMonthlySpendPerCompanyUsd = 100;
+            f.Options.ProviderRateCheckedUtc = f.Source.Clock.Now;
+            f.Options.ProviderRateCardReference = "deterministic-test";
             var source = f.Source;
             var revision = await source.Prepare(); await source.Approve(revision); await source.Generate();
             var agent = await f.Db.Agents.SingleAsync();
+            f.Presenter = new(agent.Id);
             var room = new SalesBrowserRoom(source.Company, source.Session, source.Actor, source.Clock.Now.AddHours(1), source.Clock.Now);
             room.Provisioned("synthetic-room"); room.Start(source.Clock.Now, 60);
             var owner = Guid.NewGuid(); room.StartAgent(agent.Id, source.Actor, owner, source.Clock.Now.AddSeconds(30), source.Clock.Now);
@@ -689,20 +725,54 @@ public sealed partial class SalesRoomPlaybackWorkerTests
                 revision.Id, segment.Id, responseGeneration: floor.ResponseGeneration);
             f.Db.SalesRoomAgentSpeech.Add(f.First); await f.Db.SaveChangesAsync();
             var context = new SalesNarrationTests.NarrationContext(source.Company, source.Actor);
-            f.scopes = new ServiceCollection().AddScoped(_ => f.OtherDb()).BuildServiceProvider();
-            f.worker = new(f.Db, f.scopes.GetRequiredService<IServiceScopeFactory>(), new CompanyExecutionScopeFactory(context), null!, null!, null!, null!, source.Service,
-                source.Speech, f.Reasoner, new Conductor(source.Session, deck.Id), null!, new Publisher(),
-                Microsoft.Extensions.Options.Options.Create(f.Options).ToMonitor(), Microsoft.Extensions.Options.Options.Create(new SalesRoomLifecycleOptions()).ToMonitor(),
-                null!, source.Clock, NullLogger<SalesRoomAgentWorker>.Instance);
+            f.scopes = new ServiceCollection()
+                .AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>()
+                .AddScoped<ICompanyExecutionScopeFactory, CompanyExecutionScopeFactory>()
+                .AddScoped(services => new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+                    .UseSqlite(f.Db.Database.GetDbConnection()).Options, services.GetRequiredService<ICompanyContextAccessor>()))
+                .AddScoped<ITeamsMeetingPresenterService>(_ => f.Presenter)
+                .AddScoped<SalesRoomAgentWorker>(services => new(services.GetRequiredService<VirtualCompanyDbContext>(),
+                    f.scopes.GetRequiredService<IServiceScopeFactory>(), services.GetRequiredService<ICompanyExecutionScopeFactory>(), f.Transport, f.Pcm,
+                    new VirtualCompany.Infrastructure.Companies.OpenAiRealtimeAgentSessionGateway(null!,
+                        Microsoft.Extensions.Options.Options.Create(new VirtualCompany.Infrastructure.Companies.SharedRealtimeAgentOptions()),
+                        NullLogger<VirtualCompany.Infrastructure.Companies.OpenAiRealtimeAgentSessionGateway>.Instance),
+                    f.Conversation, source.Service, source.Speech, f.Reasoner, new Conductor(source.Session, deck.Id), f.Answerer, new Publisher(),
+                    Microsoft.Extensions.Options.Options.Create(f.Options).ToMonitor(), Microsoft.Extensions.Options.Options.Create(new SalesRoomLifecycleOptions { Enabled = true }).ToMonitor(),
+                    new SemanticTestClassifierFactory(), source.Clock, f.Trace))
+                .AddScoped<ISalesRoomAgentService>(services => ConversationService(f, services.GetRequiredService<VirtualCompanyDbContext>(), [f.StageEvents]))
+                .AddScoped<ISalesRoomCaptureService>(services => new SalesRoomCaptureService(
+                    services.GetRequiredService<VirtualCompanyDbContext>(), source.Clock)).BuildServiceProvider();
+            f.Transport = new(f.Media);
+            f.Pcm.ExpiresUtc = room.ExpiresUtc;
+            var normalizer = new VirtualCompany.Infrastructure.Companies.OpenAiRealtimeAgentSessionGateway(null!,
+                Microsoft.Extensions.Options.Options.Create(new VirtualCompany.Infrastructure.Companies.SharedRealtimeAgentOptions()),
+                NullLogger<VirtualCompany.Infrastructure.Companies.OpenAiRealtimeAgentSessionGateway>.Instance);
+            f.worker = new(f.Db, f.scopes.GetRequiredService<IServiceScopeFactory>(), new CompanyExecutionScopeFactory(context), f.Transport, f.Pcm, normalizer, f.Conversation, source.Service,
+                source.Speech, f.Reasoner, new Conductor(source.Session, deck.Id), f.Answerer, new Publisher(),
+                Microsoft.Extensions.Options.Options.Create(f.Options).ToMonitor(), Microsoft.Extensions.Options.Options.Create(new SalesRoomLifecycleOptions { Enabled = true }).ToMonitor(),
+                new SemanticTestClassifierFactory(), source.Clock, f.Trace);
             return f;
         }
         public async ValueTask DisposeAsync() { await scopes.DisposeAsync(); await Source.DisposeAsync(); }
     }
     private sealed class ConversationReasoner : ISalesRoomConversationReasoner
     {
+        public Guid? DialogueValidation = Guid.NewGuid();
+        public Task<Guid?> ValidateDialogueAsync(SalesRoomConversationContext context, string heard, string contentClass, string candidate, CancellationToken ct) => Task.FromResult(DialogueValidation);
         public AgentConversationIntent Intent = AgentConversationIntent.Question;
         public bool Complete = true;
-        public Task<bool> IsCompleteAsync(SalesRoomConversationContext context, string heard, CancellationToken ct) => Task.FromResult(Complete);
+        public SalesRoomTurnReadiness? Readiness;
+        public readonly System.Collections.Concurrent.ConcurrentQueue<string> JudgedTurns = new();
+        public readonly TaskCompletionSource CompletenessEvaluated = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public SalesRoomConversationContext? LastContext;
+        public Func<Task>? BeforeInterpret;
+        public Func<Task>? BeforeJudge;
+        public async Task<SalesRoomTurnReadiness> JudgeTurnAsync(SalesRoomConversationContext context, string heard, CancellationToken ct)
+        {
+            JudgedTurns.Enqueue(heard); CompletenessEvaluated.TrySetResult();
+            if (BeforeJudge is not null) await BeforeJudge();
+            return Readiness ?? (Complete ? SalesRoomTurnReadiness.Proceed : SalesRoomTurnReadiness.Wait);
+        }
         public ValidatedConversationBridge? Bridge;
         public Func<Task>? BeforeReturn;
         public async Task<ValidatedConversationBridge?> ProposeBridgeAsync(SalesRoomConversationContext context, CancellationToken ct)
@@ -710,8 +780,40 @@ public sealed partial class SalesRoomPlaybackWorkerTests
             if (BeforeReturn is { } action) await action();
             return Bridge;
         }
-        public Task<AgentConversationIntent> InterpretAsync(SalesRoomConversationContext context, string heard,
-            CancellationToken ct) => Task.FromResult(Intent);
+        public async Task<AgentConversationIntent> InterpretAsync(SalesRoomConversationContext context, string heard,
+            CancellationToken ct)
+        { LastContext = context; if (BeforeInterpret is not null) await BeforeInterpret(); return Intent; }
+    }
+    private sealed class ConversationGateway : IRealtimeAgentConversationGateway
+    {
+        public List<(int Delivered, bool Completed)> OutputReceipts = [];
+        public Task FinishBufferedSpeechAsync(RealtimeBufferedSpeech speech, int deliveredMilliseconds, bool completed, CancellationToken ct)
+        { OutputReceipts.Add((deliveredMilliseconds, completed)); return Task.CompletedTask; }
+        public Func<Task>? BeforeAudio;
+        public RealtimeBufferedSpeech? Candidate;
+        public int Generated;
+        public List<string> Played = [];
+        public readonly System.Collections.Concurrent.ConcurrentQueue<RealtimeConversationResponseRequest> Requests = new();
+        public readonly System.Collections.Concurrent.ConcurrentQueue<string> ToolResults = new();
+        public async Task<RealtimeBufferedSpeech> GenerateBufferedSpeechAsync(string session, RealtimeBufferedSpeechRequest request, CancellationToken ct)
+        {
+            Generated++;
+            if (BeforeAudio is not null) await BeforeAudio();
+            return Candidate ?? new(new byte[960], "Hello! Glad to be here.", "response_fixture", 5, 10);
+        }
+        public List<(Guid Id, string Text)> Inputs = [];
+        public bool Reject;
+        public Task AddConfirmedTurnAsync(string session, Guid id, string text, CancellationToken ct)
+        {
+            if (Reject) throw new RealtimeAgentEventException("turn_rejected", "Synthetic rejected turn");
+            Inputs.Add((id, text)); return Task.CompletedTask;
+        }
+        public Task RecordPlayedResponseAsync(string s, Guid id, string text, CancellationToken ct) { Played.Add(text); return Task.CompletedTask; }
+        public Task RecordPlayedFollowUpAsync(string s, Guid id, Guid follow, string text, CancellationToken ct) => Task.CompletedTask;
+        public Task RequestResponseAsync(string s, RealtimeConversationResponseRequest r, CancellationToken ct) { Requests.Enqueue(r); return Task.CompletedTask; }
+        public Task SubmitToolResultAsync(string s, string id, string json, CancellationToken ct) { ToolResults.Enqueue(json); return Task.CompletedTask; }
+        public Task ContinueAfterToolAsync(string s, RealtimeConversationResponseRequest r, CancellationToken ct) => Task.CompletedTask;
+        public Task CancelAndTruncateAsync(string s, string? r, string? item, int ms, CancellationToken ct) => Task.CompletedTask;
     }
     private sealed class Conductor(Guid session, Guid deck) : ISalesMeetingPresentationConductor
     {
@@ -735,21 +837,28 @@ public sealed partial class SalesRoomPlaybackWorkerTests
     }
     private sealed class Media : ISalesRoomMediaConnection
     {
+        private readonly Dictionary<long, int> delivered = [];
+        public int? DeliveredMilliseconds(long turn) => delivered.GetValueOrDefault(turn);
+        public int SentFrames;
         public Func<Task>? OnSend;
         public int Completions;
         public int Cancellations;
         private long generation = 1;
         public async Task<bool> SendAsync(long turn, int rate, ReadOnlyMemory<short> samples, CancellationToken ct)
         {
+            SentFrames++;
             if (OnSend is { } hook) { OnSend = null; await hook(); }
-            return !ct.IsCancellationRequested && turn == generation;
+            if (ct.IsCancellationRequested || turn != generation) return false;
+            delivered[turn] = delivered.GetValueOrDefault(turn) + samples.Length * 1000 / rate;
+            return true;
         }
         public Task<bool> CompleteSpeechAsync(long turn, CancellationToken ct) { Completions++; return Task.FromResult(!ct.IsCancellationRequested); }
         public Task<long> CancelSpeechAsync(CancellationToken ct) { Cancellations++; return Task.FromResult(++generation); }
         public Task RevokeInputAsync(Guid participant, CancellationToken ct) => Task.CompletedTask;
         public bool IsParticipantConnected(Guid participant) => true;
         public SalesRoomMediaStatistics GetStatistics() => new("connected", 0, 0, 0, 0, generation);
-        public IAsyncEnumerable<SalesRoomAudioFrame> ReceiveAsync(CancellationToken ct) => throw new NotSupportedException();
+        public readonly System.Threading.Channels.Channel<SalesRoomAudioFrame> Input = System.Threading.Channels.Channel.CreateUnbounded<SalesRoomAudioFrame>();
+        public IAsyncEnumerable<SalesRoomAudioFrame> ReceiveAsync(CancellationToken ct) => Input.Reader.ReadAllAsync(ct);
         public bool Disposed;
         public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
     }

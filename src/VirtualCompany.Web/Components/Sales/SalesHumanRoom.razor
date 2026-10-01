@@ -80,7 +80,7 @@
                 var transcriptAllowed = HostCompanyId.HasValue ? HostParticipant?.TranscriptRetentionAllowed == true : guest?.TranscriptRetentionAllowed == true;
                 <section class="room-consent" aria-labelledby="room-consent-title">
                     <div><span class="room-eyebrow">Your choice</span><h2 id="room-consent-title">AI audio processing</h2></div>
-                    <p>AI listens only after every admitted person agrees. Human audio keeps flowing through the meeting. You can withdraw at any time and AI stops.</p>
+                    <p>Alex connects automatically after every admitted person agrees. AI does not listen before consent. Human audio keeps flowing through the meeting. You can withdraw at any time and AI stops.</p>
                     <div class="room-consent__actions">
                         <button type="button" class="@(aiAllowed ? "room-consent__active" : null)" disabled="@busy" @onclick='() => SetConsent("ai_processing", !aiAllowed)'>@(aiAllowed ? "Withdraw AI consent" : "Allow AI for this meeting")</button>
                         <button type="button" class="@(transcriptAllowed ? "room-consent__active" : null)" disabled="@busy" @onclick='() => SetConsent("retained_transcript", !transcriptAllowed)'>@(transcriptAllowed ? "Do not retain my transcript" : "Allow my transcript to be retained")</button>
@@ -88,7 +88,7 @@
                     <small>Transcript retention is a separate choice. Microphone audio is never stored.</small>
                 </section>
             }
-            <div class="room-notice"><strong>@(agent?.State is "ready" or "speaking" ? $"{agent.AgentName} is in the meeting" : "Human call and manual slides stay available")</strong><p>@AgentPublicStatus</p></div>
+            <div class="room-notice"><strong>@(agent?.State is "ready" or "speaking" && agent.VoiceHealth == "healthy" && agent.Conversation?.Phase is not ("expired" or "stopped" or "unavailable") ? $"{agent.AgentName} is available" : "Human call and manual slides stay available")</strong><p>@AgentPublicStatus</p></div>
             <div class="room-notice"><strong>Audio and video are not recorded.</strong><p>Raw microphone audio is never retained. A transcript is kept only for a participant who separately allows it.</p></div>
         </section>
         @if (HostCompanyId.HasValue && host is not null)
@@ -101,7 +101,14 @@
                         <div><span class="room-eyebrow">Agent</span><h3 id="room-agent-title">@((agent?.AgentName ?? "Alex") + " · Sales agent")</h3><p>@AgentStateLabel</p></div>
                         <span class="room-agent__state room-agent__state--@(agent?.State ?? "not-started")">@AgentStateLabel</span>
                     </div>
-                    @if (agent?.Conversation is { } conversation)
+                    @if (agent?.AutoStartPending == true && !automaticStartAttempted)
+                    {
+                        <div class="room-conversation" role="status" aria-live="polite">
+                            <strong>@(joined ? "Alex is waiting to connect" : "Alex will join automatically")</strong>
+                            <p>Join the meeting and allow AI audio processing. Alex connects once everyone has consented; ask Alex when you want the presentation to begin.</p>
+                        </div>
+                    }
+                    else if (agent?.Conversation is { } conversation)
                     {
                         <div class="room-conversation" role="status" aria-live="polite">
                             <strong>@ConversationLabel(conversation)</strong>
@@ -111,7 +118,7 @@
                     @if (agent?.Floor is { } floor)
                     {
                         <div class="room-floor" role="status" aria-live="polite">
-                            <div class="room-floor__owner"><span aria-hidden="true">●</span><div><small>Floor and status</small><strong>Floor: @floor.OwnerLabel</strong><span>@FloorStatus(floor)</span></div></div>
+                            <div class="room-floor__owner"><span aria-hidden="true">●</span><div><small>Floor and status</small><strong>Floor: @FloorOwnerLabel(floor)</strong><span>@FloorStatus(floor)</span></div></div>
                             <fieldset class="room-floor__modes">
                                 <legend>Agent mode</legend>
                                 @foreach (var mode in new[] { "manual", "assisted", "autonomous" })
@@ -305,6 +312,9 @@
     private BrowserRoomAgentStatus? agent;
     private string? presentationImage, presentationImageKey, presentationError, agentError, agentQuestion, guestAgentQuestion, finishedReason;
     private bool presentationBusy, presentationLoading, agentBusy, agentErrorFromPoll;
+    private readonly Guid automaticStartCommandId = Guid.NewGuid();
+    private bool automaticStartAttempted;
+    private int automaticStartConflicts;
     private string? credential, secret, error, mediaError, invitationUrl;
     private string displayName = "";
     private bool initialized, busy, joined, finished, canJoin, confirmEnd, disposed;
@@ -312,22 +322,34 @@
     private BrowserRoomParticipant? HostParticipant => host?.Participants.SingleOrDefault(x => x.IsOrganizer);
     private string AgentPublicStatus => agent?.State switch
     {
+        _ when agent?.Conversation?.Phase is "expired" or "stopped" or "unavailable" => "Agent audio is not active. Human calling and manual slides remain available.",
+        _ when agent?.Conversation?.Phase is "listening" or "presentation_paused" => "Alex is listening. You can ask a question or clearly request presentation playback.",
+        _ when agent?.Conversation?.Phase == "reconnecting" => "Agent voice is reconnecting. Human calling continues; the presentation stays paused.",
         "ready" => "The host may invoke approved narration or a released grounded answer.",
-        "speaking" => "The room agent is speaking from approved content. Start speaking to interrupt it.",
+        "speaking" => "The room agent is speaking from approved content. Ask one clear question; only confirmed speech can interrupt playback.",
         "paused" => "AI is paused. The meeting continues without AI audio processing.",
-        _ => "AI audio processing starts only after everyone consents and the host starts the room agent."
+        _ => "AI audio processing starts only after everyone consents. Alex connects automatically when the organizer joins; presentation playback waits for your request."
     };
     private string AgentStateLabel => !joined ? "Join meeting first" : agent?.State switch
-    { "ready" => "Ready to speak", "speaking" => "Speaking", "starting" => "Connecting", "paused" => "Paused", "unavailable" => "Unavailable", "stopped" => "Stopped", _ => "Ready to start" };
+    { _ when agent?.AutoStartPending == true && !automaticStartAttempted => agent.AllParticipantsConsented ? "Connecting automatically" : "Waiting for consent",
+      _ when agent?.Conversation?.Phase == "listening" => "Listening",
+      _ when agent?.Conversation?.Phase == "presentation_paused" => "Listening · deck paused",
+      _ when agent?.Conversation?.Phase == "reconnecting" => "Reconnecting",
+      _ when agent?.Conversation?.Phase == "checking_sources" => "Checking sources",
+      _ when agent?.Conversation?.Phase == "answering" => "Answering",
+      _ when agent?.Conversation?.Phase is "stopped" or "expired" or "unavailable" or "awaiting_approval" or "awaiting_recovery" or "presenting" or "resuming" or "paused" => ConversationLabel(agent.Conversation),
+      "ready" => "Ready to speak", "speaking" => "Speaking", "starting" => "Connecting", "paused" => "Paused", "unavailable" => "Unavailable", "stopped" => "Stopped", _ => "Ready to start" };
     private string VoiceHealthLabel => agent?.VoiceHealth switch
     { "healthy" => "Voice healthy", "connecting" => "Voice connecting", "degraded" => "Voice unavailable", "stopped" => "Voice stopped", _ => "Voice not connected" };
     private string AgentDuration => FormatDuration((agent?.ForwardedAudioMilliseconds ?? 0) + (agent?.OutputAudioMilliseconds ?? 0));
-    private bool CanStartAgent => !agentBusy && joined && agent?.AllParticipantsConsented == true && agent.State is not ("starting" or "ready" or "speaking" or "unavailable");
+    private bool CanStartAgent => !agentBusy && joined && agent?.AllParticipantsConsented == true &&
+        (agent.State is not ("starting" or "ready" or "speaking" or "unavailable") || agent.Conversation?.Availability == "lease_expired");
     private bool CanStopAgent => !agentBusy && agent?.State is "starting" or "ready" or "speaking" or "paused";
     private bool CanNarrate => !agentBusy && agent?.State is "ready" or "paused" && agent.NarrationState == "ready" &&
         agent.NarrationRevisionId.HasValue && agent.NarrationSegmentId.HasValue;
     private bool CanTakeOver => !agentBusy && agent?.Floor is not null && agent.State is "starting" or "ready" or "speaking" or "paused";
     private bool CanResumeFloor => !agentBusy && agent?.Floor is { } floor && presentationStage is not null &&
+        agent.State is "ready" or "speaking" or "paused" && agent.Conversation?.Phase != "reconnecting" &&
         floor.State is "host" or "human" or "paused" or "pending" &&
         floor.PresentationVersion == presentationStage.Version && readiness?.Ready == true && agent.NarrationState == "ready";
     private string PresentationAspect => presentationStage is null ? "" : $"aspect-ratio:{Math.Max(1, presentationStage.ImageWidthPixels)}/{Math.Max(1, presentationStage.ImageHeightPixels)}";
@@ -406,6 +428,8 @@
                 { finishedReason = "This meeting has ended. Book a new meeting to continue."; await Finish(); return; }
                 canJoin = host.ConnectionAllowed && host.State is ("lobby" or "live");
                 await module.InvokeVoidAsync("heartbeat", (object)host.Participants.Where(x => x.State == "admitted").Select(x => new BrowserRoomAudience(x.Id, x.DisplayName, x.MediaIdentity)).ToArray());
+                await EnsureAutomaticAgentStart(company, deadline.Token);
+                await module.InvokeVoidAsync("setAgentPresence", new { name = agent?.AgentName ?? "Alex", status = AgentStateLabel });
             }
             else if (credential is not null)
             {
@@ -414,6 +438,7 @@
                 { finishedReason = "This meeting has ended. Ask the host for a new invitation."; await Finish(); return; }
                 canJoin = guest.ConnectionAllowed && guest.AdmissionState == "admitted";
                 await module.InvokeVoidAsync("heartbeat", guest.Participants);
+                await module.InvokeVoidAsync("setAgentPresence", new { name = "Alex", status = "AI agent · waiting for the host and consent" });
             }
             else { canJoin = secret is not null; await module.InvokeVoidAsync("heartbeat", Array.Empty<BrowserRoomAudience>()); }
         }
@@ -432,6 +457,31 @@
             }
         }
         catch (Exception ex) when (Recoverable(ex)) { error ??= Friendly(ex); }
+    }
+    private async Task EnsureAutomaticAgentStart(Guid company, CancellationToken ct)
+    {
+        if (!joined || finished || disposed || agentBusy || automaticStartAttempted ||
+            host?.State != "live" || agent?.AutoStartPending != true || !agent.AllParticipantsConsented || agentErrorFromPoll) return;
+        automaticStartAttempted = true;
+        agentBusy = true;
+        try
+        {
+            agent = await Hosts.JoinAgentAutomaticallyAsync(company, RoomId, agent.RoomVersion, automaticStartCommandId, ct);
+            agentError = null;
+        }
+        catch (BrowserRoomRequestException ex)
+        {
+            // Refresh and retry only bounded version races. Never retry quota,
+            // provider failures or an explicit host stop on every polling tick.
+            if (ex.Code == "sales.room_agent.conflict" && ++automaticStartConflicts < 3)
+                automaticStartAttempted = false;
+            else agentError = "Alex could not connect automatically. " + ex.Message + " Use Start agent to retry.";
+        }
+        catch (Exception ex) when (Recoverable(ex))
+        {
+            agentError = "Alex could not connect automatically. Check the room status and use Start agent to retry.";
+        }
+        finally { agentBusy = false; }
     }
     private async Task Run(Func<Task> action)
     {
@@ -607,8 +657,8 @@
     private static string ModeBehavior(string mode, BrowserRoomConversationStatus? conversation) => mode switch
     {
         "assisted" => "Speaks the rest of this slide. Answers require your approval before speech.",
-        "autonomous" when conversation?.Availability == "available" => "Alex can answer grounded questions, ask a follow-up and resume after a clear reply without a routine approval click. You can take over at any time.",
-        "autonomous" => "Deck control is autonomous, but Realtime conversation is not available. Use the approved-answer and manual recovery controls.",
+        "autonomous" when conversation?.Availability == "available" => "Alex stays available for conversation, can answer grounded questions and control the presentation after a clear request without a routine approval click. You can take over at any time.",
+        "autonomous" => "Deck control is autonomous, but voice conversation is not available. Use the approved-answer and manual recovery controls.",
         _ => "Speaks one talking point. Answers require your approval before speech."
     };
     private bool ShowSpeakAnswer => agent?.Floor?.ControlMode != "autonomous" ||
@@ -616,6 +666,10 @@
         agent?.Conversation?.Phase == "awaiting_recovery";
     private string ConversationLabel(BrowserRoomConversationStatus status) => status.Phase switch
     {
+        "listening" => media.Microphone ? "Listening" : "Listening — your microphone is muted",
+        "presentation_paused" => media.Microphone ? "Listening · presentation paused" : "Listening · presentation paused — your microphone is muted",
+        "reconnecting" => "Reconnecting agent voice",
+        "stopped" => "Agent stopped",
         "listening_for_reply" => media.Microphone ? "Listening for your reply" : "Waiting for your reply — microphone muted",
         "checking_sources" => "Checking approved sources",
         "answering" => "Answering",
@@ -633,6 +687,9 @@
     };
     private static string ConversationDetail(BrowserRoomConversationStatus status) => status.Phase switch
     {
+        "listening" or "presentation_paused" => status.Reason ?? "Alex remains available. Ask a question or clearly request presentation playback; silence does not resume the deck.",
+        "reconnecting" => status.Reason ?? "The presentation stays paused. Wait until Alex is listening, then ask again or request resume; pending speech will not replay.",
+        "stopped" => status.Reason ?? "Review consent and room allowance, then use Start agent. Human calling continues.",
         "listening_for_reply" => "Alex has finished the follow-up. A clear reply can continue the conversation; silence will not resume the presentation.",
         "checking_sources" => "Alex is verifying the question against approved meeting sources.",
         "answering" => "A released answer is being prepared or spoken. Wait for the voice track before continuing.",
@@ -642,7 +699,7 @@
         "presenting" => "Approved presentation audio is in progress.",
         "paused" or "expired" or "unavailable" or "legacy" => status.Reason ?? "Human calling and manual slides remain available.",
         "not_started" or "connecting" => status.Reason ?? "Wait for the agent to be ready.",
-        _ => "Alex is ready when the microphone is on and all participants have consented."
+        _ => status.Reason ?? "Alex is ready when the microphone is on and all participants have consented."
     };
     private string NarrationActionLabel => agent?.Floor?.ControlMode switch
     {
@@ -673,7 +730,11 @@
         }
     }
     private Task StartAgent() => AgentCommand((company, state, ct) => Hosts.StartAgentAsync(company, RoomId, state.RoomVersion, ct));
-    private Task StopAgent() => AgentCommand((company, state, ct) => Hosts.StopAgentAsync(company, RoomId, state.RoomVersion, ct));
+    private Task StopAgent()
+    {
+        automaticStartAttempted = true;
+        return AgentCommand((company, state, ct) => Hosts.StopAgentAsync(company, RoomId, state.RoomVersion, ct));
+    }
     private Task Narrate() => AgentCommand(async (company, state, ct) =>
     {
         if (state.Floor?.ControlMode == "autonomous")
@@ -719,7 +780,20 @@
         module is null ? Task.CompletedTask : module.InvokeVoidAsync("stopAgentPlayback", request.ResponseGeneration).AsTask();
     private Task StartAgentPlayback(SalesRoomPlaybackStartRequestViewModel request) =>
         module is null ? Task.CompletedTask : module.InvokeVoidAsync("allowAgentPlayback", request.ResponseGeneration).AsTask();
-    private static string FloorStatus(BrowserRoomFloor floor) => floor.State switch
+    private string FloorOwnerLabel(BrowserRoomFloor floor) => floor.State == "agent" &&
+        (agent?.Conversation?.Phase is "stopped" or "expired" or "unavailable" or "reconnecting" or "listening" or "presentation_paused" ||
+         agent?.State is "stopped" or "unavailable" or "paused") ? "No one" : floor.OwnerLabel;
+    private string FloorStatus(BrowserRoomFloor floor) => agent?.Conversation?.Phase switch
+    {
+        "stopped" or "expired" or "unavailable" => "Agent audio is not active. Human calling and manual slides remain available.",
+        "reconnecting" => "Voice reconnecting; presentation remains paused.",
+        "presentation_paused" => $"Presentation paused at slide {floor.SlideNumber} · point {Math.Max(1, floor.TalkingPointIndex)}; Alex is listening.",
+        "listening" => "Alex is listening; no agent audio is playing.",
+        _ when agent?.State is "stopped" or "unavailable" => "Agent audio is not active. Human calling and manual slides remain available.",
+        _ when agent?.State == "paused" => "Agent audio is paused. Review the recovery guidance.",
+        _ => LegacyFloorStatus(floor)
+    };
+    private static string LegacyFloorStatus(BrowserRoomFloor floor) => floor.State switch
     {
         "agent" => $"Agent speaking from slide {floor.SlideNumber} · point {Math.Max(1, floor.TalkingPointIndex)}",
         "overlap" => "Waiting for a clear human floor",
@@ -799,5 +873,3 @@
         // Do not await the polling loop on the circuit renderer; cancellation ends its bounded request.
     }
 }
-
-

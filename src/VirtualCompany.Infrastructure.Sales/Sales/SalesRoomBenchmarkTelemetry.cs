@@ -21,6 +21,8 @@ public static class SalesRoomBenchmarkTelemetry
     internal static readonly Counter<long> Ownership = Meter.CreateCounter<long>("sales.browser_room.agent.ownership");
     internal static readonly Counter<long> Quotas = Meter.CreateCounter<long>("sales.browser_room.quota");
     private static readonly Counter<long> ConversationFailures = Meter.CreateCounter<long>("sales.browser_room.conversation.failures");
+    private static readonly Counter<long> SemanticInput = Meter.CreateCounter<long>("sales.browser_room.semantic_input");
+    internal static void RecordSemanticInput(string stage) => SemanticInput.Add(1, new KeyValuePair<string, object?>("stage", stage));
     internal static readonly Histogram<double> Latency = Meter.CreateHistogram<double>("sales.browser_room.latency", "ms");
     internal static readonly Histogram<long> EstimatedSpend = Meter.CreateHistogram<long>("sales.browser_room.estimated_spend", "usd-micro");
 
@@ -99,6 +101,7 @@ public static class SalesRoomBenchmarkTelemetry
             "voice_unavailable" or "transcription_unavailable" or "response_failed" => "provider",
             "evidence_required" or "bridge_release_changed" or "narration_release_invalid" => "release",
             "speech_interrupted" => "interruption",
+            "playback_notification_failed" => "notification",
             _ => "other"
         };
         ConversationFailures.Add(1, new KeyValuePair<string, object?>("reason", reason));

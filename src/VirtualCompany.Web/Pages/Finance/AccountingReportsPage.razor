@@ -1,11 +1,20 @@
 @page "/finance/accounting/reports"
 @inherits FinancePageBase
 
-<PageTitle>@FinanceText["ReportsCloseTitle"]</PageTitle>
+<PageTitle>@FinanceText[View == "profit-loss" ? "ProfitAndLoss" : View == "balance-sheet" ? "BalanceSheet" : "ReportsCloseTitle"]</PageTitle>
 
-<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@(IsStatementView ? ActionError ?? ErrorMessage : ErrorMessage)"
                    Title="@FinanceText["ReportsCloseTitle"]" Description="@FinanceText["ReportsCloseDescription"]"
-                   LoadingMessage="@FinanceText["ReportsLoading"]">
+                   LoadingMessage="@FinanceText["ReportsLoading"]" ShowShellHeader="@(!IsStatementView)" ShowShellNavigation="@(!IsStatementView)">
+    @if (IsStatementView && AccessState.CompanyId is Guid statementCompanyId)
+    {
+        <div class="statement-page">
+            <nav class="statement-breadcrumb" aria-label="Breadcrumb"><a href="@FinanceRoutes.WithCompanyContext("/finance", statementCompanyId)">@StatementLabel("Ekonomi", "Finance")</a><span>/</span><a href="@FinanceRoutes.WithCompanyContext("/finance/accounting", statementCompanyId)">@StatementLabel("Bokföring", "Accounting")</a><span>/</span>@StatementLabel("Rapporter", "Reports")</nav>
+            <FinancialStatementWorkspace CompanyId="@statementCompanyId" ReportKind="@View" Periods="@Periods" InitialPeriodId="@SelectedPeriodId" />
+        </div>
+    }
+    else
+    {
     <AccountingNavigation CompanyId="@AccessState.CompanyId" />
 
     <div class="accounting-reports-heading">
@@ -182,4 +191,6 @@
         <section class="accounting-close-card"><div class="accounting-card-header"><div><h3>@FinanceText["ExportJobs"]</h3><span>@FinanceText["ExportJobsHelp"]</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="RefreshExportsAsync">@CommonText["Refresh"]</button></div>@if (Exports.Count == 0) { <div class="accounting-report-state compact"><p>@FinanceText["NoExportsForPeriod"]</p></div> } else { @foreach (var job in Exports) { <div class="accounting-export-row"><div><strong>@Friendly(job.Status)</strong><span>@LocalDateTime.DateTime(job.RequestedUtc)</span>@if (!string.IsNullOrWhiteSpace(job.FailureSummary)) { <small class="text-danger">@job.FailureSummary</small> }</div>@if (job.CanDownload) { <a class="btn btn-sm btn-outline-primary" href="@ExportDownloadUrl(job.Id)">@FinanceText["Download"]</a> } else { <span class="status-badge">@Friendly(job.Status)</span> }</div> } }</section>
     </div>
     }
+    }
 </FinancePageLayout>
+

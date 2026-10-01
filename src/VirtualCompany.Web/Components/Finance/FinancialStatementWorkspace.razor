@@ -1,0 +1,122 @@
+@using Microsoft.JSInterop
+@using VirtualCompany.Shared
+@implements IAsyncDisposable
+@inject FinanceApiClient Client
+@inject IJSRuntime JS
+
+<FinancialStatementReport CompanyId="@CompanyId" ReportKind="@ReportKind" Report="@Report" Periods="@Periods"
+    SelectedPeriodId="@PeriodId" ComparisonPeriodId="@ComparisonId" IsLoading="@Loading" ErrorMessage="@Error"
+    SelectedRow="@SelectedRow" SelectedAccount="@SelectedAccount" Evidence="@Evidence" EvidenceLoading="@EvidenceLoading" EvidenceError="@EvidenceError"
+    OnPeriodChanged="ChangePeriodAsync" OnComparisonChanged="ChangeComparisonAsync" OnSnapshotChanged="ChangeSnapshotAsync"
+    OnRowSelected="SelectRow" OnAccountSelected="SelectAccountAsync" OnRetry="LoadAsync" OnPrint="PrintAsync" OnExport="ExportAsync" />
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public string ReportKind { get; set; } = "profit-loss";
+    [Parameter] public IReadOnlyList<AccountingPeriodResponse> Periods { get; set; } = [];
+    [Parameter] public Guid InitialPeriodId { get; set; }
+    private StatementWorkspaceReport? Report;
+    private Guid PeriodId;
+    private Guid? ComparisonId;
+    private Guid? SnapshotId;
+    private Guid? ComparisonSnapshotId;
+    private StatementWorkspaceRow? SelectedRow;
+    private StatementWorkspaceAccount? SelectedAccount;
+    private StatementEvidenceResponse? Evidence;
+    private string? Error;
+    private string? EvidenceError;
+    private bool Loading;
+    private bool EvidenceLoading;
+    private (Guid Company, string Kind, Guid Initial) LoadedContext;
+    private CancellationTokenSource? Request;
+    private CancellationTokenSource? EvidenceRequest;
+    private IJSObjectReference? Module;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var context = (CompanyId, ReportKind, InitialPeriodId);
+        if (context == LoadedContext) return;
+        LoadedContext = context;
+        PeriodId = InitialPeriodId != Guid.Empty ? InitialPeriodId : Periods.FirstOrDefault()?.Id ?? Guid.Empty;
+        SnapshotId = null; ComparisonSnapshotId = null;
+        var selected = Periods.FirstOrDefault(x => x.Id == PeriodId);
+        ComparisonId = selected is null ? null : Periods.FirstOrDefault(x => x.StartDate == selected.StartDate.AddYears(-1)
+            && x.EndDate == selected.EndDate.AddYears(-1))?.Id;
+        await LoadAsync();
+    }
+    private async Task LoadAsync()
+    {
+        Request?.Cancel(); Request?.Dispose(); Request = new();
+        var request = Request; var company = CompanyId; var period = PeriodId; var kind = ReportKind;
+        var previousRow = Report?.CompanyId == company && Report.ReportKind == kind ? SelectedRow?.Key : null;
+        var previousAccount = Report?.CompanyId == company && Report.ReportKind == kind ? SelectedAccount?.Code : null;
+        EvidenceRequest?.Cancel(); Evidence = null; EvidenceError = null; EvidenceLoading = false;
+        SelectedRow = null; SelectedAccount = null; Loading = true; Error = null; Report = null;
+        try
+        {
+            if (period == Guid.Empty) { Error = Text("Inga räkenskapsperioder finns för företaget.", "No fiscal periods exist for this company."); return; }
+            var report = await Client.GetStatementWorkspaceAsync(company, period, kind, ComparisonId, SnapshotId, ComparisonSnapshotId, request.Token);
+            if (request.IsCancellationRequested) return;
+            Report = report ?? throw new InvalidOperationException(Text("Rapporten kunde inte hämtas.", "The report could not be loaded."));
+            // Pin baseline evidence for subsequent reloads of retained versions.
+            ComparisonSnapshotId = Report.ComparisonSnapshot?.Id;
+            SelectedRow = Report.Rows.FirstOrDefault(x => x.Key == previousRow);
+            var account = Report.Rows.SelectMany(x => x.Accounts).FirstOrDefault(x => x.Code == previousAccount);
+            if (account is not null) await SelectAccountAsync(account);
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception e) when (e is FinanceApiException or InvalidOperationException)
+        { if (!request.IsCancellationRequested) Error = e.Message; }
+        finally { if (!request.IsCancellationRequested) Loading = false; }
+    }
+    private async Task ChangePeriodAsync(string? id)
+    {
+        if (!Guid.TryParse(id, out var parsed) || !Periods.Any(p => p.Id == parsed)) return;
+        PeriodId = parsed; SnapshotId = null; ComparisonSnapshotId = null;
+        if (ComparisonId == parsed) ComparisonId = null;
+        await LoadAsync();
+    }
+    private async Task ChangeComparisonAsync(string? id)
+    {
+        ComparisonId = Guid.TryParse(id, out var parsed) && parsed != PeriodId && Periods.Any(p => p.Id == parsed) ? parsed : null;
+        ComparisonSnapshotId = null; await LoadAsync();
+    }
+    private async Task ChangeSnapshotAsync(Guid? id) { SnapshotId = id; await LoadAsync(); }
+    private void SelectRow(StatementWorkspaceRow row)
+    {
+        EvidenceRequest?.Cancel(); SelectedRow = row; SelectedAccount = null; Evidence = null; EvidenceError = null; EvidenceLoading = false;
+    }
+    private async Task SelectAccountAsync(StatementWorkspaceAccount account)
+    {
+        if (Report is null) return;
+        EvidenceRequest?.Cancel(); EvidenceRequest?.Dispose(); EvidenceRequest = new();
+        var request = EvidenceRequest; SelectedRow = null; SelectedAccount = account; Evidence = null; EvidenceError = null; EvidenceLoading = true;
+        try
+        {
+            if (Report.IsClosed && Report.Snapshot is null) { EvidenceError = Text("Exakt verifikationsunderlag saknas för denna äldre rapportversion.", "Exact journal evidence is unavailable for this legacy report version."); return; }
+            var evidence = await Client.GetStatementEvidenceAsync(CompanyId, PeriodId, ReportKind, account.Code, Report.Snapshot?.Id, request.Token);
+            if (!request.IsCancellationRequested) Evidence = evidence ?? throw new InvalidOperationException(Text("Verifikationsunderlaget kunde inte hämtas.", "Journal evidence could not be loaded."));
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { }
+        catch (Exception e) when (e is FinanceApiException or InvalidOperationException or HttpRequestException) { if (!request.IsCancellationRequested) EvidenceError = e.Message; }
+        finally { if (!request.IsCancellationRequested) EvidenceLoading = false; }
+    }
+    private async Task<IJSObjectReference> GetModuleAsync() => Module ??= await JS.InvokeAsync<IJSObjectReference>("import", "/js/financialStatements.js");
+    private async Task PrintAsync()
+    {
+        try { await (await GetModuleAsync()).InvokeVoidAsync("printReport"); }
+        catch (JSException) { Error = Text("Utskrift kunde inte öppnas. Försök igen.", "Could not open printing. Please retry."); }
+    }
+    private async Task ExportAsync()
+    {
+        if (Report is null) return;
+        try { await (await GetModuleAsync()).InvokeVoidAsync("downloadReport", $"{ReportKind}-{PeriodId:N}.csv", Report.CsvContent); }
+        catch (JSException) { Error = Text("Exporten kunde inte laddas ned. Försök igen.", "Could not download the export. Please retry."); }
+    }
+    private static string Text(string sv, string en) => System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "sv" ? sv : en;
+    public async ValueTask DisposeAsync()
+    {
+        Request?.Cancel(); Request?.Dispose(); EvidenceRequest?.Cancel(); EvidenceRequest?.Dispose();
+        if (Module is not null) try { await Module.DisposeAsync(); } catch (JSDisconnectedException) { }
+    }
+}

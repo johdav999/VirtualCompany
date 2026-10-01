@@ -7,6 +7,24 @@ public sealed class AgentSpeechTurnBufferTests
     private static AgentSpeechTurnScope Scope() => new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1, 1, "mic", 1, 1, 1);
 
     [Fact]
+    public void Unfinished_expiry_can_recover_once_as_scoped_clarification_not_an_answer()
+    {
+        var b = new AgentSpeechTurnBuffer(); var s = Scope(); var now = DateTime.UtcNow;
+        b.Hold(s, "A question how", now);
+        Assert.Null(b.TakeExpiredIncomplete(now.AddSeconds(11)));
+        var expired = b.TakeExpiredIncomplete(now.AddSeconds(12));
+        Assert.NotNull(expired); Assert.Equal(s, expired.Value.Scope);
+        Assert.Equal("A question how", expired.Value.Text);
+        Assert.Null(b.TakeExpiredIncomplete(now.AddSeconds(13)));
+        Assert.Null(b.ReleaseComplete(now.AddSeconds(13), false));
+        b.Hold(s, "Continue please", now, complete: true);
+        Assert.Null(b.TakeExpiredIncomplete(now.AddSeconds(61)));
+        Assert.True(b.Expire(now.AddSeconds(61)));
+        b.Hold(s, "Private fragment", now); b.Clear();
+        Assert.Null(b.TakeExpiredIncomplete(now.AddSeconds(13)));
+    }
+
+    [Fact]
     public void Pause_keeps_the_fragment_for_the_same_speakers_continuation_only()
     {
         var b = new AgentSpeechTurnBuffer(); var s = Scope(); var now = DateTime.UtcNow;
@@ -49,12 +67,24 @@ public sealed class AgentSpeechTurnBufferTests
         b.Hold(s, "A question how", now);
         Assert.Null(b.ReleaseComplete(now.AddSeconds(1), false));
         b.Hold(s, "Continue please", now, complete: true);
-        Assert.Null(b.ReleaseComplete(now.AddSeconds(13), false));
+        Assert.Null(b.ReleaseComplete(now.AddSeconds(61), false));
         b.Hold(s, "Continue please", now, complete: true);
         Assert.Equal("Continue please actually wait", b.Take(s, "actually wait", now));
         Assert.Null(b.ReleaseComplete(now, false));
         b.Hold(s, "Continue please", now, complete: true); b.Clear();
         Assert.Null(b.ReleaseComplete(now, false));
+    }
+
+    [Fact]
+    public void Complete_command_survives_fragment_timeout_and_expiry_is_observable()
+    {
+        var b = new AgentSpeechTurnBuffer(); var now = DateTime.UtcNow;
+        b.Hold(Scope(), "Continue the presentation", now, complete: true);
+        Assert.False(b.Expire(now.AddSeconds(13)));
+        Assert.Equal("Continue the presentation", b.ReleaseComplete(now.AddSeconds(14), false));
+        b.Hold(Scope(), "Continue", now, complete: true);
+        Assert.True(b.Expire(now.AddSeconds(61)));
+        Assert.False(b.Expire(now.AddSeconds(62)));
     }
 
     [Fact]

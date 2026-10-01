@@ -1,0 +1,174 @@
+@using System.Globalization
+@using VirtualCompany.Shared
+
+<div class="statement-workspace @(IsBalance ? "statement-workspace--balance" : "statement-workspace--profit")" aria-busy="@IsLoading">
+    <section class="statement-main">
+        <nav class="statement-tabs" aria-label="@T("Rapporter", "Reports")">
+            <a class="@(!IsBalance ? "active" : null)" aria-current="@(!IsBalance ? "page" : null)" href="@ReportHref("profit-loss")">@T("Resultaträkning", "Profit and loss")</a>
+            <a class="@(IsBalance ? "active" : null)" aria-current="@(IsBalance ? "page" : null)" href="@ReportHref("balance-sheet")">@T("Balansräkning", "Balance sheet")</a>
+            <a class="statement-more" href="@FinanceRoutes.WithCompanyContext("/finance/accounting/reports?view=trial", CompanyId)">@T("Övriga rapporter och periodstängning", "Other reports and period close")</a>
+        </nav>
+        <header class="statement-heading">
+            <div><h1>@Title</h1><p>@(IsBalance ? T("Tillgångar, skulder och eget kapital vid periodens slut", "Assets, liabilities and equity at period end") : T("Se företagets resultat och förändringar mot jämförelseperioden", "Review company performance and changes against the comparison period"))</p></div>
+            @if (Report is not null)
+            {
+                <span class="statement-source"><span aria-hidden="true">●</span> @(Report.IsReportingLocked ? T("Låst period", "Locked period") : Report.IsClosed ? T("Stängd period", "Closed period") : T("Öppen period", "Open period")) · @(Report.Snapshot is null ? T("Bokförda verifikationer", "Posted journals") : T("Sparad rapport", "Saved report"))</span>
+            }
+        </header>
+        <div class="statement-toolbar">
+            <label>@(IsBalance ? T("Balansdag", "Balance date") : T("Period", "Period"))
+                <select value="@SelectedPeriodId" @onchange="e => OnPeriodChanged.InvokeAsync(e.Value?.ToString())" disabled="@IsLoading" aria-label="@T("Välj period", "Select period")">
+                    @foreach (var p in Periods) { <option value="@p.Id">@PeriodLabel(p)</option> }
+                </select>
+            </label>
+            <label>@T("Jämför med", "Compare with")
+                <select value="@(ComparisonPeriodId?.ToString() ?? "")" @onchange="e => OnComparisonChanged.InvokeAsync(e.Value?.ToString())" disabled="@IsLoading" aria-label="@T("Jämförelseperiod", "Comparison period")">
+                    <option value="">@T("Ingen jämförelse", "No comparison")</option>
+                    @foreach (var p in Periods.Where(p => p.Id != SelectedPeriodId)) { <option value="@p.Id">@PeriodLabel(p)</option> }
+                </select>
+            </label>
+            <label>@T("Valuta", "Currency")<span class="statement-currency">@(Report?.Currency ?? "—")</span></label>
+            <button class="statement-button secondary" type="button" @onclick="OnPrint" disabled="@(IsLoading || Report is null)"><span aria-hidden="true">▤</span> @T("Skriv ut", "Print")</button>
+            <button class="statement-button primary" type="button" @onclick="OnExport" disabled="@(IsLoading || Report is null)"><span aria-hidden="true">↓</span> @T("Exportera", "Export")</button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(ErrorMessage)) { <div class="statement-error" role="alert">@ErrorMessage <button type="button" @onclick="OnRetry">@T("Försök igen", "Retry")</button></div> }
+        @if (IsLoading) { <div class="statement-state" role="status">@T("Hämtar bokförda rapportuppgifter…", "Loading posted report data…")</div> }
+        else if (Report is not null)
+        {
+            <p class="statement-print-context">@CompanyId · @Report.PeriodName · @Report.Currency · @Report.SourceMode · @Report.Snapshot?.Id · @Report.Snapshot?.Checksum<br />@T("Jämförelse", "Comparison"): @Report.ComparisonName · @Report.ComparisonSnapshot?.Id</p><section class="statement-kpis" aria-label="@T("Rapportöversikt", "Report overview")">
+                @foreach (var card in Report.Kpis)
+                {
+                    <article class="statement-kpi"><span class="statement-kpi-icon @card.Key" aria-hidden="true">@(card.Key is "sales" or "assets" ? "▥" : card.Key is "operating" or "equity" ? "▴" : "◔")</span><div><span>@KpiLabel(card)</span><strong>@Money(card.Amount, 0) @Unit</strong><small class="@ChangeClass(card)">@Change(card)</small><p>@(Report.ComparisonName is null ? T("Ingen jämförelse vald", "No comparison selected") : Report.ComparisonName)</p></div></article>
+                }
+            </section>
+            @if (IsBalance)
+            {
+                <div class="statement-balance @(Report.BalanceDifference == 0 && Report.Warnings.Count == 0 ? "balanced" : "review")" role="status"><strong>@(Report.BalanceDifference == 0 ? T("Balansen stämmer", "Balances reconcile") : T("Balansen behöver granskas", "Review balance difference"))</strong><span>@T("Tillgångar − eget kapital och skulder", "Assets − equity and liabilities"): @Money(Report.BalanceDifference ?? 0, 2) @Unit</span></div>
+            }
+            @if (Report.ComparisonName is null) { <p class="statement-comparison-note">@T("Välj en jämförelseperiod för att visa förändringar.", "Select a comparison period to show changes.")</p> }
+            @if (Report.Rows.All(r => r.Accounts.Count == 0)) { <div class="statement-state">@T("Inga bokförda rapportposter för perioden.", "No posted statement lines for this period.")</div> }
+            else
+            {
+                <div class="statement-table-scroll"><table class="statement-table"><caption class="visually-hidden">@Title · @Report.PeriodName</caption><thead><tr><th scope="col">@T("Konto / post", "Account / item")</th><th scope="col">@ColumnLabel(Report.StartUtc, Report.EndUtc)</th><th scope="col">@(Report.ComparisonEndUtc is DateTime end ? ColumnLabel(Report.ComparisonStartUtc!.Value, end) : "—")</th><th scope="col" title="@T("Procent visas endast med positiv jämförelsebas", "Percentages require a positive comparison base")">@T("Förändring", "Change")</th></tr></thead><tbody>
+                @foreach (var row in Report.Rows)
+                {
+                    if (row.Kind == "heading")
+                    {
+                        <tr class="statement-section"><th colspan="@(IsBalance ? 4 : 1)" scope="rowgroup">@Label(row)</th>@if (!IsBalance) { <td>@Money(row.Amount, 2)</td><td>@OptionalMoney(row.ComparisonAmount)</td><td class="@ChangeClass(row)">@Change(row)</td> }</tr>
+                    }
+                    else
+                    {
+                        <tr class="statement-row @row.Kind @(SelectedRow?.Key == row.Key ? "selected" : null)"><th scope="row"><div class="statement-row-label">
+                            @if (row.Kind == "detail" && row.Accounts.Count > 0) { <button class="statement-expand" type="button" aria-label="@($"{T("Visa konton för", "Show accounts for")} {Label(row)}")" aria-expanded="@Expanded.Contains(row.Key)" @onclick="() => Toggle(row.Key)">@(Expanded.Contains(row.Key) ? "⌄" : "›")</button> }
+                            <button type="button" class="statement-select" @onclick="() => OnRowSelected.InvokeAsync(row)">@Label(row)</button>
+                        </div></th><td>@Money(row.Amount, 2)</td><td>@OptionalMoney(row.ComparisonAmount)</td><td class="@ChangeClass(row)">@Change(row)</td></tr>
+                        @if (row.Kind == "detail" && Expanded.Contains(row.Key))
+                        {
+                            @foreach (var account in row.Accounts)
+                            {
+                                <tr class="statement-account @(SelectedAccount?.Code == account.Code ? "selected" : null)"><th scope="row"><button type="button" @onclick="() => OnAccountSelected.InvokeAsync(account)"><span>@(account.AccountId is null ? "" : account.Code)</span> @account.Name</button></th><td>@Money(account.Amount, 2)</td><td>@OptionalMoney(account.ComparisonAmount)</td><td>@(account.ComparisonAmount.HasValue ? SignedMoney(account.Amount - account.ComparisonAmount.Value) : "—")</td></tr>
+                            }
+                        }
+                    }
+                }
+                </tbody></table></div>
+            }
+            @if (Report.Warnings.Count > 0) { <details class="statement-warnings"><summary>@T("Rapporten behöver granskas", "Report needs review") · @Report.Warnings.Count</summary><ul>@foreach (var warning in Report.Warnings) { <li>@warning</li> }</ul></details> }
+        }
+    </section>
+    <aside class="statement-rail" aria-label="@T("Analys och rapportunderlag", "Analysis and report evidence")">
+        <section class="statement-rail-card statement-agent"><div class="statement-agent-header"><img src="/avatars/agents/laura-finance.png" alt="" /><div><strong>Laura</strong><span>@T("Ekonomiansvarig", "Finance Manager")</span></div></div><div class="statement-insight"><h2>☼ @T("Min analys", "My analysis")</h2><p>@Insight</p><a class="statement-button primary" href="@InsightHref">@(IsBalance ? T("Granska kundfordringar", "Review receivables") : T("Granska kostnader", "Review expenses")) <span aria-hidden="true">›</span></a></div></section>
+        <section class="statement-rail-card statement-evidence" aria-live="polite"><h2>▤ @T("Vald post", "Selected item"): @(SelectedRow is not null ? Label(SelectedRow) : SelectedAccount?.Name ?? T("Välj en post", "Select an item"))</h2>
+            @if (SelectedAccount is not null)
+            {
+                <p>@(SelectedAccount.AccountId.HasValue ? SelectedAccount.Code + " · " : "")@SelectedAccount.Name</p>
+                @if (EvidenceLoading) { <p role="status">@T("Hämtar verifikationer…", "Loading journals…")</p> }
+                else if (EvidenceError is not null) { <p role="alert">@EvidenceError</p> }
+                else if (Evidence is not null)
+                {
+                    <dl><div><dt>@T("Ingående saldo", "Opening balance")</dt><dd>@Money(EvidenceSign * Evidence.OpeningBalanceAdjustment, 2) @Unit</dd></div><div><dt>@T("Periodens förändring", "Journal contribution")</dt><dd>@SignedMoney(EvidenceSign * Evidence.JournalLineTotal) @Unit</dd></div><div><dt>@T("Rapportbelopp", "Statement amount")</dt><dd>@Money(SelectedAccount.Amount, 2) @Unit</dd></div></dl>
+                    <small>@T("Underlag för", "Evidence for") @Report?.PeriodName</small>
+                    <p class="@(EvidenceDifference == 0 ? "positive" : "negative")">@T("Avstämningsdifferens", "Reconciliation difference"): @Money(EvidenceDifference, 2)</p>
+                    @foreach (var entry in Evidence.Entries.Take(3)) { <a class="statement-voucher" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?journalId={entry.LedgerEntryId:D}", CompanyId)">@entry.EntryNumber <span>@Money(EvidenceSign * entry.TotalContributionAmount, 2)</span></a> }
+                }
+                @if (SelectedAccount.AccountId is Guid accountId) { <a class="statement-button secondary" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/reports?view=ledger&accountId={accountId:D}&periodId={SelectedPeriodId:D}", CompanyId)">@T("Visa huvudbok", "View general ledger") →</a> }
+                @if (Report?.Snapshot is not null) { <small>@T("Huvudboken visar aktuell bokföring. Underlaget ovan avser den sparade rapportversionen.", "The ledger shows current accounting. Evidence above belongs to the saved report version.")</small> }
+            }
+            else if (SelectedRow is not null)
+            {
+                <p>@T("Välj ett bidragande konto för att se verifikationer.", "Select a contributing account to inspect journals.")</p>
+                @foreach (var a in SelectedRow.Accounts) { <button class="statement-contribution" type="button" @onclick="() => OnAccountSelected.InvokeAsync(a)">@a.Code · @a.Name</button> }
+            }
+            else { <p>@T("Välj en rapportpost eller ett konto i tabellen.", "Select an item or account in the table.")</p> }
+        </section>
+        @if (IsBalance && Report is not null)
+        {
+            <section class="statement-rail-card statement-controls"><h2>✓ @T("Rapportkontroller", "Report checks")</h2><p class="@(Report.BalanceDifference == 0 ? "positive" : "negative")">@T("Balanskontroll", "Balance check"): @Money(Report.BalanceDifference ?? 0, 2) @Unit</p><small>@T("Kontrollen avser tillgångar mot eget kapital och skulder. Kontospecifika ingående saldon visas i verifikationsunderlaget.", "This check compares assets with equity and liabilities. Account opening balances are shown in journal evidence.")</small></section>
+        }
+        <section class="statement-rail-card"><h2>▣ @T("Rapportunderlag", "Report evidence")</h2>
+            <p>@(Report?.Snapshot is not null ? T("Sparad rapport", "Saved report") + " · v" + Report.Snapshot.Version : T("Bokförda verifikationer", "Posted journals"))</p>
+            <small>@T("Endast vald räkenskapsperiod. Ingen automatisk valutaomräkning.", "Selected fiscal period only. No automatic currency conversion.")</small>
+            @if (Report?.Snapshot is not null) { <p class="statement-checksum">@Report.Snapshot.Checksum</p> }
+            @if (Report?.ComparisonSnapshot is not null) { <small>@T("Sparad jämförelse", "Retained comparison") · v@(Report.ComparisonSnapshot.Version)</small><p class="statement-checksum">@Report.ComparisonSnapshot.Id · @Report.ComparisonSnapshot.Checksum</p> }
+            <p class="statement-lock">@(Report?.IsReportingLocked == true ? T("Perioden är låst", "Period is locked") : T("Perioden är ännu inte låst", "Period is not locked"))</p>
+            <details class="statement-history"><summary>@T("Visa sparade rapporter", "View saved reports")</summary>
+                @if (Report?.SavedReports.Count > 0)
+                {
+                    <button type="button" @onclick="() => OnSnapshotChanged.InvokeAsync((Guid?)null)">@T("Senaste rapport", "Latest report")</button>
+                    @foreach (var s in Report.SavedReports) { <button type="button" @onclick="() => OnSnapshotChanged.InvokeAsync((Guid?)s.Id)">v@(s.Version) · @s.GeneratedUtc.ToString("d", Culture)</button> }
+                }
+                else { <p>@T("Inga sparade rapportversioner för perioden.", "No saved report versions for the period.")</p> }
+            </details>
+        </section>
+    </aside>
+</div>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public string ReportKind { get; set; } = "profit-loss";
+    [Parameter] public StatementWorkspaceReport? Report { get; set; }
+    [Parameter] public IReadOnlyList<AccountingPeriodResponse> Periods { get; set; } = [];
+    [Parameter] public Guid SelectedPeriodId { get; set; }
+    [Parameter] public Guid? ComparisonPeriodId { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public StatementWorkspaceRow? SelectedRow { get; set; }
+    [Parameter] public StatementWorkspaceAccount? SelectedAccount { get; set; }
+    [Parameter] public StatementEvidenceResponse? Evidence { get; set; }
+    [Parameter] public bool EvidenceLoading { get; set; }
+    [Parameter] public string? EvidenceError { get; set; }
+    [Parameter] public EventCallback<string?> OnPeriodChanged { get; set; }
+    [Parameter] public EventCallback<string?> OnComparisonChanged { get; set; }
+    [Parameter] public EventCallback<Guid?> OnSnapshotChanged { get; set; }
+    [Parameter] public EventCallback<StatementWorkspaceRow> OnRowSelected { get; set; }
+    [Parameter] public EventCallback<StatementWorkspaceAccount> OnAccountSelected { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public EventCallback OnPrint { get; set; }
+    [Parameter] public EventCallback OnExport { get; set; }
+    private readonly HashSet<string> Expanded = ["sales", "cash"];
+    private bool IsBalance => ReportKind == "balance-sheet";
+    private decimal EvidenceSign => !IsBalance && Evidence?.Line is { } line && line.ReportSection != "profit_and_loss_revenue" && line.LineClassification != "non_operating_income" ? -1m : 1m;
+    private decimal EvidenceDifference => SelectedAccount is null || Evidence is null ? 0m : SelectedAccount.Amount - EvidenceSign * Evidence.ReconciliationTotal;
+    private bool Swedish => CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "sv";
+    private CultureInfo Culture => CultureInfo.GetCultureInfo(Swedish ? "sv-SE" : "en-GB");
+    private string T(string sv, string en) => Swedish ? sv : en;
+    private string Title => IsBalance ? T("Balansräkning", "Balance sheet") : T("Resultaträkning", "Profit and loss");
+    private string Label(StatementWorkspaceRow row) => Swedish ? row.LabelSv : row.LabelEn;
+    private string KpiLabel(StatementWorkspaceRow row) => IsBalance ? row.Key switch { "assets" => T("Tillgångar", "Assets"), "equity" => T("Eget kapital", "Equity"), "debt" => T("Skulder", "Liabilities"), _ => Label(row) } : Label(row);
+    private string Unit => Report?.Currency == "SEK" && Swedish ? "kr" : Report?.Currency ?? "";
+    private string Money(decimal n, int decimals) => n.ToString("N" + decimals, Culture);
+    private string OptionalMoney(decimal? n) => n.HasValue ? Money(n.Value, 2) : "—";
+    private string SignedMoney(decimal n) => (n > 0 ? "+ " : "") + Money(n, 2);
+    private string Change(StatementWorkspaceRow row) => IsBalance ? row.ComparisonAmount.HasValue ? SignedMoney(row.Amount - row.ComparisonAmount.Value) : "—" : row.ChangePercent.HasValue ? (row.ChangePercent > 0 ? "+" : "") + row.ChangePercent.Value.ToString("N1", Culture) + " %" : "—";
+    private string ChangeClass(StatementWorkspaceRow row) => !row.ComparisonAmount.HasValue || row.Amount == row.ComparisonAmount ? "neutral" : row.Amount > row.ComparisonAmount ? "positive" : "negative";
+    private string ReportHref(string kind) => FinanceRoutes.WithCompanyContext($"/finance/accounting/reports?view={kind}&periodId={SelectedPeriodId:D}", CompanyId);
+    private string PeriodLabel(AccountingPeriodResponse p) => IsBalance ? p.EndDate.ToString("d MMMM yyyy", Culture) : $"{p.StartDate.ToString("d MMM yyyy", Culture)}–{p.EndDate.ToString("d MMM yyyy", Culture)}";
+    private string ColumnLabel(DateTime start, DateTime end) => IsBalance ? end.AddTicks(-1).ToString("d MMM yyyy", Culture) : $"{start.ToString("d MMM", Culture)}–{end.AddTicks(-1).ToString("d MMM yyyy", Culture)}";
+    private void Toggle(string key) { if (!Expanded.Add(key)) Expanded.Remove(key); }
+    private string Insight => Report is null ? T("Välj en period för att granska rapporten.", "Select a period to review the report.") : Report.Warnings.Count > 0 ? T("Rapportunderlaget behöver granskas innan du använder resultatet.", "Review the report evidence before relying on the results.") : IsBalance ? Report.BalanceDifference != 0 ? T("Balansen har en differens. Granska bokföringen före periodstängning.", "The balance has a difference. Review accounting before close.") : T("Tillgångar stämmer med eget kapital och skulder. Granska kundfordringar inför periodstängning.", "Assets reconcile to equity and liabilities. Review receivables before closing.") : Report.Kpis.FirstOrDefault()?.ChangePercent is decimal change ? T($"Nettoomsättningen har förändrats med {change.ToString("N1", Culture)} %. Granska kostnader inför nästa period.", $"Net sales changed by {change.ToString("N1", Culture)}%. Review expenses before the next period.") : T("Rapporten visar bokförda intäkter och kostnader. Välj en jämförelseperiod för mer analys.", "The report shows booked income and expenses. Select a comparison period for more analysis.");
+    private string InsightHref => FinanceRoutes.WithCompanyContext(IsBalance ? "/finance/invoices" : "/finance/transactions", CompanyId);
+}
+
+
+
+

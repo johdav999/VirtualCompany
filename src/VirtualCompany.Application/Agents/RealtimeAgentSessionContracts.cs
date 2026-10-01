@@ -4,6 +4,9 @@ public static class RealtimeAgentEventTypes
 {
     public const string Connected = "connected";
     public const string ParticipantSpeechStarted = "participant_speech_started";
+    public const string ParticipantSpeechStopped = "participant_speech_stopped";
+    public const string InputCommitted = "input_committed";
+    public const string ParticipantTranscriptFailed = "participant_transcript_failed";
     public const string ParticipantTranscriptCompleted = "participant_transcript_completed";
     public const string AgentTranscriptCompleted = "agent_transcript_completed";
     public const string ToolInvocation = "tool_invocation";
@@ -50,7 +53,8 @@ public sealed record RealtimeAgentPcmSessionCreateRequest(
     string? CorrelationId = null,
     bool ManualInputCommit = false,
     string? Voice = null,
-    bool ConversationProfile = false);
+    bool ConversationProfile = false,
+    string? SemanticVadEagerness = null);
 
 public sealed record RealtimeAgentPcmSessionConnection(
     string Provider,
@@ -68,10 +72,21 @@ public sealed record RealtimeAgentPcmOutput(
     string? ProviderEventJson = null,
     string? ResponseId = null,
     string? ItemId = null,
-    Guid? TurnId = null);
+    Guid? TurnId = null,
+    int OutputIndex = 0,
+    int ContentIndex = 0);
 
 public sealed record RealtimeConversationResponseRequest(Guid TurnId, bool Audio, int MaximumOutputTokens = 256,
-    bool KeepProviderContext = false, string? RequiredToolName = null);
+    bool KeepProviderContext = false, string? RequiredToolName = null, bool AutomaticToolChoice = false,
+    IReadOnlyList<string>? AvailableTools = null, string? PlaybackContext = null, bool DefaultAudioConversation = false);
+
+public sealed record RealtimeBufferedSpeechRequest(Guid CompanyId, Guid UserId, Guid AgentId,
+    Guid TurnId, string Heard, string Instructions);
+public sealed record RealtimeBufferedSpeech(byte[] Pcm, string Text, string ResponseId, int InputTokens, int OutputTokens,
+    string? OutputSessionId = null, string? ItemId = null, IReadOnlyList<RealtimeBufferedSpeechItem>? Items = null);
+// Byte offsets in the assembled PCM, not generation or wall-clock times. Delivery receipts
+// must be translated to item-local positions before provider history can be truncated.
+public sealed record RealtimeBufferedSpeechItem(string ItemId, int PcmOffset, int PcmLength);
 
 /// <summary>
 /// Stateful, server-side conversation operations. The caller supplies only confirmed, consented
@@ -80,6 +95,10 @@ public sealed record RealtimeConversationResponseRequest(Guid TurnId, bool Audio
 /// </summary>
 public interface IRealtimeAgentConversationGateway
 {
+    Task FinishBufferedSpeechAsync(RealtimeBufferedSpeech speech, int deliveredMilliseconds, bool completed,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+    Task<RealtimeBufferedSpeech> GenerateBufferedSpeechAsync(string contextSessionId, RealtimeBufferedSpeechRequest request,
+        CancellationToken cancellationToken) => throw new RealtimeAgentUnavailableException("buffered_audio_unavailable", "Conversational audio is unavailable.");
     Task AddConfirmedTurnAsync(string providerSessionId, Guid turnId, string text, CancellationToken cancellationToken);
     Task RecordPlayedResponseAsync(string providerSessionId, Guid turnId, string text, CancellationToken cancellationToken);
     Task RecordPlayedFollowUpAsync(string providerSessionId, Guid originatingTurnId, Guid followUpId,
@@ -113,7 +132,10 @@ public sealed record RealtimeAgentEvent(
     int InputTokens = 0,
     int OutputTokens = 0,
     string? ErrorCode = null,
-    string? ErrorSummary = null);
+    string? ErrorSummary = null,
+    string? ItemId = null,
+    int? AudioStartMilliseconds = null,
+    int? AudioEndMilliseconds = null);
 
 public sealed record RealtimeAgentHealth(
     bool Enabled,

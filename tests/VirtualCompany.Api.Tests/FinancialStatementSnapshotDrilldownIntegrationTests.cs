@@ -15,6 +15,43 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IDispo
 
     public void Dispose() => _factory.Dispose();
 
+    [Theory]
+    [InlineData("profit-loss")]
+    [InlineData("balance-sheet")]
+    public async Task Statement_workspace_uses_authorized_period_and_exact_retained_source(string kind)
+    {
+        var seed = await SeedScenarioAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var live = await client.GetFromJsonAsync<VirtualCompany.Shared.StatementWorkspaceReport>($"/internal/companies/{seed.CompanyId:D}/finance/accounting/statement-workspace/{kind}?fiscalPeriodId={seed.FebruaryPeriodId:D}&comparisonFiscalPeriodId={seed.JanuaryPeriodId:D}");
+        Assert.Equal(seed.FebruaryPeriodId, live!.PeriodId);
+        Assert.Equal(seed.JanuaryPeriodId, live.ComparisonPeriodId);
+        Assert.Equal(new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc), live.EndUtc);
+        Assert.Equal(new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), live.ComparisonEndUtc);
+        Assert.All(live.Rows.Where(x => x.Kind == "detail"), r => Assert.Equal(r.Amount, r.Accounts.Sum(x => x.Amount)));
+        var regenerate = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId:D}/finance/fiscal-periods/{seed.JanuaryPeriodId:D}/reporting/stored-statements/regenerate", new { runInBackground = false });
+        Assert.Equal(HttpStatusCode.OK, regenerate.StatusCode);
+        var type = kind == "profit-loss" ? "profit_and_loss" : "balance_sheet";
+        var snapshots = await client.GetFromJsonAsync<List<FinancialStatementSnapshotSummaryResponse>>($"/api/companies/{seed.CompanyId:D}/financial-statements/snapshots?fiscalPeriodId={seed.JanuaryPeriodId:D}&statementType={type}");
+        var snapshot = Assert.Single(snapshots!);
+        var url = $"/internal/companies/{seed.CompanyId:D}/finance/accounting/statement-workspace/{kind}?fiscalPeriodId={seed.JanuaryPeriodId:D}&snapshotId={snapshot.SnapshotId:D}";
+        var report = await client.GetFromJsonAsync<VirtualCompany.Shared.StatementWorkspaceReport>(url);
+        Assert.Equal(seed.CompanyId, report!.CompanyId);
+        Assert.Equal(snapshot.SnapshotId, report.Snapshot!.Id);
+        Assert.Equal(snapshot.BalancesChecksum,report.Snapshot.Checksum);
+        Assert.Equal(snapshot.SourcePeriodEndUtc,report.EndUtc);
+        Assert.Contains(snapshot.SnapshotId.ToString(),report.CsvContent);
+        Assert.All(report.Rows.Where(x => x.Kind == "detail"), r => Assert.Equal(r.Amount,r.Accounts.Sum(x => x.Amount)));
+        var other = await SeedScenarioAsync();
+        var foreignComparison = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/accounting/statement-workspace/{kind}?fiscalPeriodId={seed.FebruaryPeriodId:D}&comparisonFiscalPeriodId={other.JanuaryPeriodId:D}");
+        Assert.Equal(HttpStatusCode.NotFound, foreignComparison.StatusCode);
+        var denied = await client.GetAsync($"/internal/companies/{other.CompanyId:D}/finance/accounting/statement-workspace/{kind}?fiscalPeriodId={other.JanuaryPeriodId:D}");
+        Assert.Equal(HttpStatusCode.Forbidden,denied.StatusCode);
+        var wrongSnapshot = await client.GetAsync(url.Replace(snapshot.SnapshotId.ToString("D"),Guid.NewGuid().ToString("D")));
+        Assert.Equal(HttpStatusCode.NotFound,wrongSnapshot.StatusCode);
+        var mismatched = await client.GetAsync(url.Replace(kind,kind == "profit-loss" ? "balance-sheet" : "profit-loss"));
+        Assert.Equal(HttpStatusCode.BadRequest,mismatched.StatusCode);
+    }
+
     [Fact]
     public async Task Regenerating_unlocked_period_creates_new_statement_snapshot_versions_without_overwriting_prior_versions()
     {

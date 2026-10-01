@@ -177,11 +177,12 @@ public sealed class SalesHumanRoomTests
         Assert.Contains("Approve answer", cut.Markup);
         Assert.Contains("1 of 2 clients acknowledged", cut.Markup);
         Assert.Contains(mode switch { "assisted" => "Present this slide", "autonomous" => "Present full deck from start", _ => "Present this point" }, cut.Markup);
-        Assert.Contains(mode == "autonomous" ? "Realtime conversation is not available" : "Answers require your approval before speech", cut.Markup);
+        Assert.Contains(mode == "autonomous" ? "voice conversation is not available" : "Answers require your approval before speech", cut.Markup);
         Export("host-agent", cut.Markup);
     }
 
     [Theory]
+    [InlineData("ready", "Ready for a question")]
     [InlineData("listening_for_reply", "Waiting for your reply — microphone muted")]
     [InlineData("checking_sources", "Checking approved sources")]
     [InlineData("answering", "Answering")]
@@ -191,6 +192,11 @@ public sealed class SalesHumanRoomTests
     [InlineData("paused", "Conversation paused")]
     [InlineData("unavailable", "Realtime conversation unavailable")]
     [InlineData("legacy", "Approved-answer mode")]
+    [InlineData("listening", "Listening — your microphone is muted")]
+    [InlineData("presentation_paused", "Listening · presentation paused — your microphone is muted")]
+    [InlineData("reconnecting", "Reconnecting agent voice")]
+    [InlineData("stopped", "Agent stopped")]
+    [InlineData("lease_expired", "Realtime conversation unavailable")]
     public void Host_sees_authoritative_conversation_phase_without_exposing_it_to_guests(string phase, string label)
     {
         var fixture = PresentationFixture();
@@ -198,11 +204,13 @@ public sealed class SalesHumanRoomTests
             "autonomous", null, null, null, null, "none", false, false, 2, 4, 9, 2, 1, null, 0,
             null, 7, new(null, "none", 0, 0, null, null, null));
         var availability = phase switch
-        { "unavailable" => "configuration", "legacy" => "off", _ => "available" };
-        var status = new BrowserRoomAgentStatus(Room, Guid.NewGuid(), "Alex", "ready", "healthy", 3, 2,
+        { "unavailable" => "configuration", "legacy" => "off", "lease_expired" => "lease_expired", "reconnecting" => "reconnecting", "stopped" => "stopped", "paused" => "paused", _ => "available" };
+        var state = phase switch { "reconnecting" => "starting", "stopped" => "stopped", "paused" => "paused", _ => "ready" };
+        var voice = phase switch { "reconnecting" => "connecting", "stopped" => "stopped", "paused" => "degraded", _ => "healthy" };
+        var status = new BrowserRoomAgentStatus(Room, Guid.NewGuid(), "Alex", state, voice, 3, 2,
             1, 1, true, DateTime.UtcNow, DateTime.UtcNow.AddMinutes(2), null, null, "ready",
             0, 0, 0, null, "not_reported", 0, 0, 0, 0, null, null, 5, null, [], floor,
-            new(phase, availability, phase == "unavailable" ? "Realtime voice is not configured." : null));
+            new(phase == "lease_expired" ? "unavailable" : phase, availability, phase == "unavailable" ? "Realtime voice is not configured." : phase == "ready" ? "Please clarify or use a typed question. I am still listening." : null));
         using var context = Context(request =>
         {
             var path = request.RequestUri!.AbsolutePath;
@@ -217,11 +225,23 @@ public sealed class SalesHumanRoomTests
         cut.WaitForAssertion(() => Assert.Contains(label, cut.Find(".room-conversation strong").TextContent));
         Assert.Equal(phase == "legacy" ? "Approved-answer mode" : label, cut.Find(".room-conversation strong").TextContent);
         Assert.Contains("Only you can see this", cut.Markup);
+        if (phase == "ready") Assert.Contains("Please clarify or use a typed question. I am still listening.", cut.Find(".room-conversation p").TextContent);
         Assert.True(cut.Find(".room-agent__wide.room-primary").HasAttribute("disabled"));
         Assert.Contains("Unmute", cut.Markup);
         Assert.Contains("Enable sound", cut.Markup);
         Assert.Contains("Microphone", cut.Markup);
         Assert.Contains("Manual", cut.Markup);
+        if (phase is "listening" or "presentation_paused")
+        {
+            Assert.DoesNotContain("AI is paused. The meeting continues without AI audio processing.", cut.Markup);
+            Assert.Contains("Ask a question or clearly request presentation playback", cut.Markup);
+        }
+        if (phase is "reconnecting" or "stopped" or "unavailable")
+            Assert.DoesNotContain("Agent speaking from", cut.Find(".room-floor").TextContent);
+        cut.Find(".room-join").Click();
+        cut.WaitForAssertion(() => Assert.Contains("Shared presentation", cut.Markup));
+        if (phase == "lease_expired") Assert.False(cut.Find(".room-agent__wide.room-primary").HasAttribute("disabled"));
+        Export("host-dialogue-" + phase, cut.Markup);
     }
 
     [Fact]
@@ -415,6 +435,103 @@ public sealed class SalesHumanRoomTests
         cut.FindAll("button").Single(b => b.TextContent == "Present full deck from start").Click();
         cut.WaitForAssertion(() => Assert.Equal(new[] { "goto", "narration" }, calls));
     }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void Agent_joins_automatically_only_after_host_join_and_server_consent(bool consent, bool pending)
+    {
+        var f = PresentationFixture();
+        var startCalls = 0;
+        var status = JoinStatus(consent, pending);
+        using var context = Context(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/agent/start"))
+            {
+                startCalls++;
+                var command = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult()).RootElement;
+                Assert.True(command.GetProperty("automatic").GetBoolean());
+                Assert.Equal(5, command.GetProperty("expectedVersion").GetInt64());
+                status = status with { State = "starting", VoiceHealth = "connecting", AutoStartPending = false };
+                return Ok(status);
+            }
+            if (path.EndsWith("/agent")) return Ok(status);
+            if (path.EndsWith("/consent"))
+            {
+                status = status with { AllParticipantsConsented = true, ConsentedParticipants = 2 };
+                return Ok(f.GuestRoom);
+            }
+            if (path.EndsWith("/agent/stop"))
+            {
+                status = status with { State = "stopped", AutoStartPending = false, LastErrorCode = "host_stopped" };
+                return Ok(status);
+            }
+            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.Contains("/presentation/decks/")) return SlideImage();
+            if (path.EndsWith("/presentation")) return Ok(f.Host);
+            return Ok(f.Room with { Participants = f.Room.Participants.Select(p => p with { AiProcessingAllowed = consent }).ToArray() });
+        });
+        var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
+        var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
+        cut.WaitForAssertion(() => Assert.Contains("Join meeting", cut.Markup));
+        Assert.Equal(0, startCalls);
+        cut.Find(".room-join").Click();
+        cut.WaitForAssertion(() => Assert.Contains("Your choice", cut.Markup));
+        Assert.Equal(consent && pending ? 1 : 0, startCalls);
+        Assert.Contains(module.Invocations, x => x.Identifier == "setAgentPresence");
+        if (!consent && pending)
+        {
+            Assert.Contains("Waiting for consent", cut.Markup);
+            cut.FindAll("button").Single(b => b.TextContent == "Allow AI for this meeting").Click();
+            cut.WaitForAssertion(() => Assert.Equal(1, startCalls));
+        }
+        if (pending)
+        {
+            cut.FindAll("button").Single(b => b.TextContent == "Stop AI").Click();
+            cut.WaitForAssertion(() => Assert.Contains("Stopped", cut.Markup));
+            // Another refresh/consent response cannot undo the host's stop.
+            cut.FindAll("button").Single(b => b.TextContent == "Do not retain my transcript").Click();
+            cut.WaitForAssertion(() => Assert.Equal(1, startCalls));
+        }
+    }
+
+    [Fact]
+    public void Automatic_join_failure_is_visible_and_does_not_block_the_human_call()
+    {
+        var f = PresentationFixture();
+        var startCalls = 0;
+        using var context = Context(request =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/agent/start"))
+            {
+                startCalls++;
+                return new(HttpStatusCode.TooManyRequests) { Content = JsonContent.Create(new { code = "sales.room_agent.quota_exceeded" }) };
+            }
+            if (path.EndsWith("/agent")) return Ok(JoinStatus(true, true));
+            if (path.EndsWith("/consent")) return Ok(f.GuestRoom);
+            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.Contains("/presentation/decks/")) return SlideImage();
+            if (path.EndsWith("/presentation")) return Ok(f.Host);
+            return Ok(f.Room);
+        });
+        var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
+        var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
+        cut.Find(".room-join").Click();
+        cut.WaitForAssertion(() => Assert.Contains("Alex could not connect automatically", cut.Markup));
+        Assert.Equal(1, startCalls);
+        Assert.Contains("room AI limit", cut.Markup);
+        Assert.Contains(module.Invocations, x => x.Identifier == "connect");
+        Assert.DoesNotContain(module.Invocations, x => x.Identifier == "forgetSession");
+        cut.FindAll("button").Single(b => b.TextContent == "Do not retain my transcript").Click();
+        cut.WaitForAssertion(() => Assert.Equal(1, startCalls));
+    }
+
+    private static BrowserRoomAgentStatus JoinStatus(bool consent, bool pending) => new(Room, null, "Alex", "not_started", "not_connected",
+        0, 1, consent ? 2 : 0, 2, consent, null, null, null, null, "not_prepared", 0, 0, 0, null, "not_reported", 0,
+        0, 0, 0, null, null, 5, null, [], AutoStartPending: pending);
 
     private static (BrowserRoomSnapshot Room, BrowserGuestSnapshot GuestRoom,
         SalesBrowserPresentationHostViewModel Host, SalesBrowserPresentationPublicViewModel GuestPresentation) PresentationFixture()

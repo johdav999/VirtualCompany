@@ -6,8 +6,93 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class OpenAiRealtimeConversationStateTests
 {
+    [Fact]
+    public void Routing_with_unanswered_history_explicitly_targets_latest_confirmed_input()
+    {
+        var state = new OpenAiRealtimeConversationState([ReadTool]);
+        state.AddConfirmed(Guid.NewGuid(), "Welcome to the meeting");
+        var latest = Guid.NewGuid();
+        state.AddConfirmed(latest, "How does onboarding work?");
+        var payload = state.CreateResponse(new(latest, false, KeepProviderContext: true,
+            AutomaticToolChoice: true, PlaybackContext: "{\"state\":\"paused\"}"));
+        var input = payload["response"]!["input"]!.AsArray();
+        Assert.Contains("LAST user message only", input[0]!["content"]![0]!["text"]!.GetValue<string>());
+        Assert.Equal("How does onboarding work?", input.Last()!["content"]![0]!["text"]!.GetValue<string>());
+        Assert.Null(payload["response"]!["instructions"]);
+    }
+
+    [Fact]
+    public void Per_turn_tools_are_advertised_and_enforced_even_if_registered_on_the_session()
+    {
+        var write = new RealtimeAgentToolDefinition("start_presentation", "Start", "{\"type\":\"object\"}", "execute");
+        var state = new OpenAiRealtimeConversationState([ReadTool, write]);
+        var turn = Guid.NewGuid(); state.AddConfirmed(turn, "Start the presentation");
+        var request = state.CreateResponse(new(turn, false, KeepProviderContext: true, AutomaticToolChoice: true,
+            AvailableTools: [ReadTool.Name], PlaybackContext: "{\"state\":\"paused\",\"offset\":120}"));
+        Assert.Equal(ReadTool.Name, Assert.Single(request["response"]!["tools"]!.AsArray())!["name"]!.GetValue<string>());
+        Assert.Null(request["response"]!["instructions"]); // Never override session policy or output instructions.
+        state.ObserveResponse("resp_tools", turn.ToString("N"));
+        Assert.Throws<RealtimeAgentEventException>(() => state.AcceptTool("resp_tools", "call_write", write.Name, "{}"));
+        Assert.True(state.AcceptTool("resp_tools", "call_read", ReadTool.Name, "{}"));
+    }
+
+    [Fact]
+    public void Isolated_audio_can_be_truncated_at_delivered_position_after_generation_completed()
+    {
+        var state = new OpenAiRealtimeConversationState([]);
+        var turn = Guid.NewGuid(); state.AddConfirmed(turn, "Hello");
+        Assert.Equal("auto", state.CreateResponse(new(turn, true, DefaultAudioConversation: true))["response"]!["conversation"]!.GetValue<string>());
+        state.ObserveResponse("resp_audio", turn.ToString("N")); state.AcceptAudio("resp_audio", "item_audio", 48000); state.Complete("resp_audio");
+        var receipt = state.Cancel("resp_audio", "item_audio", 125)!.Value;
+        var events = OpenAiRealtimeAgentSessionGateway.BuildCancellationEvents("resp_audio", "item_audio", 125,
+            receipt.KeepContext, receipt.AudioBytes, receipt.Completed);
+        Assert.Equal("conversation.item.truncate", Assert.Single(events)["type"]!.GetValue<string>());
+        Assert.Equal(125, events[0]["audio_end_ms"]!.GetValue<int>());
+        Assert.Throws<RealtimeAgentEventException>(() => state.Cancel("resp_audio", "item_audio", 1001));
+    }
     private static readonly RealtimeAgentToolDefinition ReadTool =
         new("read_approved_source", "Read an approved source", "{\"type\":\"object\"}", "read");
+
+    [Fact]
+    public void Multiple_audio_items_belong_to_same_turn_but_truncation_uses_each_items_own_duration()
+    {
+        var state = new OpenAiRealtimeConversationState([]);
+        var turn = Guid.NewGuid(); state.AddConfirmed(turn, "Hello");
+        state.CreateResponse(new(turn, true, DefaultAudioConversation: true));
+        state.ObserveResponse("resp_audio", turn.ToString("N"));
+        Assert.Equal(turn, state.AcceptAudio("resp_audio", "item_first", 48000));
+        Assert.Equal(turn, state.AcceptAudio("resp_audio", "item_second", 24000));
+        Assert.Equal(turn, state.AcceptAudio("resp_audio", "item_first", 24000));
+        state.Complete("resp_audio");
+        Assert.Throws<RealtimeAgentEventException>(() => state.Cancel("resp_audio", "item_second", 501));
+        Assert.Throws<RealtimeAgentEventException>(() => state.Cancel("resp_audio", "item_unknown", 0));
+        var first = state.Cancel("resp_audio", "item_first", 1000)!.Value;
+        var second = state.Cancel("resp_audio", "item_second", 0)!.Value;
+        Assert.Equal(72000, first.AudioBytes); Assert.Equal(24000, second.AudioBytes);
+        var payload = Assert.Single(OpenAiRealtimeAgentSessionGateway.BuildCancellationEvents("resp_audio", "item_second", 0,
+            second.KeepContext, second.AudioBytes, second.Completed));
+        Assert.Equal("conversation.item.truncate", payload["type"]!.GetValue<string>());
+        Assert.Equal("item_second", payload["item_id"]!.GetValue<string>());
+        Assert.Equal(0, payload["audio_end_ms"]!.GetValue<int>());
+        Assert.Null(state.AcceptAudio("resp_audio", "item_second", 480));
+    }
+
+    [Fact]
+    public void Multiple_items_cannot_bypass_response_audio_or_item_count_bounds()
+    {
+        var state = new OpenAiRealtimeConversationState([]);
+        var turn = Guid.NewGuid(); state.AddConfirmed(turn, "Hello");
+        state.CreateResponse(new(turn, true)); state.ObserveResponse("resp_audio", turn.ToString("N"));
+        for (var i = 0; i < 60; i++) state.AcceptAudio("resp_audio", "item_" + i % 2, 96000);
+        Assert.Equal("audio_limit", Assert.Throws<RealtimeAgentEventException>(() =>
+            state.AcceptAudio("resp_audio", "item_third", 480)).Code);
+
+        var second = Guid.NewGuid(); state.AddConfirmed(second, "Next");
+        state.CreateResponse(new(second, true)); state.ObserveResponse("resp_items", second.ToString("N"));
+        for (var i = 0; i < 32; i++) state.AcceptAudio("resp_items", "item_" + i, 480);
+        Assert.Equal("audio_limit", Assert.Throws<RealtimeAgentEventException>(() =>
+            state.AcceptAudio("resp_items", "item_extra", 480)).Code);
+    }
 
     [Fact]
     public void Two_confirmed_turns_use_only_bounded_played_context_and_correlate_audio()

@@ -9,6 +9,20 @@ public sealed class SalesRoomAgentOptions
     public bool Enabled { get; set; }
     // Opt-in hybrid conversation; factual speech still uses the approved audio lane.
     public bool HybridConversationEnabled { get; set; }
+    // Explicit opt-in. Legacy browser, Teams and guided-work profiles keep their commit path.
+    public bool SemanticConversationInputEnabled { get; set; }
+    // Explicit, room-scoped diagnostic for generated acknowledgement text; disabled by default.
+    public Guid? AcknowledgementTextDiagnosticRoomId { get; set; }
+    public string SemanticVadEagerness { get; set; } = "low";
+    // Provider lifetime is separate from the room/call allowance. Rollover never resets usage.
+    public int ProviderSessionMinutes { get; set; } = 55;
+    public int MaximumProviderSessionRecoveries { get; set; } = 2;
+    public int ProviderRecoveryBackoffSeconds { get; set; } = 1;
+    public string? DialogueConfigurationProblem => SemanticConversationInputEnabled && !HybridConversationEnabled
+        ? "semantic_profile_requires_conversation" : SemanticVadEagerness is not ("low" or "medium" or "high" or "auto")
+        ? "invalid_semantic_eagerness" : ProviderSessionMinutes is < 1 or > 55 ||
+            MaximumProviderSessionRecoveries is < 0 or > 3 || ProviderRecoveryBackoffSeconds is < 1 or > 10
+        ? "invalid_provider_recovery_limits" : null;
     public bool EmergencyDisabled { get; set; }
     public bool DrainEnabled { get; set; }
     public int LeaseSeconds { get; set; } = 30;

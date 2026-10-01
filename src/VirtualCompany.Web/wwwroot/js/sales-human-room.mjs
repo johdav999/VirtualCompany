@@ -37,6 +37,10 @@ export class HumanRoomMedia {
         this.audience = new Map((audience || []).slice(0, 6).map(p => [p.mediaIdentity, p.displayName]));
         this.sync();
     }
+    setAgentPresence(presence) {
+        this.agentPresence = presence;
+        this.sync();
+    }
     savedDevices() {
         try {
             const value = JSON.parse(this.env.localStorage?.getItem(devicePreferenceKey) || '{}');
@@ -206,6 +210,22 @@ export class HumanRoomMedia {
                 for (const sid of [...entry.tracks.keys()]) if (!active.has(sid)) this.detach(entry, sid);
             }
         }
+        // A waiting identity is not a media participant and never owns audio.
+        // Replace it as soon as the real voice participant is subscribed.
+        if (this.agentPresence && !participants.some(p => p.identity?.startsWith('agent-'))) {
+            const key = 'agent-standby:person'; wanted.add(key);
+            let entry = this.attachments.get(key);
+            if (!entry) {
+                const tile = this.env.document.createElement('section'); tile.className = 'room-tile';
+                const fallback = this.env.document.createElement('span'); fallback.className = 'room-avatar';
+                const label = this.env.document.createElement('span'); label.className = 'room-tile-label';
+                tile.append(fallback, label); grid.append(tile);
+                entry = { tile, fallback, label, tracks: new Map() }; this.attachments.set(key, entry);
+            }
+            const name = this.agentPresence.name || 'Alex';
+            entry.fallback.textContent = name.split(/\s+/).slice(0, 2).map(n => n[0]).join('').toUpperCase();
+            entry.label.textContent = `${name} · Sales agent · ${this.agentPresence.status || 'Waiting to connect'}`;
+        }
         for (const [key, entry] of this.attachments) if (!wanted.has(key)) { for (const sid of [...entry.tracks.keys()]) this.detach(entry, sid); entry.tile.remove(); this.attachments.delete(key); }
     }
     detach(entry, sid) { const item = entry.tracks.get(sid); if (item) { item.track.detach(item.element); item.element.srcObject = null; item.element.remove(); entry.tracks.delete(sid); } }
@@ -248,6 +268,7 @@ export async function initialize(root, bridge) {
     controller = new HumanRoomMedia(root, bridge, sdk); await controller.devices();
 }
 export function heartbeat(audience) { controller?.heartbeat(audience); }
+export function setAgentPresence(presence) { controller?.setAgentPresence(presence); }
 export function connect(token) { return controller?.connect(token); }
 export function disconnect() { return controller?.disconnect(); }
 export function stopAgentPlayback(responseGeneration) { return controller?.stopAgentPlayback(responseGeneration); }

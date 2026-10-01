@@ -12,7 +12,7 @@ using VirtualCompany.Infrastructure.Sales;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesMeetingCaptureServiceTests
+public sealed partial class SalesMeetingCaptureServiceTests
 {
     [Fact]
     public void Sales_answer_is_bounded_without_cutting_claim_qualifiers_or_using_summary()
@@ -347,7 +347,22 @@ public sealed class SalesMeetingCaptureServiceTests
     {
         public Func<AgentReasoningRequest, AgentReasoningResult> ResultFactory { get; set; } = _ => throw new InvalidOperationException("Configure the result.");
         public AgentReasoningRequest? Request { get; private set; }
-        public Task<AgentReasoningResult> ReasonAsync(AgentReasoningRequest request, CancellationToken cancellationToken) { Request = request; return Task.FromResult(ResultFactory(request)); }
+        public int[]? AcceptedClaimOrders;
+        public AgentReasoningRequest? ValidationRequest;
+        private AgentReasoningResult? proposal;
+        public Task<AgentReasoningResult> ReasonAsync(AgentReasoningRequest request, CancellationToken cancellationToken)
+        {
+            if (request.PromptVersion == "sales-meeting-claim-validation-v1")
+            {
+                ValidationRequest = request;
+                var accepted = AcceptedClaimOrders ?? Enumerable.Range(0, proposal!.Claims.Count).ToArray();
+                return Task.FromResult(new AgentReasoningResult(Guid.NewGuid(), AgentAiRunStatuses.Completed, "1.0.0",
+                    "", [], 1, [], [], [], [], StructuredResult: new JsonObject
+                    { ["resultVersion"] = "1.0.0", ["state"] = "ready",
+                        ["acceptedClaimOrders"] = new JsonArray(accepted.Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()) }));
+            }
+            Request = request; proposal = ResultFactory(request); return Task.FromResult(proposal);
+        }
         public Task<AgentReasoningResult?> GetRunAsync(Guid companyId, Guid agentId, Guid runId, CancellationToken cancellationToken) => Task.FromResult<AgentReasoningResult?>(null);
     }
     private sealed class AllowingAuthority(Guid companyId, Guid agentId) : IAgentEffectiveAuthorityResolver

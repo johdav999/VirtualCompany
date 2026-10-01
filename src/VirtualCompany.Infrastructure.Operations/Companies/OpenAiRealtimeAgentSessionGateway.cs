@@ -26,7 +26,7 @@ public sealed class SharedRealtimeAgentOptions
     public int ClientSecretTtlSeconds { get; set; } = 60;
 }
 
-public sealed class OpenAiRealtimeAgentSessionGateway(
+public sealed partial class OpenAiRealtimeAgentSessionGateway(
     IHttpClientFactory clients,
     IOptions<SharedRealtimeAgentOptions> configured,
     ILogger<OpenAiRealtimeAgentSessionGateway> logger) : IRealtimeAgentSessionGateway, IRealtimeAgentPcmSessionGateway,
@@ -132,7 +132,8 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             }.ToJsonString(), ct);
             var maximum = TimeSpan.FromMinutes(Math.Clamp(request.MaximumDuration.TotalMinutes, 1, 60));
             var state = new PcmSocketSession(socket, DateTime.UtcNow.Add(maximum),
-                request.ConversationProfile ? new OpenAiRealtimeConversationState(request.Tools) : null);
+                request.ConversationProfile ? new OpenAiRealtimeConversationState(request.Tools) : null,
+                request.SemanticVadEagerness is not null, request.CompanyId, request.UserId, request.AgentId);
             if (!pcmSessions.TryAdd(providerSessionId, state))
                 throw new RealtimeAgentUnavailableException("provider_unavailable", "Realtime PCM session allocation failed.");
             return new("openai", providerSessionId, options.Model, 24_000, state.ExpiresUtc);
@@ -209,7 +210,8 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                     logger.LogWarning("Realtime response did not complete. Status={Status} Reason={Reason} Code={Code}",
                         NestedString(root, "response", "status"), NestedString(root, "response", "status_details", "reason"),
                         NestedString(root, "response", "status_details", "error", "code"));
-                    throw new RealtimeAgentEventException("response_failed", "The realtime provider could not complete the response.");
+                    if (!state.SemanticInput)
+                        throw new RealtimeAgentEventException("response_failed", "The realtime provider could not complete the response.");
                 }
                 if (type == "response.output_item.done" && root.TryGetProperty("item", out var item) &&
                     String(item, "type") == "function_call")
@@ -233,7 +235,9 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
                 var turnId = state.Conversation?.AcceptAudio(responseId ?? "", itemId ?? "", audio.Length);
                 if (state.Conversation is not null && turnId is null) continue; // late or unrequested output
                 yield return new(providerSessionId, sequence, DateTime.UtcNow, audio,
-                    ResponseId: responseId, ItemId: itemId, TurnId: turnId);
+                    ResponseId: responseId, ItemId: itemId, TurnId: turnId,
+                    OutputIndex: root.GetProperty("output_index").GetInt32(),
+                    ContentIndex: root.GetProperty("content_index").GetInt32());
             }
             else
             {
@@ -253,6 +257,8 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
         if (state.Conversation is not null)
         {
             using var document = JsonDocument.Parse(clientEventJson);
+            if (state.SemanticInput && String(document.RootElement, "type") == "input_audio_buffer.commit")
+                throw new RealtimeAgentEventException("conversation_commit_denied", "Semantic turn detection owns input completion.");
             if (String(document.RootElement, "type") is not ("input_audio_buffer.commit" or "input_audio_buffer.clear"))
                 throw new RealtimeAgentEventException("conversation_event_denied", "Use the conversation operations for responses and tools.");
         }
@@ -316,7 +322,7 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
         var cancelled = conversation.Cancel(responseId!, itemId, playedMilliseconds);
         if (cancelled is null) throw new RealtimeAgentEventException("response_uncorrelated", "The response is not part of this session.");
         foreach (var payload in BuildCancellationEvents(responseId!, itemId, playedMilliseconds,
-                     cancelled.Value.KeepContext, cancelled.Value.AudioBytes))
+                     cancelled.Value.KeepContext, cancelled.Value.AudioBytes, cancelled.Value.Completed))
         {
             try { await SendSocketJsonAsync(state, payload.ToJsonString(), ct); }
             catch { await TerminatePcmSessionAsync(providerSessionId, CancellationToken.None); throw; }
@@ -324,16 +330,15 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
     }
 
     internal static IReadOnlyList<JsonObject> BuildCancellationEvents(string responseId, string? itemId,
-        int playedMilliseconds, bool keepProviderContext, int receivedAudioBytes)
+        int playedMilliseconds, bool keepProviderContext, int receivedAudioBytes, bool responseCompleted = false)
     {
         if (!OpenAiRealtimeConversationState.ValidId(responseId) || playedMilliseconds < 0 ||
             receivedAudioBytes < 0 || keepProviderContext &&
             (!OpenAiRealtimeConversationState.ValidId(itemId) || playedMilliseconds > receivedAudioBytes / 48))
             throw new RealtimeAgentEventException("playback_uncorrelated", "The provider playback position is not verified.");
-        var events = new List<JsonObject>
-        {
-            new() { ["event_id"] = $"evt_{Guid.NewGuid():N}", ["type"] = "response.cancel", ["response_id"] = responseId }
-        };
+        var events = new List<JsonObject>();
+        if (!responseCompleted)
+            events.Add(new() { ["event_id"] = $"evt_{Guid.NewGuid():N}", ["type"] = "response.cancel", ["response_id"] = responseId });
         // Out-of-band responses never enter history. Default-conversation audio must be cut
         // at the position actually played, not at the full generated duration.
         if (keepProviderContext)
@@ -378,9 +383,14 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             {
                 "session.created" or "session.updated" => Event(RealtimeAgentEventTypes.Connected),
                 "input_audio_buffer.speech_started" => Event(RealtimeAgentEventTypes.ParticipantSpeechStarted,
-                    responseId: String(root, "item_id")),
+                    responseId: String(root, "item_id"), itemId: String(root, "item_id"), audioStart: AudioTime("audio_start_ms")),
+                "input_audio_buffer.speech_stopped" => Event(RealtimeAgentEventTypes.ParticipantSpeechStopped,
+                    itemId: String(root, "item_id"), audioEnd: AudioTime("audio_end_ms")),
+                "input_audio_buffer.committed" => Event(RealtimeAgentEventTypes.InputCommitted, itemId: String(root, "item_id")),
+                "conversation.item.input_audio_transcription.failed" => Event(RealtimeAgentEventTypes.ParticipantTranscriptFailed,
+                    itemId: String(root, "item_id"), errorCode: "transcription_failed"),
                 "conversation.item.input_audio_transcription.completed" => Event(RealtimeAgentEventTypes.ParticipantTranscriptCompleted,
-                    text: String(root, "transcript"), speakerId: String(root, "item_id")),
+                    text: String(root, "transcript"), speakerId: String(root, "item_id"), itemId: String(root, "item_id")),
                 "response.output_audio_transcript.done" or "response.audio_transcript.done" => Event(RealtimeAgentEventTypes.AgentTranscriptCompleted,
                     text: String(root, "transcript"), responseId: String(root, "response_id")),
                 "response.function_call_arguments.done" => Event(RealtimeAgentEventTypes.ToolInvocation,
@@ -402,10 +412,15 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             RealtimeAgentEvent Event(string type, string? text = null, string? speakerId = null, string? toolCallId = null,
                 string? toolName = null, string? toolArguments = null, string? responseId = null,
                 int inputTokens = 0, int outputTokens = 0, int audioDurationMilliseconds = 0,
-                string? errorCode = null, string? errorSummary = null) =>
+                string? errorCode = null, string? errorSummary = null, string? itemId = null,
+                int? audioStart = null, int? audioEnd = null) =>
                 new(providerEvent.EventId, providerEvent.Sequence, type, Bounded(text, 8000), speakerId, null,
                     toolCallId, toolName, Bounded(toolArguments, 64_000), responseId, audioDurationMilliseconds,
-                    inputTokens, outputTokens, errorCode, errorSummary);
+                    inputTokens, outputTokens, errorCode, errorSummary, itemId, audioStart, audioEnd);
+
+            int? AudioTime(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number &&
+                value.TryGetInt32(out var time) && time >= 0
+                ? time : null;
 
             RealtimeAgentEvent NormalizeResponseDone()
             {
@@ -498,7 +513,14 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
             ["format"] = new JsonObject { ["type"] = "audio/pcm", ["rate"] = 24_000 },
             ["transcription"] = new JsonObject { ["model"] = options.TranscriptionModel }
         };
-        if (request.ManualInputCommit || request.ConversationProfile)
+        if (request.SemanticVadEagerness is { } eagerness)
+        {
+            if (!request.ConversationProfile || request.ManualInputCommit || eagerness is not ("low" or "medium" or "high" or "auto"))
+                throw new ArgumentException("Semantic input requires a conversation profile, valid eagerness and provider-owned commits.");
+            input["turn_detection"] = new JsonObject { ["type"] = "semantic_vad", ["eagerness"] = eagerness,
+                ["create_response"] = false, ["interrupt_response"] = false };
+        }
+        else if (request.ManualInputCommit || request.ConversationProfile)
             input["turn_detection"] = null;
         else
             input["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["create_response"] = true, ["interrupt_response"] = false };
@@ -535,6 +557,9 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
 
     private static void Validate(RealtimeAgentPcmSessionCreateRequest request)
     {
+        if (request.SemanticVadEagerness is { } eagerness && (!request.ConversationProfile || request.ManualInputCommit ||
+            eagerness is not ("low" or "medium" or "high" or "auto")))
+            throw new ArgumentException("Semantic input requires a conversation profile, provider commits and a valid eagerness.");
         if (request.CompanyId == Guid.Empty || request.UserId == Guid.Empty || request.AgentId == Guid.Empty)
             throw new ArgumentException("Company, user, and agent are required.");
         if (string.IsNullOrWhiteSpace(request.Instructions) || request.Instructions.Length > 16_000)
@@ -610,13 +635,15 @@ public sealed class OpenAiRealtimeAgentSessionGateway(
     }
 
     private sealed class PcmSocketSession(ClientWebSocket socket, DateTime expiresUtc,
-        OpenAiRealtimeConversationState? conversation) : IDisposable
+        OpenAiRealtimeConversationState? conversation, bool semanticInput, Guid companyId, Guid userId, Guid agentId) : IDisposable
     {
         private readonly HashSet<string> receivedEventIds = new(StringComparer.Ordinal);
         private readonly Queue<string> eventIdOrder = new();
         public ClientWebSocket Socket { get; } = socket;
         public DateTime ExpiresUtc { get; } = expiresUtc;
         public OpenAiRealtimeConversationState? Conversation { get; } = conversation;
+        public bool SemanticInput { get; } = semanticInput;
+        public bool Owns(Guid company, Guid user, Guid agent) => companyId == company && userId == user && agentId == agent;
         public SemaphoreSlim SendLock { get; } = new(1, 1);
         public long ReceiveSequence;
         public bool AcceptEventId(string eventId)

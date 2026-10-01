@@ -40,7 +40,7 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
             { FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = false });
         room.TrackPublished += (_, e) => Subscribe(e.Publication);
         room.TrackSubscribed += (_, e) => StartTrack(e.Publication, e.Track);
-        room.TrackUnsubscribed += (_, e) => StopTrack(e.Track.Sid);
+        room.TrackUnsubscribed += (_, e) => StopTrack(InputTrackId(e.Publication));
         room.ParticipantDisconnected += (_, p) =>
         {
             lock (inputLock)
@@ -94,7 +94,12 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
             if (disposing != 0 || remoteTrack is not RemoteAudioTrack ||
                 publication.Source != LiveKit.Proto.TrackSource.SourceMicrophone ||
                 !allowed.TryGetValue(publication.Participant.Identity, out var participant)) return;
-            if (readers.ContainsKey(remoteTrack.Sid)) return;
+            // SDK 0.1.4 does not populate RemoteAudioTrack.Sid. The publication
+            // carries the server-assigned SID and must own the complete reader lifecycle.
+            var sid = InputTrackId(publication);
+            if (sid is null)
+            { publication.SetSubscribed(false); return; }
+            if (readers.ContainsKey(sid)) return;
             // LiveKit can subscribe the replacement microphone before it reports the old
             // track as unpublished. Retire that participant's old reader here so a browser
             // device switch cannot make the replacement lose the bounded reader slot.
@@ -107,14 +112,18 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
             var stop = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             var reader = new TrackReader(new AudioStream(remoteTrack, sampleRate: 24000, numChannels: 1,
                 frameSizeMs: 20, capacity: options.MaximumBufferedFrames), stop, Interlocked.Increment(ref trackGeneration), participant);
-            readers[remoteTrack.Sid] = reader;
-            reader.Pump = Task.Run(() => PumpAsync(participant, publication.Participant.Identity, remoteTrack.Sid, reader));
+            readers[sid] = reader;
+            reader.Pump = Task.Run(() => PumpAsync(participant, publication.Participant.Identity, sid, reader));
             pumps.Add(reader.Pump);
             _ = reader.Pump.ContinueWith(completed => { lock (inputLock) pumps.Remove(completed); }, TaskScheduler.Default);
         }
     }
-    private void StopTrack(string sid)
+    internal static string? InputTrackId(TrackPublication publication) =>
+        !string.IsNullOrWhiteSpace(publication.Sid) && publication.Sid.Length <= 200 ? publication.Sid : null;
+
+    private void StopTrack(string? sid)
     {
+        if (sid is null) return;
         lock (inputLock)
             if (readers.TryGetValue(sid, out var reader)) reader.Stop.Cancel();
     }
@@ -172,6 +181,7 @@ internal sealed class LiveKitSalesRoomMediaConnection : ISalesRoomMediaConnectio
     public Task<bool> CompleteSpeechAsync(long turnGeneration, CancellationToken cancellationToken) =>
         output?.CompleteAsync(turnGeneration, cancellationToken) ?? Task.FromResult(false);
     public Task<long> CancelSpeechAsync(CancellationToken cancellationToken) => output?.CancelAsync() ?? Task.FromResult(1L);
+    public int? DeliveredMilliseconds(long turnGeneration) => output?.DeliveredMilliseconds(turnGeneration);
     private async Task StopForConnectionChangeAsync()
     {
         try { await CancelSpeechAsync(CancellationToken.None); }

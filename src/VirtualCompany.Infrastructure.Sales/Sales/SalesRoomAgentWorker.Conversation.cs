@@ -1,6 +1,8 @@
 using System.Data;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Agents;
 using VirtualCompany.Domain.Entities;
@@ -9,6 +11,59 @@ namespace VirtualCompany.Infrastructure.Sales;
 
 internal sealed partial class SalesRoomAgentWorker
 {
+    internal sealed record FreshConversationInput(AgentConversationBinding Binding, long FloorVersion,
+        AgentConversationIntent Intent, Guid? PlayedSpeechId);
+
+    // Called for every fresh autonomous input, including initial/idle turns. Played speech
+    // supplies optional history, never permission to listen. All actions retain their own fences.
+    internal async Task<FreshConversationInput?> PrepareConversationInputAsync(AgentConversationSession session,
+        SalesRoomAgentWorkItem work, Guid participantId, Guid turnId, string text, string providerSession,
+        CancellationToken ct, bool modelSelectsTool = false)
+    {
+        var authority = await SalesRoomConversationPolicy.LoadAsync(db, Options, work.CompanyId,
+            work.RoomId, participantId, Now, ct);
+        if (authority is null || authority.Binding.Mode != "autonomous" ||
+            string.IsNullOrWhiteSpace(text) || text.Length > 2000) return null;
+        var turn = session.BeginTurn(authority, turnId, Now);
+        if (turn is null) return null;
+        var b = turn.Binding;
+        var floor = await db.SalesRoomFloors.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
+            x.CompanyId == b.CompanyId && x.RoomId == b.ConversationId, ct);
+        var played = floor.State == SalesRoomFloorStates.Host && floor.PendingTurnId is null
+            ? await db.SalesRoomAgentSpeech.IgnoreQueryFilters().AsNoTracking().Where(x =>
+                x.CompanyId == b.CompanyId && x.RoomId == b.ConversationId && x.SessionId == b.SessionId &&
+                x.AgentGeneration == b.OwnerGeneration && x.TurnGeneration == b.TurnGeneration &&
+                x.ResponseGeneration == b.ResponseGeneration && x.Status == SalesRoomAgentSpeechStates.Spoken &&
+                (x.Kind == SalesRoomAgentSpeechKinds.Answer || x.Kind == SalesRoomAgentSpeechKinds.Bridge) &&
+                x.CompletedUtc > Now.AddMinutes(-2)).OrderByDescending(x => x.CompletedUtc).FirstOrDefaultAsync(ct)
+            : null;
+        var answer = played?.QuestionId is Guid questionId
+            ? await db.SalesMeetingQuestions.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+                x.CompanyId == b.CompanyId && x.SessionId == b.SessionId && x.Id == questionId, ct)
+            : null;
+        var context = new SalesRoomConversationContext(b.CompanyId, b.AgentId, b.ConversationId,
+            b.SessionId, b.ParticipantId, answer?.Id ?? turnId, answer?.QuestionText ?? "", answer?.AnswerText ?? "",
+            answer?.Status == VirtualCompany.Domain.Enums.SalesMeetingQuestionStatus.PartiallySupported,
+            b.Slide, b.Point, b.Mode, played?.Kind == SalesRoomAgentSpeechKinds.Bridge ? played.ReleasedText : null);
+        try
+        {
+            await RunWithLeaseRenewalAsync(work, async token =>
+            {
+                await realtimeConversation.AddConfirmedTurnAsync(providerSession, turnId, text, token);
+                return true;
+            }, ct);
+            var intent = modelSelectsTool ? AgentConversationIntent.Unknown : await RunWithLeaseRenewalAsync(work,
+                token => conversationReasoner.InterpretAsync(context, text, token), ct);
+            if (!(await SalesRoomConversationPolicy.RecheckAsync(db, Options, turn, Now, ct)).Allowed) return null;
+            return new(b, floor.Version, intent, answer is null ? null : played?.Id);
+        }
+        catch (RealtimeAgentEventException ex)
+        {
+            logger.LogInformation("Fresh room conversation turn rejected. RoomId={RoomId} Code={Code}", work.RoomId, ex.Code);
+            return null;
+        }
+    }
+
     // Addressing/speech detection does not establish that the captured words contain a question.
     // In particular, never invent a product topic for a backchannel or a clipped transcript.
     private async Task<bool> IsSubstantiveQuestionAsync(SalesBrowserRoom room, Guid participantId,
@@ -20,8 +75,8 @@ internal sealed partial class SalesRoomAgentWorker
         if (floor is null) return false;
         var context = new SalesRoomConversationContext(room.CompanyId, agentId, room.Id, sessionId,
             participantId, Guid.NewGuid(), "", "", false, floor.SlideNumber, floor.TalkingPointIndex, floor.ControlMode);
-        if (!completenessConfirmed && !await RunWithLeaseRenewalAsync(work,
-                token => conversationReasoner.IsCompleteAsync(context, text, token), ct)) return false;
+        if (!completenessConfirmed && await RunWithLeaseRenewalAsync(work,
+                token => conversationReasoner.JudgeTurnAsync(context, text, token), ct) != SalesRoomTurnReadiness.Proceed) return false;
         var intent = await RunWithLeaseRenewalAsync(work,
             token => conversationReasoner.InterpretAsync(context, text, token), ct);
         return intent == AgentConversationIntent.Question;

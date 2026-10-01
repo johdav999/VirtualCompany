@@ -61,6 +61,8 @@ public sealed partial class SalesRoomAgentService(
             if (!replay)
             {
                 if (room.Version != command.ExpectedVersion) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room changed. Refresh before starting the agent.");
+                if (command.Automatic && !SalesRoomAgentJoinPolicy.CanStartAutomatically(room, Now))
+                    throw Error(SalesRoomAgentProblemCodes.Conflict, "Automatic joining is no longer available. Use Start agent if you want to reconnect Alex.");
                 if (room.MeetingSessionId is not Guid sessionId) throw Error(SalesRoomAgentProblemCodes.Conflict, "The room has no meeting session.");
                 if (SalesRoomOperationsPolicy.AudioLimitProblem(room, Options) is { } audioLimit)
                     throw Error(SalesRoomAgentProblemCodes.QuotaExceeded, audioLimit, 429);
@@ -671,6 +673,7 @@ public sealed partial class SalesRoomAgentService(
                 x.DurationMilliseconds, x.FailureCode, x.FailureSummary, x.CreatedUtc)).ToListAsync(ct);
         SalesRoomAgentAnswerView? latest = null;
         Guid? narrationRevisionId = null, narrationSegmentId = null;
+        Guid? selectedAgentId = room.AgentId;
         var narrationState = "not_prepared";
         if (room.MeetingSessionId is Guid session)
         {
@@ -680,6 +683,7 @@ public sealed partial class SalesRoomAgentService(
                 question.Status.ToStorageValue(), question.Visibility.ToStorageValue(), question.ConcurrencyVersion,
                 question.Evidence.Select(x => new SalesRoomAgentEvidenceView(x.SourceId, x.SourceType, x.SourceTitle)).Distinct().ToArray());
             var meeting = await db.SalesMeetingSessions.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.CompanyId == room.CompanyId && x.Id == session, ct);
+            selectedAgentId ??= meeting.PresenterAgentId;
             var revision = await SalesRoomNarrationSelection.Current(db, room.CompanyId, session, Now).FirstOrDefaultAsync(ct);
             if (revision is not null)
             {
@@ -696,7 +700,7 @@ public sealed partial class SalesRoomAgentService(
                 narrationState = segment is null ? "slide_not_prepared" : "ready";
             }
         }
-        var name = room.AgentId is Guid agent
+        var name = selectedAgentId is Guid agent
             ? await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == room.CompanyId && x.Id == agent).Select(x => x.DisplayName).SingleOrDefaultAsync(ct) ?? "Sales agent"
             : "Sales agent";
         var estimated = SalesRoomOperationsPolicy.EstimatedSpend(room, Options);
@@ -739,7 +743,8 @@ public sealed partial class SalesRoomAgentService(
             .OrderByDescending(x => x.CreatedUtc).FirstOrDefaultAsync(ct);
         var provider = Options.HybridConversationEnabled ? await realtime.GetHealthAsync(ct) : null;
         var conversation = SalesRoomConversationStatusProjection.Project(room, floor, currentSpeech, latest,
-            Options.HybridConversationEnabled, provider, effectiveErrorCode, effectiveError, Now);
+            Options.HybridConversationEnabled, provider, effectiveErrorCode, effectiveError, Now,
+            Options.SemanticConversationInputEnabled);
         return new(room.Id, room.AgentId, name, health, voiceHealth, room.AgentGeneration,
             room.AgentTurnGeneration, participants.Count(x => x.AiProcessingAllowed), participants.Count,
             participants.Count > 0 && participants.All(x => x.AiProcessingAllowed), room.AgentStartedUtc, room.AgentLeaseExpiresUtc,
@@ -748,7 +753,8 @@ public sealed partial class SalesRoomAgentService(
             room.AgentProviderBilledAudioMilliseconds > 0 ? room.AgentProviderBilledAudioMilliseconds : null,
             room.AgentProviderBilledAudioMilliseconds > 0 ? "reported_by_provider" : "provider_duration_not_reported",
             room.AgentOutputAudioMilliseconds, room.AgentInputTokens, room.AgentOutputTokens, estimated,
-            effectiveErrorCode, effectiveError, room.Version, latest, recent, floorView, conversation);
+            effectiveErrorCode, effectiveError, room.Version, latest, recent, floorView, conversation,
+            !unavailable && selectedAgentId.HasValue && SalesRoomAgentJoinPolicy.CanStartAutomatically(room, Now));
     }
 
     private async Task<bool> ReplayAsync(Guid company, Guid room, Guid command, string action, CancellationToken ct)

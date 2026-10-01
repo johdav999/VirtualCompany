@@ -87,6 +87,9 @@ public interface ISalesMeetingCaptureService
 
 public interface ISalesMeetingQuestionAnsweringService
 {
+    // Release must fail closed for implementations without current source validation.
+    Task<bool> ValidateEvidenceAsync(Guid companyId, Guid userId, Guid sessionId, Guid questionId,
+        long expectedVersion, CancellationToken cancellationToken) => Task.FromResult(false);
     Task<IReadOnlyList<SalesMeetingQuestionDto>> ListQuestionsAsync(Guid companyId, Guid userId, Guid sessionId, CancellationToken cancellationToken);
     Task<IReadOnlyList<SalesMeetingStageAnswerDto>> ListStageAnswersAsync(Guid companyId, Guid userId, Guid sessionId, CancellationToken cancellationToken);
     Task<SalesMeetingQuestionDto?> GetQuestionAsync(Guid companyId, Guid userId, Guid sessionId, Guid questionId, CancellationToken cancellationToken);

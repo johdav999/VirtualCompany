@@ -6,6 +6,59 @@ namespace VirtualCompany.SalesSource.Tests;
 
 public class AgentConversationTests
 {
+    [Fact]
+    public void Independent_agent_configurations_share_dialogue_lifecycle_but_not_authority_or_history()
+    {
+        var sales = Authority();
+        var finance = sales with { Binding = sales.Binding with { AgentId = Guid.NewGuid(), ConversationId = Guid.NewGuid(), SessionId = Guid.NewGuid() } };
+        var b = finance.Binding;
+        var session = new AgentConversationSession(b.CompanyId, b.AgentId, b.ConversationId, b.SessionId, b.OwnerId, b.OwnerGeneration);
+        Assert.Null(session.BeginTurn(sales, Guid.NewGuid(), Now));
+        var first = session.BeginTurn(finance, Guid.NewGuid(), Now);
+        Assert.NotNull(first);
+        session.RecordPlayed(first.HeardTurnId!.Value);
+        Assert.NotNull(session.BeginTurn(finance, Guid.NewGuid(), Now.AddSeconds(60)));
+        Assert.Null(session.BeginTurn(sales, Guid.NewGuid(), Now.AddSeconds(60)));
+        session.Stop();
+        Assert.Null(session.BeginTurn(finance, Guid.NewGuid(), Now));
+    }
+
+    [Fact]
+    public void Session_accepts_initial_and_late_input_with_fresh_checkpoint_but_old_actions_stay_fenced()
+    {
+        var a = Authority(); var b = a.Binding;
+        var session = new AgentConversationSession(b.CompanyId, b.AgentId, b.ConversationId, b.SessionId, b.OwnerId, b.OwnerGeneration);
+        var first = session.BeginTurn(a, Guid.NewGuid(), Now)!;
+        Assert.Equal(AgentConversationPhase.Interpreting, first.Phase);
+        Assert.Null(first.PlayedResponseId);
+        var later = a with { Binding = b with { Slide = 2, Point = 4, TurnGeneration = 3, ResponseGeneration = 8 } };
+        var second = session.BeginTurn(later, Guid.NewGuid(), Now.AddMinutes(2));
+        Assert.NotNull(second);
+        Assert.Equal(later.Binding, second.Binding);
+        Assert.False(first.Check(later, Now.AddMinutes(2)).Allowed);
+        Assert.Null(session.BeginTurn(later, second.HeardTurnId!.Value, Now.AddMinutes(2)));
+        session.Stop();
+        Assert.Null(session.BeginTurn(later, Guid.NewGuid(), Now.AddMinutes(2)));
+    }
+
+    [Fact]
+    public void Session_denies_terminal_authority_and_replacement_owner_without_replaying_context()
+    {
+        var a = Authority(); var b = a.Binding;
+        var session = new AgentConversationSession(b.CompanyId, b.AgentId, b.ConversationId, b.SessionId, b.OwnerId, b.OwnerGeneration);
+        AgentConversationAuthority[] denied = [a with { ConsentAllowed = false }, a with { ParticipantAllowed = false },
+            a with { SessionActive = false }, a with { BudgetAvailable = false }, a with { ExpiresUtc = Now },
+            a with { Binding = b with { CompanyId = Guid.NewGuid() } },
+            a with { Binding = b with { OwnerGeneration = 2 } }, a with { Binding = b with { OwnerId = Guid.NewGuid() } }];
+        foreach (var changed in denied) Assert.Null(session.BeginTurn(changed, Guid.NewGuid(), Now));
+        var id = Guid.NewGuid(); Assert.NotNull(session.BeginTurn(a, id, Now));
+        for (var i = 0; i < 128; i++) Assert.NotNull(session.BeginTurn(a, Guid.NewGuid(), Now));
+        Assert.False(session.HasHeard(id));
+        var replacement = new AgentConversationSession(b.CompanyId, b.AgentId, b.ConversationId, b.SessionId, Guid.NewGuid(), 2);
+        Assert.False(replacement.HasHeard(id));
+        Assert.Null(replacement.BeginTurn(a, Guid.NewGuid(), Now));
+    }
+
     private static readonly DateTime Now = new(2026, 9, 27, 12, 0, 0, DateTimeKind.Utc);
     private static AgentConversationAuthority Authority(string mode = "autonomous") => new(
         new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 1,

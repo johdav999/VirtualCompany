@@ -49,7 +49,8 @@ public sealed record BrowserRoomAgentStatus(Guid RoomId, Guid? AgentId, string A
     long? ProviderBilledAudioMilliseconds, string BillingEvidenceState, long OutputAudioMilliseconds,
     int InputTokens, int OutputTokens, decimal EstimatedSpendUsd, string? LastErrorCode, string? LastErrorSummary,
     long RoomVersion, BrowserRoomAgentAnswer? LatestAnswer, IReadOnlyList<BrowserRoomAgentSpeech> RecentSpeech,
-    BrowserRoomFloor? Floor = null, BrowserRoomConversationStatus? Conversation = null);
+    BrowserRoomFloor? Floor = null, BrowserRoomConversationStatus? Conversation = null,
+    bool AutoStartPending = false);
 public sealed record BrowserRoomCaptureReview(Guid RoomId, Guid SessionId, Guid? AgentId, string State,
     long SessionVersion, long CaptureVersion, Guid? CaptureCheckpointId, DateTime RetentionUntilUtc,
     string Coverage, IReadOnlyList<SalesMeetingTranscriptSegmentViewModel> Segments,
@@ -92,6 +93,8 @@ public sealed class SalesBrowserRoomApiClient(ICompanyApiTransport transport, bo
         Host<BrowserRoomAgentStatus>(company, room, "/agent", null, ct);
     public Task<BrowserRoomAgentStatus> StartAgentAsync(Guid company, Guid room, long version, CancellationToken ct) =>
         Host<BrowserRoomAgentStatus>(company, room, "/agent/start", new { commandId = Guid.NewGuid(), expectedVersion = version }, ct);
+    public Task<BrowserRoomAgentStatus> JoinAgentAutomaticallyAsync(Guid company, Guid room, long version, Guid commandId, CancellationToken ct) =>
+        Host<BrowserRoomAgentStatus>(company, room, "/agent/start", new { commandId, expectedVersion = version, automatic = true }, ct);
     public Task<BrowserRoomAgentStatus> StopAgentAsync(Guid company, Guid room, long version, CancellationToken ct) =>
         Host<BrowserRoomAgentStatus>(company, room, "/agent/stop", new { commandId = Guid.NewGuid(), expectedVersion = version, reason = "host_stopped" }, ct);
     public Task<BrowserRoomAgentStatus> InvokeNarrationAsync(Guid company, Guid room, long version, Guid revision, Guid segment, CancellationToken ct) =>

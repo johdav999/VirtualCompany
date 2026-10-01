@@ -81,8 +81,22 @@ public sealed class SalesBrowserRoom : ICompanyOwnedEntity
         AgentHealth is SalesRoomAgentHealthStates.Starting or SalesRoomAgentHealthStates.Ready or SalesRoomAgentHealthStates.Speaking or SalesRoomAgentHealthStates.Paused;
     public void AgentReady(Guid ownerId, long generation)
     { RequireAgentOwner(ownerId, generation); AgentHealth = SalesRoomAgentHealthStates.Ready; AgentVoiceHealth = "healthy"; AgentLastErrorCode = null; AgentLastErrorSummary = null; Touch(); }
+    public void AgentReconnecting(Guid ownerId, long generation)
+    {
+        RequireAgentOwner(ownerId, generation); AgentTurnGeneration++;
+        AgentHealth = SalesRoomAgentHealthStates.Starting; AgentVoiceHealth = "connecting";
+        AgentLastErrorCode = "provider_reconnecting";
+        AgentLastErrorSummary = "Agent voice is reconnecting. The presentation stays paused; ask again once listening resumes.";
+        Touch();
+    }
     public void AgentSpeaking(Guid ownerId, long generation)
     { RequireAgentOwner(ownerId, generation); AgentHealth = SalesRoomAgentHealthStates.Speaking; Touch(); }
+    public void ConversationReplyWithheld(Guid ownerId, long generation)
+    {
+        RequireAgentOwner(ownerId, generation); AgentHealth = SalesRoomAgentHealthStates.Ready;
+        AgentLastErrorCode = "conversation_reply_withheld";
+        AgentLastErrorSummary = "The reply could not be safely released. Please clarify or use a typed question. I am still listening."; Touch();
+    }
     public void AgentSpeechCompleted(Guid ownerId, long generation, long outputMilliseconds)
     { RequireAgentOwner(ownerId, generation); AgentOutputAudioMilliseconds += Math.Max(0, outputMilliseconds); AgentHealth = SalesRoomAgentHealthStates.Ready; Touch(); }
     public void RecordAgentAudio(Guid ownerId, long generation, long received, long detected, long forwarded, long billed, int inputTokens, int outputTokens)

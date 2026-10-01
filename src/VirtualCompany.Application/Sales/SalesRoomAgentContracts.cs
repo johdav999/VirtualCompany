@@ -9,7 +9,7 @@ public static class SalesRoomAgentProblemCodes
         EmergencyDisabled = "sales.room_agent.emergency_disabled", Draining = "sales.room_agent.draining",
         ConcurrencyLimit = "sales.room_agent.concurrency_limit", SpendLimit = "sales.room_agent.spend_limit";
 }
-public sealed record StartSalesRoomAgent(Guid CommandId, long ExpectedVersion);
+public sealed record StartSalesRoomAgent(Guid CommandId, long ExpectedVersion, bool Automatic = false);
 public sealed record StopSalesRoomAgent(Guid CommandId, long ExpectedVersion, string Reason = "host_stopped");
 public sealed record InvokeSalesRoomNarration(Guid CommandId, long ExpectedVersion, Guid RevisionId, Guid SegmentId, int OffsetMilliseconds = 0);
 public sealed record AskSalesRoomAgent(Guid CommandId, long ExpectedVersion, string Question);
@@ -45,7 +45,8 @@ public sealed record SalesRoomAgentStatusView(Guid RoomId, Guid? AgentId, string
     long? ProviderBilledAudioMilliseconds, string BillingEvidenceState, long OutputAudioMilliseconds,
     int InputTokens, int OutputTokens, decimal EstimatedSpendUsd, string? LastErrorCode, string? LastErrorSummary,
     long RoomVersion, SalesRoomAgentAnswerView? LatestAnswer, IReadOnlyList<SalesRoomAgentSpeechView> RecentSpeech,
-    SalesRoomFloorView? Floor = null, SalesRoomConversationStatusView? Conversation = null);
+    SalesRoomFloorView? Floor = null, SalesRoomConversationStatusView? Conversation = null,
+    bool AutoStartPending = false);
 public sealed record SalesRoomAgentWorkItem(Guid CompanyId, Guid RoomId, Guid LeaseOwnerId, long Generation, string Action);
 public interface ISalesRoomAgentCommandSink { ValueTask SignalAsync(SalesRoomAgentWorkItem work, CancellationToken ct); }
 public sealed record SalesRoomPlaybackStopRequest(Guid RoomId, Guid StopId, long ResponseGeneration, DateTime DeadlineUtc);

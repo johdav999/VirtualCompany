@@ -18,6 +18,7 @@ internal static class SalesRoomOperationsPolicy
     internal static string? ConfigurationProblem(SalesRoomAgentOptions options, DateTime nowUtc)
     {
         if (!options.Enabled) return null;
+        if (options.DialogueConfigurationProblem is { } dialogueProblem) return dialogueProblem;
         if (options.MaximumActiveAgentsGlobal is < 1 or > 10_000 ||
             options.MaximumActiveAgentsPerCompany is < 1 or > 100 ||
             options.MaximumActiveAgentsPerCompany > options.MaximumActiveAgentsGlobal)
