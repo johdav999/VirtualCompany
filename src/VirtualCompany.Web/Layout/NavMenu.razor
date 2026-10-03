@@ -3,6 +3,7 @@
 @inject AgentApiClient AgentApiClient
 @inject FinanceIntegrationApplicationApiClient FinanceProviderAdminApiClient
 @inject NavigationManager Navigation
+@inject OverviewNavigationContext OverviewContext
 @inject IJSRuntime JS
 @inject IStringLocalizer<NavigationResources> NavigationText
 @implements IDisposable
@@ -44,6 +45,23 @@
      aria-modal="@(!collapseNavMenu)"
      aria-label="@NavigationText["NavigationMenu"]">
     <div class="nav-menu-shell">
+        @if (ActiveMemberships.Count > 0)
+        {
+            <div class="nav-company-switcher" data-testid="workspace-company-switcher">
+                <label for="workspace-company">@NavigationText["Company"]</label>
+                <select id="workspace-company" value="@SelectedCompanyValue" @onchange="ChangeCompanyAsync"
+                        aria-label="@NavigationText["ChooseCompany"]">
+                    @if (string.IsNullOrEmpty(SelectedCompanyValue))
+                    {
+                        <option value="">@NavigationText["ChooseCompany"]</option>
+                    }
+                    @foreach (var membership in ActiveMemberships)
+                    {
+                        <option value="@membership.CompanyId.ToString("D")" selected="@(membership.CompanyId == currentCompanyId)">@membership.CompanyName</option>
+                    }
+                </select>
+            </div>
+        }
         <div class="nav-drawer-heading">
             <span>@NavigationText["NavigationMenu"]</span>
             <button type="button"
@@ -217,6 +235,32 @@
     private string pendingReturnUrl = "/";
     private bool cultureSyncSubmitted;
     private bool showAccountantPortfolio;
+    private bool disposed;
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships => currentUser?.Memberships
+        .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
+        .GroupBy(x => x.CompanyId).Select(x => x.First()).ToList() ?? [];
+    private string SelectedCompanyValue => ActiveMemberships.Any(x => x.CompanyId == currentCompanyId)
+        ? currentCompanyId?.ToString("D") ?? string.Empty : string.Empty;
+
+    private async Task ChangeCompanyAsync(ChangeEventArgs args)
+    {
+        if (!Guid.TryParse(args.Value?.ToString(), out var companyId) ||
+            !ActiveMemberships.Any(x => x.CompanyId == companyId) || companyId == currentCompanyId) return;
+        ResetNavigation(companyId);
+        await CloseNavMenuAsync();
+        Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(companyId));
+    }
+
+    private void ResetNavigation(Guid? companyId)
+    {
+        currentCompanyId = companyId;
+        financeHref = simulationLabHref = systemAdminHref = null;
+        sidebarAgentRefreshVersion++;
+        sidebarAgent = SidebarAgentContext.Default(null);
+        dashboardHref = OverviewContext.Resolve(Navigation.Uri, companyId);
+        salesHref = marketingHref = supportHref = agentStaffHref = agentsHref = workHref = historyHref = settingsHref = dashboardHref;
+        showAccountantPortfolio = false;
+    }
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
 
@@ -245,18 +289,22 @@
 
     private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
     {
-        _ = RefreshNavigationContextAsync(reloadCurrentUser: true);
+        _ = InvokeAsync(() => RefreshNavigationContextAsync(reloadCurrentUser: true));
     }
 
     private async Task RefreshNavigationContextAsync(bool reloadCurrentUser)
     {
         var refreshVersion = ++navigationRefreshVersion;
+        var uriCompanyId = TryGetCompanyIdFromUri(Navigation.Uri);
+        if (uriCompanyId != currentCompanyId) ResetNavigation(uriCompanyId);
 
         try
         {
             if (reloadCurrentUser || currentUser is null)
             {
-                currentUser = await ApiClient.GetCurrentUserContextAsync();
+                var refreshedUser = await ApiClient.GetCurrentUserContextAsync();
+                if (disposed || refreshVersion != navigationRefreshVersion) return;
+                currentUser = refreshedUser;
                 QueuePersistedCultureSync();
             }
         }
@@ -273,35 +321,45 @@
             }
         }
 
-        if (refreshVersion != navigationRefreshVersion)
+        if (disposed || refreshVersion != navigationRefreshVersion)
         {
             return;
         }
 
-        await RefreshFinanceHrefAsync();
+        await RefreshFinanceHrefAsync(refreshVersion);
+        if (disposed || refreshVersion != navigationRefreshVersion) return;
         await RefreshContextualAgentAsync();
+        if (disposed || refreshVersion != navigationRefreshVersion) return;
         await InvokeAsync(StateHasChanged);
     }
 
-    private async Task RefreshFinanceHrefAsync()
+    private async Task RefreshFinanceHrefAsync(int refreshVersion)
     {
-        currentCompanyId = TryGetCompanyIdFromUri(Navigation.Uri) ?? currentUser?.ActiveCompany?.CompanyId;
-        financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, currentCompanyId);
-        showAccountantPortfolio = currentUser?.Memberships.Any(x => string.Equals(x.MembershipRole, "accountant", StringComparison.OrdinalIgnoreCase)) == true;
-        simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin);
-        systemAdminHref = await ResolveSystemAdminHrefAsync();
-        dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
-        salesHref = currentCompanyId is Guid salesCompanyId ? $"/app/sales?companyId={salesCompanyId:D}" : "/app/sales";
-        marketingHref = DashboardRoutes.EnsureCompanyContext("/marketing", currentCompanyId, "/marketing");
-        supportHref = currentCompanyId is Guid supportCompanyId ? $"/support?companyId={supportCompanyId:D}" : "/support";
-        agentStaffHref = DashboardRoutes.EnsureCompanyContext("/agents/staff", currentCompanyId, "/agents/staff");
-        agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
-        workHref = DashboardRoutes.EnsureCompanyContext("/work", currentCompanyId, "/work");
-        historyHref = DashboardRoutes.EnsureCompanyContext("/history", currentCompanyId, "/history");
-        settingsHref = DashboardRoutes.EnsureCompanyContext("/settings", currentCompanyId, "/settings");
+        var selectedCompanyId = TryGetCompanyIdFromUri(Navigation.Uri) ?? currentUser?.ActiveCompany?.CompanyId;
+        var financePath = FinanceAccessResolver.BuildNavigationHref(currentUser, selectedCompanyId);
+        var adminFallback = BuildRestrictedAreaHref(FinanceRoutes.EmailProviderSettings, selectedCompanyId, financePath);
+        var adminPath = await ResolveSystemAdminHrefAsync(adminFallback);
+        if (disposed || refreshVersion != navigationRefreshVersion) return;
+
+        currentCompanyId = selectedCompanyId;
+        dashboardHref = OverviewContext.Resolve(Navigation.Uri, currentCompanyId);
+        string Scoped(string path) => currentCompanyId is Guid id
+            ? DashboardRoutes.EnsureWorkspaceContext(path, id, dashboardHref) : path;
+        financeHref = financePath is null ? null : Scoped(financePath);
+        showAccountantPortfolio = ActiveMemberships.Any(x => string.Equals(x.MembershipRole, "accountant", StringComparison.OrdinalIgnoreCase));
+        simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin, selectedCompanyId, financePath);
+        systemAdminHref = adminPath;
+        salesHref = Scoped("/app/sales");
+        marketingHref = Scoped("/marketing");
+        supportHref = Scoped("/support");
+        agentStaffHref = Scoped("/agents/staff");
+        agentsHref = Scoped("/agents");
+        workHref = Scoped("/work");
+        historyHref = Scoped("/history");
+        settingsHref = Scoped("/settings");
     }
 
-    private async Task<string?> ResolveSystemAdminHrefAsync()
+    private async Task<string?> ResolveSystemAdminHrefAsync(string? fallbackHref)
     {
         try
         {
@@ -310,7 +368,7 @@
         }
         catch (FinanceIntegrationApplicationApiException)
         {
-            return BuildRestrictedAreaHref(FinanceRoutes.EmailProviderSettings);
+            return fallbackHref;
         }
     }
 
@@ -363,7 +421,7 @@
         {
             var roster = await AgentApiClient.GetRosterAsync(companyId);
             var agent = FindContextualAgent(roster, moduleKey);
-            if (agent is null || refreshVersion != sidebarAgentRefreshVersion)
+            if (disposed || agent is null || refreshVersion != sidebarAgentRefreshVersion)
             {
                 return;
             }
@@ -390,7 +448,7 @@
         }
         catch (OnboardingApiException)
         {
-            sidebarAgent = fallback;
+            if (!disposed && refreshVersion == sidebarAgentRefreshVersion) sidebarAgent = fallback;
         }
 
         await InvokeAsync(StateHasChanged);
@@ -435,7 +493,7 @@
                 route),
             _ => new SidebarAgentContext(
                 "dashboard",
-                currentUser?.ActiveCompany?.CompanyName ?? "Company",
+                ActiveMemberships.FirstOrDefault(x => x.CompanyId == currentCompanyId)?.CompanyName ?? "Company",
                 "Company",
                 null,
                 string.Empty,
@@ -519,9 +577,9 @@
     private static string BuildChatUri(Guid companyId, Guid agentId) =>
         $"/agents/{agentId}/chat?companyId={companyId:D}";
 
-    private string? BuildRestrictedAreaHref(string path)
+    private string? BuildRestrictedAreaHref(string path, Guid? selectedCompanyId, string? financePath)
     {
-        if (financeHref is null || currentCompanyId is not Guid companyId)
+        if (financePath is null || selectedCompanyId is not Guid companyId)
         {
             return null;
         }
@@ -545,6 +603,9 @@
 
     public void Dispose()
     {
+        disposed = true;
+        navigationRefreshVersion++;
+        sidebarAgentRefreshVersion++;
         Navigation.LocationChanged -= HandleLocationChanged;
     }
 

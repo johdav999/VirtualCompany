@@ -36,6 +36,8 @@ builder.Services.AddScoped<TeamsMeetingContextService>();
 builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
 builder.Services.AddScoped<FinanceAccessResolver>();
 builder.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
+builder.Services.AddScoped<OverviewNavigationContext>();
+builder.Services.AddScoped<TodayPriorityChanges>();
 builder.Services.AddScoped<ICompanyPresentationContext, CompanyPresentationContext>();
 builder.Services.AddScoped<ILocalDateTimeFormatter, LocalDateTimeFormatter>();
 builder.Services.AddScoped<INumberFormatter, NumberFormatter>();

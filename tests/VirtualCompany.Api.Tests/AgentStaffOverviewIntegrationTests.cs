@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -167,7 +168,7 @@ public sealed class AgentStaffOverviewIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Overview_does_not_leave_an_approved_payment_proposal_task_in_progress()
+    public async Task Overview_does_not_infer_task_completion_from_payment_proposal_approval()
     {
         var seed = await SeedAsync();
         var taskId = Guid.NewGuid();
@@ -211,9 +212,9 @@ public sealed class AgentStaffOverviewIntegrationTests : IDisposable
         var overview = await response.Content.ReadFromJsonAsync<AgentStaffOverviewDto>();
         Assert.NotNull(overview);
         var finance = Assert.Single(overview!.Agents, agent => agent.AgentId == seed.FinanceAgentId);
-        Assert.DoesNotContain(finance.InProgress, task => task.Id == taskId);
-        var completedTask = Assert.Single(finance.Completed, task => task.Id == taskId);
-        Assert.Equal(WorkTaskStatus.Completed.ToStorageValue(), completedTask.Status);
+        var currentTask = Assert.Single(finance.InProgress, task => task.Id == taskId);
+        Assert.Equal(WorkTaskStatus.InProgress.ToStorageValue(), currentTask.Status);
+        Assert.DoesNotContain(finance.Completed, task => task.Id == taskId);
     }
 
     [Fact]
@@ -247,6 +248,146 @@ public sealed class AgentStaffOverviewIntegrationTests : IDisposable
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, email);
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Staff Owner");
         return client;
+    }
+
+    [Fact]
+    public async Task Board_maps_all_seven_states_retains_shared_identity_and_never_infers_outcome_completion()
+    {
+        var seed = await SeedAsync(); Guid human = default;
+        await _factory.SeedAsync(async db => human = await db.Users.Select(x => x.Id).SingleAsync());
+        var fixture = await AgentWorkLifecycleFixture.SeedAsync(_factory, seed.CompanyId, human);
+        using var client = CreateAuthenticatedClient("owner", "owner@staff.example");
+        var board = (await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work"))!;
+        Assert.All(AgentWorkStates.All, state => Assert.True(board.StateCounts[state] > 0, state));
+        var shared = Assert.Single(board.Items, x => x.Id == fixture.SharedId);
+        Assert.Equal(AgentWorkStates.Active, shared.State); Assert.Equal(2, shared.Agents.Count);
+        Assert.DoesNotContain(board.Items, x => x.Id == fixture.SharedTaskId);
+        Assert.Contains(shared.Outputs, x => x.Summary.Contains("Draft only"));
+        var draft = Assert.Single(board.Items, x => x.Title == "P10 in_progress review");
+        Assert.Equal(AgentWorkStates.Active,draft.State); Assert.Single(draft.Outputs); Assert.Null(draft.CompletedUtc);
+        var detail = (await client.GetFromJsonAsync<AgentWorkItemDto>($"/api/companies/{seed.CompanyId}/agent-work/initiative/{fixture.SharedId}"))!;
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(shared), System.Text.Json.JsonSerializer.Serialize(detail));
+        var worker = (await client.GetFromJsonAsync<AgentWorkItemDto>($"/api/companies/{seed.CompanyId}/agent-work/task/{fixture.SharedTaskId}"))!;
+        Assert.Equal(AgentWorkStates.Completed,worker.State);
+        Assert.Contains(worker.RelatedRecords,x=>x.Label=="Company outcome: P10 shared renewal review" && x.Route.Contains(fixture.SharedId.ToString()));
+    }
+
+    [Fact]
+    public async Task Board_detail_dependencies_filtered_pages_and_Work_use_the_same_durable_task()
+    {
+        var seed = await SeedAsync(); Guid human = default;
+        await _factory.SeedAsync(async db => human = await db.Users.Select(x => x.Id).SingleAsync());
+        var fixture = await AgentWorkLifecycleFixture.SeedAsync(_factory, seed.CompanyId, human);
+        using var client = CreateAuthenticatedClient("owner", "owner@staff.example");
+        var blocked = (await client.GetFromJsonAsync<AgentWorkItemDto>($"/api/companies/{seed.CompanyId}/agent-work/initiative/{fixture.BlockedId}"))!;
+        Assert.Contains("P10 shared renewal review", blocked.Dependency); Assert.Contains(blocked.RelatedRecords, x => x.Route.Contains(fixture.SharedId.ToString()));
+        var first = (await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work?objective=P10&agentId={fixture.AgentId}&take=2"))!;
+        var second = (await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work?objective=P10&agentId={fixture.AgentId}&take=2&skip=2"))!;
+        Assert.True(first.HasNext); Assert.Equal(2, first.Items.Count); Assert.Empty(first.Items.Select(x => x.Id).Intersect(second.Items.Select(x => x.Id)));
+        Assert.Equal(first.Total, second.Total); Assert.All(first.Items, x => Assert.Contains(x.Agents, a => a.Id == fixture.AgentId));
+        var completed = (await client.GetFromJsonAsync<AgentWorkItemDto>($"/api/companies/{seed.CompanyId}/agent-work/task/{fixture.CompletedTaskId}"))!;
+        var work = await client.GetFromJsonAsync<JsonObject>($"/api/companies/{seed.CompanyId}/tasks/{fixture.CompletedTaskId}");
+        Assert.Equal(completed.Id.ToString(), work!["id"]!.GetValue<string>()); Assert.Equal(completed.SourceState, work["status"]!.GetValue<string>());
+        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/companies/{seed.CompanyId}/agent-work/task/{Guid.NewGuid()}")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync($"/api/companies/{seed.CompanyId}/agent-work?take=101")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/agent-work")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task Responsibility_scope_removes_hidden_tasks_agents_counts_detail_and_legacy_summaries(bool perState)
+    {
+        var seed = await SeedAsync(); var manager = Guid.NewGuid(); var membership = Guid.NewGuid(); var visible = Guid.NewGuid(); var hidden = Guid.NewGuid();
+        await _factory.SeedAsync(db =>
+        {
+            db.Users.Add(new User(manager,"scoped@staff.example","Sales only","dev-header","scoped"));
+            db.CompanyMemberships.Add(new CompanyMembership(membership,seed.CompanyId,manager,CompanyMembershipRole.Manager,CompanyMembershipStatus.Active));
+            db.CompanyResponsibilityAssignments.Add(new CompanyResponsibilityAssignment(Guid.NewGuid(),seed.CompanyId,ResponsibilityArea.Sales,ResponsibilityAssignmentKind.Primary,membership,null,AgentAutonomyLevel.Level1,null,null));
+            db.WorkTasks.AddRange(new WorkTask(visible,seed.CompanyId,"sales_review","Visible sales",null,WorkTaskPriority.Normal,null,null,"user",manager),
+                new WorkTask(hidden,seed.CompanyId,"finance_review","Secret finance",null,WorkTaskPriority.Normal,null,visible,"user",manager));
+            return Task.CompletedTask;
+        });
+        using var client = CreateAuthenticatedClient("scoped","scoped@staff.example");
+        var board = (await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work?perState={perState}"))!;
+        Assert.Equal(1,board.Total); Assert.Equal(visible,Assert.Single(board.Items).Id); Assert.Empty(board.Agents);
+        Assert.DoesNotContain("finance",board.Responsibilities); Assert.Equal(1,board.StateCounts.Values.Sum());
+        foreach (var path in new[] { $"agent-work/task/{hidden}", $"tasks/{hidden}" })
+            Assert.Equal(HttpStatusCode.NotFound,(await client.GetAsync($"/api/companies/{seed.CompanyId}/{path}")).StatusCode);
+        var work = (await client.GetFromJsonAsync<JsonObject>($"/api/companies/{seed.CompanyId}/tasks/{visible}"))!;
+        Assert.DoesNotContain("Secret finance",work.ToJsonString()); Assert.DoesNotContain(hidden.ToString(),work.ToJsonString());
+        var summary = (await client.GetFromJsonAsync<AgentStaffOverviewDto>($"/api/companies/{seed.CompanyId}/executive-cockpit/agent-staff"))!;
+        Assert.Empty(summary.Agents); Assert.False(summary.Finance.HasData);
+        Assert.Equal(HttpStatusCode.NotFound,(await client.PatchAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{hidden}/status",new {status="completed"})).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,(await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks",new {type="finance_review",title="Forbidden Finance write",priority="normal"})).StatusCode);
+        await _factory.SeedAsync(async db=> { Assert.Equal(WorkTaskStatus.New,(await db.WorkTasks.IgnoreQueryFilters().SingleAsync(x=>x.Id==hidden)).Status);Assert.False(await db.WorkTasks.IgnoreQueryFilters().AnyAsync(x=>x.Title=="Forbidden Finance write")); });
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task Partial_source_window_is_explicit_and_known_older_work_can_still_be_opened(bool perState)
+    {
+        var seed = await SeedAsync(); var older = Guid.NewGuid();
+        await _factory.SeedAsync(db =>
+        {
+            var row = new WorkTask(older,seed.CompanyId,"finance_review","Older retained work",null,WorkTaskPriority.Normal,seed.FinanceAgentId,null,"system",null);
+            db.WorkTasks.Add(row); db.Entry(row).Property(x=>x.UpdatedUtc).CurrentValue=DateTime.UtcNow.AddDays(-30);
+            for(var i=0;i<2001;i++) db.WorkTasks.Add(new WorkTask(Guid.NewGuid(),seed.CompanyId,"finance_review","Recent retained work",null,WorkTaskPriority.Normal,seed.FinanceAgentId,null,"system",null));
+            return Task.CompletedTask;
+        });
+        using var client=CreateAuthenticatedClient("owner","owner@staff.example");
+        var board=(await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work?take=100&perState={perState}"))!;
+        Assert.True(board.IsPartial); Assert.Equal(2000,board.Total); Assert.Equal(100,board.Items.Count); Assert.Contains(board.Diagnostics,x=>x.Contains("window"));
+        var detail=(await client.GetFromJsonAsync<AgentWorkItemDto>($"/api/companies/{seed.CompanyId}/agent-work/task/{older}"))!;
+        Assert.Equal(older,detail.Id); Assert.Contains(detail.Diagnostics,x=>x.Contains("older than one day"));
+    }
+
+    [Fact]
+    public async Task Business_case_states_follow_the_owning_record_instead_of_assuming_agent_execution()
+    {
+        var seed=await SeedAsync();var ids=new Dictionary<string,Guid>();
+        await _factory.SeedAsync(db=> { foreach(var status in new[] {SupportCaseStatuses.New,SupportCaseStatuses.WaitingForCustomer,SupportCaseStatuses.WaitingInternal,SupportCaseStatuses.AwaitingApproval,SupportCaseStatuses.Resolved,SupportCaseStatuses.Reopened})
+            { var row=new SupportCase(Guid.NewGuid(),seed.CompanyId,"P10-"+status,"Case "+status,null,"manual"); if(status==SupportCaseStatuses.Reopened)row.SetStatus(SupportCaseStatuses.Resolved); if(status!=SupportCaseStatuses.New)row.SetStatus(status); db.SupportCases.Add(row); ids[status]=row.Id; }return Task.CompletedTask; });
+        using var client=CreateAuthenticatedClient("owner","owner@staff.example");
+        var board=(await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work?responsibility=support"))!;
+        Assert.Equal(AgentWorkStates.Planned,Assert.Single(board.Items,x=>x.Id==ids[SupportCaseStatuses.New]).State);
+        Assert.Equal(AgentWorkStates.Completed,Assert.Single(board.Items,x=>x.Id==ids[SupportCaseStatuses.Resolved]).State);
+        Assert.Equal(AgentWorkStates.AwaitingApproval,Assert.Single(board.Items,x=>x.Id==ids[SupportCaseStatuses.AwaitingApproval]).State);
+        Assert.Equal(AgentWorkStates.Blocked,Assert.Single(board.Items,x=>x.Id==ids[SupportCaseStatuses.WaitingForCustomer]).State);
+        Assert.Contains("internal specialist",Assert.Single(board.Items,x=>x.Id==ids[SupportCaseStatuses.WaitingInternal]).Dependency);
+        var reopened=Assert.Single(board.Items,x=>x.Id==ids[SupportCaseStatuses.Reopened]);
+        Assert.Equal(AgentWorkStates.Active,reopened.State); Assert.Null(reopened.CompletedUtc);
+    }
+
+    [Fact]
+    public async Task Scoped_owner_can_read_unlinked_outcome_without_inference_of_company_dependency()
+    {
+        var seed=await SeedAsync();var manager=Guid.NewGuid();var membership=Guid.NewGuid();var agent=Guid.NewGuid();
+        var visible=Guid.NewGuid();var hidden=Guid.NewGuid();var task=Guid.NewGuid();
+        await _factory.SeedAsync(db=>
+        {
+            db.Users.Add(new User(manager,"planner@staff.example","Sales planner","dev-header","planner"));
+            db.CompanyMemberships.Add(new CompanyMembership(membership,seed.CompanyId,manager,CompanyMembershipRole.Manager,CompanyMembershipStatus.Active));
+            db.CompanyResponsibilityAssignments.Add(new CompanyResponsibilityAssignment(Guid.NewGuid(),seed.CompanyId,ResponsibilityArea.Sales,ResponsibilityAssignmentKind.Primary,membership,null,AgentAutonomyLevel.Level1,null,null));
+            db.Agents.Add(new Agent(agent,seed.CompanyId,"sales","Sales planner agent","Planner","Sales",null,AgentSeniority.Senior,AgentStatus.Active));
+            var cycle=new OperatingCycle(Guid.NewGuid(),seed.CompanyId,"manual",null,agent,"test","scoped-planning",1);
+            var plan=new OperatingPlan(Guid.NewGuid(),seed.CompanyId,cycle.Id,1,"Scoped plan","Retained evidence");
+            var goal=new CompanyGoal(Guid.NewGuid(),seed.CompanyId,"Sales goal","Retained outcome",CompanyGoalPriority.Normal,DateTime.UtcNow,DateTime.UtcNow.AddDays(7),ownerUserId:manager);
+            db.AddRange(cycle,plan,goal);
+            db.WorkTasks.Add(new WorkTask(task,seed.CompanyId,"manual","Own manual task",null,WorkTaskPriority.Normal,null,null,"user",manager));
+            var outcome=new OperatingInitiative(visible,seed.CompanyId,plan.Id,goal.Id,"Sales planned outcome","Reviewed terms",CompanyGoalPriority.Normal,"Signed terms",agent,null,null);
+            var companyDependency=new OperatingInitiative(hidden,seed.CompanyId,plan.Id,goal.Id,"Private company dependency","Company evidence",CompanyGoalPriority.Normal,"Evidence",null,null,null);
+            companyDependency.LinkWork(task,null); outcome.Approve(); outcome.Block(); db.AddRange(outcome,companyDependency);
+            db.OperatingPlanDependencies.Add(new OperatingPlanDependency(Guid.NewGuid(),seed.CompanyId,plan.Id,visible,hidden));
+            return Task.CompletedTask;
+        });
+        using var client=CreateAuthenticatedClient("planner","planner@staff.example");
+        var board=(await client.GetFromJsonAsync<AgentWorkBoardDto>($"/api/companies/{seed.CompanyId}/agent-work"))!;
+        Assert.Contains(board.Items,x=>x.Id==visible);Assert.DoesNotContain(board.Items,x=>x.Id==hidden);
+        var detail=(await client.GetFromJsonAsync<AgentWorkItemDto>($"/api/companies/{seed.CompanyId}/agent-work/initiative/{visible}"))!;
+        Assert.Equal(AgentWorkStates.Blocked,detail.State);Assert.Contains("unavailable in this access scope",detail.Dependency);
+        var serialized=System.Text.Json.JsonSerializer.Serialize(detail);
+        Assert.DoesNotContain("Private company dependency",serialized);Assert.DoesNotContain(hidden.ToString(),serialized);
+        Assert.Equal(HttpStatusCode.NotFound,(await client.GetAsync($"/api/companies/{seed.CompanyId}/agent-work/initiative/{hidden}")).StatusCode);
     }
 
     private async Task<StaffSeed> SeedAsync()

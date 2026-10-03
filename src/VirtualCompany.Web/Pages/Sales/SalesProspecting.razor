@@ -7,6 +7,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @using VirtualCompany.Web.Components.Sales
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@SalesText["SalesProspecting"]</PageTitle>
 
 <div class="sales-workspace">
@@ -495,7 +496,7 @@
     private async Task ImportFile(Guid runId, InputFileChangeEventArgs e) { if (ResolvedCompanyId is not Guid companyId) return; isBusy = true; try { await using var stream = e.File.OpenReadStream(10_000_000); var result = await SalesApiClient.ImportProspectsAsync(companyId, runId, stream, e.File.Name); actionMessage = SalesText["ImportSummary", result.Imported, result.Duplicates, result.Rejected]; await LoadAsync(); } catch (Exception ex) when (ex is SalesApiException or IOException) { actionMessage = ex.Message; } finally { isBusy = false; } }
     private async Task SaveSources() => await RunAction(c => SalesApiClient.SaveProspectSourcePolicyAsync(c, sourceForm));
     private async Task AddSuppression() => await RunAction(c => SalesApiClient.AddSuppressionAsync(c, suppressionForm));
-    private string BuildPath(string path) => ResolvedCompanyId is Guid id ? $"{path}?companyId={id:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private string ProspectingViewLabel(string view) => view switch
     {
         "Accounts" => SalesText["Accounts"],

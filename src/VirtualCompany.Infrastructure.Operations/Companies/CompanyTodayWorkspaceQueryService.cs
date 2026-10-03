@@ -67,7 +67,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
             resolution.ResponsibilityRevision,
             resolution.ActiveLens,
             resolution.AvailableLenses.Select(x => x.Lens));
-        var cached = await _cache.TryGetTodayAsync(scope, cancellationToken);
+        var cached = query.Refresh ? null : await _cache.TryGetTodayAsync(scope, cancellationToken);
         if (cached is not null && cached.UserId == resolution.UserId &&
             string.Equals(cached.ActiveLens, resolution.ActiveLens, StringComparison.OrdinalIgnoreCase))
         {
@@ -103,7 +103,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
             }
             catch (Exception exception)
             {
-                _logger.LogError(exception, "Executive cockpit contribution failed for Today workspace company {CompanyId}.", query.CompanyId);
+                _logger.LogError("Executive cockpit contribution failed for Today workspace company {CompanyId}; error type {ErrorType}.", query.CompanyId, exception.GetType().Name);
                 diagnostics.Add(Unavailable("company", "cockpit_unavailable", "Company briefing and activity are temporarily unavailable."));
             }
         }
@@ -112,7 +112,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
         try
         {
             focusItems = await _focus.GetFocusAsync(
-                new GetDashboardFocusQuery(query.CompanyId, resolution.UserId),
+                new GetDashboardFocusQuery(query.CompanyId, resolution.UserId, ForPriorityWorkspace: true),
                 cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -125,12 +125,18 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
         }
         catch (Exception exception)
         {
-            _logger.LogError(exception, "Focus contribution failed for Today workspace company {CompanyId}.", query.CompanyId);
+            _logger.LogError("Focus contribution failed for Today workspace company {CompanyId}; error type {ErrorType}.", query.CompanyId, exception.GetType().Name);
             diagnostics.Add(Unavailable("decisions", "focus_unavailable", "Personal decisions and tasks are temporarily unavailable."));
             focusItems = [];
         }
 
         var contributions = new List<TodayWorkspaceFeatureContribution>();
+        // Company presentation is not a Finance grant. Apply the same responsibility
+        // boundary to focus summaries as to the department contributions.
+        focusItems = focusItems.Where(item =>
+            (item.SourceType is not ("finance_alert" or "finance-alert" or "anomaly") && item.PriorityEvidenceKey?.StartsWith("finance:", StringComparison.Ordinal) != true) ||
+            resolution.AvailableLenses.Any(x => x.Lens == TodayWorkspaceLenses.Finance) &&
+            resolution.ActiveLens is TodayWorkspaceLenses.Company or TodayWorkspaceLenses.Finance).ToList();
         foreach (var lens in requiredContributorLenses)
         {
             var access = resolution.AvailableLenses.First(x => string.Equals(x.Lens, lens, StringComparison.OrdinalIgnoreCase));
@@ -166,7 +172,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
             }
             catch (Exception exception)
             {
-                _logger.LogError(exception, "Today contributor {Lens} failed for company {CompanyId}.", lens, query.CompanyId);
+                _logger.LogError("Today contributor {Lens} failed for company {CompanyId}; error type {ErrorType}.", lens, query.CompanyId, exception.GetType().Name);
                 diagnostics.Add(Unavailable(lens, "contributor_failed", $"{TodayWorkspaceLenses.Label(lens)} data is temporarily unavailable."));
                 contributions.Add(UnavailableContribution(lens, nowUtc));
             }
@@ -175,22 +181,34 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
         var activeAccess = resolution.AvailableLenses.First(x =>
             string.Equals(x.Lens, resolution.ActiveLens, StringComparison.OrdinalIgnoreCase));
         var priorityCandidates = contributions.SelectMany(x => x.PriorityCandidates).ToList();
-        priorityCandidates.AddRange(MapFocus(focusItems, resolution, activeAccess, nowUtc));
+        // A linked personal next step is shown beside its source risk, rather than ranking the same initiative twice.
+        var sourceKeys = priorityCandidates.Select(x => x.Key).ToHashSet(StringComparer.Ordinal);
+        var rankedFocus = resolution.ActiveLens == TodayWorkspaceLenses.Company
+            ? focusItems.Where(x => x.PriorityEvidenceKey is null || !sourceKeys.Contains(x.PriorityEvidenceKey)).ToList()
+            : focusItems;
+        priorityCandidates.AddRange(MapFocus(rankedFocus, resolution, activeAccess, nowUtc));
         var selected = TodayWorkspacePriorityOrdering.Select(priorityCandidates, nowUtc, PriorityLimit);
         var priorities = selected.Select((candidate, index) => MapPriority(candidate, index + 1, nowUtc)).ToList();
+        // The health report retains authorized cross-department risks even when another department fills the top five.
+        var companyRisks = resolution.ActiveLens == TodayWorkspaceLenses.Company
+            ? TodayWorkspacePriorityOrdering.Select(priorityCandidates.Where(x => x.Lens != TodayWorkspaceLenses.Company), nowUtc, 20, maximum: 20)
+                .Select((candidate, index) => MapPriority(candidate, index + 1, nowUtc)).ToList()
+            : null;
         var metrics = SelectMetrics(contributions, resolution).Take(MetricLimit).ToList();
         var decisions = focusItems
             .Where(item => string.Equals(item.SourceType, "approval", StringComparison.OrdinalIgnoreCase) ||
                            string.Equals(item.ActionType, "review", StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(item => item.PriorityScore)
             .ThenBy(item => item.Id, StringComparer.Ordinal)
+            .GroupBy(item => (item.RelatedTaskId.HasValue ? $"task:{item.RelatedTaskId:D}" : item.RelatedApprovalId.HasValue ? $"approval:{item.RelatedApprovalId:D}" : item.Id), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.FirstOrDefault(x => x.SourceType == "approval") ?? group.First())
             .Take(5)
             .Select(item => new TodayWorkspaceDecisionDto(
-                $"focus:{item.Id}", item.Title, item.Description, nowUtc, item.NavigationTarget,
+                $"focus:{item.Id}", item.Title, item.Description, item.ObservedAtUtc ?? DateTime.MinValue, FocusActionRoute(item, query.CompanyId),
                 string.Equals(item.SourceType, "approval", StringComparison.OrdinalIgnoreCase)
                     ? "Shown because this decision needs your attention."
                     : VisibilityReason(activeAccess),
-                Guid.TryParse(item.Id, out var approvalId) ? approvalId : null))
+                item.RelatedApprovalId))
             .ToList();
         IReadOnlyList<TodayWorkspaceAgentUpdateDto> normalizedAgentUpdates;
         try
@@ -199,7 +217,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
         }
         catch (Exception exception) when (exception is not OperationCanceledException and not UnauthorizedAccessException)
         {
-            _logger.LogError(exception, "Normalized agent activity failed for Today workspace company {CompanyId}.", query.CompanyId);
+            _logger.LogError("Normalized agent activity failed for Today workspace company {CompanyId}; error type {ErrorType}.", query.CompanyId, exception.GetType().Name);
             diagnostics.Add(Unavailable("agents", "agent_activity_unavailable", "Agent activity is temporarily unavailable."));
             normalizedAgentUpdates = [];
         }
@@ -232,7 +250,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
             contributions.Select(x => x.Marketing).FirstOrDefault(x => x is not null),
             decisions,
             agentUpdates,
-            nowUtc,
+            _timeProvider.GetUtcNow().UtcDateTime,
             null,
             diagnostics.Count > 0,
             diagnostics,
@@ -245,7 +263,18 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
                         ? "Responsibility ownership is not configured yet. Set owners so each workspace reflects the right work."
                         : "Responsibility ownership is not configured yet. Ask a company owner or administrator to assign it.",
                 $"/settings?companyId={query.CompanyId:D}"),
-            manualReview);
+            manualReview,
+            companyRisks,
+            resolution.AvailableLenses.Where(x => x.Lens != TodayWorkspaceLenses.Company)
+                .Select(x => new TodayWorkspaceDepartmentDto(x.Lens, x.ResponsiblePerson, x.WorkingAgent,
+                    contributions.Any(c => c.Lens == x.Lens && (c.Finance?.IsAvailable == true || c.Sales?.IsAvailable == true || c.Support?.IsAvailable == true || c.Marketing?.IsAvailable == true)))).ToList(),
+            resolution.ActiveLens == TodayWorkspaceLenses.Company
+                ? focusItems.Where(x => x.RelatedTaskId.HasValue && x.SourceType == "task" &&
+                    companyRisks!.Any(risk => risk.Key == x.PriorityEvidenceKey))
+                    .OrderByDescending(x => x.ObservedAtUtc).Take(15)
+                    .Select(x => new TodayWorkspaceRiskFollowUpDto(x.RelatedTaskId!.Value, x.PriorityEvidenceKey!,
+                        x.Title, x.SourceState ?? "unknown", x.ObservedAtUtc ?? DateTime.MinValue, FocusActionRoute(x, query.CompanyId))).ToList()
+                : null);
 
         var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
         await _cache.SetTodayAsync(
@@ -286,20 +315,21 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
 
             yield return new TodayWorkspacePriorityCandidate(
                 $"focus:{item.Id}",
-                $"{source}:{item.Id}",
+                item.RelatedTaskId is Guid taskId ? $"task:{taskId:N}" : $"{source}:{item.Id}",
                 source is "finance_alert" or "finance-alert" or "anomaly" ? TodayWorkspaceLenses.Finance : resolution.ActiveLens,
                 item.Title,
                 item.Description,
-                activeAccess.ResponsiblePerson,
-                activeAccess.WorkingAgent,
+                item.ResponsiblePerson ?? activeAccess.ResponsiblePerson,
+                source is "task" or "approval" ? item.WorkingAgent : activeAccess.WorkingAgent,
                 string.Equals(item.ActionType, "review", StringComparison.OrdinalIgnoreCase)
                     ? "Review the evidence and record your decision."
                     : "Open the item and confirm the next step.",
-                observedUtc,
+                item.ObservedAtUtc ?? DateTime.MinValue,
                 source,
                 item.Id,
-                item.NavigationTarget,
+                FocusActionRoute(item, resolution.CompanyId),
                 DecisionRequired: source == "approval" || string.Equals(item.ActionType, "review", StringComparison.OrdinalIgnoreCase),
+                DueUtc: item.DueUtc,
                 Impact: item.PriorityScore,
                 DirectlyOwned: true,
                 Blocked: item.Description.Contains("blocked", StringComparison.OrdinalIgnoreCase),
@@ -307,7 +337,8 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
                 Confidence: 1m,
                 VisibilityReason: source == "approval"
                     ? "Shown because this decision needs your attention."
-                    : VisibilityReason(activeAccess));
+                    : VisibilityReason(activeAccess),
+                SourceState: item.SourceState, RelatedTaskId: item.RelatedTaskId, RelatedApprovalId: item.RelatedApprovalId);
         }
     }
 
@@ -332,7 +363,16 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
         candidate.DueUtc,
         candidate.DirectlyOwned,
         candidate.Confidence,
-        candidate.VisibilityReason);
+        candidate.VisibilityReason,
+        TodayWorkspacePriorityOrdering.Explain(candidate, nowUtc),
+        candidate.SourceState, candidate.RelatedTaskId, candidate.RelatedApprovalId);
+
+    private static string FocusActionRoute(FocusItemDto item, Guid companyId) =>
+        item.SourceType == "approval" && item.RelatedApprovalId is Guid approval
+            ? $"/work?companyId={companyId:D}&tab=approvals&itemId={approval:D}"
+            : item.SourceType == "task" && item.RelatedTaskId is Guid task
+                ? $"/work?companyId={companyId:D}&tab=tasks&taskId={task:D}"
+                : item.NavigationTarget;
 
     private static string VisibilityReason(TodayWorkspaceLensAccess access) => access.IsPrimary
         ? $"Shown because you own the {access.Label} responsibility."
@@ -438,6 +478,7 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
 
     private static string Freshness(DateTime observedUtc, DateTime nowUtc)
     {
+        if (observedUtc == DateTime.MinValue || observedUtc > nowUtc) return "unknown";
         var age = nowUtc - observedUtc;
         if (age <= TimeSpan.FromMinutes(15)) return "fresh";
         if (age <= TimeSpan.FromHours(6)) return "current";

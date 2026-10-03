@@ -13,6 +13,10 @@ public partial class AccountingReportsPage : FinancePageBase
     [SupplyParameterFromQuery(Name = "runId")] public Guid? RequestedRunId { get; set; }
     [SupplyParameterFromQuery(Name = "periodId")] public Guid? RequestedPeriodId { get; set; }
     [SupplyParameterFromQuery(Name = "accountId")] public Guid? RequestedAccountId { get; set; }
+    [SupplyParameterFromQuery(Name = "comparisonId")] public string? RequestedComparisonId { get; set; }
+    [SupplyParameterFromQuery(Name = "snapshotId")] public Guid? RequestedSnapshotId { get; set; }
+    [SupplyParameterFromQuery(Name = "comparisonSnapshotId")] public Guid? RequestedComparisonSnapshotId { get; set; }
+    [SupplyParameterFromQuery(Name = "accountCode")] public string? RequestedAccountCode { get; set; }
     private List<AccountingPeriodResponse> Periods { get; set; } = [];
     private Guid? PeriodCompanyId;
     private Guid SelectedPeriodId { get; set; }
@@ -45,6 +49,7 @@ public partial class AccountingReportsPage : FinancePageBase
     private string? ActionMessage { get; set; }
     private string? ActionError { get; set; }
     private string? VatError { get; set; }
+    private int readVersion;
     private bool CanManageAccounting => FinanceAccess.CanManageAccounting(AccessState.MembershipRole);
     private bool CanApproveSchedules => FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
     private bool CanReopen => AccessState.MembershipRole is "owner" or "admin";
@@ -62,12 +67,16 @@ public partial class AccountingReportsPage : FinancePageBase
         else if (string.Equals(RequestedView, "schedules", StringComparison.OrdinalIgnoreCase)) View = "schedules";
         else if (string.Equals(RequestedView, "assets", StringComparison.OrdinalIgnoreCase)) View = "assets";
         if (string.IsNullOrWhiteSpace(CloseReason)) CloseReason = FinanceText["DefaultCloseReason"];
-        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
-        if (PeriodCompanyId != companyId) { Periods = []; SelectedPeriodId = Guid.Empty; ActionError = null; PeriodCompanyId = companyId; }
+        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) { ++readVersion; ClearReports(); Periods = []; return; }
+        var read = ++readVersion; var location = Navigation.Uri;
+        if (PeriodCompanyId != companyId) { ClearReports(); Periods = []; SelectedPeriodId = Guid.Empty; ActionError = null; PeriodCompanyId = companyId; }
         try
         {
             var years = await FinanceApiClient.GetAccountingFiscalYearsAsync(companyId);
+            if (read != readVersion || location != Navigation.Uri) return;
             Periods = years.SelectMany(x => x.Periods).OrderByDescending(x => x.StartDate).ToList();
+            if (RequestedPeriodId is Guid invalid && !Periods.Any(p => p.Id == invalid))
+            { ClearReports(); SelectedPeriodId = Guid.Empty; ActionError = "The requested period is unavailable in this company. Select a period to continue."; return; }
             SelectedPeriodId = RequestedPeriodId is Guid requested && Periods.Any(p => p.Id == requested) ? requested :
                 Periods.Any(p => p.Id == SelectedPeriodId) ? SelectedPeriodId :
                 Periods.FirstOrDefault(x => !x.IsClosed)?.Id ?? Periods.FirstOrDefault()?.Id ?? Guid.Empty;
@@ -77,19 +86,22 @@ public partial class AccountingReportsPage : FinancePageBase
                 if (RequestedAccountId is Guid account) await SelectAccountAsync(account);
             }
         }
-        catch (FinanceApiException exception) { ActionError = exception.Message; }
+        catch (Exception exception) when (exception is FinanceApiException or HttpRequestException)
+        { if (read == readVersion) { ClearReports(); ActionError = exception.Message; } }
     }
 
     private async Task ChangePeriodAsync(ChangeEventArgs args)
     {
         if (Guid.TryParse(args.Value?.ToString(), out var periodId) && AccessState.CompanyId is Guid companyId)
         {
-            SelectedPeriodId = periodId; SelectedAccountId = null; SelectedLedgerAccount = null; CloseValidation = null; await LoadReportsAsync(companyId);
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["periodId"] = periodId, ["accountId"] = null }), replace: true);
+            await Task.CompletedTask;
         }
     }
 
     private async Task LoadReportsAsync(Guid companyId)
     {
+        var read = readVersion; var location = Navigation.Uri;
         IsReportLoading = true; ActionError = null;
         try
         {
@@ -103,6 +115,7 @@ public partial class AccountingReportsPage : FinancePageBase
             var exports = FinanceApiClient.GetAccountingExportsAsync(companyId, SelectedPeriodId);
             var vatPeriods = FinanceApiClient.GetVatFilingPeriodsAsync(companyId);
             await Task.WhenAll(trial, ledger, profit, balance, tax, control, history, exports, vatPeriods);
+            if (read != readVersion || location != Navigation.Uri) return;
             TrialBalance = await trial; GeneralLedger = await ledger; ProfitAndLoss = await profit; BalanceSheet = await balance;
             TaxSummary = await tax; ControlAccounts = await control; History = await history; Exports = await exports;
             VatFilingPeriods = await vatPeriods;
@@ -111,19 +124,35 @@ public partial class AccountingReportsPage : FinancePageBase
             await LoadVatReturnsAsync(companyId);
             SelectedAccountId = null; SelectedLedgerAccount = null;
         }
-        catch (FinanceApiException exception) { ActionError = exception.Message; }
-        finally { IsReportLoading = false; }
+        catch (Exception exception) when (exception is FinanceApiException or HttpRequestException)
+        { if (read == readVersion) { ClearReports(); ActionError = exception.Message; } }
+        finally { if (read == readVersion) IsReportLoading = false; }
     }
+
+    private void ClearReports()
+    {
+        TrialBalance = null; GeneralLedger = null; ProfitAndLoss = null; BalanceSheet = null;
+        TaxSummary = null; ControlAccounts = null; CloseValidation = null; SelectedLedgerAccount = null;
+        History = []; Exports = []; VatFilingPeriods = []; VatReturns = []; SelectedAccountId = null;
+    }
+
+    private void ChangeView(string view) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(
+        new Dictionary<string, object?> { ["view"] = view, ["periodId"] = SelectedPeriodId, ["accountId"] = null,
+            ["snapshotId"] = null, ["comparisonSnapshotId"] = null, ["accountCode"] = null }), replace: true);
 
     private async Task SelectAccountAsync(Guid accountId)
     {
         if (AccessState.CompanyId is not Guid companyId) return;
         SelectedAccountId = accountId;
         View = View == "trial" ? "trial" : "ledger";
+        var target = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["accountId"] = accountId, ["view"] = View, ["periodId"] = SelectedPeriodId });
+        if (target != Navigation.Uri) Navigation.NavigateTo(target, replace: true);
+        var read = readVersion; var location = Navigation.Uri;
         try
         {
             var detail = await FinanceApiClient.GetAccountingGeneralLedgerPageAsync(
                 companyId, SelectedPeriodId, accountId, 1, 200);
+            if (read != readVersion || location != Navigation.Uri) return;
             SelectedLedgerAccount = detail?.Accounts.SingleOrDefault();
         }
         catch (FinanceApiException exception)
@@ -201,7 +230,7 @@ public partial class AccountingReportsPage : FinancePageBase
     private async Task ActAsync(Func<Guid, Task> action) { if (AccessState.CompanyId is not Guid companyId) return; IsActing = true; ActionError = null; ActionMessage = null; try { await action(companyId); } catch (Exception exception) when (exception is FinanceApiException or InvalidOperationException) { ActionError = exception.Message; } finally { IsActing = false; } }
     private string ExportDownloadUrl(Guid id) => AccessState.CompanyId is Guid companyId ? FinanceApiClient.GetAccountingExportDownloadUrl(companyId, id) : "#";
     private string VatPackageDownloadUrl => AccessState.CompanyId is Guid companyId && CurrentVatReturn is not null ? FinanceApiClient.GetVatReturnPackageDownloadUrl(companyId, CurrentVatReturn.Id) : "#";
-    private string JournalEntryUrl(Guid ledgerEntryId) => FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingJournal}?entryId={ledgerEntryId:D}", AccessState.CompanyId);
+    private string JournalEntryUrl(Guid ledgerEntryId) => BuildAccountingPath($"{FinanceRoutes.AccountingJournal}?journalId={ledgerEntryId:D}");
     private string Friendly(string value)
     {
         var key = $"Value_{value.Replace('-', '_').Replace('.', '_')}";

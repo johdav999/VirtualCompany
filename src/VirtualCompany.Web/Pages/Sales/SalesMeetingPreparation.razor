@@ -621,9 +621,7 @@
         : BuildPath($"/app/sales/leads/{preparation.LeadId:D}");
 
     private string SalesPath => BuildPath("/app/sales");
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId
-        ? $"{path}?companyId={companyId:D}"
-        : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
 
     private string CustomerContext =>
         string.IsNullOrWhiteSpace(preparation?.CustomerCompanyName)

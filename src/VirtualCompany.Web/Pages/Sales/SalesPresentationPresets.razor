@@ -5,6 +5,7 @@
 @using VirtualCompany.Web.Components.Sales
 
 <PageTitle>Presentation presets</PageTitle>
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 
 <div class="sales-workspace preset-workspace">
   <main class="sales-main">
@@ -37,7 +38,7 @@
           @if (FilteredItems.Count == 0) { <div class="preset-inline-empty"><h2>No matching presets</h2><p>Adjust the search or lifecycle filter.</p></div> }
           else foreach (var item in FilteredItems)
           {
-            <button class="@RowClass(item)" @onclick="() => SelectAsync(item.Id)" aria-current="@(Selected?.Id == item.Id ? "true" : null)">
+            <button class="@RowClass(item)" @onclick="() => NavigateToPreset(item.Id)" aria-current="@(Selected?.Id == item.Id ? "true" : null)">
               <div class="preset-row-cover"><PresentationPresetCover CompanyId="@(ResolvedCompanyId ?? Guid.Empty)" PresetId="item.Id" SlideId="item.CoverSlideId" Name="@item.Name" Processing="@(item.AssetStatus is "pending_scan" or "processing")" /></div>
               <div class="preset-row-main"><strong>@item.Name</strong><span>@(string.IsNullOrWhiteSpace(item.Description) ? "No description" : item.Description)</span><small>Owner @OwnerName(item.OwnerUserId) · updated @item.UpdatedUtc.ToLocalTime().ToString("g")</small></div>
               <div class="preset-row-facts"><span class="@BadgeClass(ItemState(item))">@StateLabel(ItemState(item))</span><span>v@(item.CurrentDraftVersion ?? item.CurrentPublishedVersion)</span><span>@item.SlideCount slides</span><span>@item.WhereUsedCount uses</span></div>

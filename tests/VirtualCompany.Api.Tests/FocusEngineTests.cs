@@ -10,6 +10,21 @@ namespace VirtualCompany.Api.Tests;
 public sealed class FocusEngineTests
 {
     [Fact]
+    public async Task Priority_workspace_receives_all_authorized_candidates_before_deadline_ranking()
+    {
+        var company = Guid.NewGuid(); var user = Guid.NewGuid();
+        var candidates = Enumerable.Range(1, 7).Select(x => Candidate($"approval{x}", FocusSourceType.Approval, 100 - x)).Append(
+            Candidate("old-overdue", FocusSourceType.Task, 1) with { DueUtc = DateTime.UtcNow.AddDays(-3), ObservedAtUtc = DateTime.UtcNow.AddDays(-4) }).ToArray();
+        var engine = CreateEngine(company, user, new StubSource(candidates));
+        var items = await engine.GetFocusAsync(new(company, user, ForPriorityWorkspace: true), CancellationToken.None);
+        Assert.Equal(8, items.Count);
+        var overdue = Assert.Single(items, x => x.Id == "old-overdue");
+        Assert.Equal(candidates.Last().ObservedAtUtc, overdue.ObservedAtUtc);
+        Assert.Equal(candidates.Last().DueUtc, overdue.DueUtc);
+        var ordinary = await engine.GetFocusAsync(new(company, user), CancellationToken.None);
+        Assert.Equal(5, ordinary.Count);
+    }
+    [Fact]
     public async Task Engine_normalizes_scores_orders_descending_and_caps_to_five()
     {
         var companyId = Guid.NewGuid();

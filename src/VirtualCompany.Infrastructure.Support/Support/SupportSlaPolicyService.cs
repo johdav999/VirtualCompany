@@ -225,7 +225,7 @@ public sealed class SupportSlaPolicyService : ISupportSlaPolicyService
         catch (InvalidTimeZoneException) { throw new SupportValidationException(new Dictionary<string, string[]> { ["timeZoneId"] = ["Choose a valid timezone."] }); }
     }
 
-    private static (int First, int Resolution) DefaultDurations(string priority) => priority switch
+    internal static (int First, int Resolution) DefaultDurations(string priority) => priority switch
     {
         SupportPriorities.Urgent => (60, 480),
         SupportPriorities.High => (120, 1440),

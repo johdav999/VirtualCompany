@@ -1,0 +1,98 @@
+{
+  "prompt": "P06",
+  "date": "2026-10-02",
+  "baseline": "37834c7f",
+  "implementation": "complete within recorded P06 scope",
+  "workingTree": "P01-P06 preserved, uncommitted; no deployment",
+  "tests": [
+    {
+      "suite": "Finance",
+      "project": "tests/VirtualCompany.Finance.Tests/VirtualCompany.Finance.Tests.csproj",
+      "results": "p06-finance.trx",
+      "total": 49,
+      "passed": 49,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    {
+      "suite": "API",
+      "project": "tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj",
+      "results": "p06-api.trx",
+      "total": 30,
+      "passed": 30,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    {
+      "suite": "Web",
+      "project": "tests/VirtualCompany.Web.Tests/VirtualCompany.Web.Tests.csproj",
+      "results": "p06-web.trx",
+      "total": 477,
+      "passed": 477,
+      "failed": 0,
+      "notExecuted": 0
+    },
+    {
+      "suite": "Wire",
+      "project": "tests/VirtualCompany.Web.Contract.Tests/VirtualCompany.Web.Contract.Tests.csproj",
+      "results": "p06-contract.trx",
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "notExecuted": 0
+    }
+  ],
+  "builds": [
+    {
+      "log": "api-build.txt",
+      "result": "passed",
+      "project": "API"
+    },
+    {
+      "log": "web-build.txt",
+      "result": "passed after final responsive fix",
+      "project": "Web"
+    },
+    {
+      "warnings": "NU1900 vulnerability-feed unavailable; transient earlier compiler failure retained separately",
+      "log": "uat-build.txt",
+      "result": "passed",
+      "project": "UAT adapter"
+    }
+  ],
+  "browser": {
+    "issueLedger": "issue-ledger.md",
+    "flows": "uat.md",
+    "persistedAction": "Invoice Pending Approval saved and reloaded; Booked refused by existing approval policy",
+    "checks": "browser-checks.json",
+    "profile": "profile.md",
+    "result": "local acceptance passed within review/action scope",
+    "csv": "current authorized payload and browser handoff passed; physical save unverified",
+    "responsive": "desktop and mobile measured; narrow Today overflow fixed; keyboard order verified",
+    "forecastAfterAction": {
+      "SEK": "10000 + 0 - 300 = 9700",
+      "USD": "500 + 100 - 0 = 600"
+    },
+    "screenshots": "screenshots/"
+  },
+  "independentGates": [
+    "P07 configured native accounting ledger/posting/close/statements",
+    "controlled live payment provider and confirmation",
+    "production SQL Server and deployed tenant",
+    "physical browser CSV file save",
+    "human release and qualified statutory approval"
+  ],
+  "hostReadiness": {
+    "api": "Finance authenticated reads succeeded; root / is 404; /health reports optional-media Degraded; health HTTP status not retained",
+    "webRoots": "owner and restricted member HTTP 200",
+    "rootProbe": "host-health.json"
+  },
+  "cleanup": "cleanup.json: no owned listeners, hosts stopped, tabs closed, viewport reset",
+  "diffCheck": {
+    "log": "diff-check.txt",
+    "command": "git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol diff --check",
+    "result": "passed",
+    "note": "CRLF normalization warnings only, no whitespace errors"
+  },
+  "handoff": "docs/vcscreens/implementation-status.md: P07 prerequisite handoff"
+}

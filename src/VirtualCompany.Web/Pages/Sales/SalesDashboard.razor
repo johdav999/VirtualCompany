@@ -3,7 +3,9 @@
 @inherits SalesPageBase
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
+@inject SalesOperationalApiClient Reports
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@SalesText["Sales"]</PageTitle>
 
 <main class="vc-page sales-overview-page">
@@ -45,7 +47,7 @@
             <article>
                 <span>@SalesText["PipelineValue"]</span>
                 <strong>@Money(dashboard.PipelineValue, dashboard.Currency)</strong>
-                <small>@SalesText["OpenDealsActivePipeline"]</small>
+                <small>@SalesText["AmountsInCurrency", dashboard.Currency]</small>
             </article>
             <article>
                 <span>@SalesText["OpenLeads"]</span>
@@ -88,7 +90,7 @@
                                     <div class="sales-overview-stage__bar" aria-hidden="true">
                                         <span style="width: @StageWidth(stage)%"></span>
                                     </div>
-                                    <strong>@Money(stage.TotalValue, dashboard.Currency)</strong>
+                                    <strong>@string.Join(" · ", stage.Deals.GroupBy(x => x.Currency).Select(x => Money(x.Sum(d => d.Amount), x.Key)))</strong>
                                 </div>
                             }
                         </div>
@@ -157,7 +159,7 @@
                         </article>
                         <article>
                             <span>@SalesText["HighRiskDeals"]</span>
-                            <strong>@(forecast?.RiskDistribution.High ?? 0)</strong>
+                            <strong>@(forecast?.Rows.Count(x => x.Risk >= .67m) ?? 0)</strong>
                             <small>@SalesText["ReviewBeforeForecast"]</small>
                         </article>
                     </div>
@@ -273,14 +275,14 @@
                             <h2>@SalesText["ForecastWindows"]</h2>
                         </div>
                     </div>
-                    @if (forecast?.Windows.Count > 0)
+                    @if (forecast?.Windows?.Count > 0)
                     {
                         <div class="sales-overview-forecast">
-                            @foreach (var window in forecast.Windows.OrderBy(x => x.Days))
+                            @foreach (var window in forecast.Windows.OrderBy(x => x.Days).ThenBy(x => x.Currency))
                             {
                                 <div>
                                     <span>@SalesText["ForecastWindow", window.Days]</span>
-                                    <strong>@Money(window.ExpectedRevenue, forecast.Currency)</strong>
+                                    <strong>@Money(window.ExpectedAmount, window.Currency)</strong>
                                     <small>@SalesText["DealsIncluded", window.DealCount]</small>
                                 </div>
                             }
@@ -301,7 +303,7 @@
     private string? errorMessage;
     private SalesDashboardResponse? dashboard;
     private SalesAnalyticsDashboardResponse? analytics;
-    private RevenueForecastSnapshotResponse? forecast;
+    private SalesOpportunityReportViewModel? forecast;
     private SalesPipelineResponse? pipeline;
     private IReadOnlyList<SalesLeadSummaryResponse> leads = [];
 
@@ -309,6 +311,7 @@
 
     private async Task LoadAsync()
     {
+        var read = BeginSalesRead();
         isLoading = true;
         errorMessage = null;
         try
@@ -322,11 +325,12 @@
             var companyId = ResolvedCompanyId!.Value;
             var dashboardTask = SalesApiClient.GetDashboardAsync(companyId);
             var analyticsTask = SalesApiClient.GetAnalyticsAsync(companyId);
-            var forecastTask = SalesApiClient.GetRevenueForecastAsync(companyId);
+            var forecastTask = Reports.OpportunitiesAsync(companyId, true, 90, null, null);
             var pipelineTask = SalesApiClient.GetPipelineAsync(companyId);
             var leadsTask = SalesApiClient.ListLeadsAsync(companyId);
 
             await Task.WhenAll(dashboardTask, analyticsTask, forecastTask, pipelineTask, leadsTask);
+            if (!SalesReadIsCurrent(read)) return;
 
             dashboard = await dashboardTask;
             analytics = await analyticsTask;
@@ -335,21 +339,22 @@
             leads = await leadsTask;
             AgentPanelDashboard = dashboard;
         }
-        catch (SalesApiException ex)
+        catch (Exception ex) when (ex is SalesApiException or SalesOperationalApiException)
         {
+            if (!SalesReadIsCurrent(read)) return;
             errorMessage = ex.Message;
             AgentPanelErrorMessage = ex.Message;
         }
         finally
         {
-            isLoading = false;
+            if (SalesReadIsCurrent(read)) isLoading = false;
         }
     }
 
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
-    private decimal PrimaryForecastValue => ForecastValue(30) > 0m ? ForecastValue(30) : dashboard?.ForecastRevenue ?? 0m;
-    private string PrimaryForecastCurrency => forecast?.Currency ?? dashboard?.Currency ?? "USD";
-    private decimal ForecastValue(int days) => forecast?.Windows.FirstOrDefault(x => x.Days == days)?.ExpectedRevenue ?? 0m;
+    private string BuildPath(string path) => BuildSalesPath(path);
+    private decimal PrimaryForecastValue => ForecastValue(30);
+    private string PrimaryForecastCurrency => dashboard?.Currency ?? "USD";
+    private decimal ForecastValue(int days) => forecast?.Windows?.FirstOrDefault(x => x.Days == days && x.Currency == PrimaryForecastCurrency)?.ExpectedAmount ?? 0m;
     private string RecommendationPath(SalesRecommendationResponse recommendation) =>
         recommendation.DealId is Guid dealId
             ? BuildPath($"/app/sales/deals/{dealId:D}")

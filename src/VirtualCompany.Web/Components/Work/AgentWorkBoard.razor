@@ -1,0 +1,51 @@
+@using VirtualCompany.Web.Services
+<p class="work-board-help" id="agent-work-board-help">Counts reflect your permitted work and current filters@(Data.IsPartial ? " within the source window" : ""). Scroll across the board or choose a column's View state link to review its work.</p>
+@if (Data.Total == 0)
+{ <div class="work-board-empty" role="status"><h2>No work matches these filters</h2><p>Clear or adjust the filters to review your permitted work.</p></div> }
+<div class="work-kanban" role="region" aria-label="Company outcomes by work state" aria-describedby="agent-work-board-help" tabindex="0" data-testid="agent-work-kanban">
+    @foreach (var state in BoardStates)
+    {
+        var items = Data.Items.Where(x => x.State == state).ToArray();
+        var total = Data.StateCounts.GetValueOrDefault(state);
+        <section class="work-lane work-lane--@state" aria-labelledby="work-lane-@state" data-state="@state">
+            <header class="work-stage-counts">
+                <div><h2 id="work-lane-@state">@AgentWorkRoutes.State(state)</h2><strong class="work-lane__count" aria-label="@($"{total} authorized outcomes matching filters")">@LocalNumber.Integer(total)</strong></div>
+                <small>@(PerStatePages && items.Length > 0 ? $"{LocalNumber.Integer(Data.Skip + 1)}–{LocalNumber.Integer(Data.Skip + items.Length)} of {LocalNumber.Integer(total)}" : $"{LocalNumber.Integer(items.Length)} on this page")</small>
+                <a href="@StatePath(state)" aria-label="@($"View {AgentWorkRoutes.State(state)} work")">View state →</a>
+                @if (PerStatePages && total > 0)
+                {
+                    <nav class="work-lane__pagination" aria-label="@($"{AgentWorkRoutes.State(state)} pages")">
+                        @if (Data.Skip > 0) { <a href="@StatePath(state, Math.Max(0, Data.Skip - Data.Take))">Previous page</a> }
+                        @if ((long)Data.Skip + Data.Take < total) { <a href="@StatePath(state, Data.Skip + Data.Take)">Next page →</a> }
+                    </nav>
+                }
+            </header>
+            <div class="work-lane__cards" tabindex="0" role="region" aria-label="@($"{AgentWorkRoutes.State(state)} outcomes on this page")">
+                @if (items.Length == 0)
+                {
+                    <p class="work-lane__empty">@(total > 0 ? (PerStatePages ? "No work on this page. Choose View state to return to the first page." : "Work in this state is on another page. Choose View state to review it.") : "No work in this state matches these filters.")</p>
+                }
+                @foreach (var item in items)
+                {
+                    <article class="work-card" data-testid="agent-work-item" @key="(item.Kind,item.Id)">
+                        <h3>@item.Title</h3><span class="work-area">@AgentWorkRoutes.Area(item.Responsibility)</span><p>@item.Objective</p>
+                        <dl><dt>Accountable human</dt><dd>@item.AccountableHuman</dd><dt>Agents</dt><dd>@(item.Agents.Count>0?string.Join(", ",item.Agents.Select(x=>x.Name)):"No participating agent recorded")</dd><dt>Last update</dt><dd>@LocalDateTime.DateTime(item.UpdatedUtc)</dd></dl>
+                        <div class="work-card__dependency"><span>Next dependency</span><p>@item.Dependency</p></div>
+                        <a href="@AgentWorkRoutes.Detail(item.Kind,item.Id,Data.CompanyId,Location)">Open work →</a>
+                    </article>
+                }
+            </div>
+        </section>
+    }
+</div>
+<details class="work-coverage"><summary>Data coverage · observed @LocalDateTime.DateTime(Data.ObservedUtc)@(Data.Diagnostics.Count > 0 ? " · source gaps recorded" : "")</summary><p>States come from retained lifecycle records. Refreshing does not establish completion or newer source evidence.</p>@foreach(var diagnostic in Data.Diagnostics) { <p>@diagnostic</p> }<p>Open a work item for its ownership, sources, outputs and next dependency.</p></details>
+@code {
+    [Parameter,EditorRequired] public AgentWorkBoardDto Data { get; set; } = default!;
+    [Parameter,EditorRequired] public string Location { get; set; } = "http://localhost/";
+    [Parameter] public bool PerStatePages { get; set; }
+    private static readonly string[] BoardStates = [AgentWorkStates.Planned, AgentWorkStates.Active, AgentWorkStates.AwaitingApproval,
+        AgentWorkStates.Blocked, AgentWorkStates.Failed, AgentWorkStates.Paused, AgentWorkStates.Completed];
+    private string StatePath(string state, int skip = 0) => DashboardRoutes.WithQuery(
+        AgentWorkRoutes.Board(new Uri(Location).PathAndQuery, Data.CompanyId) ?? $"/agents/staff?companyId={Data.CompanyId:D}",
+        ("state", state), ("skip", skip.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+}

@@ -1,0 +1,96 @@
+@page "/finance/receivables-aging"
+@page "/finance/payables-aging"
+@page "/finance/cash-forecast"
+@inherits FinancePageBase
+@rendermode InteractiveServer
+@implements IDisposable
+@inject FinanceApiClient Finance
+@inject IJSRuntime JS
+@using System.Globalization
+
+<PageTitle>@Title</PageTitle>
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@Title" Description="Inspect the included obligations and dated cash evidence." ShowShellHeader="false">
+    <main class="vc-page finance-report" data-testid="finance-operational-report">
+        <header class="vc-page-header"><div><span class="vc-kicker">FINANCE</span><h1>@Title</h1><p>Current operational evidence, separated by currency.</p></div></header>
+        <form class="vc-panel finance-report-filters" @onsubmit="Apply" @onsubmit:preventDefault>
+            <label>As-of date (UTC)<input type="date" @bind="cutoff" /></label>
+            <label>Currency<input maxlength="3" placeholder="All, separately" @bind="currency" @bind:event="oninput" /></label>
+            <label>Aging bucket<select @bind="bucket"><option value="">All buckets</option><option value="current">Not overdue</option><option value="overdue">All overdue</option><option value="past_due_1_30">1–30 days</option><option value="past_due_31_60">31–60 days</option><option value="past_due_61_90">61–90 days</option><option value="past_due_over_90">Over 90 days</option></select></label>
+            @if (Kind == "forecast") { <label>Horizon (days)<input type="number" min="1" max="30" @bind="horizon" /></label> }
+            <button class="btn btn-primary" disabled="@loading" type="submit">Apply filters</button><button class="btn btn-outline-primary" disabled="@loading" type="button" @onclick="Load">Refresh</button>
+        </form>
+        @if (loading) { <section class="vc-panel" role="status">Loading current Finance evidence…</section> }
+        else if (error is not null) { <section class="vc-panel" role="alert"><h2>Finance evidence unavailable</h2><p>@error</p><button class="btn btn-primary" @onclick="Load">Retry</button></section> }
+        else if (report is not null)
+        {
+            <section class="finance-report-totals">
+                @foreach (var total in report.Totals)
+                {
+                    <article class="vc-panel"><h2>@total.Currency</h2>
+                        @if (Kind == "forecast") { <p>Starting cash <strong>@Money(total.StartingCash, total.Currency)</strong></p><p>Expected inflows <strong>@Money(total.ExpectedInflows, total.Currency)</strong></p><p>Expected outflows <strong>@Money(total.ExpectedOutflows, total.Currency)</strong></p><p>Projected cash <strong>@Money(total.ProjectedCash, total.Currency)</strong></p> }
+                        else { <p>Remaining <strong>@Money(Kind == "receivables" ? total.Receivables : total.Payables, total.Currency)</strong></p><p>Overdue <strong>@Money(Kind == "receivables" ? total.OverdueReceivables : total.OverduePayables, total.Currency)</strong></p> }
+                    </article>
+                }
+                <article class="vc-panel"><span>Included records</span><strong class="finance-report-count">@Rows.Count</strong><small>Same filters in source rows and CSV</small></article>
+            </section>
+            <section class="vc-panel"><p>Cutoff @report.AsOfDate.ToString("yyyy-MM-dd") UTC · observed @report.ObservedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC · @report.CalculationVersion</p><p>@report.Meaning</p>
+                @if (Kind == "forecast") { <p>Through @report.ThroughDate.ToString("yyyy-MM-dd") UTC. @report.ForecastAssumptions</p> }
+                @foreach (var gap in report.CoverageGaps) { <p class="alert alert-warning" role="status">@gap</p> }
+                <button class="btn btn-outline-primary" disabled="@loading" @onclick="Download">Refresh and download CSV</button>
+                @if (downloadMessage is not null) { <p role="status">@downloadMessage</p> }
+            </section>
+            <section class="vc-panel finance-report-table"><h2>Included source obligations</h2>
+                @if (Rows.Count == 0) { <p>No recorded obligations match these filters. Missing cash evidence remains unavailable.</p> }
+                else { <div class="finance-report-scroll"><table><thead><tr><th>Record</th><th>Counterparty</th><th>Due UTC</th><th>Days overdue</th><th>Remaining</th><th>Recorded status</th><th>Next step</th></tr></thead><tbody>
+                    @foreach (var row in Rows) { <tr><td>@row.Number</td><td>@row.Counterparty</td><td>@row.DueUtc.ToString("yyyy-MM-dd")</td><td>@row.DaysOverdue</td><td>@Money(row.RemainingAmount, row.Currency)</td><td>@row.Status.Replace('_', ' ')</td><td><a href="@BuildFinancePath(row.DeepLink)">Review</a></td></tr> }
+                </tbody></table></div> }
+            </section>
+            @if (Kind == "forecast") { <section class="vc-panel"><h2>Starting cash sources</h2>@foreach (var cash in report.CashEvidence) { <p>@cash.AccountName · @Money(cash.Amount, cash.Currency) · source @(cash.SourceObservedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "unavailable") UTC. @cash.Basis <a href="@BuildFinancePath(FinanceRoutes.Balances)">Review balances</a></p> }</section> }
+            <section class="vc-panel"><h2>Laura · Finance Manager</h2><p>Use record review for the next permitted action. Payment instructions, provider acceptance, uncertain outcomes and settlement remain distinct.</p><a href="@BuildFinancePath(FinanceRoutes.Payments)">Review payments</a> · <a href="@BuildFinancePath(FinanceRoutes.AccountingReconciliation)">Bank reconciliation</a> · <a href="@BuildFinancePath(FinanceRoutes.AccountingCloseWorkspace)">Accounting close</a></section>
+        }
+    </main>
+</FinancePageLayout>
+@code {
+    [SupplyParameterFromQuery(Name = "asOfDate")] public string? AsOfDate { get; set; }
+    [SupplyParameterFromQuery(Name = "currency")] public string? Currency { get; set; }
+    [SupplyParameterFromQuery(Name = "bucket")] public string? Bucket { get; set; }
+    [SupplyParameterFromQuery(Name = "horizonDays")] public int? HorizonDays { get; set; }
+    private string Kind => new Uri(Navigation.Uri).AbsolutePath switch { "/finance/payables-aging" => "payables", "/finance/cash-forecast" => "forecast", _ => "receivables" };
+    private string Title => Kind == "payables" ? "Payables aging" : Kind == "forecast" ? "Short-term cash forecast" : "Receivables aging";
+    private DateTime cutoff = DateTime.UtcNow.Date; private string? currency; private string? bucket; private int horizon = 14;
+    private FinanceOperationalReportResponse? report; private bool loading; private string? error; private string? downloadMessage;
+    private CancellationTokenSource? cts; private int version;
+    private IReadOnlyList<FinanceObligationRowResponse> Rows => report is null ? [] : Kind == "receivables" ? report.Receivables : Kind == "payables" ? report.Payables : report.Receivables.Concat(report.Payables).Where(x => DateOnly.FromDateTime(x.DueUtc) <= report.ThroughDate).ToArray();
+    private string Money(decimal? amount, string code) => amount.HasValue ? LocalMoney.Format(amount.Value, code) : "Unavailable";
+    protected override async Task OnParametersSetAsync()
+    {
+        cts?.Cancel(); report = null; error = null; downloadMessage = null;
+        await base.OnParametersSetAsync(); if (!AccessState.IsAllowed) return;
+        cutoff = DateTime.UtcNow.Date;
+        if (AsOfDate is not null && !DateTime.TryParseExact(AsOfDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out cutoff)) { error = "Choose a valid UTC cutoff date."; return; }
+        currency = Currency; bucket = Bucket; horizon = HorizonDays ?? 14; await Load();
+    }
+    private void Apply() => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["asOfDate"] = cutoff.ToString("yyyy-MM-dd"), ["currency"] = currency, ["bucket"] = bucket, ["horizonDays"] = horizon }));
+    private async Task Load()
+    {
+        if (AccessState.CompanyId is not Guid company || !AccessState.IsAllowed) return;
+        cts?.Cancel(); cts?.Dispose(); cts = new(); var token = cts.Token; var read = ++version; var location = Navigation.Uri;
+        report = null; error = null; loading = true;
+        var appliedCutoff = DateOnly.FromDateTime(DateTime.UtcNow);
+        if (AsOfDate is not null && !DateOnly.TryParseExact(AsOfDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out appliedCutoff)) { loading = false; error = "Choose a valid UTC cutoff date."; return; }
+        try { var result = await Finance.GetOperationalReportAsync(company, appliedCutoff, HorizonDays ?? 14, Currency, Bucket, token, OperationalSource);
+            if (read == version && location == Navigation.Uri && !token.IsCancellationRequested) report = result ?? throw new FinanceApiException("No report response was returned."); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is FinanceApiException or HttpRequestException) { if (read == version && location == Navigation.Uri) error = ex is FinanceApiException ? ex.Message : "Finance could not be reached. Retry the report."; }
+        finally { if (read == version) loading = false; }
+    }
+    private async Task Download()
+    {
+        downloadMessage = null; var location = Navigation.Uri; var kind = Kind;
+        await Load(); if (report is null || location != Navigation.Uri || !AccessState.IsAllowed) return;
+        try { await using var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/reportDownload.js");
+            await module.InvokeVoidAsync("downloadReport", $"finance-{kind}.csv", FinanceOperationalCsv.Build(report, kind)); downloadMessage = "Current authorized CSV passed to your browser."; }
+        catch (JSException) { downloadMessage = "The browser download could not start. Retry the download."; }
+    }
+    public void Dispose() { ++version; cts?.Cancel(); cts?.Dispose(); }
+}

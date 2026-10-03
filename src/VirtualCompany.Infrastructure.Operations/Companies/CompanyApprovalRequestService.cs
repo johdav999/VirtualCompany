@@ -1116,6 +1116,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             ApprovalTargetEntityType.Action => await _dbContext.ToolExecutionAttempts
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.MarketingChannelAction => await _dbContext.MarketingChannelActions
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.FinanceIntegrationWrite => await _dbContext.FinanceIntegrationWriteCommands
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
@@ -1453,6 +1456,11 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             .Select(x => x.TargetEntityId)
             .Distinct()
             .ToList();
+        var marketingActionIds = approvals.Where(x => x.TargetEntityType == ApprovalTargetEntityType.MarketingChannelAction.ToStorageValue())
+            .Select(x => x.TargetEntityId).Distinct().ToList();
+        var marketingActions = marketingActionIds.Count == 0 ? new Dictionary<Guid, MarketingChannelAction>()
+            : await _dbContext.MarketingChannelActions.AsNoTracking().Where(x => x.CompanyId == companyId && marketingActionIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
         var meetingChangeIds = approvals
             .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
             .Select(x => x.TargetEntityId)
@@ -1544,6 +1552,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                         operatingPlan.RationaleSummary,
                         label,
                         [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.OperatingPlan.ToStorageValue(), operatingPlan.Id, label)]);
+                }
+                if (marketingActions.TryGetValue(approval.TargetEntityId, out var marketingAction))
+                {
+                    var label = $"{marketingAction.ActionType} to {marketingAction.DestinationReference}; content brief version {marketingAction.ContentBriefVersion?.ToString() ?? "not linked"}";
+                    return new ApprovalSummaryContext("Review the exact content version and destination. Approval does not confirm provider delivery or increase the campaign budget.",
+                        label, [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.MarketingChannelAction.ToStorageValue(), marketingAction.Id, label)]);
                 }
 
                 if (meetings.TryGetValue(approval.TargetEntityId, out var meeting))
@@ -1880,6 +1894,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             var value when string.Equals(value, ApprovalTargetEntityType.Task.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Task",
             var value when string.Equals(value, ApprovalTargetEntityType.Workflow.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Workflow",
             var value when string.Equals(value, ApprovalTargetEntityType.Action.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Action",
+            var value when string.Equals(value, ApprovalTargetEntityType.MarketingChannelAction.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Marketing delivery",
             var value when string.Equals(value, ApprovalTargetEntityType.FinanceIntegrationWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingInvitation.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting invitation",
             var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting change",

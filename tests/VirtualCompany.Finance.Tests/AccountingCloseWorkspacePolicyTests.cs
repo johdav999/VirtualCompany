@@ -10,6 +10,15 @@ namespace VirtualCompany.Finance.Tests;
 public sealed class AccountingCloseWorkspacePolicyTests
 {
     [Fact]
+    public void Current_success_checks_are_not_presented_as_attention_issues()
+    {
+        AccountingCloseReadinessCheckDto Check(string category, string code, bool blocking) =>
+            new(Guid.NewGuid(), category, code, "Retained evidence", blocking, false, 0m, "SEK", 0, "hash", DateTime.UtcNow);
+        Assert.Equal(1, AccountingCloseWorkspaceService.CountAttentionChecks([
+            Check("bank", "bank_ready", false), Check("reports", "reports_ready", false),
+            Check("tasks", "close_tasks_incomplete", true), Check("exports", "waived_export_gap", false)]));
+    }
+    [Fact]
     public void Manager_receives_only_actions_allowed_by_current_backend_states()
     {
         var actions = AccountingCloseWorkspaceActionPolicy.Evaluate(CompanyMembershipRole.Manager,

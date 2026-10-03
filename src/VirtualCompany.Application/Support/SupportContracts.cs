@@ -92,6 +92,7 @@ public sealed record SupportRefundFinanceActionResult(Guid RefundRequestId, Guid
 public interface ISupportSlaMonitor
 {
     Task<SupportSlaMonitorResult> RunAsync(DateTime nowUtc, CancellationToken cancellationToken);
+    Task<SupportSlaMonitorResult> RunForCompanyAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken);
 }
 
 public interface ISupportSlaPolicyService
@@ -452,7 +453,7 @@ public sealed record SupportReplyDraftDto(
     string? SafetyDecision = null,
     string? SafetyReasonCodesJson = null,
     string? SafetyPolicyVersion = null,
-    DateTime? SafetyEvaluatedUtc = null);
+    DateTime? SafetyEvaluatedUtc = null, string DeliveryStatus = "pending", DateTime? LastDeliveryAttemptUtc = null, bool DeliveryRequested = false);
 
 public sealed record SupportRefundRequestDto(
     Guid Id,

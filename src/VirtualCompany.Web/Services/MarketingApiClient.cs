@@ -34,8 +34,15 @@ public sealed class MarketingApiClient
         GetAsync<IReadOnlyList<MarketingPlanListItemViewModel>>(companyId, "api/marketing/plan-portfolio", ct);
     public Task<MarketingPlanDetailViewModel> GetPlanPortfolioAsync(Guid companyId, Guid planId, CancellationToken ct = default) =>
         GetAsync<MarketingPlanDetailViewModel>(companyId, $"api/marketing/plans/{planId:D}/portfolio", ct);
-    public Task<MarketingDailyReviewViewModel?> GetDailyReviewAsync(Guid companyId, DateTime dateUtc, CancellationToken ct = default) =>
-        GetAsync<MarketingDailyReviewViewModel?>(companyId, $"api/marketing/daily-review?dateUtc={Uri.EscapeDataString(dateUtc.ToString("O"))}", ct);
+    public async Task<MarketingDailyReviewViewModel?> GetDailyReviewAsync(Guid companyId, DateTime dateUtc, CancellationToken ct = default)
+    {
+        EnsureOnline();
+        using var response = await transport.SendAsync(companyId, HttpMethod.Get,
+            $"api/marketing/daily-review?dateUtc={Uri.EscapeDataString(dateUtc.ToString("O"))}", null, ct);
+        // No recorded review is a valid empty state, not malformed evidence.
+        return response.StatusCode == System.Net.HttpStatusCode.NoContent ? null
+            : await ReadAsync<MarketingDailyReviewViewModel>(response, ct);
+    }
     public Task<MarketingCampaignPortfolioProposalViewModel> PrepareCampaignPortfolioAsync(Guid companyId, Guid planId,
         PrepareMarketingCampaignPortfolioViewModel request, CancellationToken ct = default) =>
         SendAsync<PrepareMarketingCampaignPortfolioViewModel, MarketingCampaignPortfolioProposalViewModel>(companyId, HttpMethod.Post,
@@ -56,6 +63,10 @@ public sealed class MarketingApiClient
 
     public Task ReviewContentAsync(Guid companyId, Guid briefId, bool approved, CancellationToken ct = default) =>
         SendNoContentAsync(companyId, HttpMethod.Post, $"api/marketing/content/{briefId:D}/review", new { approved }, ct);
+    public Task ReviewContentVersionAsync(Guid companyId, Guid briefId, bool approved, int expectedVersion, CancellationToken ct = default) =>
+        SendNoContentAsync(companyId, HttpMethod.Post, $"api/marketing/content/{briefId:D}/review", new { approved, expectedVersion }, ct);
+    public Task<MarketingContentVariantViewModel> ReviseContentAsync(Guid companyId, Guid variantId, string name, string body, string sourceReferences, int expectedBriefVersion, CancellationToken ct = default) =>
+        SendAsync<object, MarketingContentVariantViewModel>(companyId, HttpMethod.Post, $"api/marketing/content-variants/{variantId:D}/versions", new { name, body, sourceReferences, expectedBriefVersion }, ct);
     public Task SubmitContentAsync(Guid companyId, Guid briefId, CancellationToken ct = default) =>
         SendNoContentAsync(companyId, HttpMethod.Post, $"api/marketing/content/{briefId:D}/submit", new { }, ct);
     public Task<MarketingContentPreflightViewModel> PreflightContentAsync(Guid companyId, Guid briefId, CancellationToken ct = default) =>
@@ -170,6 +181,8 @@ public sealed class MarketingApiClient
         await SendNoContentAsync(companyId, HttpMethod.Post, $"api/marketing/channel-connections/{connectionId:D}/disconnect", new { }, ct);
     public Task<IReadOnlyList<MarketingChannelActionViewModel>> GetChannelActionsAsync(Guid companyId, CancellationToken ct = default) =>
         GetAsync<IReadOnlyList<MarketingChannelActionViewModel>>(companyId, "api/marketing/channel-actions", ct);
+    public Task<MarketingChannelActionViewModel> SubmitChannelActionAsync(Guid companyId, Guid actionId, CancellationToken ct = default) =>
+        SendAsync<object, MarketingChannelActionViewModel>(companyId, HttpMethod.Post, $"api/marketing/channel-actions/{actionId:D}/submit", new { }, ct);
     public Task<MarketingChannelActionViewModel> SynchronizeChannelActionAsync(Guid companyId, Guid actionId, CancellationToken ct = default) =>
         SendAsync<object, MarketingChannelActionViewModel>(companyId, HttpMethod.Post, $"api/marketing/channel-actions/{actionId:D}/synchronize-approval", new { }, ct);
     public Task<MarketingChannelActionViewModel> CancelChannelActionAsync(Guid companyId, Guid actionId, CancellationToken ct = default) =>

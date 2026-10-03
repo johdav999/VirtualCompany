@@ -6,15 +6,16 @@ namespace VirtualCompany.Web.Services;
 
 public sealed partial class SupportApiClient
 {
-    private const string CompanyContextHeaderName = "X-Company-Id";
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private readonly ICompanyApiTransport _transport;
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web) { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
     private readonly HttpClient _httpClient;
     private readonly bool _useOfflineMode;
     private readonly IApiProblemMessageResolver? _problemResolver;
 
-    public SupportApiClient(HttpClient httpClient, bool useOfflineMode = false, IApiProblemMessageResolver? problemResolver = null)
+    public SupportApiClient(HttpClient httpClient, bool useOfflineMode = false, IApiProblemMessageResolver? problemResolver = null, ICompanyApiTransport? transport = null)
     {
         _httpClient = httpClient;
+        _transport = transport ?? new CompanyApiTransport(httpClient);
         _useOfflineMode = useOfflineMode;
         _problemResolver = problemResolver;
     }
@@ -197,8 +198,7 @@ public sealed partial class SupportApiClient
 
         try
         {
-            using var request = CreateCompanyRequest(companyId, HttpMethod.Get, uri, null);
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            using var response = await _transport.SendAsync(companyId, HttpMethod.Get, uri, null, cancellationToken);
             if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
             {
                 return default;
@@ -211,9 +211,9 @@ public sealed partial class SupportApiClient
 
             throw await CreateExceptionAsync(response, cancellationToken);
         }
-        catch (HttpRequestException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
         {
-            throw new SupportApiException("The support workspace could not reach the backend API.");
+            throw new SupportApiException("Support evidence could not be loaded. Retry the current scope.");
         }
     }
 
@@ -226,8 +226,7 @@ public sealed partial class SupportApiClient
 
         try
         {
-            using var request = CreateCompanyRequest(companyId, method, uri, JsonContent.Create(payload, options: SerializerOptions));
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            using var response = await _transport.SendAsync(companyId, method, uri, JsonContent.Create(payload, options: SerializerOptions), cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 return await response.Content.ReadFromJsonAsync<TResponse>(SerializerOptions, cancellationToken)
@@ -236,17 +235,10 @@ public sealed partial class SupportApiClient
 
             throw await CreateExceptionAsync(response, cancellationToken);
         }
-        catch (HttpRequestException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException || ex is TaskCanceledException && !cancellationToken.IsCancellationRequested)
         {
-            throw new SupportApiException("The support workspace could not reach the backend API.");
+            throw new SupportApiException("The action outcome could not be confirmed. Reload current history before retrying.");
         }
-    }
-
-    private static HttpRequestMessage CreateCompanyRequest(Guid companyId, HttpMethod method, string uri, HttpContent? content)
-    {
-        var request = new HttpRequestMessage(method, uri) { Content = content };
-        request.Headers.TryAddWithoutValidation(CompanyContextHeaderName, companyId.ToString("D"));
-        return request;
     }
 
     private static void Add(ICollection<string> parameters, string key, string? value)
@@ -295,7 +287,7 @@ public sealed record SupportCaseListItem(Guid Id, string CaseNumber, string Subj
 public sealed record SupportCaseDetailResponse(Guid Id, string CaseNumber, string Subject, string Summary, string? Description, string Status, string StatusLabel, string Priority, string PriorityLabel, string Category, string CategoryLabel, string Source, string? Sentiment, decimal? ConfidenceScore, string? SuggestedNextAction, string? RationaleSummary, Guid? ContactId, Guid? CustomerCompanyId, Guid? RelatedInvoiceId, Guid? RelatedPaymentId, string? CustomerName, string? ContactName, string? ContactEmail, Guid? AssignedAgentId, Guid? AssignedUserId, DateTime? FirstResponseDueUtc, DateTime? ResolutionDueUtc, bool IsSlaRisk, bool IsSlaBreached, bool IsChurnRisk, bool IsVipRisk, IReadOnlyList<string> AllowedActions, DateTime CreatedUtc, DateTime UpdatedUtc, IReadOnlyList<SupportMessageDto> Messages, IReadOnlyList<SupportCaseEventDto> Events, IReadOnlyList<SupportReplyDraftDto> ReplyDrafts, IReadOnlyList<SupportRefundRequestDto> RefundRequests, IReadOnlyList<SupportKnowledgeGapDto> KnowledgeGaps, SupportCaseContextSummary Context);
 public sealed record SupportMessageDto(Guid Id, string Direction, string Channel, string Sender, string? Recipient, string Body, DateTime OccurredUtc, Guid? EmailMessageSnapshotId, string? ProviderMessageId, string? ProviderThreadId);
 public sealed record SupportCaseEventDto(Guid Id, string EventType, string EventLabel, string Summary, string ActorType, Guid? ActorId, DateTime OccurredUtc);
-public sealed record SupportReplyDraftDto(Guid Id, Guid SupportCaseId, string DraftBody, string Tone, string Status, string StatusLabel, decimal Confidence, decimal Answerability, string? RationaleSummary, string? SourceReferencesJson, Guid? CreatedByAgentId, Guid? CreatedByUserId, Guid? ApprovedByUserId, DateTime? ApprovedUtc, DateTime? SentUtc, string? SendFailureSummary, DateTime CreatedUtc, DateTime UpdatedUtc, string? SafetyDecision = null, string? SafetyReasonCodesJson = null, string? SafetyPolicyVersion = null, DateTime? SafetyEvaluatedUtc = null);
+public sealed record SupportReplyDraftDto(Guid Id, Guid SupportCaseId, string DraftBody, string Tone, string Status, string StatusLabel, decimal Confidence, decimal Answerability, string? RationaleSummary, string? SourceReferencesJson, Guid? CreatedByAgentId, Guid? CreatedByUserId, Guid? ApprovedByUserId, DateTime? ApprovedUtc, DateTime? SentUtc, string? SendFailureSummary, DateTime CreatedUtc, DateTime UpdatedUtc, string? SafetyDecision = null, string? SafetyReasonCodesJson = null, string? SafetyPolicyVersion = null, DateTime? SafetyEvaluatedUtc = null, string DeliveryStatus = "pending", DateTime? LastDeliveryAttemptUtc = null, bool DeliveryRequested = false);
 public sealed record SupportRefundRequestDto(
     Guid Id,
     Guid SupportCaseId,

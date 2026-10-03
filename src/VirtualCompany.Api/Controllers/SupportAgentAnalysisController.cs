@@ -12,6 +12,7 @@ namespace VirtualCompany.Api.Controllers;
 [Route("api/support/agents/{agentId:guid}/analysis")]
 [Authorize(Policy = CompanyPolicies.CompanyMember)]
 [RequireCompanyContext]
+[TypeFilter(typeof(SupportResponsibilityFilter))]
 public sealed class SupportAgentAnalysisController(
     ISupportAgentAnalysisService analysis,
     ISupportAgentDecisionService decisions,

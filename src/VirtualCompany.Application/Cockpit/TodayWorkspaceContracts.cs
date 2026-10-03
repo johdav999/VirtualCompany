@@ -38,7 +38,7 @@ public static class TodayWorkspaceLenses
     };
 }
 
-public sealed record GetTodayWorkspaceQuery(Guid CompanyId, string? Lens = null);
+public sealed record GetTodayWorkspaceQuery(Guid CompanyId, string? Lens = null, bool Refresh = false);
 
 public sealed record TodayWorkspaceDto(
     Guid CompanyId,
@@ -59,7 +59,14 @@ public sealed record TodayWorkspaceDto(
     bool IsPartial,
     IReadOnlyList<TodayWorkspaceDiagnosticDto> Diagnostics,
     TodayWorkspaceResponsibilitySetupDto? ResponsibilitySetup = null,
-    TodayWorkspaceManualReviewDto? ManualReview = null);
+    TodayWorkspaceManualReviewDto? ManualReview = null,
+    IReadOnlyList<TodayWorkspacePriorityDto>? CompanyRisks = null,
+    IReadOnlyList<TodayWorkspaceDepartmentDto>? Departments = null,
+    IReadOnlyList<TodayWorkspaceRiskFollowUpDto>? RiskFollowUps = null);
+
+public sealed record TodayWorkspaceRiskFollowUpDto(Guid TaskId, string EvidenceKey, string Title, string State, DateTime ObservedAtUtc, string DeepLink);
+
+public sealed record TodayWorkspaceDepartmentDto(string Lens, string ResponsiblePerson, string? WorkingAgent, bool IsAvailable);
 
 public sealed record TodayWorkspaceHeaderDto(string CompanyName, string Title, string Subtitle);
 public sealed record TodayWorkspaceLensDto(string Value, string Label, bool IsDefault, string AvailabilityReason);
@@ -88,7 +95,11 @@ public sealed record TodayWorkspacePriorityDto(
     DateTime? DueUtc,
     bool DirectlyOwned,
     decimal Confidence,
-    string? VisibilityReason = null);
+    string? VisibilityReason = null,
+    string? RankingReason = null,
+    string? SourceState = null,
+    Guid? RelatedTaskId = null,
+    Guid? RelatedApprovalId = null);
 
 public sealed record TodayWorkspaceMetricDto(
     string Key,
@@ -119,7 +130,14 @@ public sealed record TodayWorkspaceFinanceSectionDto(
     string FinancialHealth,
     int OpenInsightCount,
     IReadOnlyList<TodayWorkspaceFeatureItemDto> Items,
-    string DeepLink);
+    string DeepLink,
+    TodayWorkspacePlanComparisonDto? PlanComparison = null,
+    int? OverdueReceivables = null, int? DuePayables = null, int? ReconciliationExceptions = null,
+    IReadOnlyList<string>? CoverageGaps = null, string? WorkingAgent = null);
+
+public sealed record TodayWorkspacePlanComparisonDto(
+    string State, DateTime PeriodStartUtc, DateTime PeriodEndUtc, DateTime? SourceUpdatedUtc,
+    IReadOnlyList<string> RecordedVersions, VirtualCompany.Application.Finance.FinanceVarianceResultDto? RecordedComparison);
 
 public sealed record TodayWorkspaceSalesSectionDto(
     bool IsAvailable,
@@ -132,7 +150,10 @@ public sealed record TodayWorkspaceSalesSectionDto(
     int DealsNeedingAttention,
     decimal ForecastRevenue,
     IReadOnlyList<TodayWorkspaceFeatureItemDto> Items,
-    string DeepLink);
+    string DeepLink,
+    IReadOnlyList<TodaySalesAgendaItemDto>? Agenda = null);
+
+public sealed record TodaySalesAgendaItemDto(string Title, DateTime DueUtc, string State, string DeepLink, bool IsMeeting);
 
 public sealed record TodayWorkspaceSupportSectionDto(
     bool IsAvailable,
@@ -144,7 +165,7 @@ public sealed record TodayWorkspaceSupportSectionDto(
     int SlaAtRisk,
     int SlaBreached,
     IReadOnlyList<TodayWorkspaceFeatureItemDto> Items,
-    string DeepLink);
+    string DeepLink, int WaitingCases = 0);
 
 public sealed record TodayWorkspaceMarketingSectionDto(
     bool IsAvailable,
@@ -155,7 +176,7 @@ public sealed record TodayWorkspaceMarketingSectionDto(
     int DueContentItems,
     int ActiveExperiments,
     IReadOnlyList<TodayWorkspaceFeatureItemDto> Items,
-    string DeepLink);
+    string DeepLink, int DueLaunches = 0, int SpendExceptions = 0, int AttributionGaps = 0);
 
 public sealed record TodayWorkspaceDecisionDto(
     string Key,
@@ -296,7 +317,10 @@ public sealed record TodayWorkspacePriorityCandidate(
     bool Blocked = false,
     int SeverityRank = 0,
     decimal Confidence = 1m,
-    string? VisibilityReason = null);
+    string? VisibilityReason = null,
+    string? SourceState = null,
+    Guid? RelatedTaskId = null,
+    Guid? RelatedApprovalId = null);
 
 public sealed record TodayWorkspaceFeatureContribution(
     string Lens,
@@ -347,11 +371,12 @@ public static class TodayWorkspacePriorityOrdering
     public static IReadOnlyList<TodayWorkspacePriorityCandidate> Select(
         IEnumerable<TodayWorkspacePriorityCandidate> candidates,
         DateTime nowUtc,
-        int limit = 5)
+        int limit = 5, int maximum = 5)
     {
         var ordered = candidates
             .Where(IsValid)
-            .OrderByDescending(x => x.DecisionRequired)
+            .OrderByDescending(x => x.DueUtc.HasValue && x.DueUtc.Value <= nowUtc)
+            .ThenByDescending(x => x.DecisionRequired)
             .ThenByDescending(x => EffectiveProximity(x, nowUtc))
             .ThenByDescending(x => x.Impact)
             .ThenByDescending(x => x.DirectlyOwned)
@@ -369,7 +394,7 @@ public static class TodayWorkspacePriorityOrdering
             if (seen.Add(candidate.DeduplicationKey))
             {
                 selected.Add(candidate);
-                if (selected.Count >= Math.Clamp(limit, 3, 5)) break;
+                if (selected.Count >= Math.Clamp(limit, 3, Math.Clamp(maximum, 5, 20))) break;
             }
         }
 
@@ -382,6 +407,19 @@ public static class TodayWorkspacePriorityOrdering
         !string.IsNullOrWhiteSpace(candidate.WhatHappened) &&
         !string.IsNullOrWhiteSpace(candidate.WhyItMatters) &&
         !string.IsNullOrWhiteSpace(candidate.DeepLink);
+
+    public static string Explain(TodayWorkspacePriorityCandidate candidate, DateTime nowUtc)
+    {
+        var timing = candidate.DueUtc is DateTime due
+            ? due <= nowUtc ? "Overdue work comes first."
+                : due <= nowUtc.AddHours(4) ? "The deadline is within four hours."
+                : due <= nowUtc.AddHours(24) ? "The deadline is within a day."
+                : due <= nowUtc.AddDays(3) ? "The deadline is within three days."
+                : "The deadline is later."
+            : "No deadline is recorded.";
+        return $"{timing} {(candidate.DecisionRequired ? "A human decision is needed. " : string.Empty)}" +
+            "Within the same urgency, decision need and deadline band, business impact, ownership, blocked work, severity, source time and confidence determine the order; equal items use a stable record key.";
+    }
 
     private static int EffectiveProximity(TodayWorkspacePriorityCandidate candidate, DateTime nowUtc)
     {

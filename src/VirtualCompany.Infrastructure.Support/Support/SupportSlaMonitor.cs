@@ -36,10 +36,16 @@ public sealed class SupportSlaMonitor : ISupportSlaMonitor
         _outbox = outbox;
     }
 
-    public async Task<SupportSlaMonitorResult> RunAsync(DateTime nowUtc, CancellationToken cancellationToken)
+    public Task<SupportSlaMonitorResult> RunAsync(DateTime nowUtc, CancellationToken cancellationToken) => RunCoreAsync(null, nowUtc, cancellationToken);
+    public Task<SupportSlaMonitorResult> RunForCompanyAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
+    {
+        SupportValidationException.ThrowIfEmpty(companyId, nameof(companyId));
+        return RunCoreAsync(companyId, nowUtc, cancellationToken);
+    }
+    private async Task<SupportSlaMonitorResult> RunCoreAsync(Guid? companyId, DateTime nowUtc, CancellationToken cancellationToken)
     {
         var cases = await _dbContext.SupportCases.IgnoreQueryFilters().Include(x => x.Events)
-            .Where(x => x.Status != SupportCaseStatuses.Closed && x.Status != SupportCaseStatuses.Resolved)
+            .Where(x => (companyId == null || x.CompanyId == companyId) && x.Status != SupportCaseStatuses.Closed && x.Status != SupportCaseStatuses.Resolved)
             .ToListAsync(cancellationToken);
         var risks = 0;
         var breaches = 0;
@@ -71,8 +77,9 @@ public sealed class SupportSlaMonitor : ISupportSlaMonitor
 
             var previousRisk = supportCase.IsSlaRisk;
             var previousBreach = supportCase.IsSlaBreached;
-            var breached = (supportCase.FirstResponseSentUtc is null && supportCase.FirstResponseDueUtc < nowUtc) || supportCase.ResolutionDueUtc < nowUtc;
-            var risk = !breached && supportCase.ResolutionDueUtc <= nowUtc.AddMinutes(riskThresholdMinutes);
+            var state = SupportSlaState.Evaluate(supportCase, nowUtc, riskThresholdMinutes);
+            var breached = state.Breached;
+            var risk = state.AtRisk;
             if (breached && !supportCase.IsSlaBreached)
             {
                 breaches++;

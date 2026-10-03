@@ -1,0 +1,128 @@
+@page "/marketing/review"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject MarketingOperationalApiClient Reports
+@inject MarketingApiClient Marketing
+@inject NavigationManager Navigation
+
+<PageTitle>Campaign review</PageTitle>
+<main class="vc-page marketing-review" data-testid="marketing-campaign-review">
+    <header class="vc-page-header"><div><span class="vc-kicker">MARKETING · MAYA</span><h1>@(review?.Campaign?.Name ?? brief?.Title ?? "Campaign review")</h1><p>Review exact content, audience and delivery authority.</p></div><a class="btn btn-outline-primary" href="@Back">Back to previous view</a><button class="btn btn-outline-primary" disabled="@busy" @onclick="LoadAsync">Reload evidence</button></header>
+    @if (loading) { <section class="vc-panel" role="status">Loading campaign evidence…</section> }
+    else if (error is not null) { <section class="vc-panel" role="alert"><p>@error</p><button class="btn btn-primary" @onclick="LoadAsync">Reload current evidence</button></section> }
+    else if (review is not null)
+    {
+        <p>As of @review.AsOfUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC. Content approval does not authorize publication or increase spending.</p>
+        @if (message is not null) { <p role="status">@message</p> }
+        <div class="marketing-review-columns">
+            <div class="marketing-review-main">
+                <section class="vc-panel"><h2>Content and exact version</h2>
+                    @if (review.Content.Count == 0) { <p>No content is linked to this campaign. Add a grounded brief before launch.</p><a href="@Workspace("Content")">Open content workspace</a> }
+                    <nav aria-label="Campaign content">@foreach (var item in review.Content) { <a class="btn btn-outline-primary" href="@Select(item.Id, null, null)">@item.Title</a> }</nav>
+                    @if (brief is not null)
+                    {
+                        <h3>@brief.Title · brief version @brief.Version</h3><p>@MarketingJourneyRoutes.State(brief.Status) · @brief.Channel · @brief.Language</p><dl><dt>Purpose</dt><dd>@brief.Purpose</dd><dt>Key message</dt><dd>@brief.KeyMessage</dd><dt>Call to action</dt><dd>@brief.CallToAction</dd><dt>Due</dt><dd>@(brief.DueUtc?.ToString("yyyy-MM-dd HH:mm") ?? "Not scheduled") UTC</dd></dl>
+                        <nav aria-label="Content versions">@foreach (var item in brief.Variants.OrderByDescending(x => x.VersionNumber)) { <a class="btn btn-sm btn-outline-primary" href="@Select(brief.Id, item.Id, null)">@item.Name · v@(item.VersionNumber) · @MarketingJourneyRoutes.State(item.Status)</a> }</nav>
+                        @if (variant is not null) { <h3>@variant.Name · version @variant.VersionNumber</h3><p class="marketing-review-body">@variant.Body</p><h4>Source evidence</h4><p>@variant.SourceReferences</p> }
+                        else { <p>No variant recorded. Create content before submitting for review.</p> }
+                        @if (brief.Status == "submitted") { <button class="btn btn-primary" disabled="@busy" @onclick="() => Review(true)">Approve content</button><button class="btn btn-outline-danger" disabled="@busy" @onclick="() => Review(false)">Request revision</button> }
+                        @if (brief.Status == "draft") { <button class="btn btn-primary" disabled="@busy" @onclick="Submit">Submit content for review</button> }
+                        @if (variant is not null && brief.Status != "published")
+                        {
+                            <details><summary>Create revised version</summary><p>A new version resets this brief to draft and invalidates its earlier approval.</p>
+                                <label>Variant name<input @bind="revisionName" @bind:event="oninput" /></label><label>Revised content<textarea rows="6" @bind="revisionBody" @bind:event="oninput"></textarea></label><label>Source evidence<textarea @bind="revisionSources" @bind:event="oninput"></textarea></label>
+                                <button class="btn btn-primary" disabled="@(busy || string.IsNullOrWhiteSpace(revisionBody) || string.IsNullOrWhiteSpace(revisionSources) || string.IsNullOrWhiteSpace(revisionName))" @onclick="Revise">Save revised version</button>
+                            </details>
+                        }
+                    }
+                </section>
+                <section class="vc-panel"><h2>Audience and context</h2><p>@(brief?.Audience ?? review.Campaign?.Audience ?? "Audience unavailable")</p>
+                    @if (brief?.SegmentVersionId is Guid segmentId && review.Audiences.FirstOrDefault(x => x.Id == segmentId) is { } audience)
+                    { <p>Recorded audience version @audience.Version · @MarketingJourneyRoutes.State(audience.State)</p><p>@audience.Evidence</p><p>@audience.MissingEvidence</p> }
+                    else { <p>No approved segment evidence linked. Audience consent, size and reach are not inferred.</p> }
+                    <a href="@Workspace("Segments")">Review audience evidence</a>
+                </section>
+                <section class="vc-panel"><h2>Creative assets</h2>
+                    @foreach (var item in review.Assets.Where(x => brief is null || x.BriefId == brief.Id))
+                    { <article><a href="@Select(brief?.Id, variant?.Id, item.Id)">@item.Name · asset version @item.VersionNumber</a><p>@MarketingJourneyRoutes.State(item.Status) · Safety: @item.SafetyResult</p><p>@item.AltText</p>@if (item.Id == AssetId) { <p>Evidence: @item.ProvenanceJson</p> }<a href="@Workspace("Content")">Open governed asset review and recovery</a></article> }
+                    @if (review.Assets.Count == 0) { <p>No creative assets recorded. Safety and approval are unavailable.</p> }
+                </section>
+            </div>
+            <aside class="marketing-review-main">
+                <section class="vc-panel"><h2>Campaign context</h2>
+                    @if (review.Campaign is { } c) { <p>@MarketingJourneyRoutes.State(c.State) · launch @(c.LaunchUtc?.ToString("yyyy-MM-dd HH:mm") ?? "Not scheduled") UTC</p><p>Recorded campaign budget: @(c.Budget?.ToString("N2") ?? "Missing budget") @c.Currency</p><p>Known cost: @(c.KnownSpend?.ToString("N2") ?? "Unknown spend") @c.Currency</p>@foreach (var gap in c.Gaps) { <p>@gap</p> } }
+                    @if (brief?.PlanId is Guid plan) { <a href="@DashboardRoutes.EnsureWorkspaceContext($"/marketing?section=Plans&planId={plan:D}", CompanyId ?? Guid.Empty, Origin)">Review owning plan</a> }
+                </section>
+                <section class="vc-panel"><h2>Launch and delivery records</h2>
+                    @if (review.Deliveries.Count == 0) { <p>No delivery prepared. Content approval does not create a launch request.</p> }
+                    @foreach (var item in review.Deliveries)
+                    { <article><strong>@MarketingJourneyRoutes.State(item.State)</strong><p>@item.UpdatedUtc.ToString("yyyy-MM-dd HH:mm") UTC · @item.Attempts attempts</p>@if (item.FailureCode is not null) { <p>Delivery needs recovery. Inspect the channel state before retrying.</p> }
+                        @if (item.ApprovalId is Guid approval) { <a href="@(DashboardRoutes.EnsureWorkspaceContext($"/work?tab=approvals&itemId={approval:D}", CompanyId ?? Guid.Empty, Origin) + "&recordReturnUrl=" + Uri.EscapeDataString(CurrentPath))">Review launch approval</a> }
+                        @if (item.State == "proposed") { <button class="btn btn-outline-primary" disabled="@busy" @onclick="() => LaunchReview(item.Id)">Request launch approval</button> }
+                        @if (item.State == "awaiting_approval") { <button class="btn btn-outline-primary" disabled="@busy" @onclick="() => Queue(item.Id)">Check approval and queue</button> }
+                        <a href="@Workspace("Channels", item.Id)">Open exact delivery controls</a></article> }
+                    <a href="@MarketingJourneyRoutes.Report(CompanyId ?? Guid.Empty, "delivery", Origin, review.Campaign?.Id, Navigation.Uri)">Campaign delivery report</a>
+                </section>
+            </aside>
+        </div>
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery] public Guid? CampaignId { get; set; }
+    [SupplyParameterFromQuery] public Guid? BriefId { get; set; }
+    [SupplyParameterFromQuery] public Guid? VariantId { get; set; }
+    [SupplyParameterFromQuery] public Guid? AssetId { get; set; }
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? RecordReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? PriorityReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? HealthReturnUrl { get; set; }
+    private MarketingCampaignReviewViewModel? review; private MarketingContentBriefViewModel? brief; private MarketingContentVariantViewModel? variant;
+    private bool loading, busy, disposed; private int version; private string? error, message;
+    private string revisionName = "", revisionBody = "", revisionSources = ""; private CancellationTokenSource? read;
+    private string Origin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, CompanyId ?? Guid.Empty) ?? DashboardRoutes.BuildTodayPath(CompanyId ?? Guid.Empty, "marketing");
+    private string Back => MarketingJourneyRoutes.NormalizeRecordReturn(RecordReturnUrl ?? PriorityReturnUrl ?? HealthReturnUrl, CompanyId ?? Guid.Empty) ?? Origin;
+    private string CurrentPath => "/" + Navigation.ToBaseRelativePath(Navigation.Uri);
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        var current = ++version; read?.Cancel(); read?.Dispose(); read = new(); var ct = read.Token;
+        loading = true; error = null; review = null; brief = null; variant = null;
+        try
+        {
+            if (CompanyId is not Guid id || id == Guid.Empty) throw new MarketingApiException("Choose a company.");
+            var result = await Reports.ReviewAsync(id, CampaignId, BriefId, ct);
+            if (disposed || current != version) return;
+            if (VariantId.HasValue && !result.Content.Any(x => x.Variants.Any(y => y.Id == VariantId))) throw new MarketingApiException("The selected content version is unavailable. Reload its owning content.");
+            if (AssetId.HasValue && !result.Assets.Any(x => x.Id == AssetId)) throw new MarketingApiException("The selected asset is unavailable in this campaign.");
+            review = result; brief = result.Content.FirstOrDefault(x => x.Id == BriefId) ?? result.Content.FirstOrDefault(x => x.Variants.Any(y => y.Id == VariantId)) ?? result.Content.FirstOrDefault();
+            variant = brief?.Variants.FirstOrDefault(x => x.Id == VariantId) ?? brief?.Variants.OrderByDescending(x => x.VersionNumber).FirstOrDefault();
+            revisionName = variant?.Name ?? ""; revisionBody = variant?.Body ?? ""; revisionSources = variant?.SourceReferences ?? "";
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (MarketingApiException ex) { if (current == version) { error = ex.Message; review = null; brief = null; variant = null; } }
+        finally { if (!disposed && current == version) loading = false; }
+    }
+    private string Select(Guid? briefId, Guid? variantId, Guid? assetId) => MarketingJourneyRoutes.Build(MarketingJourneyRoutes.Review(CompanyId ?? Guid.Empty, CampaignId, briefId, Origin, variantId, assetId), CompanyId ?? Guid.Empty, Navigation.Uri);
+    private string Workspace(string section, Guid? actionId = null) => DashboardRoutes.EnsureWorkspaceContext($"/marketing?section={section}&actionId={actionId}&briefId={brief?.Id}&assetId={AssetId}", CompanyId ?? Guid.Empty, Origin) + "&recordReturnUrl=" + Uri.EscapeDataString(CurrentPath);
+    private async Task Act(Func<Guid, Task> action, string success)
+    {
+        if (busy || CompanyId is not Guid id) return; var origin = CurrentPath; busy = true; error = null; message = null;
+        try { await action(id); if (CurrentPath == origin) { await LoadAsync(); message = success; } }
+        catch (MarketingApiException ex) { if (CurrentPath == origin) { error = ex.Message + " Reload evidence before trying another write; the previous result may be uncertain."; review = null; } }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { if (CurrentPath == origin) { error = "The connection interrupted this change. Reload evidence before retrying; its result may be uncertain."; review = null; } }
+        finally { busy = false; }
+    }
+    private Task Review(bool approved) => brief is null ? Task.CompletedTask : Act(id => Marketing.ReviewContentVersionAsync(id, brief.Id, approved, brief.Version), approved ? "Content approved. Publication still requires its own authority." : "Revision requested and persisted.");
+    private Task Submit() => brief is null ? Task.CompletedTask : Act(id => Marketing.SubmitContentAsync(id, brief.Id), "Content submitted for review.");
+    private async Task Revise()
+    {
+        if (variant is null) return; var source = variant.Id; var briefId = brief!.Id;
+        var expected = brief.Version;
+        await Act(async id => { var saved = await Marketing.ReviseContentAsync(id, source, revisionName, revisionBody, revisionSources, expected); Navigation.NavigateTo(Select(briefId, saved.Id, null)); }, "Revised content saved as a new version.");
+    }
+    private Task LaunchReview(Guid action) => Act(async id => { await Marketing.SubmitChannelActionAsync(id, action); }, "Launch approval requested. Delivery remains subject to approval and execution policy.");
+    private Task Queue(Guid action) => Act(async id => { await Marketing.SynchronizeChannelActionAsync(id, action); }, "Approval checked. Inspect the persisted delivery state.");
+    public void Dispose() { disposed = true; ++version; read?.Cancel(); read?.Dispose(); }
+}

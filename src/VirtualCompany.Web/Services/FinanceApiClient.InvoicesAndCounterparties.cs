@@ -24,14 +24,14 @@ public sealed partial class FinanceApiClient
             cancellationToken);
     }
 
-    public Task<IReadOnlyList<FinanceInvoiceResponse>> GetInvoicesAsync(Guid companyId, DateTime? startUtc = null, DateTime? endUtc = null, int limit = 100, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<FinanceInvoiceResponse>> GetInvoicesAsync(Guid companyId, DateTime? startUtc = null, DateTime? endUtc = null, int limit = 100, CancellationToken cancellationToken = default, string? sourceFilter = null)
     {
         if (_useOfflineMode)
         {
             return Task.FromResult<IReadOnlyList<FinanceInvoiceResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()), ("source", _financeDataSourceFilter))}";
+        var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()), ("source", sourceFilter ?? _financeDataSourceFilter))}";
         return GetListAsync<FinanceInvoiceResponse>(companyId, uri, cancellationToken);
     }
 
@@ -73,10 +73,10 @@ public sealed partial class FinanceApiClient
     public Task<FinanceCounterpartyResponse> UpdateSupplierAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
         SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", request, cancellationToken);
 
-    public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
+    public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default, string? sourceFilter = null) =>
         _useOfflineMode
             ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
-            : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}{BuildQuery(("source", sourceFilter ?? _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
     public Task<CustomerInvoiceAccountingReferenceDataResponse> GetCustomerInvoiceAccountingReferenceDataAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
         GetAsync<CustomerInvoiceAccountingReferenceDataResponse>(companyId,

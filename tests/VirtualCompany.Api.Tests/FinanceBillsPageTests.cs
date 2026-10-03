@@ -15,6 +15,21 @@ namespace VirtualCompany.Api.Tests;
 public sealed class FinanceBillsPageTests
 {
     [Fact]
+    public void Recorded_manual_booking_does_not_confirm_a_Fortnox_dispatch()
+    {
+        var company = Guid.NewGuid(); var id = Guid.NewGuid();
+        var bill = new FinanceBillResponse { Id = id, BillNumber = "Manual", CounterpartyName = "Supplier", Amount = 400, Currency = "SEK", Status = "open", PostingStatus = "booked", SettlementStatus = "partially_paid", DocumentKind = "supplier_invoice", ReceivedUtc = DateTime.UtcNow, DueUtc = DateTime.UtcNow.AddDays(2) };
+        var detail = new FinanceBillDetailResponse { Id = id, BillNumber = bill.BillNumber, CounterpartyName = bill.CounterpartyName, Amount = bill.Amount, Currency = bill.Currency, Status = bill.Status, PostingStatus = bill.PostingStatus, SettlementStatus = bill.SettlementStatus, DocumentKind = bill.DocumentKind, ReceivedUtc = bill.ReceivedUtc, DueUtc = bill.DueUtc, Source = "manual",
+            PaidExpensePostingAvailability = new() { Message = "This supplier bill already appears booked in Fortnox.", BlockingReasons = ["This supplier bill already appears booked in Fortnox."] } };
+        using var harness = CreateHarness(company, [bill], detail); harness.Navigation.NavigateTo($"http://localhost/finance/bills/{id}?companyId={company}");
+        var cut = harness.Context.RenderComponent<BillsPage>(p => p.Add(x => x.CompanyId, company).Add(x => x.BillId, id));
+        cut.WaitForAssertion(() => {
+            var step = cut.FindComponent<SupplierBillProgressFlow>().Instance.Progress.Steps.Single(x => x.Title == "Sent to Fortnox");
+            Assert.NotEqual(SupplierBillProgressStates.Completed, step.State);
+            Assert.DoesNotContain("already appears booked in Fortnox", cut.Markup); Assert.Contains("in retained booking records", cut.Markup);
+        });
+    }
+    [Fact]
     public void Bills_page_renders_list_selected_detail_and_agent_insights()
     {
         var companyId = Guid.Parse("d53590ef-f7ff-4b98-a372-a9f3133e0f6c");
@@ -133,6 +148,7 @@ public sealed class FinanceBillsPageTests
             SettlementStatus = "unpaid",
             DueStatus = "not_due",
             DocumentKind = "supplier_invoice",
+            Source = "fortnox",
             PaymentProposal = proposal
         };
         var detail = new FinanceBillDetailResponse
@@ -150,6 +166,7 @@ public sealed class FinanceBillsPageTests
             SettlementStatus = bill.SettlementStatus,
             DueStatus = bill.DueStatus,
             DocumentKind = bill.DocumentKind,
+            Source = "fortnox",
             PaymentProposal = proposal,
             LinkedDocument = new FinanceLinkedDocumentAccessResponse { Availability = "missing", Message = "No linked document." }
         };
@@ -227,6 +244,7 @@ public sealed class FinanceBillsPageTests
             SettlementStatus = "unpaid",
             DueStatus = "not_due",
             DocumentKind = "supplier_invoice",
+            Source = "fortnox",
             PaymentProposal = proposal
         };
         var detail = new FinanceBillDetailResponse
@@ -244,6 +262,7 @@ public sealed class FinanceBillsPageTests
             SettlementStatus = bill.SettlementStatus,
             DueStatus = bill.DueStatus,
             DocumentKind = bill.DocumentKind,
+            Source = "fortnox",
             PaymentProposal = proposal,
             LinkedDocument = new FinanceLinkedDocumentAccessResponse { Availability = "missing", Message = "No linked document." }
         };

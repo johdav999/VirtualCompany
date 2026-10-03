@@ -1,5 +1,6 @@
 @page "/finance/payments"
 @page "/finance/payments/{PaymentId:guid}"
+@rendermode InteractiveServer
 @inherits FinancePageBase
 
 <PageTitle>@FinanceText["Payments"]</PageTitle>
@@ -21,8 +22,8 @@
                 <p class="finance-overview-subtitle">@FinanceText["PaymentsDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId)">@FinanceText["PaymentBatches"]</a>
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId))">@FinanceText["PaymentBatches"]</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId))">@FinanceText["FinanceOverview"]</a>
                 <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>

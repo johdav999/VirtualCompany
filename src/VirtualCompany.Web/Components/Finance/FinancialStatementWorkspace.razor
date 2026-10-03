@@ -3,6 +3,7 @@
 @implements IAsyncDisposable
 @inject FinanceApiClient Client
 @inject IJSRuntime JS
+@inject NavigationManager Navigation
 
 <FinancialStatementReport CompanyId="@CompanyId" ReportKind="@ReportKind" Report="@Report" Periods="@Periods"
     SelectedPeriodId="@PeriodId" ComparisonPeriodId="@ComparisonId" IsLoading="@Loading" ErrorMessage="@Error"
@@ -27,21 +28,25 @@
     private string? EvidenceError;
     private bool Loading;
     private bool EvidenceLoading;
-    private (Guid Company, string Kind, Guid Initial) LoadedContext;
+    private (Guid Company, string Kind, Guid Initial, string Location) LoadedContext;
     private CancellationTokenSource? Request;
     private CancellationTokenSource? EvidenceRequest;
     private IJSObjectReference? Module;
 
     protected override async Task OnParametersSetAsync()
     {
-        var context = (CompanyId, ReportKind, InitialPeriodId);
+        var context = (CompanyId, ReportKind, InitialPeriodId, Navigation.Uri);
         if (context == LoadedContext) return;
         LoadedContext = context;
-        PeriodId = InitialPeriodId != Guid.Empty ? InitialPeriodId : Periods.FirstOrDefault()?.Id ?? Guid.Empty;
-        SnapshotId = null; ComparisonSnapshotId = null;
+        PeriodId = InitialPeriodId;
+        var query = System.Web.HttpUtility.ParseQueryString(new Uri(Navigation.Uri).Query);
+        SnapshotId = Guid.TryParse(query["snapshotId"], out var snapshot) ? snapshot : null;
+        ComparisonSnapshotId = Guid.TryParse(query["comparisonSnapshotId"], out var comparisonSnapshot) ? comparisonSnapshot : null;
         var selected = Periods.FirstOrDefault(x => x.Id == PeriodId);
         ComparisonId = selected is null ? null : Periods.FirstOrDefault(x => x.StartDate == selected.StartDate.AddYears(-1)
             && x.EndDate == selected.EndDate.AddYears(-1))?.Id;
+        if (query["comparisonId"] is { } comparison)
+            ComparisonId = Guid.TryParse(comparison, out var parsed) ? parsed : null;
         await LoadAsync();
     }
     private async Task LoadAsync()
@@ -49,23 +54,27 @@
         Request?.Cancel(); Request?.Dispose(); Request = new();
         var request = Request; var company = CompanyId; var period = PeriodId; var kind = ReportKind;
         var previousRow = Report?.CompanyId == company && Report.ReportKind == kind ? SelectedRow?.Key : null;
-        var previousAccount = Report?.CompanyId == company && Report.ReportKind == kind ? SelectedAccount?.Code : null;
+        var previousAccount = System.Web.HttpUtility.ParseQueryString(new Uri(Navigation.Uri).Query)["accountCode"];
         EvidenceRequest?.Cancel(); Evidence = null; EvidenceError = null; EvidenceLoading = false;
         SelectedRow = null; SelectedAccount = null; Loading = true; Error = null; Report = null;
         try
         {
             if (period == Guid.Empty) { Error = Text("Inga räkenskapsperioder finns för företaget.", "No fiscal periods exist for this company."); return; }
+            if (ComparisonId is Guid comparison && (comparison == period || !Periods.Any(p => p.Id == comparison)))
+                throw new InvalidOperationException(Text("Jämförelseperioden är inte tillgänglig.", "The comparison period is unavailable in this company."));
             var report = await Client.GetStatementWorkspaceAsync(company, period, kind, ComparisonId, SnapshotId, ComparisonSnapshotId, request.Token);
             if (request.IsCancellationRequested) return;
             Report = report ?? throw new InvalidOperationException(Text("Rapporten kunde inte hämtas.", "The report could not be loaded."));
             // Pin baseline evidence for subsequent reloads of retained versions.
             ComparisonSnapshotId = Report.ComparisonSnapshot?.Id;
+            SnapshotId = Report.Snapshot?.Id ?? SnapshotId;
+            if (new Uri(Navigation.Uri).AbsolutePath == FinanceRoutes.AccountingReports) Persist(previousAccount);
             SelectedRow = Report.Rows.FirstOrDefault(x => x.Key == previousRow);
             var account = Report.Rows.SelectMany(x => x.Accounts).FirstOrDefault(x => x.Code == previousAccount);
             if (account is not null) await SelectAccountAsync(account);
         }
         catch (OperationCanceledException) when (request.IsCancellationRequested) { }
-        catch (Exception e) when (e is FinanceApiException or InvalidOperationException)
+        catch (Exception e) when (e is FinanceApiException or InvalidOperationException or HttpRequestException)
         { if (!request.IsCancellationRequested) Error = e.Message; }
         finally { if (!request.IsCancellationRequested) Loading = false; }
     }
@@ -74,14 +83,15 @@
         if (!Guid.TryParse(id, out var parsed) || !Periods.Any(p => p.Id == parsed)) return;
         PeriodId = parsed; SnapshotId = null; ComparisonSnapshotId = null;
         if (ComparisonId == parsed) ComparisonId = null;
+        Persist();
         await LoadAsync();
     }
     private async Task ChangeComparisonAsync(string? id)
     {
         ComparisonId = Guid.TryParse(id, out var parsed) && parsed != PeriodId && Periods.Any(p => p.Id == parsed) ? parsed : null;
-        ComparisonSnapshotId = null; await LoadAsync();
+        ComparisonSnapshotId = null; Persist(); await LoadAsync();
     }
-    private async Task ChangeSnapshotAsync(Guid? id) { SnapshotId = id; await LoadAsync(); }
+    private async Task ChangeSnapshotAsync(Guid? id) { SnapshotId = id; Persist(); await LoadAsync(); }
     private void SelectRow(StatementWorkspaceRow row)
     {
         EvidenceRequest?.Cancel(); SelectedRow = row; SelectedAccount = null; Evidence = null; EvidenceError = null; EvidenceLoading = false;
@@ -91,6 +101,7 @@
         if (Report is null) return;
         EvidenceRequest?.Cancel(); EvidenceRequest?.Dispose(); EvidenceRequest = new();
         var request = EvidenceRequest; SelectedRow = null; SelectedAccount = account; Evidence = null; EvidenceError = null; EvidenceLoading = true;
+        Persist(account.Code);
         try
         {
             if (Report.IsClosed && Report.Snapshot is null) { EvidenceError = Text("Exakt verifikationsunderlag saknas för denna äldre rapportversion.", "Exact journal evidence is unavailable for this legacy report version."); return; }
@@ -110,8 +121,26 @@
     private async Task ExportAsync()
     {
         if (Report is null) return;
-        try { await (await GetModuleAsync()).InvokeVoidAsync("downloadReport", $"{ReportKind}-{PeriodId:N}.csv", Report.CsvContent); }
+        var company = CompanyId; var period = PeriodId; var kind = ReportKind; var location = Navigation.Uri;
+        try
+        {
+            var fresh = await Client.GetStatementWorkspaceAsync(company, period, kind, ComparisonId, Report.Snapshot?.Id ?? SnapshotId, ComparisonSnapshotId);
+            if (CompanyId != company || Navigation.Uri != location || fresh is null) return;
+            Report = fresh;
+            await (await GetModuleAsync()).InvokeVoidAsync("downloadReport", $"{kind}-{period:N}.csv", fresh.CsvContent);
+        }
+        catch (Exception e) when (e is FinanceApiException or HttpRequestException or InvalidOperationException) { Error = e.Message; }
         catch (JSException) { Error = Text("Exporten kunde inte laddas ned. Försök igen.", "Could not download the export. Please retry."); }
+    }
+    private void Persist(string? account = null)
+    {
+        var path = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["periodId"] = PeriodId, ["comparisonId"] = ComparisonId?.ToString("D") ?? "none",
+            ["snapshotId"] = SnapshotId, ["comparisonSnapshotId"] = ComparisonSnapshotId, ["accountCode"] = account
+        });
+        if (!string.Equals(path, Navigation.Uri, StringComparison.Ordinal)) Navigation.NavigateTo(path, replace: true);
+        LoadedContext = (CompanyId, ReportKind, InitialPeriodId, Navigation.Uri);
     }
     private static string Text(string sv, string en) => System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "sv" ? sv : en;
     public async ValueTask DisposeAsync()

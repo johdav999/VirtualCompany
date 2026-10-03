@@ -18,6 +18,7 @@ public static class SupportModuleRegistration
             configuration.GetSection(SupportOperationsWorkerOptions.SectionName));
         services.AddHostedService<SupportOperationsBackgroundService>();
         services.AddScoped<ISupportCaseService, SupportCaseService>();
+        services.AddScoped<ISupportOperationalReportService, SupportOperationalReportService>();
         services.AddScoped<ISupportMailboxIngestionService, SupportMailboxIngestionService>();
         services.AddScoped<ISupportContextResolutionService, SupportContextResolutionService>();
         services.AddScoped<ISupportTriageService, SupportTriageService>();
@@ -25,6 +26,7 @@ public static class SupportModuleRegistration
         services.AddScoped<ISupportReplyDeliveryDispatcher, SupportReplyDeliveryDispatcher>();
         services.AddScoped<ISupportKnowledgeContextProvider, SupportKnowledgeContextProvider>();
         services.AddScoped<ISupportMailboxRoutingService, SupportMailboxRoutingService>();
+        services.AddScoped<ISupportReplySourceAccess, SupportReplySourceAccess>();
         services.AddScoped<ISupportReplySafetyPolicy, DeterministicSupportReplySafetyPolicy>();
         services.AddScoped<ISupportReplyDraftService, SupportReplyDraftService>();
         services.AddScoped<ISupportToolActionService, SupportToolActionService>();

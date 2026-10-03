@@ -1,5 +1,6 @@
 @page "/finance/accounting/reports"
 @inherits FinancePageBase
+@rendermode InteractiveServer
 
 <PageTitle>@FinanceText[View == "profit-loss" ? "ProfitAndLoss" : View == "balance-sheet" ? "BalanceSheet" : "ReportsCloseTitle"]</PageTitle>
 
@@ -9,13 +10,13 @@
     @if (IsStatementView && AccessState.CompanyId is Guid statementCompanyId)
     {
         <div class="statement-page">
-            <nav class="statement-breadcrumb" aria-label="Breadcrumb"><a href="@FinanceRoutes.WithCompanyContext("/finance", statementCompanyId)">@StatementLabel("Ekonomi", "Finance")</a><span>/</span><a href="@FinanceRoutes.WithCompanyContext("/finance/accounting", statementCompanyId)">@StatementLabel("Bokföring", "Accounting")</a><span>/</span>@StatementLabel("Rapporter", "Reports")</nav>
+            <nav class="statement-breadcrumb" aria-label="Breadcrumb"><a href="@BuildAccountingPath("/finance")">@StatementLabel("Ekonomi", "Finance")</a><span>/</span><a href="@BuildAccountingPath(FinanceRoutes.AccountingCloseWorkspace)">@StatementLabel("Bokföring", "Accounting")</a><span>/</span>@StatementLabel("Rapporter", "Reports")</nav>
             <FinancialStatementWorkspace CompanyId="@statementCompanyId" ReportKind="@View" Periods="@Periods" InitialPeriodId="@SelectedPeriodId" />
         </div>
     }
     else
     {
-    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" PeriodId="@SelectedPeriodId" />
 
     <div class="accounting-reports-heading">
         <div>
@@ -47,27 +48,27 @@
     @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div></div> }
 
     <section class="accounting-report-kpis" aria-label="@FinanceText["ReportSummary"]" aria-busy="@IsReportLoading">
-        <button type="button" class="accounting-report-kpi @(View == "trial" ? "active" : null)" aria-pressed="@(View == "trial")" @onclick='() => View = "trial"'><span aria-hidden="true">⚖</span><small>@FinanceText["TrialBalance"]</small><strong>@Money(TrialBalance?.TotalClosingDebits, Currency)</strong><em class="@(TrialBalance?.IsBalanced == true ? "ok" : "warn")">@FinanceText[TrialBalance?.IsBalanced == true ? "Balanced" : "NeedsReview"]</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => View = "profit-loss"'><span aria-hidden="true">↗</span><small>@FinanceText["ProfitAndLoss"]</small><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong><em>@FinanceText[ProfitAndLoss?.UsedSnapshot == true ? "StoredSnapshot" : "PostedJournals"]</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'><span aria-hidden="true">▣</span><small>@FinanceText["BalanceSheet"]</small><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency)</strong><em class="@(BalanceSheet?.IsBalanced == true ? "ok" : "warn")">@FinanceText[BalanceSheet?.IsBalanced == true ? "Reconciled" : "NeedsReview"]</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'><span aria-hidden="true">◇</span><small>@FinanceText["TaxSummary"]</small><strong>@Money(TaxSummary?.Lines.Sum(x => x.TaxAmount), Currency)</strong><em class="@(TaxSummary?.IsReviewed == true ? "ok" : "warn")">@FinanceText[TaxSummary?.IsReviewed == true ? "Reviewed" : "ReviewRequired"]</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => View = "vat"'><span aria-hidden="true">%</span><small>@FinanceText["VatReturn"]</small><strong>@Money(CurrentVatReturn?.SettlementExact, CurrentVatReturn?.Currency)</strong><em class="@(CurrentVatReturn?.Issues.Any(x => x.IsBlocking) == true ? "warn" : "ok")">@(CurrentVatReturn is null ? FinanceText["NotCalculated"] : CurrentVatReturn.IsStale ? FinanceText["StaleData"] : FinanceText["ReadyForReview"])</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "revaluation" ? "active" : null)" aria-pressed="@(View == "revaluation")" @onclick='() => View = "revaluation"'><span aria-hidden="true">¤</span><small>@FinanceText["CurrencyRevaluation"]</small><strong>@FinanceText["PeriodEnd"]</strong><em>@FinanceText["RatesEvidencePosting"]</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "schedules" ? "active" : null)" aria-pressed="@(View == "schedules")" @onclick='() => View = "schedules"'><span aria-hidden="true">↻</span><small>@FinanceText["AccountingSchedules"]</small><strong>@FinanceText["AutomatedPosting"]</strong><em>@FinanceText["SchedulesEvidenceApproval"]</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "assets" ? "active" : null)" aria-pressed="@(View == "assets")" @onclick='() => View = "assets"'><span aria-hidden="true">▤</span><small>@FinanceText["FixedAssets"]</small><strong>@FinanceText["AssetRegister"]</strong><em>@FinanceText["DepreciationAndDisposal"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "trial" ? "active" : null)" aria-pressed="@(View == "trial")" @onclick='() => ChangeView("trial")'><span aria-hidden="true">⚖</span><small>@FinanceText["TrialBalance"]</small><strong>@Money(TrialBalance?.TotalClosingDebits, Currency)</strong><em class="@(TrialBalance?.IsBalanced == true ? "ok" : "warn")">@FinanceText[TrialBalance?.IsBalanced == true ? "Balanced" : "NeedsReview"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => ChangeView("profit-loss")'><span aria-hidden="true">↗</span><small>@FinanceText["ProfitAndLoss"]</small><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong><em>@FinanceText[ProfitAndLoss?.UsedSnapshot == true ? "StoredSnapshot" : "PostedJournals"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => ChangeView("balance-sheet")'><span aria-hidden="true">▣</span><small>@FinanceText["BalanceSheet"]</small><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency)</strong><em class="@(BalanceSheet?.IsBalanced == true ? "ok" : "warn")">@FinanceText[BalanceSheet?.IsBalanced == true ? "Reconciled" : "NeedsReview"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => ChangeView("tax")'><span aria-hidden="true">◇</span><small>@FinanceText["TaxSummary"]</small><strong>@Money(TaxSummary?.Lines.Sum(x => x.TaxAmount), Currency)</strong><em class="@(TaxSummary?.IsReviewed == true ? "ok" : "warn")">@FinanceText[TaxSummary?.IsReviewed == true ? "Reviewed" : "ReviewRequired"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => ChangeView("vat")'><span aria-hidden="true">%</span><small>@FinanceText["VatReturn"]</small><strong>@Money(CurrentVatReturn?.SettlementExact, CurrentVatReturn?.Currency)</strong><em class="@(CurrentVatReturn?.Issues.Any(x => x.IsBlocking) == true ? "warn" : "ok")">@(CurrentVatReturn is null ? FinanceText["NotCalculated"] : CurrentVatReturn.IsStale ? FinanceText["StaleData"] : FinanceText["ReadyForReview"])</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "revaluation" ? "active" : null)" aria-pressed="@(View == "revaluation")" @onclick='() => ChangeView("revaluation")'><span aria-hidden="true">¤</span><small>@FinanceText["CurrencyRevaluation"]</small><strong>@FinanceText["PeriodEnd"]</strong><em>@FinanceText["RatesEvidencePosting"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "schedules" ? "active" : null)" aria-pressed="@(View == "schedules")" @onclick='() => ChangeView("schedules")'><span aria-hidden="true">↻</span><small>@FinanceText["AccountingSchedules"]</small><strong>@FinanceText["AutomatedPosting"]</strong><em>@FinanceText["SchedulesEvidenceApproval"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "assets" ? "active" : null)" aria-pressed="@(View == "assets")" @onclick='() => ChangeView("assets")'><span aria-hidden="true">▤</span><small>@FinanceText["FixedAssets"]</small><strong>@FinanceText["AssetRegister"]</strong><em>@FinanceText["DepreciationAndDisposal"]</em></button>
     </section>
 
     <nav class="accounting-report-tabs" aria-label="@FinanceText["ReportViews"]">
-        <button type="button" class="@(View == "trial" ? "active" : null)" aria-pressed="@(View == "trial")" @onclick='() => View = "trial"'>@FinanceText["TrialBalance"]</button>
-        <button type="button" class="@(View == "ledger" ? "active" : null)" aria-pressed="@(View == "ledger")" @onclick='() => View = "ledger"'>@FinanceText["GeneralLedger"]</button>
-        <button type="button" class="@(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => View = "profit-loss"'>@FinanceText["ProfitAndLoss"]</button>
-        <button type="button" class="@(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'>@FinanceText["BalanceSheet"]</button>
-        <button type="button" class="@(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'>@FinanceText["TaxSummary"]</button>
-        <button type="button" class="@(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => View = "vat"'>@FinanceText["VatAndStatutoryExports"]</button>
-        <button type="button" class="@(View == "revaluation" ? "active" : null)" aria-pressed="@(View == "revaluation")" @onclick='() => View = "revaluation"'>@FinanceText["CurrencyRevaluation"]</button>
-        <button type="button" class="@(View == "dimensions" ? "active" : null)" aria-pressed="@(View == "dimensions")" @onclick='() => View = "dimensions"'>@FinanceText["AccountingDimensions"]</button>
-        <button type="button" class="@(View == "schedules" ? "active" : null)" aria-pressed="@(View == "schedules")" @onclick='() => View = "schedules"'>@FinanceText["AccountingSchedules"]</button>
-        <button type="button" class="@(View == "assets" ? "active" : null)" aria-pressed="@(View == "assets")" @onclick='() => View = "assets"'>@FinanceText["FixedAssets"]</button>
+        <button type="button" class="@(View == "trial" ? "active" : null)" aria-pressed="@(View == "trial")" @onclick='() => ChangeView("trial")'>@FinanceText["TrialBalance"]</button>
+        <button type="button" class="@(View == "ledger" ? "active" : null)" aria-pressed="@(View == "ledger")" @onclick='() => ChangeView("ledger")'>@FinanceText["GeneralLedger"]</button>
+        <button type="button" class="@(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => ChangeView("profit-loss")'>@FinanceText["ProfitAndLoss"]</button>
+        <button type="button" class="@(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => ChangeView("balance-sheet")'>@FinanceText["BalanceSheet"]</button>
+        <button type="button" class="@(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => ChangeView("tax")'>@FinanceText["TaxSummary"]</button>
+        <button type="button" class="@(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => ChangeView("vat")'>@FinanceText["VatAndStatutoryExports"]</button>
+        <button type="button" class="@(View == "revaluation" ? "active" : null)" aria-pressed="@(View == "revaluation")" @onclick='() => ChangeView("revaluation")'>@FinanceText["CurrencyRevaluation"]</button>
+        <button type="button" class="@(View == "dimensions" ? "active" : null)" aria-pressed="@(View == "dimensions")" @onclick='() => ChangeView("dimensions")'>@FinanceText["AccountingDimensions"]</button>
+        <button type="button" class="@(View == "schedules" ? "active" : null)" aria-pressed="@(View == "schedules")" @onclick='() => ChangeView("schedules")'>@FinanceText["AccountingSchedules"]</button>
+        <button type="button" class="@(View == "assets" ? "active" : null)" aria-pressed="@(View == "assets")" @onclick='() => ChangeView("assets")'>@FinanceText["FixedAssets"]</button>
     </nav>
 
     @if (View == "vat")
@@ -164,7 +165,7 @@
                     <div class="accounting-evidence-entry"><div><strong>@line.VoucherNumber</strong><span>@line.PostingDate.ToString("d") · @(line.Description ?? FinanceText["PostedJournal"])</span></div><strong>@Money(line.Debit - line.Credit, line.Currency)</strong>@if (line.Evidence.Count > 0) { <small>@FinanceText["LinkedEvidenceVerified", line.Evidence.Count]</small> }</div>
                 }
                 @if (SelectedLedgerAccount.Lines.Count == 0) { <div class="accounting-report-state"><h3>@FinanceText["OpeningBalanceOnly"]</h3><p>@FinanceText["NoJournalMovement"]</p></div> }
-                <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?accountId={SelectedLedgerAccount.AccountId:D}", AccessState.CompanyId)">@FinanceText["ViewFullAuditTrail"]</a>
+                <a class="btn btn-outline-primary" href="@BuildAccountingPath($"/finance/accounting/journals?periodId={SelectedPeriodId:D}")">@FinanceText["ViewFullAuditTrail"]</a>
             }
             <div class="accounting-laura-mini"><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraFinanceManager"]</strong><p>@LauraAdvice</p></div></div>
         </aside>
@@ -193,4 +194,3 @@
     }
     }
 </FinancePageLayout>
-

@@ -37,7 +37,13 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
         _companyContextAccessor = companyContextAccessor;
     }
 
-    public async Task<RevenueForecastSnapshotDto> CalculateAndPersistForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken)
+    public Task<RevenueForecastSnapshotDto> CalculateForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken) =>
+        CalculateAsync(companyId, asOfUtc, false, cancellationToken);
+
+    public Task<RevenueForecastSnapshotDto> CalculateAndPersistForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken) =>
+        CalculateAsync(companyId, asOfUtc, true, cancellationToken);
+
+    private async Task<RevenueForecastSnapshotDto> CalculateAsync(Guid companyId, DateTime asOfUtc, bool persist, CancellationToken cancellationToken)
     {
         EnsureTenant(companyId);
         asOfUtc = NormalizeUtc(asOfUtc);
@@ -62,12 +68,18 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
                 x.ExpectedCloseUtc!.Value))
             .ToListAsync(cancellationToken);
 
+        // The legacy snapshot has one currency column. Select the same deterministic primary
+        // currency as the dashboard; the operational report exposes every currency separately.
+        var currency = deals.Select(x => x.Currency).Distinct().Order().FirstOrDefault() ?? "USD";
+        deals = deals.Where(x => x.Currency == currency).ToList();
         var latestRiskScores = await LoadLatestRiskScoresAsync(companyId, deals.Select(x => x.DealId).ToArray(), cancellationToken);
         var windows = RevenueForecastWindows.SupportedDays
             .Select(days => CalculateWindow(days, asOfUtc, deals, latestRiskScores))
             .ToArray();
-        var currency = deals.Select(x => x.Currency).FirstOrDefault() ?? "USD";
-        var risk = BuildRiskDistribution(latestRiskScores.Values);
+        var risk = BuildRiskDistribution(latestRiskScores.Values) with { Unknown = deals.Count - latestRiskScores.Count };
+
+        if (!persist)
+            return new(Guid.Empty, companyId, asOfUtc, calculatedUtc, currency, windows, risk);
 
         var snapshotDate = asOfUtc.Date;
         var existing = await _dbContext.RevenueForecastSnapshots
@@ -208,7 +220,8 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
         var lastActivityUtc = await _dbContext.SalesActivities
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.DealId == deal.Id && !x.IsDeleted)
+            .Where(x => x.CompanyId == companyId && x.DealId == deal.Id && !x.IsDeleted &&
+                x.ActivityType != "internal_follow_up" && x.Status == SalesStatuses.Completed && x.OccurredUtc <= asOfUtc)
             .MaxAsync(x => (DateTime?)x.OccurredUtc, cancellationToken);
         var lastEmail = await _dbContext.SalesEmailLinks
             .IgnoreQueryFilters()
@@ -352,16 +365,11 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
         {
             var risk = riskScores.TryGetValue(x.DealId, out var score) ? score.Score : 0.50m;
             // Forecast is expected deal value: stage likelihood dampened by the latest pipeline risk score.
-            return x.Amount * StageProbability(x.PipelineStageId) * (1m - (risk * 0.50m));
+            return RevenueForecastCalculation.ExpectedAmount(x.Amount, x.PipelineStageId, risk);
         });
 
         return new RevenueForecastWindowDto(days, Math.Round(gross, 2), Math.Round(expected, 2), included.Count);
     }
-
-    private static decimal StageProbability(Guid stageId) =>
-        stageId == SalesPipelineStage.ProposalStageId ? 0.70m :
-        stageId == SalesPipelineStage.QualifiedStageId ? 0.45m :
-        stageId == SalesPipelineStage.WonStageId ? 1m : 0.20m;
 
     private static RiskDistributionSummary BuildRiskDistribution(IEnumerable<DealRiskScoreDto> scores) =>
         new(

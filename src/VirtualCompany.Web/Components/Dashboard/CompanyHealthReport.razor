@@ -1,0 +1,104 @@
+@inject ICompanyPresentationContext Presentation
+<section class="health-report" data-testid="company-health-report">
+    <a href="@Origin">← @CommonText["PriorityBack"]</a>
+    <header><div><span class="vc-kicker">@CommonText["HealthOperational"]</span><h1>@CommonText["HealthTitle"]</h1><p>@CommonText["HealthReportMeaning"]</p></div>
+        <button class="btn btn-outline-primary" disabled="@IsLoading" @onclick="RefreshRequested">@CommonText["TodayRefresh"]</button></header>
+    @if (IsLoading) { <p role="status" aria-busy="true">@CommonText["TodayLoadingDescription"]</p> }
+    else if (IsRestricted || Workspace is { ActiveLens: not "company" }) { <div class="health-report__notice" role="alert">@CommonText["TodayAccessRestrictedDescription"]</div> }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage)) { <div class="health-report__notice" role="alert">@ErrorMessage <button class="btn btn-primary" @onclick="RefreshRequested">@CommonText["Retry"]</button></div> }
+    else if (Workspace is null || Workspace.CompanyId != CompanyId) { <p role="status">@CommonText["TodayEmptyDescription"]</p> }
+    else
+    {
+        <p class="health-report__asof">@Workspace.Header.CompanyName · @CommonText["PrioritySnapshotTime"]: @LocalDateTime.DateTime(Workspace.GeneratedAtUtc) · @CommonText["OnboardingTimezone"]: @(Presentation.TimeZoneId ?? "UTC")</p>
+        @if (Workspace.IsPartial) { <div class="health-report__notice" role="status" data-testid="health-partial"><strong>@CommonText["TodayPartialTitle"]</strong><p>@CommonText["TodayPartialDescription"]</p><ul>@foreach (var diagnostic in Workspace.Diagnostics) { <li>@diagnostic.Message</li> }</ul></div> }
+        <CompanyHealthSummary Workspace="Workspace" InReport="true" ReturnUrl="Origin" />
+        <section class="health-report__card" aria-labelledby="health-coverage-title">
+            <h2 id="health-coverage-title">@CommonText["HealthCoverage"]</h2><p>@CommonText["HealthCoverageMeaning"]</p>
+            <label for="health-department">@CommonText["HealthDepartmentFilter"]</label>
+            <select id="health-department" value="@Department" @onchange="OnDepartmentChanged"><option value="">@CommonText["HealthAllDepartments"]</option>
+                @foreach (var lens in Workspace.AvailableLenses.Where(x => x.Value != "company")) { <option value="@lens.Value">@CommonText[CompanyHealthPresentation.DepartmentTitle(lens.Value)]</option> }
+            </select>
+            @if (!ValidDepartment) { <p role="alert">@CommonText["HealthInvalidFilter"]</p> }
+            else
+            {
+                <div class="health-report__table"><table><thead><tr><th>@CommonText["HealthDepartmentFilter"]</th><th>@CommonText["PriorityHuman"]</th><th>@CommonText["HealthCoverage"]</th><th>@CommonText["HealthObservationTime"]</th><th>@CommonText["HealthMeasures"]</th><th>@CommonText["PriorityNextAction"]</th></tr></thead><tbody>
+                @foreach (var lens in VisibleDepartments)
+                {
+                    var authorized = Workspace.AvailableLenses.Any(x => x.Value == lens);
+                    var available = authorized && CompanyHealthPresentation.Available(Workspace, lens);
+                    var observed = CompanyHealthPresentation.Observed(Workspace, lens);
+                    var owner = Workspace.Departments?.FirstOrDefault(x => x.Lens == lens);
+                    <tr data-testid="health-coverage-row"><th scope="row">@CommonText[CompanyHealthPresentation.DepartmentTitle(lens)]</th><td>@(owner?.ResponsiblePerson ?? "—")</td>
+                        <td>@CommonText[!authorized ? "HealthRestrictedCoverage" : !available ? "HealthUnavailable" : CompanyHealthPresentation.Stale(Workspace, observed) ? "TodayStatusStale" : "HealthObserved"]</td>
+                        <td>@(available ? Time(observed) : "—")</td><td>@(available ? Measure(lens) : "—")</td>
+                        <td>@if (available) { <a href="@Link(CompanyHealthPresentation.Route(CompanyId, lens))">@CommonText["HealthOpenDepartment"] →</a> }</td></tr>
+                }
+                </tbody></table></div>
+            }
+        </section>
+        @if (ValidDepartment)
+        {
+            <section class="health-report__card" aria-labelledby="health-risks-title"><h2 id="health-risks-title">@CommonText["HealthMaterialRisks"]</h2><p>@CommonText["HealthRiskLimit"]</p>
+                @if (Risks.Count == 0) { <p>@CommonText["HealthNoRisks"]</p> }
+                @foreach (var risk in Risks)
+                {
+                    <article class="health-report__risk" data-testid="health-risk"><div><h3>@risk.WhatHappened</h3><p>@risk.WhyItMatters</p><small>@CommonText["PriorityHuman"]: @risk.ResponsiblePerson · @CommonText["PriorityDeadline"]: @LocalDateTime.Optional(risk.DueUtc, empty: CommonText["PriorityNoDeadline"])</small><small>@CommonText["PrioritySourceTime"]: @Time(risk.ObservedAtUtc) · @CommonText[risk.Freshness == "stale" ? "TodayStatusStale" : risk.Freshness == "unknown" ? "PriorityUnknownTime" : "HealthObserved"]</small></div>
+                        <a class="btn btn-outline-primary" href="@RiskPath(risk)">@CommonText["TodayReviewAction"] →</a></article>
+                }
+            </section>
+        }
+        <section class="health-report__card health-report__plan" id="plan-comparison" aria-labelledby="health-plan-title"><h2 id="health-plan-title">@CommonText["HealthPlan"]</h2>
+            <strong data-testid="health-baseline">@CommonText["HealthNoApprovedBaseline"]</strong><p>@CommonText["HealthApprovalGap"]</p>
+            @if (Workspace.Finance?.IsAvailable == true && Workspace.Finance.PlanComparison is { } plan)
+            {
+                <p>@CommonText["HealthFinancePeriod"]: @LocalDateTime.Date(DateOnly.FromDateTime(plan.PeriodStartUtc)) – @LocalDateTime.Date(DateOnly.FromDateTime(plan.PeriodEndUtc)) (UTC) · @CommonText["HealthPlanSourceTime"]: @LocalDateTime.Optional(plan.SourceUpdatedUtc, empty: CommonText["PriorityUnknownTime"])</p>
+                <p>@CommonText[plan.State switch { "recorded_unapproved" => "HealthRecordedPlan", "selection_required" => "HealthSelectPlan", "unavailable" => "HealthPlanUnavailable", _ => "HealthNoPlan" }]</p>
+                @if (plan.State == "recorded_unapproved" && plan.RecordedComparison is { } comparison && comparison.CompanyId == CompanyId)
+                {
+                    <p>@CommonText["HealthVersion"]: @comparison.Version · @CommonText["HealthVarianceMeaning"]</p>
+                    <div class="health-report__table"><table data-testid="health-variance"><thead><tr><th>@CommonText["HealthAccount"]</th><th>@CommonText["HealthActual"]</th><th>@CommonText["HealthRecordedBudget"]</th><th>@CommonText["HealthDifference"]</th></tr></thead><tbody>
+                        @foreach (var row in comparison.Rows) { <tr><th scope="row">@row.AccountCode @row.AccountName @row.CostCenterName</th><td>@LocalMoney.Format(row.ActualAmount, row.Currency)</td><td>@LocalMoney.Format(row.ComparisonAmount, row.Currency)</td><td>@LocalMoney.Format(row.VarianceAmount, row.Currency)</td></tr> }
+                    </tbody></table></div>
+                }
+                @if (plan.State == "selection_required") { <p>@CommonText["HealthVersion"]: @string.Join(", ", plan.RecordedVersions)</p> }
+                <a href="@Link("/finance")">@CommonText["TodayFinance"] →</a>
+            }
+            else { <p>@CommonText["HealthPlanUnavailable"]</p> }
+        </section>
+        <div class="health-report__bottom">
+            <section class="health-report__card"><h2>@CommonText["TodayDecisionsTitle"]</h2>
+                @if (Workspace.Decisions.Count == 0) { <p>@CommonText["TodayDecisionsEmpty"]</p> }
+                @foreach (var decision in Workspace.Decisions) { <article><h3>@decision.Title</h3><p>@decision.Summary</p><small>@Time(decision.ObservedAtUtc)</small><a href="@Link(decision.DeepLink)">@CommonText["TodayReviewAction"] →</a></article> }
+            </section>
+            <section class="health-report__card"><h2>@CommonText["HealthAgentOutcomes"]</h2><p>@CommonText["HealthAgentMeaning"]</p>
+                @if (Outcomes.Count == 0) { <p>@CommonText["TodayAgentBriefingsEmpty"]</p> }
+                @foreach (var outcome in Outcomes.Take(3)) { <article><h3>@outcome.WorkingAgent · @outcome.Title</h3><p>@outcome.Summary</p><small>@CommonText[outcome.AgentState switch { "working" => "TodayAgentStateWorking", "recommended" => "TodayAgentStateRecommended", "needs_user" => "TodayAgentStateNeedsUser", "blocked" => "TodayAgentStateBlocked", "completed" => "TodayAgentStateCompleted", _ => "TodayAgentStateMonitoring" }] · @Time(outcome.ObservedAtUtc)</small>@if (outcome.DeepLink is not null) { <a href="@Link(outcome.DeepLink)">@CommonText["PriorityOpenRecord"] →</a> }</article> }
+            </section>
+        </div>
+    }
+</section>
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public TodayWorkspaceViewModel? Workspace { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
+    [Parameter] public string? Department { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsRestricted { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public EventCallback RefreshRequested { get; set; }
+    [Parameter] public EventCallback<string> DepartmentChanged { get; set; }
+    private Task OnDepartmentChanged(ChangeEventArgs e) => DepartmentChanged.InvokeAsync(e.Value?.ToString() ?? "");
+    private string Origin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, CompanyId) ?? DashboardRoutes.BuildTodayPath(CompanyId, "company");
+    private bool ValidDepartment => string.IsNullOrEmpty(Department) || Workspace?.AvailableLenses.Any(x => x.Value == Department && x.Value != "company") == true;
+    private IEnumerable<string> VisibleDepartments => new[] { "finance", "sales", "marketing", "customers" }.Where(x => string.IsNullOrEmpty(Department) || x == Department);
+    private IReadOnlyList<TodayWorkspacePriorityViewModel> Risks => (Workspace?.CompanyRisks ?? []).Where(x => string.IsNullOrEmpty(Department) || x.Lens == Department).ToList();
+    private IReadOnlyList<TodayWorkspaceAgentUpdateViewModel> Outcomes => (Workspace?.AgentUpdates ?? []).Where(x => !string.IsNullOrWhiteSpace(x.WorkingAgent) && (x.RelatedTaskId.HasValue || x.RelatedWorkflowInstanceId.HasValue || x.RelatedApprovalId.HasValue)).ToList();
+    private string Link(string route) => DashboardRoutes.EnsureWorkspaceContext(route, CompanyId, Origin);
+    private string RiskPath(TodayWorkspacePriorityViewModel risk) => DashboardRoutes.WithQuery(DashboardRoutes.BuildPriorityPath(CompanyId, "company", risk.Key, Origin), ("healthReturnUrl", DashboardRoutes.BuildHealthPath(CompanyId, Department, Origin)));
+    private string Time(DateTime value) => value == DateTime.MinValue ? CommonText["PriorityUnknownTime"] : LocalDateTime.DateTime(value);
+    private string Measure(string lens) => lens switch {
+        "finance" => Workspace?.Finance?.CashBalance is decimal cash ? (Workspace.Finance.Currency is { } currency ? LocalMoney.Format(cash, currency) : cash.ToString("N2") + " (" + CommonText["HealthUnavailable"] + ")") : CommonText["HealthUnavailable"],
+        "sales" => LocalMoney.Format(Workspace!.Sales!.PipelineValue, Workspace.Sales.Currency) + " · " + CommonText["HealthDeals", Workspace.Sales.DealsNeedingAttention],
+        "customers" => CommonText["HealthCases", Workspace!.Support!.OpenCases, Workspace.Support.SlaAtRisk, Workspace.Support.SlaBreached],
+        "marketing" => CommonText["HealthMarketing", Workspace!.Marketing!.DueContentItems, Workspace.Marketing.ActiveExperiments], _ => "—" };
+}

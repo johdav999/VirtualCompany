@@ -14,6 +14,11 @@ public static class DashboardRoutes
         "/queue",
         "/finance",
         "/marketing",
+        "/app/sales",
+        "/support",
+        "/work",
+        "/history",
+        "/company-operation",
         "/settings",
         "/activity-feed",
         "/briefing-preferences"
@@ -29,11 +34,77 @@ public static class DashboardRoutes
     public const string LensQueryKey = "lens";
     public const string PeriodQueryKey = "period";
 
+    /// <summary>Carry an authorized workspace's origin into an existing business route.</summary>
+    public static string EnsureWorkspaceContext(string? route, Guid companyId, string overviewPath)
+    {
+        var localRoute = ReturnUrlNavigation.NormalizeLocalReturnUrl(route);
+        var origin = NormalizeOverviewPath(overviewPath, companyId) ?? BuildTodayPath(companyId);
+        if (localRoute is null) return origin;
+        var candidate = EnsureCompanyContext(localRoute ?? origin, companyId, origin);
+        var path = GetPath(candidate);
+        if (!IsCompanyScopedPath(path)) return origin;
+
+        // A stale link must not carry another company's context into this workspace.
+        candidate = WithQuery(candidate, ("companyId", companyId.ToString("D")));
+        return string.Equals(path, "/dashboard", StringComparison.OrdinalIgnoreCase)
+            ? candidate
+            : ReturnUrlNavigation.AppendReturnUrl(candidate, origin);
+    }
+
+    public static string? NormalizeOverviewPath(string? path, Guid companyId)
+    {
+        var local = ReturnUrlNavigation.NormalizeLocalReturnUrl(path);
+        if (local is null || !string.Equals(GetPath(local), "/dashboard", StringComparison.OrdinalIgnoreCase) ||
+            !Guid.TryParse(GetQueryValue(local, "companyId"), out var routeCompany) || routeCompany != companyId)
+            return null;
+
+        var lens = TodayWorkspaceLensValues.Normalize(GetQueryValue(local, LensQueryKey));
+        if (lens.Length > 0 && !TodayWorkspaceLensValues.All.Contains(lens)) return null;
+        return local;
+    }
+
+    public static string? OverviewPathFromLocation(string location, Guid companyId)
+    {
+        var uri = new Uri(location, UriKind.Absolute);
+        var direct = NormalizeOverviewPath(uri.PathAndQuery, companyId);
+        return direct ?? NormalizeOverviewPath(HttpUtility.ParseQueryString(uri.Query)["returnUrl"], companyId);
+    }
+
+    private static bool IsCompanyScopedPath(string path) => CompanyScopedPrefixes.Any(prefix =>
+        string.Equals(path, prefix, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(prefix + "/", StringComparison.OrdinalIgnoreCase));
+
     public static string BuildTodayPath(Guid companyId, string? lens = null) =>
         WithQuery(
             "/dashboard",
             ("companyId", companyId == Guid.Empty ? null : companyId.ToString("D")),
             (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)));
+
+    public static string BuildHealthPath(Guid companyId, string? department = null, string? returnUrl = null) =>
+        WithQuery("/dashboard/company-health", ("companyId", companyId.ToString("D")),
+            ("department", department), ("returnUrl", NormalizeOverviewPath(returnUrl, companyId) ?? BuildTodayPath(companyId, "company")));
+    public static string? NormalizeHealthPath(string? path, Guid companyId)
+    {
+        var local = ReturnUrlNavigation.NormalizeLocalReturnUrl(path);
+        var department = local is null ? null : GetQueryValue(local, "department");
+        return local is not null && GetPath(local) == "/dashboard/company-health" &&
+            Guid.TryParse(GetQueryValue(local, "companyId"), out var id) && id == companyId &&
+            (string.IsNullOrEmpty(department) || TodayWorkspaceLensValues.All.Contains(department)) ? local : null;
+    }
+
+    public static string BuildPriorityPath(Guid companyId, string lens, string key, string? returnUrl = null) =>
+        WithQuery("/dashboard/priorities", ("companyId", companyId.ToString("D")),
+            (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)), ("key", key),
+            ("returnUrl", NormalizeOverviewPath(returnUrl, companyId) ?? BuildTodayPath(companyId, lens)));
+
+    public static string? NormalizePriorityPath(string? path, Guid companyId)
+    {
+        var local = ReturnUrlNavigation.NormalizeLocalReturnUrl(path);
+        return local is not null && GetPath(local) == "/dashboard/priorities" &&
+            Guid.TryParse(GetQueryValue(local, "companyId"), out var id) && id == companyId &&
+            TodayWorkspaceLensValues.All.Contains(GetQueryValue(local, "lens") ?? "") &&
+            !string.IsNullOrWhiteSpace(GetQueryValue(local, "key")) ? local : null;
+    }
 
     public static string BuildMonthlyPath(Guid companyId, string? lens = null, int? year = null, int? month = null) =>
         WithQuery(
@@ -117,7 +188,7 @@ public static class DashboardRoutes
     {
         if (companyId is not Guid resolvedCompanyId ||
             candidate.Contains("companyId=", StringComparison.OrdinalIgnoreCase) ||
-            !CompanyScopedPrefixes.Any(prefix => candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            !IsCompanyScopedPath(GetPath(candidate)))
         {
             return candidate;
         }
@@ -306,7 +377,7 @@ public static class DashboardRoutes
             ? route[prefix.Length..].Split(['/', '?', '#'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()
             : null, out value);
 
-    private static string WithQuery(string route, params (string Key, string? Value)[] parameters)
+    public static string WithQuery(string route, params (string Key, string? Value)[] parameters)
     {
         var uri = new Uri($"http://localhost{EnsureLeadingSlash(route)}", UriKind.Absolute);
         var query = HttpUtility.ParseQueryString(uri.Query);

@@ -3,7 +3,7 @@ using VirtualCompany.Application.Sales;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales) : ITodayWorkspaceContributor
+public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales, ISalesOperationalReportService reports) : ITodayWorkspaceContributor
 {
     public string Lens => TodayWorkspaceLenses.Sales;
 
@@ -12,6 +12,7 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
         CancellationToken cancellationToken)
     {
         var dashboard = await sales.GetDashboardAsync(context.CompanyId, cancellationToken);
+        var activities = await reports.GetActivitiesAsync(context.CompanyId, "pending", null, cancellationToken);
         var route = $"/app/sales?companyId={context.CompanyId:D}";
         var pipelineRoute = $"/app/sales/pipeline?companyId={context.CompanyId:D}";
 
@@ -33,7 +34,7 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
                 Impact: Math.Abs(deal.Amount),
                 DirectlyOwned: context.Access.IsPrimary,
                 SeverityRank: 60,
-                Confidence: 1m)).ToList();
+                Confidence: 1m, SourceState: deal.Status)).ToList();
 
         priorities.AddRange(dashboard.AgentRecommendations
             .Where(item => !string.Equals(item.Status, "completed", StringComparison.OrdinalIgnoreCase) &&
@@ -65,7 +66,7 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
                     DirectlyOwned: context.Access.IsPrimary,
                     Blocked: !string.IsNullOrWhiteSpace(item.FailureSummary),
                     SeverityRank: Risk(item.RiskLevel),
-                    Confidence: 0.8m);
+                    Confidence: 0.8m, SourceState: item.Status);
             }));
 
         var metrics = new TodayWorkspaceMetricDto[]
@@ -79,7 +80,7 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
             new("sales.deals_needing_attention", "Deals needing attention", dashboard.DealsNeedingAttention,
                 dashboard.DealsNeedingAttention.ToString(), "count", dashboard.DealsNeedingAttention > 0 ? "attention" : "clear",
                 context.NowUtc, "sales_dashboard", pipelineRoute),
-            new("sales.forecast_revenue", "Forecast revenue", dashboard.ForecastRevenue,
+            new("sales.forecast_revenue", "Stage-weighted pipeline", dashboard.ForecastRevenue,
                 $"{dashboard.ForecastRevenue:0.##} {dashboard.Currency}", dashboard.Currency, "forecast", context.NowUtc,
                 "sales_dashboard", pipelineRoute)
         };
@@ -87,12 +88,12 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
         var items = dashboard.DealsRequiringAction.Take(5).Select(deal => new TodayWorkspaceFeatureItemDto(
             $"deal:{deal.Id:N}", deal.Title, $"{deal.StageName} · {deal.Amount:0.##} {deal.Currency}", deal.Status,
             deal.UpdatedUtc, $"/app/sales/deals/{deal.Id:D}?companyId={context.CompanyId:D}")).ToList();
-        var updates = dashboard.RecentActivity.Take(5).Select(item => new TodayWorkspaceAgentUpdateDto(
-            $"sales-activity:{item.Id:N}", "Sales activity", item.Summary, context.Access.WorkingAgent,
+        var updates = dashboard.RecentActivity.Where(x => string.Equals(x.Status, "Completed", StringComparison.OrdinalIgnoreCase)).Take(5).Select(item => new TodayWorkspaceAgentUpdateDto(
+            $"sales-activity:{item.Id:N}", "Sales activity", item.Summary, null,
             item.OccurredUtc, "sales_activity", item.DealId.HasValue
                 ? $"/app/sales/deals/{item.DealId:D}?companyId={context.CompanyId:D}"
                 : route,
-            "Sales agent",
+            "Sales activity",
             TodayAgentStates.Completed,
             RationaleSummary: "This update is backed by persisted sales activity.",
             VisibilityReason: context.Access.IsPrimary
@@ -100,6 +101,24 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
                 : "Shown because you have executive oversight of Sales.",
             UpdatedUtc: item.OccurredUtc)).ToList();
 
+        priorities.AddRange(activities.Commitments.Select(item => new TodayWorkspacePriorityCandidate(
+            $"sales-commitment:{item.Id:N}", $"sales-commitment:{item.Id:N}", Lens, item.Summary,
+            $"Internal follow-up for {item.DealTitle}; customer delivery is tracked separately.", context.Access.ResponsiblePerson,
+            null, "Review and record the next step on the opportunity.", item.UpdatedUtc, "sales_commitment", item.Id.ToString("D"),
+            $"/app/sales/deals/{item.DealId:D}?companyId={context.CompanyId:D}", DueUtc: item.DueUtc,
+            DirectlyOwned: context.Access.IsPrimary, SeverityRank: 65, Confidence: 1m, SourceState: item.Status)));
+        priorities.AddRange(activities.Meetings.Where(x => x.StartsUtc <= context.NowUtc.AddDays(1)).Select(item => new TodayWorkspacePriorityCandidate(
+            $"sales-meeting:{item.Id:N}", $"sales-meeting:{item.Id:N}", Lens, item.Title,
+            "Review meeting preparation and its current invitation delivery state.", context.Access.ResponsiblePerson,
+            context.Access.WorkingAgent, "Choose the approved presentation preset and review invitation blockers.", item.UpdatedUtc,
+            "sales_meeting", item.Id.ToString("D"), $"/app/sales/meeting-invitations/{item.Id:D}/prepare?companyId={context.CompanyId:D}",
+            DueUtc: item.StartsUtc, DirectlyOwned: context.Access.IsPrimary, Blocked: item.FailureCode is not null, SeverityRank: 70,
+            Confidence: 1m, SourceState: item.Status)));
+        var agenda = activities.Commitments.Select(x => new TodaySalesAgendaItemDto(x.Summary, x.DueUtc, x.Status,
+            $"/app/sales/deals/{x.DealId:D}?companyId={context.CompanyId:D}", false))
+            .Concat(activities.Meetings.Select(x => new TodaySalesAgendaItemDto(x.Title, x.StartsUtc, x.Status,
+                $"/app/sales/meeting-invitations/{x.Id:D}/prepare?companyId={context.CompanyId:D}", true)))
+            .Where(x => x.DueUtc <= context.NowUtc.AddDays(1)).OrderBy(x => x.DueUtc).Take(8).ToArray();
         return new TodayWorkspaceFeatureContribution(
             Lens,
             priorities,
@@ -107,7 +126,7 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
             updates,
             Sales: new TodayWorkspaceSalesSectionDto(
                 true,
-                "Sales pipeline data is current.",
+                $"Sales amounts cover {dashboard.Currency}; currency-separated reports show all open opportunities. Observation time is not provider synchronization.",
                 context.NowUtc,
                 dashboard.PipelineValue,
                 dashboard.Currency,
@@ -116,7 +135,7 @@ public sealed class SalesTodayWorkspaceContributor(ISalesOperationsService sales
                 dashboard.DealsNeedingAttention,
                 dashboard.ForecastRevenue,
                 items,
-                route));
+                route, agenda));
     }
 
     private static int Risk(string? value) => value?.Trim().ToLowerInvariant() switch

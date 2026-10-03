@@ -13,7 +13,7 @@
             <p class="room-subtitle">@(joined ? "Real people. Real conversations." : "Check your devices before you ask to join.")</p>
             <p class="room-status" role="status" aria-live="polite">@StatusText</p>
             @if (HostCompanyId.HasValue && finished)
-            { <a class="room-primary" href="@($"/app/sales/rooms/{RoomId}/review")">Review capture and closing</a> }
+            { <a class="room-primary" href="@SalesJourneyRoutes.Build($"/app/sales/rooms/{RoomId:D}/review", HostCompanyId!.Value, Navigation.Uri)">Review capture and closing</a> }
             @if ((error ?? mediaError) is string message) { <p class="room-alert" role="alert">@message</p> }
             <div hidden="@(joined || finished)" class="room-prejoin">
                 <div class="room-preview"><span class="room-preview-avatar" hidden="@media.Camera">You</span><span class="room-preview-label">@(media.Camera ? "Your camera preview" : "Camera off")</span><video data-preview autoplay muted playsinline aria-label="Your camera preview"></video></div>

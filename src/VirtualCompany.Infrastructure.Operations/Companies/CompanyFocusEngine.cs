@@ -82,7 +82,9 @@ public sealed class CompanyFocusEngine : IFocusEngine
             }
         }
 
-        var selected = diversified
+        // Today applies its own explainable ordering after role filtering. Do not
+        // truncate the authorized candidates before its overdue/decision ranking.
+        var selected = (query.ForPriorityWorkspace ? ordered : diversified)
             .OrderByDescending(candidate => candidate.RawScore)
             .ThenByDescending(candidate => candidate.SortUtc ?? DateTime.MinValue)
             .ThenBy(candidate => candidate.StableSortKey, StringComparer.Ordinal)
@@ -97,7 +99,9 @@ public sealed class CompanyFocusEngine : IFocusEngine
                 FocusActionTypes.Normalize(candidate.ActionType),
                 scores[candidate.StableSortKey],
                 candidate.NavigationTarget.Trim(),
-                candidate.SourceType.ToStorageValue()))
+                candidate.SourceType.ToStorageValue(), candidate.ObservedAtUtc, candidate.DueUtc,
+                candidate.SourceState, candidate.RelatedTaskId, candidate.RelatedApprovalId,
+                candidate.ResponsiblePerson, candidate.WorkingAgent, candidate.PriorityEvidenceKey))
             .ToList();
     }
 
@@ -169,6 +173,9 @@ public sealed class ApprovalFocusCandidateSource : IFocusCandidateSource
             .Where(request => request.CompanyId == query.CompanyId && request.Status == ApprovalRequestStatus.Pending)
             .ToListAsync(cancellationToken);
 
+        var reviewerName = await _dbContext.Users.AsNoTracking().Where(x => x.Id == query.UserId)
+            .Select(x => x.DisplayName).SingleOrDefaultAsync(cancellationToken);
+
         var items = new List<FocusCandidate>();
         foreach (var approval in approvals)
         {
@@ -201,7 +208,9 @@ public sealed class ApprovalFocusCandidateSource : IFocusCandidateSource
                 FocusSourceType.Approval,
                 rawScore,
                 approval.CreatedUtc,
-                $"approval:{approval.Id:N}"));
+                $"approval:{approval.Id:N}", approval.UpdatedUtc, null,
+                approval.Status.ToStorageValue(), RelatedTaskId: approval.TargetEntityType == "task" ? approval.TargetEntityId : null,
+                RelatedApprovalId: approval.Id, ResponsiblePerson: reviewerName));
         }
 
         return items;
@@ -240,6 +249,7 @@ public sealed class TaskFocusCandidateSource : IFocusCandidateSource
     {
         var tasks = await _dbContext.WorkTasks
             .AsNoTracking()
+            .Include(x => x.AssignedAgent)
             .Where(task => task.CompanyId == query.CompanyId &&
                 task.Status != WorkTaskStatus.Completed &&
                 task.Status != WorkTaskStatus.Failed &&
@@ -247,9 +257,14 @@ public sealed class TaskFocusCandidateSource : IFocusCandidateSource
                 // user-scoped by the originating human actor to avoid leaking peer work.
                 task.CreatedByActorType == WorkTaskSourceTypes.User &&
                 task.CreatedByActorId == query.UserId)
-            .OrderByDescending(task => task.UpdatedUtc)
+            .OrderByDescending(task => task.DueUtc <= DateTime.UtcNow)
+            .ThenBy(task => task.DueUtc)
+            .ThenByDescending(task => task.UpdatedUtc)
             .Take(15)
             .ToListAsync(cancellationToken);
+
+        var creatorName = await _dbContext.Users.AsNoTracking().Where(x => x.Id == query.UserId)
+            .Select(x => x.DisplayName).SingleOrDefaultAsync(cancellationToken);
 
         return tasks.Select(task =>
         {
@@ -274,7 +289,12 @@ public sealed class TaskFocusCandidateSource : IFocusCandidateSource
                 FocusSourceType.Task,
                 rawScore,
                 task.DueUtc ?? task.UpdatedUtc,
-                $"task:{task.Id:N}");
+                $"task:{task.Id:N}", task.UpdatedUtc, task.DueUtc, task.Status.ToStorageValue(), RelatedTaskId: task.Id,
+                ResponsiblePerson: creatorName, WorkingAgent: task.AssignedAgent?.DisplayName,
+                PriorityEvidenceKey: task.Type == "follow_up" &&
+                    task.InputPayload.TryGetValue("sourceCompanyId", out var sourceCompany) &&
+                    Guid.TryParse(sourceCompany?.ToString(), out var sourceId) && sourceId == query.CompanyId &&
+                    task.InputPayload.TryGetValue("priorityEvidenceKey", out var evidence) ? evidence?.ToString() : null);
         }).ToList();
     }
 
@@ -352,7 +372,7 @@ public sealed class AlertAnomalyFocusCandidateSource : IFocusCandidateSource
             FocusSourceType.Anomaly,
             48d + SeverityScore(alert.Severity) + RecencyScore(alert.LastDetectedUtc ?? alert.UpdatedUtc) + Math.Min(alert.OccurrenceCount, 5),
             alert.LastDetectedUtc ?? alert.UpdatedUtc,
-            $"anomaly:{alert.Id:N}")).ToList();
+            $"anomaly:{alert.Id:N}", alert.LastDetectedUtc ?? alert.UpdatedUtc, SourceState: alert.Status.ToStorageValue())).ToList();
     }
 
     private static double SeverityScore(AlertSeverity severity) =>
@@ -402,7 +422,13 @@ public sealed class FinanceAlertFocusCandidateSource : IFocusCandidateSource
             .Take(10)
             .ToListAsync(cancellationToken);
 
-        return alerts.Select(alert =>
+        // Older cash evaluations could persist a low-cash alert for an empty or
+        // mixed-currency aggregate. Retain its history, but never rank that invalid
+        // amount as current cash evidence. Other risk alerts keep their behavior.
+        return alerts.Where(alert => !(alert.Fingerprint?.StartsWith("finance-cash-position:", StringComparison.OrdinalIgnoreCase) == true &&
+                (!alert.Evidence.TryGetValue("currency", out var currency) || currency is null ||
+                 string.Equals(currency.ToString(), "MIXED", StringComparison.OrdinalIgnoreCase))))
+            .Select(alert =>
         {
             var rawScore = 42d + SeverityScore(alert.Severity) + RecencyScore(alert.LastDetectedUtc ?? alert.UpdatedUtc);
             return new FocusCandidate(
@@ -414,7 +440,7 @@ public sealed class FinanceAlertFocusCandidateSource : IFocusCandidateSource
                 FocusSourceType.FinanceAlert,
                 rawScore,
                 alert.LastDetectedUtc ?? alert.UpdatedUtc,
-                $"finance-alert:{alert.Id:N}");
+                $"finance-alert:{alert.Id:N}", alert.LastDetectedUtc ?? alert.UpdatedUtc, SourceState: alert.Status.ToStorageValue());
         }).ToList();
     }
 

@@ -93,13 +93,24 @@ public sealed class MarketingDeliveryService(
 
     public async Task<MarketingChannelActionDto?> SubmitActionAsync(Guid companyId, Guid userId, Guid actionId, CancellationToken ct)
     {
+        var attempt = 0;
+        return await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+        if (attempt++ > 0) db.ChangeTracker.Clear();
+        await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
         var action = await db.MarketingChannelActions.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == actionId, ct);
         if (action is null) return null;
+        if (action.Status == "awaiting_approval" && action.ApprovalRequestId.HasValue) return Map(action);
+        if (action.Status != "proposed") throw new InvalidOperationException("Only a proposed delivery can request launch approval.");
         var approval = await approvals.CreateAsync(companyId, new CreateApprovalRequestCommand(
-            "marketing_channel_action", action.Id, "user", userId, "marketing_external_delivery", null, "company_manager"), ct);
+            "marketing_channel_action", action.Id, "user", userId, "marketing_external_delivery",
+            new Dictionary<string, JsonNode?> { ["contentBriefVersion"] = JsonValue.Create(action.ContentBriefVersion), ["actionVersion"] = JsonValue.Create(action.Version + 1) }, "company_manager"), ct);
         action.Submit(approval.Id);
-        await db.SaveChangesAsync(ct);
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) { throw new InvalidOperationException("Delivery changed. Reload before requesting launch approval again."); }
+        await transaction.CommitAsync(ct);
         return Map(action);
+        });
     }
 
     public async Task<MarketingChannelActionDto?> SynchronizeApprovedActionAsync(Guid companyId, Guid actionId, CancellationToken ct)
@@ -112,7 +123,7 @@ public sealed class MarketingDeliveryService(
         if (approval.Status.Equals("approved", StringComparison.OrdinalIgnoreCase))
         {
             var hasEvidence = !action.MarketingContentBriefId.HasValue || await db.MarketingContentBriefs.AsNoTracking()
-                .AnyAsync(x => x.CompanyId == companyId && x.Id == action.MarketingContentBriefId && x.Status == MarketingStatuses.Approved, ct);
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == action.MarketingContentBriefId && x.Status == MarketingStatuses.Approved && x.Version == action.ContentBriefVersion, ct);
             var decision = policies.Evaluate(new MarketingPolicyRequest(MarketingPolicyActions.ContentPublication,
                 "marketing_channel_action", action.Id, action.Version, hasEvidence, ApprovalCompleted: true));
             if (!decision.Allowed) throw new InvalidOperationException(decision.Explanation);

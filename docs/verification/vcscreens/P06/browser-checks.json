@@ -1,0 +1,86 @@
+{
+  "date": "2026-10-02",
+  "profile": "real Web + authenticated UAT API, disposable SQLite, disabled workers",
+  "checks": [
+    {
+      "flow": "F06-01",
+      "status": "pass",
+      "evidence": "Invoice pending_approval persists after save and reload; source, report and Overview URL retained; paid 200 and remaining 800 remain separate."
+    },
+    {
+      "flow": "F06-02",
+      "status": "pass",
+      "evidence": "Pending invoice is excluded from booked obligations. Attempt to book is refused by existing USD approval policy for the SEK invoice; no policy override or settlement."
+    },
+    {
+      "flow": "F06-04",
+      "status": "pass",
+      "evidence": "After pending review, SEK cash 10000 + inflows 0 - outflows 300 = 9700; USD 500 + 100 = 600. UTC source balances and assumptions visible."
+    },
+    {
+      "flow": "F06-04-export",
+      "status": "handoff_pass_save_unverified",
+      "evidence": "Report refreshed and current authorized CSV passed to browser; download event timed out after 8 seconds. Automated checks reconcile latest payload/filters/source dates and reject revoked scope."
+    },
+    {
+      "flow": "F06-03",
+      "status": "pass",
+      "evidence": "Payables includes one SEK 300 remaining bill, source detail shows SEK 100 paid / SEK 300 remaining and missing accounting/document evidence; exact payables report return retained."
+    },
+    {
+      "flow": "F06-05-payment",
+      "status": "pass",
+      "evidence": "Canonical 300 SEK outgoing payment remains Pending; source/report/bill return retained."
+    },
+    {
+      "flow": "F06-03-provider",
+      "status": "pass",
+      "evidence": "Manual recorded booking shows Sent to Fortnox Upcoming; expense evidence says retained booking records."
+    },
+    {
+      "flow": "F06-05-transaction",
+      "status": "pass",
+      "evidence": "Canonical 200 SEK installment detail identifies source Payment, reference, and 200 paid/800 remaining; no native ledger posting inferred."
+    },
+    {
+      "flow": "F06-05-uncertain",
+      "status": "pass",
+      "evidence": "P06-UNCERTAIN visibly requires reconciliation with no blind resubmit; mixed currencies show Review by currency, missing bank coverage visible."
+    },
+    {
+      "flow": "F06-05-reconciliation",
+      "status": "pass_review_only",
+      "evidence": "Cash exception opens canonical bank row; Unmatched/200 remaining and setup prerequisite visible. Keyboard search P06 bank + state unmatched persist in URL and reload. No posting/matching performed."
+    },
+    {
+      "flow": "F06-06-restricted",
+      "status": "pass",
+      "evidence": "Unassigned member directly opening forecast sees Finance access required; no Finance rows exposed."
+    },
+    {
+      "flow": "F06-06-company",
+      "status": "pass",
+      "evidence": "Company switch routes to South Overview and clears North obligations, account/agent labels and exceptions; South Finance shows unavailable cash/zero observed obligations with gap."
+    },
+    {
+      "flow": "F06-07-mobile-report",
+      "status": "pass",
+      "evidence": "Requested 390x844; actual CSS 312x675, document width 300. Cards/filters stack; source table scrolls within its container; keyboard Currency -> Aging bucket."
+    },
+    {
+      "flow": "F06-07-mobile-today",
+      "status": "pass_after_fix",
+      "evidence": "Shared metadata wrapped at narrow breakpoint; actual CSS width312, document300 (beforefix368). Finance cards and report/close links fit."
+    },
+    {
+      "flow": "F06-07-close",
+      "status": "pass_entry_only",
+      "evidence": "Finance Today opens canonical scoped Close workspace, no close/period configured. Distinct income/balance view links retained; P07 owns ledger/close acceptance."
+    },
+    {
+      "flow": "F06-02-approval-return",
+      "status": "pass_read_only",
+      "evidence": "Invoice opens existing Work approval (1000 SEK, Pending), Finance return link restores source/report/exact Overview context. No decision submitted."
+    }
+  ]
+}

@@ -49,8 +49,10 @@ public sealed class SalesOperationsService : ISalesOperationsService
         var recommendations = await RecommendationQuery(companyId).Take(5).ToListAsync(cancellationToken);
         var recentActivity = await ActivityQuery(companyId).Take(10).ToListAsync(cancellationToken);
 
-        var pipelineValue = deals.Where(x => x.Status == SalesStatuses.Open).Sum(x => x.Amount);
-        var forecastRevenue = deals.Where(x => x.Status == SalesStatuses.Open).Sum(x => x.Amount * ForecastWeight(x.PipelineStageId));
+        var currencies = deals.Where(x => x.Status == SalesStatuses.Open).Select(x => x.Currency).Distinct().Order().ToArray();
+        var currency = currencies.FirstOrDefault() ?? leads.FirstOrDefault()?.Currency ?? "USD";
+        var pipelineValue = deals.Where(x => x.Status == SalesStatuses.Open && x.Currency == currency).Sum(x => x.Amount);
+        var forecastRevenue = deals.Where(x => x.Status == SalesStatuses.Open && x.Currency == currency).Sum(x => x.Amount * ForecastWeight(x.PipelineStageId));
         var attentionThreshold = _timeProvider.GetUtcNow().UtcDateTime.AddDays(-7);
         var dealsRequiringAction = deals
             .Where(x => x.Status == SalesStatuses.Open && x.UpdatedUtc <= attentionThreshold)
@@ -62,14 +64,14 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
         return new SalesDashboardResponse(
             pipelineValue,
-            deals.FirstOrDefault()?.Currency ?? leads.FirstOrDefault()?.Currency ?? "USD",
+            currency,
             leads.Count(x => x.Status == SalesStatuses.Open),
             leads.Count(x => ResolveTemperature(x) == "Hot"),
             deals.Count(x => x.Status == SalesStatuses.Open && x.UpdatedUtc <= attentionThreshold),
             Math.Round(forecastRevenue, 2),
             dealsRequiringAction,
             recommendations.Select(MapRecommendation).ToList(),
-            recentActivity.Select(MapActivity).ToList());
+            recentActivity.Select(MapActivity).ToList(), currencies);
     }
 
     public async Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(Guid companyId, CancellationToken cancellationToken)
@@ -768,7 +770,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
         new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal), null, customerMemory, deal.SourceLeadId);
 
     private static SalesActivityResponse MapActivity(SalesActivity activity) =>
-        new(activity.Id, StatusLabel(activity.ActivityType), activity.Summary, StatusLabel(activity.Status), activity.OccurredUtc, activity.LeadId, activity.DealId);
+        new(activity.Id, StatusLabel(activity.ActivityType), activity.Summary, StatusLabel(activity.Status),
+            activity.ActivityType == "internal_follow_up" && activity.Status == SalesStatuses.Completed ? activity.UpdatedUtc : activity.OccurredUtc,
+            activity.LeadId, activity.DealId);
 
     private static SalesRecommendationResponse MapRecommendation(SalesAgentRecommendation recommendation) =>
         new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, StatusLabel(recommendation.Category), StatusLabel(recommendation.TriggerCondition), StatusLabel(recommendation.ActionType), StatusLabel(recommendation.RiskLevel), recommendation.RequiresApproval, StatusLabel(recommendation.ApprovalStatus), StatusLabel(recommendation.ExecutionStatus), recommendation.FailureSummary, recommendation.CanRetryExecution, recommendation.ExecutionAttemptCount, recommendation.LastExecutionErrorCode, recommendation.Provider, recommendation.MailboxConnectionId, recommendation.ProviderThreadId, recommendation.ProviderMessageId, recommendation.ProviderDraftId, recommendation.ActivityId, recommendation.CreatedUtc);

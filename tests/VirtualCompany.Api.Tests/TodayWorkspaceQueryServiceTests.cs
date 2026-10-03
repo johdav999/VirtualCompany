@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Focus;
 using VirtualCompany.Infrastructure.Companies;
@@ -9,6 +10,27 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class TodayWorkspaceQueryServiceTests
 {
+    [Fact]
+    public async Task Missing_source_timestamp_is_unknown_and_never_replaced_by_read_time()
+    {
+        var id = Guid.NewGuid(); var membership = Guid.NewGuid();
+        var access = new TodayWorkspaceLensAccess("sales", "Sales", "Primary", true, false, membership, "Owner", "Alex");
+        var service = new CompanyTodayWorkspaceQueryService(new StubResolver(new(id, Guid.NewGuid(), membership,
+            CompanyMembershipRole.Manager, "Example", "sales", "sales", "r1", [access])),
+            [new FailingContributor()], new UnusedCockpit(), new TimestampMissingFocus(), new NoOpCache(), new EmptyAgentActivity(),
+            new ReadyManualReview(), TimeProvider.System, NullLogger<CompanyTodayWorkspaceQueryService>.Instance);
+        var workspace = await service.GetAsync(new(id, "sales", true), CancellationToken.None);
+        var priority = Assert.Single(workspace.Priorities);
+        Assert.Equal(DateTime.MinValue, priority.ObservedAtUtc);
+        Assert.Equal("unknown", priority.Freshness);
+        Assert.True(workspace.IsPartial);
+    }
+
+    private sealed class TimestampMissingFocus : IFocusEngine
+    {
+        public Task<IReadOnlyList<FocusItemDto>> GetFocusAsync(GetDashboardFocusQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<FocusItemDto>>([new("task", "Review task", "Review its evidence", "open", 10, "/tasks", "task")]);
+    }
     [Fact]
     public async Task Noncritical_contributor_failure_returns_typed_unavailable_section_and_fallback_summary()
     {
@@ -37,6 +59,56 @@ public sealed class TodayWorkspaceQueryServiceTests
         Assert.NotNull(result.Sales);
         Assert.False(result.Sales!.IsAvailable);
         Assert.Contains(result.Diagnostics, x => x.Section == "sales" && x.Code == "contributor_failed");
+    }
+
+    [Fact]
+    public async Task Company_decisions_suppress_task_approval_duplicates_and_projection_logs_exclude_sensitive_content()
+    {
+        var id=Guid.NewGuid();var membership=Guid.NewGuid();var task=Guid.NewGuid();var approval=Guid.NewGuid();
+        var access=new TodayWorkspaceLensAccess("company","Company","Oversight",false,true,membership,"Owner",null);
+        var sales=access with {Lens="sales",Label="Sales"};var logger=new SafeLogger();
+        var service=new CompanyTodayWorkspaceQueryService(new StubResolver(new(id,Guid.NewGuid(),membership,CompanyMembershipRole.Owner,"North","company","company","r1",[access,sales])),
+            [new FailingContributor()],new UnusedCockpit(),new DuplicateFocus(task,approval),new NoOpCache(),new EmptyAgentActivity(),new ReadyManualReview(),TimeProvider.System,logger);
+        var result=await service.GetAsync(new(id,"company",true),default);
+        Assert.Single(result.Decisions);Assert.Equal(approval,result.Decisions[0].RelatedApprovalId);
+        Assert.Single(result.Priorities);Assert.Equal(task,result.Priorities[0].RelatedTaskId);
+        Assert.DoesNotContain("Sensitive provider detail",string.Join(" ",logger.Messages));Assert.All(logger.Exceptions,x=>Assert.Null(x));
+        Assert.Contains(result.Departments!,x=>x.Lens=="sales" && !x.IsAvailable);
+    }
+    private sealed class DuplicateFocus(Guid task,Guid approval):IFocusEngine
+    {
+        public Task<IReadOnlyList<FocusItemDto>> GetFocusAsync(GetDashboardFocusQuery query,CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<FocusItemDto>>([
+                new("task","Review work","Review recorded proposal","review",100,"/work","task",RelatedTaskId:task),
+                new("approval","Review decision","Decide on proposal","review",90,"/work","approval",RelatedTaskId:task,RelatedApprovalId:approval)]);
+    }
+    private sealed class SafeLogger:ILogger<CompanyTodayWorkspaceQueryService>
+    {
+        public List<string> Messages=[];public List<Exception?> Exceptions=[];
+        public IDisposable? BeginScope<T>(T state) where T:notnull=>null;public bool IsEnabled(LogLevel level)=>true;
+        public void Log<T>(LogLevel level,EventId id,T state,Exception? ex,Func<T,Exception?,string> format){Messages.Add(format(state,ex));Exceptions.Add(ex);}
+    }
+
+    [Fact]
+    public async Task Snapshot_time_follows_department_reads_so_new_observations_are_not_in_the_future()
+    {
+        var id=Guid.NewGuid();var membership=Guid.NewGuid();var clock=new ReadClock();
+        var access=new TodayWorkspaceLensAccess("company","Company","Oversight",false,true,membership,"Owner",null);
+        var service=new CompanyTodayWorkspaceQueryService(new StubResolver(new(id,Guid.NewGuid(),membership,CompanyMembershipRole.Owner,"North","company","company","r1",[access,access with {Lens="sales"}])),
+            [new ObservedContributor(clock)],new UnusedCockpit(),new EmptyFocus(),new NoOpCache(),new EmptyAgentActivity(),new ReadyManualReview(),clock,NullLogger<CompanyTodayWorkspaceQueryService>.Instance);
+        var result=await service.GetAsync(new(id,"company",true),default);
+        Assert.NotNull(result.Sales);Assert.Equal(clock.Current.UtcDateTime,result.GeneratedAtUtc);Assert.True(result.Sales!.ObservedAtUtc<=result.GeneratedAtUtc);
+    }
+    private sealed class ReadClock:TimeProvider
+    {
+        public DateTimeOffset Current=new(2026,10,1,12,0,0,TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow()=>Current;
+    }
+    private sealed class ObservedContributor(ReadClock clock):ITodayWorkspaceContributor
+    {
+        public string Lens=>"sales";
+        public Task<TodayWorkspaceFeatureContribution> ContributeAsync(TodayWorkspaceContributorContext context,CancellationToken token)
+        { clock.Current=clock.Current.AddSeconds(2);return Task.FromResult(new TodayWorkspaceFeatureContribution("sales",[],[],[],Sales:new(true,"Recorded",clock.Current.UtcDateTime,12000,"SEK",0,0,0,3000,[],"/app/sales"))); }
     }
 
     private sealed class StubResolver(TodayWorkspaceLensResolution resolution) : ITodayWorkspaceLensResolver

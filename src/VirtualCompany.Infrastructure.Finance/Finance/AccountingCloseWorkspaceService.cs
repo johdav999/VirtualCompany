@@ -196,13 +196,16 @@ public sealed class AccountingCloseWorkspaceService(
                 blocker.SafeNextAction, task.OwnerUserId, blocker.Status, task.Evidence.Count, blocker.CreatedUtc,
                 $"/finance/accounting/close-workspace?taskId={task.Id:D}", false, null)));
         var blockers = checkBlockers.Concat(taskBlockers).OrderBy(x => x.ObservedUtc).ToArray();
-        var warningCount = snapshot.Checks.Count(x => !x.IsBlocking);
+        var warningCount = CountAttentionChecks(snapshot.Checks);
         DateTime? latestTaskUtc = close?.Tasks.Count > 0 ? (DateTime?)close.Tasks.Max(x => x.UpdatedUtc) : null;
         var newestSource = new[] { latestTaskUtc, latestJournalUtc }.Where(x => x.HasValue).Max();
         return new(snapshot.Id, snapshot.SnapshotNumber, snapshot.Status, snapshot.IsReady,
             snapshot.EvidenceHash, snapshot.PreparedUtc, snapshot.Version, blockers.Length, warningCount,
             newestSource.HasValue && newestSource.Value > snapshot.PreparedUtc, blockers);
     }
+
+    public static int CountAttentionChecks(IEnumerable<AccountingCloseReadinessCheckDto> checks) =>
+        checks.Count(x => !x.IsBlocking && x.Code != $"{x.Category}_ready");
 
     private static AccountingCloseWorkspaceTaskDto MapTask(AccountingCloseTaskDto task)
     {

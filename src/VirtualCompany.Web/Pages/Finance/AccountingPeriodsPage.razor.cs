@@ -8,6 +8,8 @@ namespace VirtualCompany.Web.Pages.Finance;
 public partial class AccountingPeriodsPage : FinancePageBase
 {
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
+    [SupplyParameterFromQuery(Name = "periodId")] public Guid? RequestedPeriodId { get; set; }
+    private Guid? LoadedCompany;
 
     private IReadOnlyList<AccountingFiscalYearResponse> Years { get; set; } = [];
     private AccountingPeriodResponse? Selected { get; set; }
@@ -27,6 +29,7 @@ public partial class AccountingPeriodsPage : FinancePageBase
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
+        if (LoadedCompany != AccessState.CompanyId) { Years = []; Selected = null; LoadedCompany = AccessState.CompanyId; }
         if (AccessState.IsAllowed && AccessState.CompanyId is Guid companyId)
         {
             await LoadYearsAsync(companyId, selectFirst: true);
@@ -46,14 +49,16 @@ public partial class AccountingPeriodsPage : FinancePageBase
                 NewFiscalYearStart = latestEnd.Value.AddDays(1);
             }
 
-            if (selectFirst && Selected is null)
+            if (selectFirst && (Selected is null || RequestedPeriodId.HasValue && Selected.Id != RequestedPeriodId))
             {
-                var first = Years.SelectMany(year => year.Periods).FirstOrDefault(period => !period.IsClosed && !period.IsReportingLocked)
+                var first = RequestedPeriodId is Guid requested ? Years.SelectMany(year => year.Periods).FirstOrDefault(p => p.Id == requested) :
+                    Years.SelectMany(year => year.Periods).FirstOrDefault(period => !period.IsClosed && !period.IsReportingLocked)
                     ?? Years.SelectMany(year => year.Periods).FirstOrDefault();
                 if (first is not null)
                 {
                     await SelectPeriodAsync(first.Id);
                 }
+                else if (RequestedPeriodId.HasValue) { Selected = null; ListError = "The requested period is unavailable in this company."; }
             }
         }
         catch (FinanceApiException exception)

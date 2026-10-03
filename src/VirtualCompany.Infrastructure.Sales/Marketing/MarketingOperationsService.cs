@@ -11,6 +11,7 @@ using VirtualCompany.Application.Tasks;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Application.Auth;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
@@ -22,10 +23,11 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
     private readonly ISalesCampaignDraftService? _campaignDrafts;
     private readonly IApprovalRequestService? _approvals;
     private readonly ICompanyTaskService? _tasks;
+    private readonly ICompanyContextAccessor? _actorContext;
     public MarketingOperationsService(VirtualCompanyDbContext db, IMarketingAgentAnalysisService? analysis = null,
         IMarketingEventPublisher? events = null, ISalesCampaignDraftService? campaignDrafts = null,
-        IApprovalRequestService? approvals = null, ICompanyTaskService? tasks = null)
-    { _db = db; _analysis = analysis; _events = events; _campaignDrafts = campaignDrafts; _approvals = approvals; _tasks = tasks; }
+        IApprovalRequestService? approvals = null, ICompanyTaskService? tasks = null, ICompanyContextAccessor? actorContext = null)
+    { _db = db; _analysis = analysis; _events = events; _campaignDrafts = campaignDrafts; _approvals = approvals; _tasks = tasks; _actorContext = actorContext; }
 
     public async Task<MarketingDashboardDto> GetDashboardAsync(Guid companyId, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
@@ -203,39 +205,74 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         return Map(brief, []);
     }
 
-    public async Task<MarketingContentVariantDto?> AddContentVariantAsync(Guid companyId, Guid briefId, CreateMarketingContentVariantRequest r, CancellationToken ct)
+    public Task<MarketingContentVariantDto?> AddContentVariantAsync(Guid companyId, Guid briefId, CreateMarketingContentVariantRequest r, CancellationToken ct) => ContentTransactionAsync<MarketingContentVariantDto?>(async () =>
     {
-        if (!await _db.MarketingContentBriefs.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == briefId, ct)) return null;
+        var brief = await _db.MarketingContentBriefs.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == briefId, ct);
+        if (brief is null) return null;
+        await ResetContentForRevisionAsync(companyId, brief, ct);
         var variant = new MarketingContentVariant(Guid.NewGuid(), companyId, briefId, r.Name, r.Body, r.SourceReferences, r.GeneratedByAi);
         _db.MarketingContentVariants.Add(variant);
-        await _db.SaveChangesAsync(ct);
         return Map(variant);
-    }
+    }, ct);
 
-    public async Task<MarketingContentVariantDto?> CreateContentVariantVersionAsync(Guid companyId, Guid variantId,
-        CreateMarketingContentVariantVersionRequest r, CancellationToken ct)
+    public Task<MarketingContentVariantDto?> CreateContentVariantVersionAsync(Guid companyId, Guid variantId,
+        CreateMarketingContentVariantVersionRequest r, CancellationToken ct) => ContentTransactionAsync<MarketingContentVariantDto?>(async () =>
     {
         var source = await _db.MarketingContentVariants.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
             x.CompanyId == companyId && x.Id == variantId, ct);
         if (source is null) return null;
+        var brief = await _db.MarketingContentBriefs.IgnoreQueryFilters().AsNoTracking().SingleAsync(x =>
+            x.CompanyId == companyId && x.Id == source.MarketingContentBriefId, ct);
+        var expected = brief.Version;
+        if (r.ExpectedBriefVersion.HasValue && r.ExpectedBriefVersion != expected) throw new InvalidOperationException("Content changed. Reload before revising it.");
+        brief.RequestRevision();
+        var changed = await _db.MarketingContentBriefs.IgnoreQueryFilters().Where(x => x.CompanyId == companyId &&
+            x.Id == brief.Id && x.Version == expected).ExecuteUpdateAsync(set => set
+                .SetProperty(x => x.Version, brief.Version).SetProperty(x => x.Status, brief.Status).SetProperty(x => x.UpdatedUtc, brief.UpdatedUtc), ct);
+        if (changed != 1) throw new InvalidOperationException("Content changed. Reload before revising it.");
         var nextVersion = await _db.MarketingContentVariants.IgnoreQueryFilters().Where(x =>
             x.CompanyId == companyId && x.VariantFamilyId == source.VariantFamilyId).MaxAsync(x => x.VersionNumber, ct) + 1;
         var variant = new MarketingContentVariant(Guid.NewGuid(), companyId, source.MarketingContentBriefId,
             r.Name, r.Body, r.SourceReferences, false, source.ContentFormat, null, "human-revision",
             "human-revision-v1", null, 0, source.VariantFamilyId, nextVersion);
         _db.MarketingContentVariants.Add(variant);
-        await _db.SaveChangesAsync(ct);
+        _db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, "user", _actorContext?.UserId, "marketing.content.revised",
+            "marketing_content_brief", brief.Id.ToString("D"), "draft", "New variant invalidated the previous content approval.",
+            metadata: new Dictionary<string, string?> { ["briefVersion"] = brief.Version.ToString(), ["variantId"] = variant.Id.ToString("D") }));
         return Map(variant);
-    }
+    }, ct);
 
-    public async Task<bool> RetireContentVariantAsync(Guid companyId, Guid variantId, CancellationToken ct)
+    public Task<bool> RetireContentVariantAsync(Guid companyId, Guid variantId, CancellationToken ct) => ContentTransactionAsync(async () =>
     {
         var variant = await _db.MarketingContentVariants.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
             x.CompanyId == companyId && x.Id == variantId, ct);
         if (variant is null) return false;
+        var brief = await _db.MarketingContentBriefs.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.CompanyId == companyId && x.Id == variant.MarketingContentBriefId, ct);
+        await ResetContentForRevisionAsync(companyId, brief, ct);
         variant.Retire();
-        await _db.SaveChangesAsync(ct);
         return true;
+    }, ct);
+
+    private async Task<T> ContentTransactionAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        var attempt = 0;
+        return await _db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+        {
+            if (attempt++ > 0) _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
+            try { var result = await action(); await _db.SaveChangesAsync(ct); await transaction.CommitAsync(ct); return result; }
+            catch (DbUpdateConcurrencyException) { throw new InvalidOperationException("Content changed. Reload before trying another write."); }
+        });
+    }
+
+    private async Task ResetContentForRevisionAsync(Guid companyId, MarketingContentBrief brief, CancellationToken ct)
+    {
+        var expected = brief.Version; brief.RequestRevision();
+        var changed = await _db.MarketingContentBriefs.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.Id == brief.Id && x.Version == expected)
+            .ExecuteUpdateAsync(set => set.SetProperty(x => x.Version, brief.Version).SetProperty(x => x.Status, brief.Status).SetProperty(x => x.UpdatedUtc, brief.UpdatedUtc), ct);
+        if (changed != 1) throw new InvalidOperationException("Content changed. Reload before editing it.");
+        _db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, "user", _actorContext?.UserId, "marketing.content.changed",
+            "marketing_content_brief", brief.Id.ToString("D"), "draft", "Content change invalidated prior approval."));
     }
 
     public async Task<GenerateMarketingContentVariantsResult> GenerateContentVariantsAsync(Guid companyId,
@@ -294,14 +331,22 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
             variants.Select(Map).ToArray(), result.MissingEvidence, result.RequiresReview);
     }
 
-    public async Task<bool> ReviewContentAsync(Guid companyId, Guid briefId, ReviewMarketingContentRequest r, CancellationToken ct)
+    public Task<bool> ReviewContentAsync(Guid companyId, Guid briefId, ReviewMarketingContentRequest r, CancellationToken ct) => ContentTransactionAsync(async () =>
     {
-        var brief = await _db.MarketingContentBriefs.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == briefId, ct);
+        var brief = await _db.MarketingContentBriefs.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == briefId, ct);
         if (brief is null) return false;
+        var expected = r.ExpectedVersion ?? brief.Version;
+        if (expected != brief.Version) throw new InvalidOperationException("Content changed. Reload before reviewing it.");
         brief.Review(r.Approved);
-        await _db.SaveChangesAsync(ct);
+        var changed = await _db.MarketingContentBriefs.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.Id == briefId &&
+            x.Version == expected && x.Status == MarketingStatuses.Submitted).ExecuteUpdateAsync(set => set
+                .SetProperty(x => x.Version, brief.Version).SetProperty(x => x.Status, brief.Status).SetProperty(x => x.UpdatedUtc, brief.UpdatedUtc), ct);
+        if (changed != 1) throw new InvalidOperationException("Content changed. Reload before reviewing it.");
+        _db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, "user", _actorContext?.UserId, "marketing.content.reviewed",
+            "marketing_content_brief", brief.Id.ToString("D"), brief.Status, "Content review does not grant publication or spending authority.",
+            metadata: new Dictionary<string, string?> { ["briefVersion"] = brief.Version.ToString() }));
         return true;
-    }
+    }, ct);
 
     public async Task<bool> SubmitContentAsync(Guid companyId, Guid briefId, CancellationToken ct)
     {
@@ -498,11 +543,11 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
     private static MarketingContentVariantDto Map(MarketingContentVariant x) => new(x.Id, x.VariantFamilyId,
         x.VersionNumber, x.Name, x.Body, x.ContentFormat, x.SourceReferences, x.GeneratedByAi,
         x.GenerationRunId, x.CapabilityVersion, x.PromptVersion, x.Status, x.CreatedUtc);
-    private static MarketingContentBriefDto Map(MarketingContentBrief x, IReadOnlyList<MarketingContentVariantDto> variants) => new(x.Id, x.SalesCampaignId, x.MarketingPlanId, x.Title, x.Purpose, x.Audience, x.Channel, x.Language, x.Tone, x.CallToAction, x.DueUtc, x.Status, x.Version, variants, x.MarketingCustomerSegmentVersionId, x.MeasurableObjective, x.FunnelStage, x.CustomerInsight, x.KeyMessage, x.SupportingPointsJson, x.Offer, x.RequiredClaimsJson, x.ProhibitedClaimsJson, x.SeoRequirementsJson, x.VisualDirection, x.DesiredFormatsJson, x.VariantRequirementsJson, x.EvidenceRequirementsJson, x.ApprovalPolicyJson);
+    private static MarketingContentBriefDto Map(MarketingContentBrief x, IReadOnlyList<MarketingContentVariantDto> variants) => new(x.Id, x.SalesCampaignId, x.MarketingPlanId, x.Title, x.Purpose, x.Audience, x.Channel, x.Language, x.Tone, x.CallToAction, x.DueUtc, x.Status, x.Version, variants, x.MarketingCustomerSegmentVersionId, x.MeasurableObjective, x.FunnelStage, x.CustomerInsight, x.KeyMessage, x.SupportingPointsJson, x.Offer, x.RequiredClaimsJson, x.ProhibitedClaimsJson, x.SeoRequirementsJson, x.VisualDirection, x.DesiredFormatsJson, x.VariantRequirementsJson, x.EvidenceRequirementsJson, x.ApprovalPolicyJson, x.UpdatedUtc);
     private static void ValidateMarketingJson(string value, string label)
     { try { JsonNode.Parse(value); } catch (System.Text.Json.JsonException ex) { throw new ArgumentException($"{label} must be valid JSON.", ex); } }
     private static string ValueOr(string? value, string fallback = "Not specified") => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     private static MarketingSalesHandoffDto Map(MarketingSalesHandoff x) => new(x.Id, x.SalesCampaignId, x.ContactId, x.CustomerCompanyId, x.LinkedLeadId, x.LinkedDealId, x.Reason, x.SuggestedAction, x.Urgency, x.ExpiresUtc, x.EvidenceReferences, x.Status, x.DecisionReason, x.UpdatedUtc);
     private static MarketingObservationDto Map(MarketingChannelObservation x) => new(x.Id, x.SalesCampaignId, x.SalesCampaignActivityId, x.Provider, x.MetricCode, x.Value, x.Unit, x.PeriodStartUtc, x.PeriodEndUtc, x.SourceReference, x.RetrievedUtc, x.CorrectionOfObservationId, x.IsSuperseded);
-    private static MarketingExperimentDto Map(MarketingExperiment x) => new(x.Id, x.SalesCampaignId, x.Name, x.Hypothesis, x.PrimaryMetric, x.GuardrailMetric, x.MinimumSampleSize, x.StartsUtc, x.EndsUtc, x.Status, x.Decision);
+    private static MarketingExperimentDto Map(MarketingExperiment x) => new(x.Id, x.SalesCampaignId, x.Name, x.Hypothesis, x.PrimaryMetric, x.GuardrailMetric, x.MinimumSampleSize, x.StartsUtc, x.EndsUtc, x.Status, x.Decision, x.UpdatedUtc);
 }

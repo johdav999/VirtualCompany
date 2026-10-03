@@ -51,6 +51,7 @@
     }
     else if (deal is not null)
     {
+        <SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
         <div class="deal-workspace">
             <div class="deal-content">
                 <section class="deal-hero">
@@ -104,6 +105,8 @@
                         </details>
                     </div>
                 </section>
+
+                <SalesCommitmentPanel CompanyId="ResolvedCompanyId!.Value" DealId="DealId" Changed="LoadAsync" />
 
                 <nav class="deal-content-tabs" aria-label="@SalesText["DealSections"]">
                     <button class="@(activeTab == "overview" ? "active" : null)" aria-selected="@(activeTab == "overview")" @onclick='() => SetTab("overview")'>@SalesText["Overview"]</button>
@@ -337,7 +340,7 @@
             <aside class="deal-agent-rail" aria-label="@SalesText["AlexSalesManager"]">
                 <header class="deal-agent-identity">
                     <span class="deal-agent-avatar" aria-hidden="true">A</span>
-                    <div><strong>Alex</strong><span>@SalesText["SalesManager"]</span><small><i aria-hidden="true"></i>@SalesText["Online"]</small></div>
+                    <div><strong>Alex</strong><span>@SalesText["SalesManager"]</span></div>
                 </header>
 
                 <section class="deal-agent-card deal-agent-card--priority">
@@ -373,6 +376,7 @@
 
 @code {
     [Parameter] public Guid DealId { get; set; }
+    [SupplyParameterFromQuery(Name = "tab")] public string? Tab { get; set; }
 
     private bool isLoading = true;
     private bool isSubmitting;
@@ -393,6 +397,8 @@
 
     private async Task LoadAsync()
     {
+        var read = BeginSalesRead();
+        activeTab = Tab is "activity" or "emails" or "files" ? Tab : "overview";
         isLoading = true;
         errorMessage = null;
         try
@@ -403,9 +409,12 @@
                 return;
             }
 
-            deal = await SalesApiClient.GetDealAsync(ResolvedCompanyId!.Value, DealId);
-            dealEmails = await SalesApiClient.ListDealEmailsAsync(ResolvedCompanyId!.Value, DealId);
-            financeHandoff = await SalesApiClient.GetFinanceHandoffAsync(ResolvedCompanyId!.Value, DealId);
+            var company = ResolvedCompanyId!.Value; var record = DealId;
+            var nextDeal = await SalesApiClient.GetDealAsync(company, record);
+            var nextEmails = await SalesApiClient.ListDealEmailsAsync(company, record);
+            var nextHandoff = await SalesApiClient.GetFinanceHandoffAsync(company, record);
+            if (!SalesReadIsCurrent(read)) return;
+            deal = nextDeal; dealEmails = nextEmails; financeHandoff = nextHandoff;
             if (deal is null)
             {
                 errorMessage = SalesText["DealNotFound"];
@@ -419,12 +428,13 @@
         }
         catch (SalesApiException ex)
         {
+            if (!SalesReadIsCurrent(read)) return;
             errorMessage = ex.Message;
             AgentPanelErrorMessage = ex.Message;
         }
         finally
         {
-            isLoading = false;
+            if (SalesReadIsCurrent(read)) isLoading = false;
         }
     }
 
@@ -531,7 +541,7 @@
         }
     }
 
-    private void SetTab(string tab) => activeTab = tab;
+    private void SetTab(string tab) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("tab", tab), replace: true);
 
     private void SearchSales()
     {
@@ -560,8 +570,10 @@
                 ? SalesText["ScheduleProductDemo"]
                 : SalesText["ReviewDealWithAlex"];
     private string NextActionDue => PrimaryRecommendation is not null || DaysSinceLastActivity >= 7 ? SalesText["Today"] : SalesText["NotScheduled"];
-    private int DaysSinceLastActivity => deal?.Activities.Count > 0
-        ? Math.Max(0, (int)Math.Floor((DateTime.UtcNow - deal.Activities.Max(x => x.OccurredUtc.ToUniversalTime())).TotalDays))
+    private IEnumerable<SalesActivityResponse> CustomerActivities => deal?.Activities.Where(x =>
+        x.ActivityType != "Internal follow up" && x.Status == "Completed" && x.OccurredUtc <= DateTime.UtcNow) ?? [];
+    private int DaysSinceLastActivity => CustomerActivities.Any()
+        ? Math.Max(0, (int)Math.Floor((DateTime.UtcNow - CustomerActivities.Max(x => DateTime.SpecifyKind(x.OccurredUtc, DateTimeKind.Utc))).TotalDays))
         : 0;
     private string ContactInitials
     {
@@ -609,7 +621,7 @@
             {
                 risks.Add(new(SalesText["NoCompanyLinked"], SalesText["High"], "deal-severity--high"));
             }
-            if (deal?.Activities.Count == 0)
+            if (!CustomerActivities.Any())
             {
                 risks.Add(new(SalesText["NoActivity"], SalesText["Medium"], "deal-severity--medium"));
             }
@@ -631,7 +643,7 @@
 
     private IReadOnlyList<ChecklistItem> DealChecklist =>
     [
-        new(SalesText["QualificationComplete"], "bi-check-circle-fill", "is-complete"),
+        new(SalesText["ReviewQualificationEvidence"], "bi-info-circle", "needs-attention"),
         string.IsNullOrWhiteSpace(deal?.ContactName)
             ? new(SalesText["ContactMissing"], "bi-exclamation-triangle-fill", "needs-attention")
             : new(SalesText["ContactIdentified"], "bi-check-circle-fill", "is-complete"),
@@ -654,14 +666,14 @@
         return $"deal-activity-list__icon bi {icon}";
     }
 
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private string BuildNotificationsPath()
     {
         var path = BuildPath("/work");
         return $"{path}{(path.Contains('?') ? '&' : '?')}section=notifications";
     }
-    private string BuildFinanceDocumentPath() => ResolvedCompanyId is Guid companyId ? $"/finance/invoices?companyId={companyId:D}&source=sales&dealId={DealId:D}" : "/finance/invoices";
-    private string BuildMeetingPath(Guid leadId) => ResolvedCompanyId is Guid companyId ? $"/app/sales/leads/{leadId:D}?companyId={companyId:D}&schedule=true" : $"/app/sales/leads/{leadId:D}?schedule=true";
+    private string BuildFinanceDocumentPath() => BuildSalesPath($"/finance/invoices?source=sales&dealId={DealId:D}");
+    private string BuildMeetingPath(Guid leadId) => BuildPath($"/app/sales/leads/{leadId:D}?schedule=true");
     private string BuildContactProfilePath(Guid contactId) => BuildPath($"/app/sales/contacts/{contactId:D}");
     private string EngagementBand(decimal score) => score >= 75m ? SalesText["StrongEngagement"] : score >= 45m ? SalesText["ModerateEngagement"] : SalesText["LightEngagement"];
     private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;

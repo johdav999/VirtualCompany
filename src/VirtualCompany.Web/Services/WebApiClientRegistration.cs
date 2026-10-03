@@ -9,6 +9,7 @@ public static class WebApiClientRegistration
         IConfiguration configuration)
     {
         services.AddScoped<ICompanyApiTransport, CompanyApiTransport>();
+        services.AddScoped(sp => new SalesOperationalApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped<DocumentRepositoryApiClient>(sp => new(
             sp.GetRequiredService<ICompanyApiTransport>(),
             IsOffline(sp),
@@ -34,6 +35,7 @@ public static class WebApiClientRegistration
             sp.GetRequiredService<ICompanyApiTransport>(),
             IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new AgentWorkApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new ActionInsightApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new TodayFocusApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped<TodayWorkspaceApiClient>(sp => new(
@@ -116,9 +118,10 @@ public static class WebApiClientRegistration
             sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new MarketingApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new MarketingOperationalApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new GuidedWorkApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesAutomationApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
-        services.AddScoped(sp => new SupportApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped(sp => new SupportApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>(), sp.GetRequiredService<ICompanyApiTransport>()));
         services.AddScoped<FinanceIntegrationApplicationApiClient>();
         services.AddScoped<AccountantCollaborationApiClient>();
         return services;

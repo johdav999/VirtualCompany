@@ -61,6 +61,13 @@ else
                             }
                         </div>
                     }
+                    @if (Workspace.AvailableLenses.Count == 1)
+                    {
+                        <div class="workspace-current-responsibility" data-testid="monthly-active-responsibility">
+                            <strong>@LensLabel(Workspace.ActiveLens)</strong>
+                            <small>@Workspace.AvailableLenses[0].AvailabilityReason</small>
+                        </div>
+                    }
                 </div>
 
                 @if (Workspace.ResponsibilitySetup is { IsConfigured: false } setup)
@@ -152,7 +159,7 @@ else
                             }
                         }
                     </div>
-                    <a class="monthly-rail-footer" href="@DashboardRoutes.BuildApprovalsPath(CompanyId)">@CommonText["TodayViewAllDecisions"] <MonthlyWorkspaceIcon Kind="chevron-right" Size="14" /></a>
+                    <a class="monthly-rail-footer" href="@Resolve(DashboardRoutes.BuildApprovalsPath(CompanyId))">@CommonText["TodayViewAllDecisions"] <MonthlyWorkspaceIcon Kind="chevron-right" Size="14" /></a>
                 </section>
 
                 <section class="monthly-rail-card" data-testid="monthly-agent-outcomes">
@@ -200,9 +207,9 @@ else
     private void ToggleMobileOutcomes() => ShowMobileOutcomes = !ShowMobileOutcomes;
 
     private Task ShiftMonth(int offset) { var date = new DateTime(Workspace!.Period.Year, Workspace.Period.Month, 1).AddMonths(offset); return MonthChanged.InvokeAsync((date.Year, date.Month)); }
-    private string Resolve(string? route) => DashboardRoutes.EnsureCompanyContext(route, CompanyId, DashboardRoutes.BuildMonthlyPath(CompanyId, Workspace?.ActiveLens, Workspace?.Period.Year, Workspace?.Period.Month));
+    private string Resolve(string? route) => DashboardRoutes.EnsureWorkspaceContext(route, CompanyId, DashboardRoutes.BuildMonthlyPath(CompanyId, Workspace?.ActiveLens, Workspace?.Period.Year, Workspace?.Period.Month));
     private Task Record(string area, string target, string? id, string? source, string? label, int? position = null) => ActionSelected.InvokeAsync(new(area, "open-" + area, Resolve(target), id, source, label, position));
-    private string LensLabel(string? lens) => TodayWorkspaceLensValues.Normalize(lens) switch { "finance" => CommonText["TodayFinance"], "sales" => CommonText["TodaySales"], "marketing" => CommonText["TodayMarketing"], "customers" => CommonText["TodayCustomers"], _ => CommonText["TodayCompany"] };
+    private string LensLabel(string? lens) => TodayWorkspaceLensValues.Normalize(lens) switch { "finance" => CommonText["TodayFinance"], "sales" => CommonText["TodaySales"], "marketing" => CommonText["TodayMarketing"], "customers" => CommonText["TodayCustomerSupport"], _ => CommonText["TodayCompany"] };
     private static string Tone(string? status) => status?.Trim().ToLowerInvariant() switch { "critical" or "blocked" or "failed" => "danger", "attention" or "unavailable" or "needs_user" => "attention", "positive" or "healthy" or "completed" => "positive", "recommended" => "recommended", _ => "current" };
     private string AgentState(string? state) => state?.Trim().ToLowerInvariant() switch { "blocked" => CommonText["TodayAgentStateBlocked"], "needs_user" => CommonText["TodayAgentStateNeedsUser"], "recommended" => CommonText["TodayAgentStateRecommended"], "completed" => CommonText["TodayAgentStateCompleted"], "working" => CommonText["TodayAgentStateWorking"], _ => CommonText["TodayAgentStateMonitoring"] };
 

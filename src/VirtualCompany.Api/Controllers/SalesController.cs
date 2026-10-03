@@ -24,6 +24,7 @@ public sealed class SalesController : ControllerBase
     private readonly IDealIntelligenceSignalRepository _dealIntelligenceSignals;
     private readonly ISalesLeadEmailEvidenceService _leadEmailEvidence;
     private readonly ISalesMeetingSchedulingService _meetingScheduling;
+    private readonly TimeProvider _timeProvider;
 
     public SalesController(
         ICompanyContextAccessor companyContextAccessor,
@@ -33,7 +34,8 @@ public sealed class SalesController : ControllerBase
         IConversionAnalyticsService conversionAnalyticsService,
         IDealIntelligenceSignalRepository dealIntelligenceSignals,
         ISalesLeadEmailEvidenceService leadEmailEvidence,
-        ISalesMeetingSchedulingService meetingScheduling)
+        ISalesMeetingSchedulingService meetingScheduling,
+        TimeProvider timeProvider)
     {
         _companyContextAccessor = companyContextAccessor;
         _salesOperations = salesOperations;
@@ -43,6 +45,7 @@ public sealed class SalesController : ControllerBase
         _dealIntelligenceSignals = dealIntelligenceSignals;
         _leadEmailEvidence = leadEmailEvidence;
         _meetingScheduling = meetingScheduling;
+        _timeProvider = timeProvider;
     }
 
     [HttpGet("dashboard")]
@@ -294,9 +297,7 @@ public sealed class SalesController : ControllerBase
     {
         var companyId = CompanyId();
         var latest = await _revenueForecastService.GetLatestForecastAsync(companyId, cancellationToken);
-        return latest is not null
-            ? Ok(latest)
-            : Ok(await _revenueForecastService.CalculateAndPersistForecastAsync(companyId, DateTime.UtcNow, cancellationToken));
+        return Ok(latest ?? await _revenueForecastService.CalculateForecastAsync(companyId, _timeProvider.GetUtcNow().UtcDateTime, cancellationToken));
     }
 
     [HttpGet("analytics")]

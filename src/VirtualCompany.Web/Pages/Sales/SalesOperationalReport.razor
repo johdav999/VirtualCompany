@@ -1,0 +1,190 @@
+@page "/app/sales/forecast"
+@page "/app/sales/activities"
+@page "/app/sales/pipeline/report"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@implements IAsyncDisposable
+@inject SalesOperationalApiClient Reports
+@inject ICompanyPresentationContext PresentationContext
+@inject IJSRuntime JS
+@using System.Globalization
+
+<PageTitle>@Title</PageTitle>
+<main class="vc-page sales-report" data-testid="sales-operational-report">
+    <header class="vc-page-header"><div><span class="vc-kicker">@SalesText["Sales"]</span><h1>@Title</h1><p>@SalesText["ReportEvidenceDescription"]</p></div>
+        <button class="btn btn-primary" disabled="@loading" @onclick="LoadAsync">@SalesText["Reload"]</button></header>
+    <SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
+    <p>@CommonText["OnboardingTimezone"]: @(PresentationContext.TimeZoneId ?? "UTC")</p>
+    <section class="vc-panel sales-report-filters">
+        @if (IsActivities)
+        {
+            <label>@SalesText["Status"]<select disabled="@(loading || submitting)" value="@(Status ?? "overdue")" @onchange="StatusChanged">
+                @foreach (var state in new[] { "overdue", "pending", "completed", "all" }) { <option value="@state">@SalesText["ReportStatus_" + state]</option> }
+            </select></label>
+        }
+        else
+        {
+            @if (IsForecast)
+            { <label>@SalesText["ForecastHorizon"]<select disabled="@(loading || submitting)" value="@(Days ?? 30)" @onchange="DaysChanged"><option value="30">30</option><option value="60">60</option><option value="90">90</option></select></label> }
+            <label>@SalesText["Currency"]<select disabled="@(loading || submitting)" value="@(Currency ?? "")" @onchange="CurrencyChanged"><option value="">@SalesText["SeparateCurrencies"]</option>
+                @foreach (var currency in currencies) { <option value="@currency">@currency</option> }
+            </select></label>
+            <label>@SalesText["Stage"]<select disabled="@(loading || submitting)" value="@StageId" @onchange="StageChanged"><option value="">@SalesText["AllStages"]</option>
+                @foreach (var stage in stages) { <option value="@stage.StageId">@stage.Name</option> }
+            </select></label>
+        }
+    </section>
+    @if (loading) { <section class="vc-panel" role="status">@SalesText["LoadingSalesData"]</section> }
+    else if (error is not null) { <section class="vc-panel" role="alert"><h2>@SalesText["SalesUnavailable"]</h2><p>@error</p><button class="btn btn-primary" @onclick="LoadAsync">@SalesText["Reload"]</button></section> }
+    else if (opportunities is not null)
+    {
+        <section class="vc-panel"><p>@SalesText["ReportAsOf"]: @LocalDateTime.DateTime(opportunities.AsOfUtc) · @SalesText["CurrentOpportunityCoverage"]</p>
+            <p>@SalesText[IsForecast ? "ForecastFormula" : "PipelineFormula"]</p>
+            <small>@SalesText["ReportCurrentCalculation"]: @opportunities.CalculationVersion</small>
+        </section>
+        <section class="sales-report-totals" aria-label="@SalesText["ReportTotals"]">
+            <article class="vc-panel"><span>@SalesText["IncludedOpportunities"]</span><strong>@opportunities.Rows.Count</strong></article>
+            @foreach (var total in opportunities.Totals)
+            { <article class="vc-panel"><span>@total.Currency · @SalesText["PipelineValue"]</span><strong>@LocalMoney.Format(total.GrossAmount, total.Currency)</strong><small>@SalesText[IsForecast ? "RiskAdjustedRevenue" : "StageWeightedValue"]: @LocalMoney.Format(total.ExpectedAmount, total.Currency)</small></article> }
+        </section>
+        <section class="vc-panel">
+            <h2>@SalesText["OpportunityEvidence"]</h2>
+            @if (opportunities.Rows.Count == 0) { <p role="status">@SalesText["NoMatchingOpportunities"]</p> }
+            else
+            {
+                <div class="sales-report-table"><table><thead><tr><th>@SalesText["Opportunity"]</th><th>@SalesText["Stage"]</th><th>@SalesText["ReportExpectedClose"]</th><th>@SalesText["PipelineValue"]</th><th>@SalesText["StageProbability"]</th>@if (IsForecast) { <th>@SalesText["Risk"]</th> }<th>@SalesText[IsForecast ? "RiskAdjustedRevenue" : "StageWeightedValue"]</th></tr></thead><tbody>
+                @foreach (var row in opportunities.Rows)
+                {
+                    <tr><td><a href="@DealPath(row.DealId)">@row.Title</a><small>@SalesText["UpdatedAt", LocalDateTime.DateTime(row.UpdatedUtc)]</small></td><td>@row.Stage</td><td>@(row.ExpectedCloseUtc.HasValue ? LocalDateTime.DateTime(row.ExpectedCloseUtc.Value) : SalesText["NoCloseDate"])</td><td>@LocalMoney.Format(row.Amount, row.Currency)</td><td>@row.StageProbability.ToString("P0", CultureInfo.CurrentCulture)</td>
+                    @if (IsForecast) { <td>@row.Risk.ToString("P0", CultureInfo.CurrentCulture)<small>@(row.RiskCalculatedUtc.HasValue ? LocalDateTime.DateTime(row.RiskCalculatedUtc.Value) : SalesText["UnknownRiskDefault"])</small></td> }
+                    <td>@LocalMoney.Format(row.ExpectedAmount, row.Currency)</td></tr>
+                }
+                </tbody></table></div>
+            }
+        </section>
+    }
+    else if (activities is not null)
+    {
+        <section class="vc-panel"><p>@SalesText["ReportAsOf"]: @LocalDateTime.DateTime(activities.AsOfUtc)</p><p>@SalesText["ActivityMeaning"]</p></section>
+        <section class="vc-panel"><h2>@SalesText["InternalCommitments"] (@activities.Commitments.Count)</h2>
+            @if (activities.Commitments.Count == 0) { <p role="status">@SalesText["NoMatchingActivities"]</p> }
+            @foreach (var row in activities.Commitments)
+            { <article class="sales-report-activity"><div><a href="@DealPath(row.DealId)">@row.DealTitle</a><p>@row.Summary</p><small>@SalesText["Due"]: @LocalDateTime.DateTime(row.DueUtc) · @SalesText["ReportStatus_" + row.Status]</small></div>
+                @if (row.Status == "pending") { <button class="btn btn-outline-primary" disabled="@submitting" @onclick="() => ReviewAsync(row)">@SalesText["MarkReviewed"]</button> }
+            </article> }
+        </section>
+        <section class="vc-panel"><h2>@SalesText["MeetingDeliveryStates"] (@activities.Meetings.Count)</h2><p>@SalesText["MeetingCompletionMeaning"]</p>
+            @foreach (var row in activities.Meetings)
+            { <article class="sales-report-activity"><div><a href="@BuildSalesPath($"/app/sales/meeting-invitations/{row.Id:D}/prepare")">@row.Title</a><p>@LocalDateTime.DateTime(row.StartsUtc) – @LocalDateTime.DateTime(row.EndsUtc)</p><small>@SalesStatusPresenter.Present(row.Status, SalesText)</small>
+                @if (row.FailureCode is not null) { <p>@SalesText["MeetingRecovery"] <a href="@BuildSalesPath($"/app/sales/leads/{row.LeadId:D}")">@SalesText["Review"]</a></p> }</div></article> }
+        </section>
+    }
+    @if (!loading && error is null && (opportunities is not null || activities is not null))
+    {
+        <section class="vc-panel"><button class="btn btn-outline-primary" disabled="@submitting" @onclick="PrepareExportAsync">@SalesText["PrepareReportExport"]</button><p>@SalesText["ExportRechecksAccess"]</p>
+            @if (download is not null) { <button class="btn btn-primary" disabled="@submitting" @onclick="DownloadAsync">@SalesText["ExportCsv"]</button> }
+        </section>
+    }
+    @if (message is not null) { <p class="vc-panel" role="status">@message</p> }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "days")] public int? Days { get; set; }
+    [SupplyParameterFromQuery(Name = "currency")] public string? Currency { get; set; }
+    [SupplyParameterFromQuery(Name = "stageId")] public Guid? StageId { get; set; }
+    [SupplyParameterFromQuery(Name = "status")] public string? Status { get; set; }
+    [SupplyParameterFromQuery(Name = "dealId")] public Guid? FilterDealId { get; set; }
+    private SalesOpportunityReportViewModel? opportunities;
+    private SalesActivityReportViewModel? activities;
+    private IReadOnlyList<SalesPipelineStageResponse> stages = [];
+    private IReadOnlyList<string> currencies = [];
+    private bool loading = true, submitting, disposed;
+    private string? error, message, download;
+    private int version;
+    private CancellationTokenSource? read;
+    private IJSObjectReference? downloadModule;
+    private bool IsActivities => new Uri(Navigation.Uri).AbsolutePath == "/app/sales/activities";
+    private bool IsForecast => new Uri(Navigation.Uri).AbsolutePath == "/app/sales/forecast";
+    private string Title => SalesText[IsActivities ? "ActivityReport" : IsForecast ? "NearTermForecast" : "PipelineReport"];
+    protected override async Task OnParametersSetAsync() { submitting = false; await LoadAsync(); }
+    private async Task LoadAsync()
+    {
+        var stamp = ++version;
+        var location = Navigation.Uri;
+        read?.Cancel(); read?.Dispose(); read = new(); var ct = read.Token;
+        loading = true; error = null; opportunities = null; activities = null; download = null;
+        try
+        {
+            if (!await ResolveCompanyAsync(ct)) { error = ShellErrorMessage; return; }
+            var company = ResolvedCompanyId!.Value;
+            if (IsActivities)
+            {
+                var result = await Reports.ActivitiesAsync(company, Status ?? "overdue", FilterDealId, ct);
+                if (Current()) activities = result;
+            }
+            else
+            {
+                var result = await Reports.OpportunitiesAsync(company, IsForecast, Days ?? 30, Currency, StageId, ct);
+                var pipeline = await SalesApiClient.GetPipelineAsync(company, ct);
+                if (Current()) { opportunities = result; currencies = result.AvailableCurrencies; stages = pipeline.Stages; }
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is SalesOperationalApiException or SalesApiException)
+        { if (Current()) error = ex.Message; }
+        finally { if (Current()) loading = false; }
+        bool Current() => !disposed && stamp == version && Navigation.Uri == location;
+    }
+    private async Task ReviewAsync(SalesCommitmentViewModel row)
+    {
+        if (ResolvedCompanyId is not Guid company) return;
+        var location = Navigation.Uri;
+        submitting = true; message = null; download = null;
+        try { await Reports.ReviewAsync(company, row); if (Navigation.Uri == location) { await LoadAsync(); message = SalesText["CommitmentReviewed"]; } }
+        catch (SalesOperationalApiException ex)
+        {
+            if (!disposed && Navigation.Uri == location)
+            {
+                message = ex.Message;
+                if (ex.IsUncertain || ex.Status == System.Net.HttpStatusCode.Conflict)
+                { activities = null; error = SalesText["CommitmentUncertain"]; }
+            }
+        }
+        finally { if (!disposed && Navigation.Uri == location) submitting = false; }
+    }
+    private async Task PrepareExportAsync()
+    {
+        var location = Navigation.Uri;
+        submitting = true; await LoadAsync();
+        if (disposed || Navigation.Uri != location) return;
+        if (error is null && !loading) download = opportunities is not null ? SalesOperationalCsv.Export(opportunities) :
+            activities is not null ? SalesOperationalCsv.Export(activities) : null;
+        submitting = false;
+    }
+    private async Task DownloadAsync()
+    {
+        var location = Navigation.Uri;
+        await PrepareExportAsync();
+        if (disposed || Navigation.Uri != location || download is null) return;
+        submitting = true;
+        try
+        {
+            downloadModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "/js/reportDownload.js");
+            if (!disposed && Navigation.Uri == location)
+                await downloadModule.InvokeVoidAsync("downloadReport", "sales-operational-report.csv", download);
+        }
+        catch (JSException) { if (!disposed && Navigation.Uri == location) message = SalesText["ReportDownloadFailed"]; }
+        finally { if (!disposed && Navigation.Uri == location) submitting = false; }
+    }
+    private string DealPath(Guid id) => BuildSalesPath($"/app/sales/deals/{id:D}");
+    private void Filter(string name, object? value) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameter(name, value?.ToString()), replace: true);
+    private void StatusChanged(ChangeEventArgs e) => Filter("status", e.Value);
+    private void CurrencyChanged(ChangeEventArgs e) => Filter("currency", e.Value);
+    private void DaysChanged(ChangeEventArgs e) => Filter("days", e.Value);
+    private void StageChanged(ChangeEventArgs e) => Filter("stageId", e.Value);
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true; ++version; read?.Cancel(); read?.Dispose();
+        if (downloadModule is not null) try { await downloadModule.DisposeAsync(); } catch (JSDisconnectedException) { }
+    }
+}

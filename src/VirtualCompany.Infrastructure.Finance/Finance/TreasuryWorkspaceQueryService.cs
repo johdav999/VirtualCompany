@@ -98,7 +98,11 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
                 .Take(exceptionLimit)
                 .ToArray();
 
-            var missingEvidence = BuildMissingEvidence(accounts);
+            var missingEvidence = BuildMissingEvidence(accounts).ToList();
+            if (liquidity.RiskLevel == "missing")
+                missingEvidence.Add(dashboard.Currency == "MIXED"
+                    ? "Cash sources use different currencies; review the currency-separated cash and forecast evidence."
+                    : cashPosition.Rationale);
             var citations = BuildCitations(query.CompanyId, liquidity, accounts, reconciliation, paymentWork);
             var recommendation = BuildLauraRecommendation(
                 query.CompanyId,
@@ -121,7 +125,7 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
                 .Select(account => account.EvidenceUtc)
                 .Where(value => value.HasValue)
                 .Select(value => value!.Value)
-                .Append(dashboard.AsOfUtc)
+                .Concat(liquidity.RiskLevel == "missing" ? [] : new[] { dashboard.AsOfUtc })
                 .ToArray();
             var hasStaleEvidence = accounts.Any(account =>
                 account.EvidenceState == TreasuryWorkspaceEvidenceStates.Stale);
@@ -629,8 +633,10 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
                     ? TreasuryWorkspaceSeverity.Critical
                     : TreasuryWorkspaceSeverity.High,
                 "Short-horizon liquidity needs review",
-                $"Projected cash is {liquidity.ProjectedCash:0.##} {liquidity.Currency} through {liquidity.ProjectionThroughUtc:yyyy-MM-dd}.",
-                liquidity.ProjectedCash,
+                liquidity.RiskLevel == "missing"
+                    ? "Recover missing or currency-separated cash evidence before relying on a short-horizon projection."
+                    : $"Projected cash is {liquidity.ProjectedCash:0.##} {liquidity.Currency} through {liquidity.ProjectionThroughUtc:yyyy-MM-dd}.",
+                liquidity.RiskLevel == "missing" ? null : liquidity.ProjectedCash,
                 liquidity.Currency,
                 asOfUtc,
                 liquidity.RiskLevel == "critical" ? 95 : 80,
@@ -706,7 +712,8 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
     {
         var projected = Math.Round(dashboard.CurrentCashBalance + dashboard.ExpectedIncomingCash -
                                    dashboard.ExpectedOutgoingCash, 2, MidpointRounding.AwayFromZero);
-        var risk = ResolveLiquidityRisk(projected, cashPosition);
+        var missing = cashPosition.Classification == "cash_position_unavailable" || dashboard.Currency == "MIXED";
+        var risk = missing ? "missing" : ResolveLiquidityRisk(projected, cashPosition);
         var through = DateTime.SpecifyKind(
             asOfUtc.Date.AddDays(horizonDays).AddDays(1).AddTicks(-1),
             DateTimeKind.Utc);
@@ -719,12 +726,12 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
             horizonDays,
             through,
             risk,
-            cashPosition.EstimatedRunwayDays,
-            cashPosition.Thresholds.WarningCashAmount,
-            cashPosition.Thresholds.CriticalCashAmount,
+            missing ? null : cashPosition.EstimatedRunwayDays,
+            missing ? null : cashPosition.Thresholds.WarningCashAmount,
+            missing ? null : cashPosition.Thresholds.CriticalCashAmount,
             cashPosition.Thresholds.WarningRunwayDays,
             cashPosition.Thresholds.CriticalRunwayDays,
-            [
+            missing ? [] : [
                 new TreasuryProjectionPointDto(DateOnly.FromDateTime(asOfUtc),
                     dashboard.CurrentCashBalance, "Posted cash evidence at the workspace as-of time."),
                 new TreasuryProjectionPointDto(DateOnly.FromDateTime(through), projected,
@@ -769,14 +776,13 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
         TreasuryReconciliationSummaryDto reconciliation,
         TreasuryPaymentWorkSummaryDto paymentWork)
     {
-        var citations = new List<TreasuryEvidenceReferenceDto>
-        {
-            new($"treasury-projection:{companyId:N}:{liquidity.ProjectionThroughUtc:yyyyMMdd}",
+        var citations = new List<TreasuryEvidenceReferenceDto>();
+        if (liquidity.RiskLevel != "missing")
+            citations.Add(new($"treasury-projection:{companyId:N}:{liquidity.ProjectionThroughUtc:yyyyMMdd}",
                 "cash_projection",
                 $"{liquidity.HorizonDays}-day cash projection",
                 liquidity.ProjectionThroughUtc,
-                BuildCashPath(companyId))
-        };
+                BuildCashPath(companyId)));
         citations.AddRange(accounts.OrderBy(account => account.EvidenceUtc).Take(2).Select(account =>
             new TreasuryEvidenceReferenceDto(
                 $"bank-account:{account.CompanyBankAccountId:N}:{account.EvidenceUtc?.Ticks ?? 0}",
@@ -805,7 +811,7 @@ public sealed class TreasuryWorkspaceQueryService : ITreasuryWorkspaceQueryServi
         IReadOnlyList<string> missingEvidence,
         bool hasExceptions)
     {
-        var summary = accounts.Any(account => account.ConnectionStatus != BankConnectionStatuses.Active ||
+        var summary = missingEvidence.Count > 0 || accounts.Any(account => account.ConnectionStatus != BankConnectionStatuses.Active ||
                                               account.AllowedActions.Any(action => action.ReasonCode == TreasuryWorkspaceReasonCodes.FeedGapOpen))
             ? "Recover the missing bank evidence before relying on the short-horizon cash projection, then review the remaining exceptions in priority order."
             : paymentWork.ReconciliationRequired > 0

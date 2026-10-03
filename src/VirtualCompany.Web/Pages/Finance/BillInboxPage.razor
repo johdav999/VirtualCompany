@@ -1,5 +1,6 @@
 @page "/finance/bill-inbox"
 @page "/finance/supplier-bills/review"
+@rendermode InteractiveServer
 @inherits FinancePageBase
 
 <PageTitle>@FinanceText["SupplierBillReview"]</PageTitle>
@@ -13,8 +14,8 @@
     LoadingMessage="@FinanceText["LoadingSupplierBillReview"]">
     <section class="bill-review-page" aria-labelledby="review-queue-heading">
         <div class="finance-subtab-nav" aria-label="@FinanceText["SupplierBillSections"]">
-            <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">@FinanceText["Bills"]</a>
-            <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">@FinanceText["Review"]</a>
+            <a class="finance-subtab-nav__link" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId))">@FinanceText["Bills"]</a>
+            <a class="finance-subtab-nav__link active" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId))">@FinanceText["Review"]</a>
         </div>
 
         <div class="bill-review-summary" aria-label="@FinanceText["ReviewQueueSummary"]">

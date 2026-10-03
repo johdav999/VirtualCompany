@@ -1,0 +1,84 @@
+@inject SalesOperationalApiClient Reports
+@inject NavigationManager Navigation
+@implements IDisposable
+@using System.Globalization
+
+<section class="vc-panel sales-commitment" data-testid="sales-commitment-panel">
+    <h2>@SalesText["InternalCommitments"]</h2><p>@SalesText["CommitmentMeaning"]</p>
+    @if (loading) { <p role="status">@SalesText["LoadingSalesData"]</p> }
+    else if (error is not null) { <p role="alert">@error</p> }
+    @if (!loading && error is null)
+    {
+        <div class="sales-commitment-form">
+            <label>@SalesText["CommitmentNote"]<textarea maxlength="500" @bind="note" @bind:event="oninput" disabled="@(submitting || uncertain)"></textarea></label>
+            <label>@SalesText["CommitmentDueUtc"]<input type="datetime-local" value="@due" @oninput="e => due = e.Value?.ToString() ?? string.Empty" disabled="@(submitting || uncertain)" /></label>
+            <button class="btn btn-primary" disabled="@(submitting || uncertain)" @onclick="RecordAsync">@SalesText["SaveCommitment"]</button>
+        </div>
+        @foreach (var row in rows)
+        {
+            <article><div><strong>@row.Summary</strong><small>@SalesText["Due"]: @LocalDateTime.DateTime(row.DueUtc) · @SalesText["ReportStatus_" + row.Status]</small>
+                @if (row.Status == "completed") { <small>@SalesText["ReviewedAt"]: @LocalDateTime.DateTime(row.UpdatedUtc)</small> }</div>
+                @if (row.Status == "pending") { <button class="btn btn-outline-primary" disabled="@(submitting || uncertain)" @onclick="() => ReviewAsync(row)">@SalesText["MarkReviewed"]</button> }
+            </article>
+        }
+        @if (rows.Count == 0) { <p>@SalesText["NoMatchingActivities"]</p> }
+    }
+    @if (message is not null) { <p role="status">@message</p> }
+    @if (uncertain) { <p role="alert">@SalesText["CommitmentUncertain"]</p> }
+    <button class="btn btn-outline-primary" disabled="@submitting" @onclick="ReloadAsync">@SalesText["ReloadActivityHistory"]</button>
+    <a href="@SalesJourneyRoutes.Build($"/app/sales/activities?status=all&dealId={DealId:D}", CompanyId, Navigation.Uri)">@SalesText["ActivityReport"]</a>
+</section>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid DealId { get; set; }
+    [Parameter] public EventCallback Changed { get; set; }
+    private IReadOnlyList<SalesCommitmentViewModel> rows = [];
+    private Guid command = Guid.NewGuid();
+    private string note = "", due = "", location = "";
+    private string? message, error;
+    private bool loading, submitting, uncertain, disposed;
+    private int version;
+    private (Guid, Guid) scope;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (scope != (CompanyId, DealId)) { scope = (CompanyId, DealId); command = Guid.NewGuid(); note = due = ""; uncertain = false; }
+        await ReloadAsync();
+    }
+    private async Task ReloadAsync()
+    {
+        var stamp = ++version; var company = CompanyId; var deal = DealId; location = Navigation.Uri;
+        loading = true; error = null; rows = [];
+        try
+        {
+            var result = await Reports.ActivitiesAsync(company, "all", deal);
+            if (Current()) { rows = result.Commitments; uncertain = false; }
+        }
+        catch (SalesOperationalApiException ex) { if (Current()) error = ex.Message; }
+        finally { if (Current()) loading = false; }
+        bool Current() => !disposed && stamp == version && company == CompanyId && deal == DealId && Navigation.Uri == location;
+    }
+    private async Task RecordAsync()
+    {
+        if (!DateTime.TryParse(due, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dueUtc) || string.IsNullOrWhiteSpace(note))
+        { message = SalesText["CommitmentValidation"]; return; }
+        var company = CompanyId; var deal = DealId; var route = Navigation.Uri;
+        await ExecuteAsync(async () =>
+        {
+            await Reports.RecordAsync(company, deal, command, note.Trim(), dueUtc);
+            if (!disposed && company == CompanyId && deal == DealId && route == Navigation.Uri)
+            { command = Guid.NewGuid(); note = due = ""; }
+        });
+    }
+    private Task ReviewAsync(SalesCommitmentViewModel row) => ExecuteAsync(async () => { await Reports.ReviewAsync(CompanyId, row); });
+    private async Task ExecuteAsync(Func<Task> action)
+    {
+        var company = CompanyId; var deal = DealId; var route = Navigation.Uri;
+        submitting = true; message = null;
+        try { await action(); if (Current()) { await ReloadAsync(); message = SalesText["CommitmentSaved"]; await Changed.InvokeAsync(); } }
+        catch (SalesOperationalApiException ex) { if (Current()) { message = ex.Message; uncertain = ex.IsUncertain; } }
+        finally { if (Current()) submitting = false; }
+        bool Current() => !disposed && company == CompanyId && deal == DealId && route == Navigation.Uri;
+    }
+    public void Dispose() { disposed = true; ++version; }
+}

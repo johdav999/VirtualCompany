@@ -145,7 +145,7 @@ public partial class InvoiceReviewsPage : FinancePageBase
     {
         var query = Filters.Normalize().ToQueryString(AccessState.CompanyId);
         var path = FinanceRoutes.BuildInvoiceReviewDetailPath(item.Id, null);
-        return string.IsNullOrWhiteSpace(query) ? path : $"{path}?{query}";
+        return BuildFinancePath(string.IsNullOrWhiteSpace(query) ? path : $"{path}?{query}");
     }
 
     private async Task SelectReviewAsync(FinanceInvoiceReviewListItemResponse item)

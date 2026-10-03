@@ -20,6 +20,8 @@ public partial class AccountingReconciliationPage : FinancePageBase
     private TreasuryPostingPreviewResponse? TreasuryPostingPreview { get; set; }
     private IReadOnlyList<AccountingAccountListItemResponse> Accounts { get; set; } = [];
     private IReadOnlyList<AccountingFiscalYearResponse> FiscalYears { get; set; } = [];
+    [SupplyParameterFromQuery(Name = "state")] public string? RequestedState { get; set; }
+    [SupplyParameterFromQuery(Name = "search")] public string? RequestedSearch { get; set; }
     private string? StateFilter { get; set; }
     private string? Search { get; set; }
     private Guid SelectedPaymentId { get; set; }
@@ -52,6 +54,7 @@ public partial class AccountingReconciliationPage : FinancePageBase
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
+        StateFilter = RequestedState; Search = RequestedSearch;
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
         await LoadAdvancedWorkspaceAsync(companyId);
         await LoadWorkspaceAsync(companyId);
@@ -91,6 +94,8 @@ public partial class AccountingReconciliationPage : FinancePageBase
 
     private async Task ApplyFiltersAsync()
     {
+        var target = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["state"] = StateFilter, ["search"] = Search });
+        if (target != Navigation.Uri) { Navigation.NavigateTo(target); return; }
         if (AccessState.CompanyId is not Guid companyId) return;
         await LoadAdvancedWorkspaceAsync(companyId);
         await LoadWorkspaceAsync(companyId);
@@ -200,7 +205,7 @@ public partial class AccountingReconciliationPage : FinancePageBase
             TreasuryPostingPreview = null;
             TreasuryReviewReason = string.Empty;
             if (navigate)
-                Navigation.NavigateTo(FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingReconciliation}/{transactionId:D}", companyId));
+                Navigation.NavigateTo(BuildFinancePath(FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingReconciliation}/{transactionId:D}", companyId)));
         }
         catch (FinanceApiException ex) { ActionError = ex.Message; }
         finally { IsDetailLoading = false; }
@@ -361,9 +366,9 @@ public partial class AccountingReconciliationPage : FinancePageBase
     private int Count(string state) => Workspace.StateCounts.GetValueOrDefault(state);
     private string Money(decimal value, string currency) => string.Format(CultureInfo.CurrentCulture, "{0:N2} {1}", value, currency);
     private string JournalHref(Guid journalId) => FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingJournal}?journalId={journalId:D}", AccessState.CompanyId);
-    private string PaymentHref(Guid paymentId) => FinanceRoutes.BuildPaymentDetailPath(paymentId, AccessState.CompanyId);
-    private string InvoiceHref(Guid invoiceId) => FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
-    private string BillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
+    private string PaymentHref(Guid paymentId) => BuildFinancePath(FinanceRoutes.BuildPaymentDetailPath(paymentId, AccessState.CompanyId));
+    private string InvoiceHref(Guid invoiceId) => BuildFinancePath(FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId));
+    private string BillHref(Guid billId) => BuildFinancePath(FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId));
     private string StateLabel(string state) => FinanceText[state switch
     {
         "partial" => "PartiallyMatched",

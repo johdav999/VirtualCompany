@@ -141,6 +141,57 @@ public sealed class FinancialStatementWorkspaceComponentTests
         Assert.All(cut.FindAll(".statement-toolbar button"), b => Assert.True(b.HasAttribute("disabled")));
     }
     [Fact]
+    public void Reload_restores_exact_statement_selection_and_export_rereads_its_authorized_scope()
+    {
+        using var context = Context();
+        var snapshot = Guid.NewGuid(); var requests = new List<string>();
+        using var http = new HttpClient(new Handler(req =>
+        {
+            requests.Add(req.RequestUri!.ToString());
+            return new(HttpStatusCode.OK) { Content = JsonContent.Create(Fixture("profit-loss") with { CsvContent = requests.Count == 1 ? "old" : "fresh" }) };
+        })) { BaseAddress = new("https://test.local/") };
+        context.Services.AddSingleton(new FinanceApiClient(http)); context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().NavigateTo(
+            $"/finance/accounting/reports?companyId={Company}&periodId={Period}&view=profit-loss&comparisonId={Previous}&snapshotId={snapshot}");
+        var cut = context.RenderComponent<FinancialStatementWorkspace>(p => p.Add(x => x.CompanyId, Company)
+            .Add(x => x.InitialPeriodId, Period).Add(x => x.Periods, Periods("profit-loss")));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Export")).Click();
+        cut.WaitForAssertion(() => Assert.Equal(2, requests.Count));
+        Assert.All(requests, url => { Assert.Contains($"snapshotId={snapshot}", url); Assert.Contains($"comparisonFiscalPeriodId={Previous}", url); });
+        Assert.Equal("fresh", context.JSInterop.Invocations["downloadReport"].Single().Arguments[1]);
+    }
+
+    [Fact]
+    public void Revoked_statement_export_shows_failure_and_never_downloads_cached_rows()
+    {
+        using var context = Context(); var reads = 0;
+        using var http = new HttpClient(new Handler(_ => ++reads == 1
+            ? new(HttpStatusCode.OK) { Content = JsonContent.Create(Fixture("profit-loss")) }
+            : new(HttpStatusCode.Forbidden) { Content = JsonContent.Create(new { detail = "Accounting access denied." }) })) { BaseAddress = new("https://test.local/") };
+        context.Services.AddSingleton(new FinanceApiClient(http)); context.JSInterop.Mode = JSRuntimeMode.Loose;
+        var cut = context.RenderComponent<FinancialStatementWorkspace>(p => p.Add(x => x.CompanyId, Company)
+            .Add(x => x.InitialPeriodId, Period).Add(x => x.Periods, Periods("profit-loss")));
+        cut.FindAll("button").Single(b => b.TextContent.Contains("Export")).Click();
+        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[role='alert']")));
+        Assert.DoesNotContain(context.JSInterop.Invocations, call => call.Identifier == "downloadReport");
+    }
+
+    [Fact]
+    public void Reload_of_an_already_persisted_selection_does_not_redirect_to_itself()
+    {
+        using var context = Context();
+        using var http = new HttpClient(new Handler(_ => new(HttpStatusCode.OK) { Content = JsonContent.Create(Fixture("profit-loss")) }))
+            { BaseAddress = new("https://test.local/") };
+        context.Services.AddSingleton(new FinanceApiClient(http));
+        var navigation = (Bunit.TestDoubles.FakeNavigationManager)context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>();
+        navigation.NavigateTo($"/finance/accounting/reports?companyId={Company}&periodId={Period}&view=profit-loss&comparisonId=none");
+        var historyCount = navigation.History.Count;
+        var cut = context.RenderComponent<FinancialStatementWorkspace>(p => p.Add(x => x.CompanyId, Company)
+            .Add(x => x.InitialPeriodId, Period).Add(x => x.Periods, Periods("profit-loss")));
+        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll(".statement-kpi")));
+        Assert.Equal(historyCount, navigation.History.Count);
+    }
+    [Fact]
     public void Export_visual_fixtures_from_the_production_components()
     {
         var directory = Environment.GetEnvironmentVariable("VC_STATEMENT_UAT_DIRECTORY");

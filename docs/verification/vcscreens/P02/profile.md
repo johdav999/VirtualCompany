@@ -1,0 +1,9 @@
+# P02 verification profile
+
+2026-10-01; baseline `37834c7f` plus preserved P01 and P02 working-tree changes. No commit, deployment or release approval. Windows; .NET SDK 9.0.317; Codex in-app browser; real Blazor Interactive Server Web against the composed authenticated test API through `tests/VirtualCompany.Workspace.Uat`. Workers disabled; SQLite is disposable. No provider requests or customer messages.
+
+Reuse the P01 profile and run the adapter DLL from the repository root on API 5319. Owner Web 5079 and member Web 5080 run from `src/VirtualCompany.Web`, with `ApiBaseUrl=http://127.0.0.1:5319/`, Development, development-auth fixture identities and EventLog logging disabled. Fixtures include overdue manual follow-up 6666…, pending approval 8888… targeting task 7777…, Marketing experiment 9999…, Support case aaaa… and the existing North/South deals. The test auth-context service omits timezone; the UI explicitly uses UTC in that environment. The component suite separately verifies Europe/Stockholm conversion.
+
+Check ports before startup; launch dotnet directly with `Start-Process -PassThru -WindowStyle Hidden`; record PID immediately; bounded separate health checks (`/_uat/health`, Web GET, 10–15 second request timeout). P01 already demonstrated Windows DPAPI failure within the sandbox: Web hosts used approved outside-sandbox startup without production bypass. Stop only recorded PIDs before builds and after verification. All P02 hosts stopped; PID files are historical. Temporary viewport overrides reset and both agent tabs closed.
+
+Reference-first: saved generation prompt and `docs/design/references/priority-evidence-detail-reference.png` precede the detail implementation. Desktop screenshot comparison preserves sidebar, explanation/ownership summary, Data used / Next action columns, and separate summary/change footer. Actual source coverage determines visible warnings.

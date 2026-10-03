@@ -9,6 +9,8 @@ public interface ITodayWorkspaceApiClient
         Guid companyId,
         string? lens = null,
         CancellationToken cancellationToken = default);
+    Task<TodayWorkspaceViewModel?> RefreshAsync(Guid companyId, string? lens = null,
+        CancellationToken cancellationToken = default) => GetAsync(companyId, lens, cancellationToken);
     Task<TodayWorkspaceManualReviewViewModel> RequestReviewAsync(
         Guid companyId,
         CancellationToken cancellationToken = default);
@@ -39,10 +41,17 @@ public sealed class TodayWorkspaceApiClient(
             ?? throw new HttpRequestException("The company review response was empty.");
     }
 
-    public async Task<TodayWorkspaceViewModel?> GetAsync(
+    public Task<TodayWorkspaceViewModel?> RefreshAsync(Guid companyId, string? lens = null,
+        CancellationToken cancellationToken = default) => ReadAsync(companyId, lens, true, cancellationToken);
+
+    public Task<TodayWorkspaceViewModel?> GetAsync(Guid companyId, string? lens = null,
+        CancellationToken cancellationToken = default) => ReadAsync(companyId, lens, false, cancellationToken);
+
+    private async Task<TodayWorkspaceViewModel?> ReadAsync(
         Guid companyId,
-        string? lens = null,
-        CancellationToken cancellationToken = default)
+        string? lens,
+        bool refresh,
+        CancellationToken cancellationToken)
     {
         if (companyId == Guid.Empty)
         {
@@ -61,6 +70,7 @@ public sealed class TodayWorkspaceApiClient(
         {
             uri += $"?lens={Uri.EscapeDataString(normalizedLens)}";
         }
+        if (refresh) uri += (uri.Contains('?') ? "&" : "?") + "refresh=true";
 
         using var response = await transport.SendAsync(
             companyId,

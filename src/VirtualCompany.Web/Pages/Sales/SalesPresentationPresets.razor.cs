@@ -36,42 +36,58 @@ public partial class SalesPresentationPresets : IAsyncDisposable
         (string.IsNullOrWhiteSpace(Search) || x.Name.Contains(Search, StringComparison.CurrentCultureIgnoreCase) ||
          (x.Description?.Contains(Search, StringComparison.CurrentCultureIgnoreCase) ?? false) || OwnerName(x.OwnerUserId).Contains(Search, StringComparison.CurrentCultureIgnoreCase))).ToArray();
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    [SupplyParameterFromQuery(Name = "presetId")] public Guid? SelectedPresetId { get; set; }
+    [SupplyParameterFromQuery(Name = "versionId")] public Guid? SelectedVersionId { get; set; }
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+    private void NavigateToPreset(Guid id) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        { ["presetId"] = id, ["versionId"] = null }));
 
     private async Task LoadAsync()
     {
+        var read = BeginSalesRead();
         IsLoading = true; ErrorMessage = null;
         try
         {
             if (!await ResolveCompanyAsync(lifetime.Token) || ResolvedCompanyId is not Guid companyId) return;
             var context = await OnboardingApiClient.GetCurrentUserContextAsync(companyId, lifetime.Token);
+            if (!SalesReadIsCurrent(read)) return;
+            if (Selected?.CompanyId != companyId) ClearSelection();
             actorUserId = context?.User.Id ?? Guid.Empty;
             try
             {
                 var roster = await AgentApiClient.GetRosterAsync(companyId, lifetime.Token);
+                if (!SalesReadIsCurrent(read)) return;
                 SalesAgents = roster.Where(x => x.Department.Equals("Sales", StringComparison.OrdinalIgnoreCase) && x.Status.Equals("active", StringComparison.OrdinalIgnoreCase)).ToArray();
             }
             catch (OnboardingApiException)
             {
                 SalesAgents = [];
             }
-            Items = await PresetApi.ListAsync(companyId, includeArchived: true, ct: lifetime.Token);
+            var items = await PresetApi.ListAsync(companyId, includeArchived: true, ct: lifetime.Token);
+            if (!SalesReadIsCurrent(read)) return;
+            Items = items;
             await RefreshAuthoritativeStatesAsync(companyId);
-            if (Selected is not null && Items.All(x => x.Id != Selected.Id)) ClearSelection();
+            if (!SalesReadIsCurrent(read)) return;
+            if (SelectedPresetId is Guid selectedId) await SelectAsync(selectedId);
+            else if (Selected is not null && Items.All(x => x.Id != Selected.Id)) ClearSelection();
             else if (Selected is not null) await SelectAsync(Selected.Id);
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        catch (SalesPresentationPresetApiException ex) { ErrorMessage = ex.Message; }
-        finally { IsLoading = false; }
+        catch (SalesPresentationPresetApiException ex) { if (SalesReadIsCurrent(read)) ErrorMessage = ex.Message; }
+        finally { if (SalesReadIsCurrent(read)) IsLoading = false; }
     }
 
     private async Task SelectAsync(Guid id)
     {
         if (ResolvedCompanyId is not Guid companyId) return;
+        var location = Navigation.Uri;
         try
         {
-            Selected = await PresetApi.GetAsync(companyId, id, lifetime.Token);
-            PreviewVersion = Selected?.CurrentDraft ?? Selected?.CurrentPublished ?? Selected?.Versions.FirstOrDefault();
+            var selected = await PresetApi.GetAsync(companyId, id, lifetime.Token);
+            if (Navigation.Uri != location || ResolvedCompanyId != companyId) return;
+            Selected = selected;
+            PreviewVersion = SelectedVersionId is Guid versionId ? Selected?.Versions.SingleOrDefault(x => x.Id == versionId) :
+                Selected?.CurrentDraft ?? Selected?.CurrentPublished ?? Selected?.Versions.FirstOrDefault();
             ConflictMessage = null; FieldErrors = new Dictionary<string, string[]>();
             PopulateForm();
             await LoadVersionAsync();
@@ -79,7 +95,8 @@ public partial class SalesPresentationPresets : IAsyncDisposable
         catch (SalesPresentationPresetApiException ex) { ErrorMessage = ex.Message; }
     }
 
-    private async Task PreviewVersionAsync(SalesPresentationPresetVersionViewModel version) { PreviewVersion = version; PopulateForm(); await LoadVersionAsync(); }
+    private Task PreviewVersionAsync(SalesPresentationPresetVersionViewModel version)
+    { Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("versionId", version.Id)); return Task.CompletedTask; }
     private async Task LoadVersionAsync()
     {
         if (ResolvedCompanyId is not Guid companyId || Selected is null || PreviewVersion is null) { Slides = []; Readiness = null; return; }
@@ -302,7 +319,7 @@ public partial class SalesPresentationPresets : IAsyncDisposable
     private string OwnerName(Guid id) => id == actorUserId ? CurrentUserName() : "Company member";
     private string CurrentUserName() => "You";
     private string? PresenterName(Guid? id) => id is null ? null : SalesAgents.FirstOrDefault(x => x.Id == id)?.DisplayName ?? "Unavailable presenter";
-    private string BuildPath(string path) => ResolvedCompanyId is Guid id ? $"{path}?companyId={id:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private void CancelConfirmation() => PendingConfirmation = null;
     private async Task RunConfirmationAsync() { if (PendingConfirmation is { } confirmation) await confirmation.Action(); }
 

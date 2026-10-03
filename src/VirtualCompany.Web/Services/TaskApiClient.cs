@@ -64,6 +64,48 @@ public sealed class TaskApiClient
         return GetAsync<TaskDetailViewModel>($"api/companies/{companyId}/tasks/{taskId}", cancellationToken);
     }
 
+    public async Task<RiskFollowUpResult> CreateRiskFollowUpAsync(Guid companyId, TodayWorkspacePriorityViewModel risk, CancellationToken token = default)
+    {
+        if (_useOfflineMode) throw new OnboardingApiException("Task changes are unavailable in offline mode.");
+        using var response = await new CompanyApiTransport(_httpClient).SendAsync(companyId, HttpMethod.Post,
+            $"api/companies/{companyId:D}/tasks", JsonContent.Create(new {
+                type = "follow_up", title = risk.WhatHappened, description = risk.RequiredHumanAction,
+                priority = "high", dueAt = risk.DueUtc, assignedAgentId = (Guid?)null,
+                inputPayload = new { priorityEvidenceKey = risk.Key, sourceType = risk.EvidenceSourceType,
+                    sourceId = risk.EvidenceSourceId, sourceObservedUtc = DateTime.SpecifyKind(risk.ObservedAtUtc, DateTimeKind.Utc),
+                    sourceCompanyId = companyId, sourceLens = risk.Lens, sourceWorkspaceLens = "company" },
+                correlationId = Guid.NewGuid().ToString("N")
+            }), token);
+        if (!response.IsSuccessStatusCode) throw await CreateExceptionAsync(response, token);
+        var result = await response.Content.ReadFromJsonAsync<RiskFollowUpResult>(SerializerOptions, token)
+            ?? throw new OnboardingApiException("Task result is unavailable. Check Work before retrying.");
+        if (result.CompanyId != companyId || result.Id == Guid.Empty)
+            throw new OnboardingApiException("Task result is unavailable. Check Work before retrying.");
+        return result;
+    }
+
+    public async Task CompleteFollowUpAsync(Guid companyId, Guid taskId, CancellationToken cancellationToken = default)
+    {
+        if (_useOfflineMode) throw new OnboardingApiException("Task changes are unavailable in offline mode.");
+        var transport = new CompanyApiTransport(_httpClient);
+        using var currentResponse = await transport.SendAsync(companyId, HttpMethod.Get,
+            $"api/companies/{companyId:D}/tasks/{taskId:D}", null, cancellationToken);
+        if (!currentResponse.IsSuccessStatusCode) throw await CreateExceptionAsync(currentResponse, cancellationToken);
+        var current = await currentResponse.Content.ReadFromJsonAsync<TaskDetailViewModel>(SerializerOptions, cancellationToken)
+            ?? throw new OnboardingApiException("Task details are unavailable. Refresh and retry.");
+        if (current.CompanyId != companyId || current.Id != taskId)
+            throw new OnboardingApiException("Task details are unavailable for the selected company.");
+        if (current.Status == "completed") return;
+        if (current.Type != "follow_up" || current.CreatedByActorType != "user" || current.AssignedAgentId.HasValue ||
+            current.WorkflowInstanceId.HasValue || current.ParentTaskId.HasValue || current.Status is not ("new" or "pending" or "in_progress" or "blocked"))
+            throw new OnboardingApiException("This task changed or requires its owning workflow. Refresh and review it there.");
+        // Use the existing authorized status command. This does not execute agent tools or workflows.
+        using var response = await transport.SendAsync(companyId, HttpMethod.Patch,
+            $"api/companies/{companyId:D}/tasks/{taskId:D}/status",
+            JsonContent.Create(new { status = "completed", outputPayload = current.OutputPayload, rationaleSummary = current.RationaleSummary, confidenceScore = current.ConfidenceScore }), cancellationToken);
+        if (!response.IsSuccessStatusCode) throw await CreateExceptionAsync(response, cancellationToken);
+    }
+
     private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
     {
         try
@@ -203,3 +245,5 @@ public sealed class TaskSubtaskSummaryViewModel
     public DateTime? CompletedAt { get; set; }
     public TaskAgentSummaryViewModel? AssignedAgent { get; set; }
 }
+
+public sealed record RiskFollowUpResult(Guid Id, Guid CompanyId, string Status, DateTime UpdatedAt);

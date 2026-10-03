@@ -17,9 +17,16 @@
                     <p class="text-body-secondary mb-0">@SupportText["SupportDescription"]</p>
                 </div>
                 <button class="btn btn-primary" @onclick="CreateCaseAsync" disabled="@isBusy">@SupportText["CreateCase"]</button>
-                <a class="btn btn-outline-secondary" href="@BuildPath("/support/knowledge")">@SupportText["Knowledge"]</a>
+                <a class="btn btn-outline-secondary" href="@RecordPath("/support/knowledge")">@SupportText["Knowledge"]</a>
             </div>
 
+            <nav class="vc-section-tabs mt-3" aria-label="Support journey">
+                <a href="@OverviewPath">Back to Overview</a>
+                <a href="@RecordPath("/support/reports?view=sla")">SLA risk</a>
+                <a href="@RecordPath("/support/reports?view=backlog")">Backlog</a>
+                <a href="@RecordPath("/support/reports?view=unresolved")">Unresolved cases</a>
+                <a href="@RecordPath("/support/reports?view=aging")">Case aging</a>
+            </nav>
             @if (isLoading)
             {
                 <p class="text-body-secondary mt-4 mb-0">@SupportText["LoadingCases"]</p>
@@ -113,53 +120,7 @@
                     </div>
                 </div>
 
-                @if (analytics is not null && analytics.Insights.Count > 0)
-                {
-                    <div class="alert alert-warning mt-4 mb-0 support-secondary-insight">
-                        <strong>@analytics.Insights[0].Title</strong>
-                        <div>@analytics.Insights[0].Summary @analytics.Insights[0].SuggestedAction</div>
-                    </div>
-                }
-
-                @if (analytics is not null)
-                {
-                    <div class="border rounded p-3 mt-4 bg-white support-secondary-analytics">
-                        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-                            <div>
-                                <h2 class="h6 mb-1">@SupportText["SlaPerformance"]</h2>
-                                <p class="text-body-secondary mb-0">@analytics.SlaPerformance.Rationale</p>
-                            </div>
-                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/settings/sla")">@SupportText["ReviewTargets"]</a>
-                        </div>
-                        <div class="row g-3 mt-2">
-                            <div class="col-6 col-lg-2">@MetricCard(SupportText["AtRiskNow"], analytics.SlaPerformance.OpenAtRisk, "sla-risk")</div>
-                            <div class="col-6 col-lg-2">@MetricCard(SupportText["BreachedNow"], analytics.SlaPerformance.OpenBreached, "breached")</div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ResponsesMet"]</div><strong>@analytics.SlaPerformance.FirstResponsesMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ResponsesMissed"]</div><strong>@analytics.SlaPerformance.FirstResponsesMissed.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ResolutionsMet"]</div><strong>@analytics.SlaPerformance.ResolutionsMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["MissingTargets"]</div><strong>@analytics.SlaPerformance.MissingTargets.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                        </div>
-                    </div>
-
-                    <div class="border rounded p-3 mt-4 bg-white support-secondary-analytics">
-                        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
-                            <div>
-                                <h2 class="h6 mb-1">@SupportText["LearningImpact"]</h2>
-                                <p class="text-body-secondary mb-0">@analytics.Learning.Rationale</p>
-                            </div>
-                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/knowledge?view=memory")">@SupportText["ReviewMemory"]</a>
-                        </div>
-                        <div class="row g-3 mt-2">
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["MemoryUsed"]</div><strong>@analytics.Learning.DraftsUsingMemory.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["NeedsReview"]</div><strong>@analytics.Learning.ReviewMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ApprovedMemory"]</div><strong>@analytics.Learning.ApprovedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["RejectedMemory"]</div><strong>@analytics.Learning.RejectedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["AnswerabilityWithMemory"]</div><strong>@FormatPercent(analytics.Learning.AverageAnswerabilityWithMemory)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ReopenedCases"]</div><strong>@analytics.Learning.ReopenedCases.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                        </div>
-                    </div>
-                }
-
+                <p class="small mt-3">Current case state and recorded targets. Waiting and paused owners do not stop service clocks; reopened cases retain original deadlines. Reviewed drafts are not delivered replies.</p>
                 <div class="table-responsive mt-4 support-case-queue">
                     <table class="table align-middle">
                         <thead>
@@ -212,7 +173,7 @@
                                             }
                                         </td>
                                         <td>@LocalDateTime.DateTime(item.UpdatedUtc)</td>
-                                        <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@BuildPath($"/support/cases/{item.Id:D}")">@SupportText["OpenCase"]</a></td>
+                                        <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@RecordPath($"/support/cases/{item.Id:D}")">@SupportText["OpenCase"]</a></td>
                                     </tr>
                                 }
                             }
@@ -235,11 +196,12 @@
 </section>
 
 @code {
-    private static readonly string[] CaseStatuses = ["new", "triaged", "waiting_for_customer", "waiting_internal", "escalated", "awaiting_approval", "resolved"];
+    private static readonly string[] CaseStatuses = ["new", "triaged", "waiting_for_customer", "waiting_internal", "escalated", "awaiting_approval", "resolved", "closed", "reopened"];
     private static readonly string[] Priorities = ["urgent", "high", "normal", "low"];
     private static readonly string[] Categories = ["billing", "refund", "technical_issue", "account_access", "complaint", "bug_report", "churn_risk"];
     private SupportCaseListResponse? cases;
-    private SupportAnalyticsDashboardResponse? analytics;
+    private VirtualCompany.Web.Services.SupportOperationalReport? operational;
+    private int readVersion;
     private bool isLoading = true;
     private bool isBusy;
     private string? errorMessage;
@@ -282,7 +244,8 @@
     private async Task LoadAsync()
     {
         ReadQueryState();
-        isLoading = cases is null;
+        var version = ++readVersion; var location = Navigation.Uri;
+        cases = null; operational = null; isLoading = true;
         isBusy = true;
         errorMessage = null;
 
@@ -300,23 +263,25 @@
                 "resolved" => "resolved",
                 _ => status
             };
-            cases = await SupportApiClient.ListCasesAsync(companyId, new SupportCaseListQuery(
-                Status: effectiveStatus,
-                Priority: priority,
-                Category: category,
-                Search: search,
-                OpenOnly: attentionView == "open",
-                ResolvedToday: attentionView == "resolved",
-                Unassigned: ownerFilter == "unassigned",
-                AssignedToMe: ownerFilter == "mine",
-                SlaRisk: attentionView == "sla-risk" ? true : null,
-                SlaBreached: attentionView == "breached" ? true : null,
-                WaitingTooLong: attentionView == "waiting",
-                FailedReply: attentionView == "failed-reply",
-                SortBy: sortBy == "attention" ? null : sortBy,
-                Skip: pageIndex * pageSize,
-                Take: pageSize));
-            analytics = await SupportApiClient.GetAnalyticsAsync(companyId);
+            var current = await SupportApiClient.GetOperationalReportAsync(companyId, new("all", Status: effectiveStatus,
+                Priority: priority, Category: category, Search: search, Unassigned: ownerFilter == "unassigned", FailedReply: attentionView == "failed-reply"), ownerFilter == "mine");
+            if (version != readVersion || location != Navigation.Uri || companyId != ResolvedCompanyId) return;
+            operational = current;
+            var rows = current.Cases.AsEnumerable();
+            rows = attentionView switch {
+                "open" => rows.Where(x => x.Case.Status is not ("resolved" or "closed")),
+                "sla-risk" => rows.Where(x => x.Case.IsSlaRisk || x.Case.IsSlaBreached),
+                "breached" => rows.Where(x => x.Case.IsSlaBreached),
+                "waiting" => rows.Where(x => x.Waiting && x.Case.UpdatedUtc < current.AsOfUtc.AddHours(-24)),
+                "resolved" => rows.Where(x => x.Case.Status == "resolved" && x.Case.UpdatedUtc >= current.AsOfUtc.Date),
+                _ => rows };
+            rows = sortBy switch { "created" => rows.OrderByDescending(x => x.Case.CreatedUtc), "updated" => rows.OrderByDescending(x => x.Case.UpdatedUtc),
+                "due" => rows.OrderBy(x => x.NextDeadlineUtc ?? DateTime.MaxValue), _ => rows };
+            var selected = rows.ToList();
+            cases = new(selected.Skip(pageIndex * pageSize).Take(pageSize).Select(x => x.Case).ToList(), selected.Count,
+                new(current.Cases.Count(x => x.Case.Status is not ("resolved" or "closed")), current.AwaitingApproval,
+                    current.Escalated, current.AtRisk, current.Breached, current.Cases.Count(x => x.Case.Status == "resolved" && x.Case.UpdatedUtc >= current.AsOfUtc.Date)));
+
         }
         catch (SupportApiException ex)
         {
@@ -324,8 +289,7 @@
         }
         finally
         {
-            isLoading = false;
-            isBusy = false;
+            if (version == readVersion) { isLoading = false; isBusy = false; }
         }
     }
 

@@ -46,7 +46,7 @@ public partial class InvoicesPage : FinancePageBase
             : ToDetailViewModel(
                 SelectedInvoice,
                 Invoices.FirstOrDefault(invoice => invoice.Id == SelectedInvoice.Id)?.PaymentContext);
-    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? DashboardRoutes.OverviewPathFromLocation(Navigation.Uri, companyId) ?? DashboardRoutes.BuildTodayPath(companyId, "finance") : "/dashboard";
     private bool CanChangeInvoiceApprovalStatus =>
         SelectedInvoice?.Permissions.CanChangeInvoiceApprovalStatus ?? FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
     private IReadOnlyList<string> EditableStatusOptions =>
@@ -98,7 +98,7 @@ public partial class InvoicesPage : FinancePageBase
 
         try
         {
-            Invoices = await FinanceApiClient.GetInvoicesAsync(companyId, limit: 200);
+            Invoices = await FinanceApiClient.GetInvoicesAsync(companyId, limit: 200, sourceFilter: OperationalSource);
         }
         catch (FinanceApiException ex)
         {
@@ -118,7 +118,7 @@ public partial class InvoicesPage : FinancePageBase
 
         try
         {
-            SelectedInvoice = await FinanceApiClient.GetInvoiceDetailAsync(companyId, invoiceId);
+            SelectedInvoice = await FinanceApiClient.GetInvoiceDetailAsync(companyId, invoiceId, sourceFilter: OperationalSource);
             if (SelectedInvoice is null)
             {
                 DetailErrorMessage = "The selected invoice could not be found for this company.";
@@ -349,7 +349,7 @@ public partial class InvoicesPage : FinancePageBase
     }
 
     private string BuildInvoiceHref(Guid invoiceId) =>
-        FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
+        BuildFinancePath(FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId));
 
     private string ResolveValidationMessage(FinanceApiValidationException exception, string key)
     {
@@ -370,7 +370,7 @@ public partial class InvoicesPage : FinancePageBase
 
     private string? BuildApprovalHref(Guid? approvalRequestId) =>
         approvalRequestId is Guid resolvedApprovalRequestId
-            ? $"/approvals?companyId={AccessState.CompanyId}&approvalId={resolvedApprovalRequestId:D}"
+            ? BuildFinancePath($"/work?companyId={AccessState.CompanyId}&tab=approvals&itemId={resolvedApprovalRequestId:D}")
             : null;
 
     private string? BuildAuditHref(Guid? auditEventId) =>
@@ -469,7 +469,7 @@ public partial class InvoicesPage : FinancePageBase
          paymentContext.RemainingAmount > 0m && paymentContext.RemainingAmount < paymentContext.TotalAmount);
 
     private string BuildTransactionHref(Guid transactionId) =>
-        FinanceRoutes.BuildTransactionDetailPath(transactionId, AccessState.CompanyId);
+        BuildFinancePath(FinanceRoutes.BuildTransactionDetailPath(transactionId, AccessState.CompanyId));
 
     private InvoiceRelatedTransactionViewModel ToRelatedTransactionViewModel(FinanceInvoiceRelatedTransactionResponse transaction)
     {

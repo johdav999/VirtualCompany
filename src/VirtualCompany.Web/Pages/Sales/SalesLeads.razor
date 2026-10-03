@@ -4,6 +4,7 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@SalesText["SalesLeads"]</PageTitle>
 
 <div class="sales-workspace @(Embedded ? "sales-workspace--embedded" : null)">
@@ -351,7 +352,7 @@
 
     private bool IsBusy(Guid id) => busyId == id;
     private void OpenLead(Guid leadId) => Navigation.NavigateTo(BuildPath($"/app/sales/leads/{leadId:D}"));
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private string Confidence(decimal? confidence) => confidence.HasValue ? LocalNumber.Percentage(confidence.Value) : SalesText["NotScored"];
     private string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? LocalMoney.Format(value.Value, currency ?? "USD") : SalesText["NoValueYet"];
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";

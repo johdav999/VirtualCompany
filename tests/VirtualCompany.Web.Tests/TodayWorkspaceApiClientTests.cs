@@ -7,6 +7,16 @@ namespace VirtualCompany.Web.Tests;
 public sealed class TodayWorkspaceApiClientTests
 {
     [Fact]
+    public async Task Refresh_is_an_authorized_read_and_preserves_new_priority_metadata()
+    {
+        var id = Guid.NewGuid(); var handler = new RecordingHandler(id);
+        var client = new TodayWorkspaceApiClient(new CompanyApiTransport(new HttpClient(handler) { BaseAddress = new Uri("http://localhost/") }), false);
+        await client.RefreshAsync(id, "sales");
+        Assert.Equal(HttpMethod.Get, handler.Request!.Method);
+        Assert.Contains("lens=sales&refresh=true", handler.Request.RequestUri!.Query);
+        Assert.Equal(id.ToString("D"), handler.Request.Headers.GetValues("X-Company-Id").Single());
+    }
+    [Fact]
     public async Task GetAsync_uses_typed_company_transport_with_lens_and_context_headers()
     {
         var companyId = Guid.NewGuid();

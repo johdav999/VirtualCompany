@@ -19,6 +19,7 @@
             <p>Plan measurable growth, coordinate campaigns and content, and hand qualified demand to Sales.</p>
         </div>
         <div class="marketing-header__actions">
+            <a class="btn btn-outline-primary" href="@PreviousView">Back to previous view</a>
             <a class="btn btn-outline-primary" href="@WithCompany("/company-operation")">Company operation</a>
             <button class="btn btn-outline-primary" disabled="@isLoading" @onclick="LoadAsync">Refresh</button>
             <button class="btn btn-primary" disabled="@(isLoading || marketingAgentId is null)" @onclick="RunAnalysisAsync">Ask Maya for priorities</button>
@@ -28,9 +29,10 @@
     <nav class="vc-section-tabs marketing-tabs" aria-label="Marketing sections">
         @foreach (var tab in tabs)
         {
-            <button type="button" class="@(activeTab == tab ? "active" : null)" @onclick="() => activeTab = tab">@tab</button>
+            <a class="@(activeTab == tab ? "active" : null)" href="@WithCompany($"/marketing?section={tab}")" data-enhance-nav="false">@tab</a>
         }
     </nav>
+    <nav class="vc-section-tabs" aria-label="Operational Marketing reports">@foreach (var kind in new[] { "delivery", "spend", "leads" }) { <a href="@MarketingJourneyRoutes.Report(resolvedCompanyId ?? CompanyId ?? Guid.Empty, kind, WorkspaceOrigin)">@(kind == "delivery" ? "Campaign delivery" : kind == "spend" ? "Spend versus budget" : "Available lead results")</a> }</nav>
 
     @if (isLoading)
     {
@@ -260,9 +262,9 @@
                     <h2>Content workflow</h2>
                     @if (dashboard.Content.Count == 0) { <MarketingEmpty Title="No content briefs" Message="Briefs keep audience, claims, tone, channel, sources, and approval state together." /> }
                     <div class="marketing-content-list">
-                        @foreach (var item in dashboard.Content)
+                        @foreach (var item in dashboard.Content.Where(x => !BriefId.HasValue || x.Id == BriefId))
                         {
-                            <article><div><strong>@item.Title</strong><span>@item.Channel / @item.Audience / @item.Status</span><p>@item.Purpose</p>
+                            <article id="marketing-record-@item.Id"><div><a href="@MarketingJourneyRoutes.Review(resolvedCompanyId ?? CompanyId ?? Guid.Empty, item.CampaignId, item.Id, WorkspaceOrigin)">@item.Title</a><span>@item.Channel / @item.Audience / @MarketingJourneyRoutes.State(item.Status)</span><p>@item.Purpose</p>
                                 @if (item.Variants.Count > 0)
                                 {
                                     <div class="marketing-list">@foreach (var variant in item.Variants) { <article><div><strong>@variant.Name</strong><span>v@variant.VersionNumber · @Friendly(variant.ContentFormat) · @Friendly(variant.Status)</span><p>@variant.Body</p><small>Sources: @JsonSummary(variant.SourceReferences, "No sources recorded") · @variant.PromptVersion</small></div></article> }</div>
@@ -329,7 +331,7 @@
             <section class="vc-panel marketing-section">
                 <div class="marketing-section__header"><div><span class="vc-kicker">MARKETING TO SALES</span><h2>Qualified demand handoffs</h2></div><a href="@WithCompany("/app/sales/prospects")">Open Sales prospects</a></div>
                 @if (dashboard.Handoffs.Count == 0) { <MarketingEmpty Title="No handoffs" Message="Qualified engagement can be transferred to Sales with evidence, urgency, ownership, and an expiry." /> }
-                <div class="marketing-content-list">@foreach (var item in dashboard.Handoffs) { <article><div><strong>@item.Reason</strong><span>@item.Urgency / @item.Status / expires @item.ExpiresUtc.ToLocalTime().ToString("d")</span><p>@item.SuggestedAction</p></div>@if (item.Status.Equals("proposed", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => DecideHandoffAsync(item.Id, true)">Accept</button><button class="btn btn-sm btn-outline-danger" @onclick="() => DecideHandoffAsync(item.Id, false)">Decline</button></div> }</article> }</div>
+                <div class="marketing-content-list">@foreach (var item in dashboard.Handoffs) { <article id="marketing-record-@item.Id"><div><strong>@item.Reason</strong><span>@item.Urgency / @item.Status / expires @item.ExpiresUtc.ToLocalTime().ToString("d")</span><p>@item.SuggestedAction</p></div>@if (item.Status.Equals("proposed", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => DecideHandoffAsync(item.Id, true)">Accept</button><button class="btn btn-sm btn-outline-danger" @onclick="() => DecideHandoffAsync(item.Id, false)">Decline</button></div> }</article> }</div>
             </section>
         }
         else if (activeTab == "Experiments")
@@ -338,7 +340,7 @@
                 <div class="vc-panel marketing-section">
                     <h2>Experiments</h2>
                     @if (dashboard.Experiments.Count == 0) { <MarketingEmpty Title="No experiments" Message="Define a hypothesis, primary metric, guardrail, sample size, and decision window." /> }
-                    <div class="marketing-list">@foreach (var item in dashboard.Experiments) { <article><div><strong>@item.Name</strong><span>@item.Hypothesis / @item.Status</span></div><div class="marketing-inline-actions"><strong>@item.PrimaryMetric</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateExperimentAsync(item.Id)">Start</button> } else if (item.Status.Equals("active", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => CompleteExperimentAsync(item.Id)">Complete</button> }</div></article> }</div>
+                    <div class="marketing-list">@foreach (var item in dashboard.Experiments) { <article id="marketing-record-@item.Id"><div><strong>@item.Name</strong><span>@item.Hypothesis / @item.Status</span></div><div class="marketing-inline-actions"><strong>@item.PrimaryMetric</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateExperimentAsync(item.Id)">Start</button> } else if (item.Status.Equals("active", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => CompleteExperimentAsync(item.Id)">Complete</button> }</div></article> }</div>
                 </div>
                 <EditForm Model="experimentForm" OnValidSubmit="CreateExperimentAsync" class="vc-panel marketing-form">
                     <h2>Create experiment</h2>
@@ -368,7 +370,7 @@
                 <div class="marketing-two-column">
                     <div class="marketing-run-list">
                         @if (creativeAssets.Count == 0) { <MarketingEmpty Title="No creative assets" Message="Generate from a submitted brief or upload a human-created alternative for review." /> }
-                        @foreach (var asset in creativeAssets)
+                        @foreach (var asset in creativeAssets.Where(x => !AssetId.HasValue || x.Id == AssetId))
                         {
                             var scan = LatestScan(asset.Id);
                             <article><div><strong>@asset.Name · v@asset.VersionNumber</strong><span>@asset.Dimensions · @asset.MediaType · @Friendly(asset.Status)</span><p>@asset.AltText</p><small>Brand @asset.BrandProfileVersion · scan: @(scan is null ? "not available" : Friendly(scan.Result))</small>@if(scan?.Result != "passed"){<p role="status">Quarantined — an authoritative safety scan must pass before submission, approval, download, or publication. @(scan?.ReasonCode is null ? "" : Friendly(scan.ReasonCode))</p>}<details><summary>Provenance, scan, and audit</summary><pre>@JsonSummary(asset.ProvenanceJson)</pre>@if(scan is not null){<small>@scan.Provider · @scan.ScannerVersion · @scan.ScannedUtc.ToLocalTime().ToString("g")</small><pre>@JsonSummary(scan.EvidenceJson)</pre>}<small>Sources: @JsonSummary(asset.SourceAssetIdsJson) · @asset.AuditReference · checksum @asset.Checksum[..Math.Min(12, asset.Checksum.Length)]</small></details></div><div class="marketing-inline-actions">@if (scan?.Result != "passed") { <button class="btn btn-sm btn-outline-secondary" disabled="@isSaving" @onclick="() => RescanCreativeAsync(asset.Id)">Rescan</button> }@if (asset.Status is "draft" or "changes_requested") { <button class="btn btn-sm btn-primary" disabled="@(isSaving || scan?.Result != "passed")" @onclick="() => SubmitCreativeAsync(asset.Id)">Submit</button> }@if (asset.Status == "submitted") { <button class="btn btn-sm btn-primary" disabled="@(isSaving || scan?.Result != "passed")" @onclick="() => ReviewCreativeAsync(asset.Id, true)">Approve</button><button class="btn btn-sm btn-outline-secondary" disabled="@isSaving" @onclick="() => RequestCreativeChangesAsync(asset.Id)">Request changes</button><button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick="() => ReviewCreativeAsync(asset.Id, false)">Reject</button> }@if (asset.Status == "approved") { <button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick="() => RetireCreativeAsync(asset.Id)">Retire</button> }</div></article>
@@ -574,7 +576,7 @@
                     <div class="marketing-section__header"><div><span class="vc-kicker">APPROVAL-BACKED DELIVERY</span><h2>Channel action queue</h2></div></div>
                     @if (channelDestinations.Count > 0) { <p>@channelDestinations.Count manageable destinations discovered: @string.Join(", ", channelDestinations.Where(x => x.Status == "active").Select(x => x.DisplayName))</p> }
                     @if (channelActions.Count == 0) { <MarketingEmpty Title="No channel actions" Message="Approved content delivery will appear here before it is dispatched by the background worker." /> }
-                    <div class="marketing-run-list">@foreach (var action in channelActions) { <article><div><strong>@Friendly(action.ActionType)</strong><span>@action.DestinationReference · @(action.ScheduledUtc?.ToLocalTime().ToString("g") ?? "Ready when approved")</span><p>@(action.FailureCode is null ? $"Attempt {action.AttemptCount}" : Friendly(action.FailureCode))</p></div><div class="marketing-inline-actions"><span class="marketing-status @(action.Status is "failed" or "ambiguous" ? "warning" : null)">@Friendly(action.Status)</span>@if (action.Status == "awaiting_approval") { <button class="btn btn-sm btn-outline-primary" @onclick="() => SynchronizeChannelActionAsync(action.Id)">Check approval</button> }@if (action.Status is "ambiguous" or "dispatched") { <button class="btn btn-sm btn-outline-primary" @onclick="() => ReconcileChannelActionAsync(action.Id)">Reconcile</button> }@if (action.Status is "proposed" or "awaiting_approval" or "queued" or "retry_scheduled") { <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelChannelActionAsync(action.Id)">Cancel</button> }</div></article> }</div>
+                    <div class="marketing-run-list">@foreach (var action in channelActions.Where(x => !ActionId.HasValue || x.Id == ActionId)) { <article><div><strong>@Friendly(action.ActionType)</strong><span>@action.DestinationReference · @(action.ScheduledUtc?.ToLocalTime().ToString("g") ?? "Ready when approved")</span><p>@(action.FailureCode is null ? $"Attempt {action.AttemptCount}" : Friendly(action.FailureCode))</p></div><div class="marketing-inline-actions"><span class="marketing-status @(action.Status is "failed" or "ambiguous" ? "warning" : null)">@Friendly(action.Status)</span>@if (action.Status == "awaiting_approval") { <button class="btn btn-sm btn-outline-primary" @onclick="() => SynchronizeChannelActionAsync(action.Id)">Check approval</button> }@if (action.Status is "ambiguous" or "dispatched") { <button class="btn btn-sm btn-outline-primary" @onclick="() => ReconcileChannelActionAsync(action.Id)">Reconcile</button> }@if (action.Status is "proposed" or "awaiting_approval" or "queued" or "retry_scheduled") { <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelChannelActionAsync(action.Id)">Cancel</button> }</div></article> }</div>
                 </article>
                 <aside class="vc-panel marketing-section"><span class="vc-kicker">LIFECYCLE AND CREATIVE</span><h2>Governed assets</h2><p>@creativeAssets.Count creative assets · @journeys.Count lifecycle journeys</p><div class="marketing-list">@foreach (var asset in creativeAssets.Take(5)) { <article><div><strong>@asset.Name</strong><span>@asset.Dimensions · @Friendly(asset.Status)</span><small>@asset.AltText</small></div></article> }</div>
                     @if (dashboard.Content.Any(x => x.Status is "submitted" or "approved"))
@@ -645,8 +647,8 @@
         else if (activeTab == "Performance")
         {
             <section class="marketing-kpis" aria-label="Marketing evidence classification">
-                @foreach (var group in attribution.GroupBy(x => x.Classification))
-                { <article class="vc-panel"><span>@Friendly(group.Key)</span><strong>@group.Sum(x => x.AttributedValue).ToString("N1") @group.First().Unit</strong><small>@group.Count() results · confidence @group.Average(x => x.Confidence).ToString("P0")</small></article> }
+                @foreach (var group in attribution.GroupBy(x => new { x.Classification, x.Unit }))
+                { <article class="vc-panel"><span>@Friendly(group.Key.Classification)</span><strong>@group.Sum(x => x.AttributedValue).ToString("N1") @group.First().Unit</strong><small>@group.Count() results · confidence @group.Average(x => x.Confidence).ToString("P0")</small></article> }
             </section>
             <section class="marketing-workspace-grid">
                 <article class="vc-panel marketing-section"><span class="vc-kicker">ATTRIBUTION WITH LIMITS</span><h2>Evidence and performance</h2>
@@ -693,6 +695,13 @@
     [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
     [SupplyParameterFromQuery(Name = "section")] public string? Section { get; set; }
     [SupplyParameterFromQuery(Name = "planId")] public Guid? RequestedPlanId { get; set; }
+    [SupplyParameterFromQuery] public Guid? BriefId { get; set; }
+    [SupplyParameterFromQuery] public Guid? AssetId { get; set; }
+    [SupplyParameterFromQuery] public Guid? ActionId { get; set; }
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? RecordReturnUrl { get; set; }
+    private string WorkspaceOrigin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, resolvedCompanyId ?? CompanyId ?? Guid.Empty) ?? DashboardRoutes.BuildTodayPath(resolvedCompanyId ?? CompanyId ?? Guid.Empty, "marketing");
+    private string PreviousView => MarketingJourneyRoutes.NormalizeRecordReturn(RecordReturnUrl, resolvedCompanyId ?? CompanyId ?? Guid.Empty) ?? WorkspaceOrigin;
     private readonly string[] tabs = ["Overview", "Strategy", "Segments", "Intelligence", "Objectives", "Plans", "Calendar", "Content", "Audiences", "Handoffs", "Experiments", "Channels", "Journeys", "Performance", "Operations"];
     private string activeTab = "Overview";
     private bool isLoading = true;
@@ -754,7 +763,13 @@
     private readonly QualificationForm qualificationForm = new();
     private readonly CreativeForm creativeForm = new();
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    private string? loadedRoute;
+    protected override Task OnParametersSetAsync()
+    {
+        if (loadedRoute is null) { loadedRoute = Navigation.Uri; return LoadAsync(); }
+        if (loadedRoute != Navigation.Uri) Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+        return Task.CompletedTask;
+    }
 
     private async Task LoadAsync()
     {
@@ -994,6 +1009,7 @@
         if (resolvedCompanyId is not Guid companyId) return;
         portfolioProposal = null; pendingPortfolio = null; planActionMessage = null;
         selectedPlan = await MarketingApi.GetPlanPortfolioAsync(companyId, planId);
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["section"] = "Plans", ["planId"] = planId }), forceLoad: true);
     }
 
     private async Task SubmitSelectedPlanAsync()
@@ -1085,7 +1101,7 @@
         catch (MarketingApiException ex) { errorMessage = ex.Message; }
     }
     private Task ActivateQualificationAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateQualificationDefinitionAsync(companyId, id));
-    private Task ReviewContentAsync(Guid id, bool approved) => ExecuteAndReloadAsync(companyId => MarketingApi.ReviewContentAsync(companyId, id, approved));
+    private Task ReviewContentAsync(Guid id, bool approved) => ExecuteAndReloadAsync(companyId => MarketingApi.ReviewContentVersionAsync(companyId, id, approved, dashboard!.Content.Single(x => x.Id == id).Version));
     private async Task GenerateContentVariantsAsync()
     {
         if (resolvedCompanyId is not Guid companyId || marketingAgentId is not Guid agentId || contentGenerationForm.BriefId == Guid.Empty) return;
@@ -1178,7 +1194,7 @@
     private Task RetireCreativeAsync(Guid assetId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.RetireCreativeAssetAsync(companyId, assetId));
 
     private string WithCompany(string path) => resolvedCompanyId is Guid id
-        ? $"{path}{(path.Contains("?", StringComparison.Ordinal) ? '&' : '?')}companyId={id:D}"
+        ? DashboardRoutes.EnsureWorkspaceContext(path, id, WorkspaceOrigin) + "&recordReturnUrl=" + Uri.EscapeDataString(PreviousView)
         : path;
     private static string StrategyWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_strategy?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";
     private string SegmentWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_segment?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";

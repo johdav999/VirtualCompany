@@ -266,6 +266,13 @@ public sealed class MarketingContentBrief : ICompanyOwnedEntity
         Version++;
         UpdatedUtc = DateTime.UtcNow;
     }
+    public void RequestRevision()
+    {
+        if (Status == "published") throw new InvalidOperationException("Published content requires a new brief.");
+        Status = MarketingStatuses.Draft;
+        Version++;
+        UpdatedUtc = DateTime.UtcNow;
+    }
 }
 
 public sealed class MarketingContentVariant : ICompanyOwnedEntity

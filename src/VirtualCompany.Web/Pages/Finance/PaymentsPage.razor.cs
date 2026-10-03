@@ -23,8 +23,8 @@ public partial class PaymentsPage : FinancePageBase
 
     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Payments.Count == 0;
     private string? TypeFilterValue => NormalizeOptionalText(Type);
-    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Payments, AccessState.CompanyId);
-    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
+    private string ClearFiltersHref => BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.Payments, AccessState.CompanyId));
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? DashboardRoutes.OverviewPathFromLocation(Navigation.Uri, companyId) ?? DashboardRoutes.BuildTodayPath(companyId, "finance") : "/dashboard";
     private string LauraHref => AccessState.CompanyId is Guid companyId ? $"/agents?companyId={companyId:D}&agent=Laura" : "/agents";
     private IReadOnlyList<PaymentListItemViewModel> PaymentItems =>
         Payments.Select(payment => ToListItem(payment, PaymentId == payment.Id)).ToList();
@@ -74,7 +74,7 @@ public partial class PaymentsPage : FinancePageBase
 
         try
         {
-            Payments = await FinanceApiClient.GetPaymentsAsync(companyId, TypeFilterValue, 200);
+            Payments = await FinanceApiClient.GetPaymentsAsync(companyId, TypeFilterValue, 200, sourceFilter: OperationalSource);
         }
         catch (FinanceApiException ex)
         {
@@ -94,7 +94,7 @@ public partial class PaymentsPage : FinancePageBase
 
         try
         {
-            SelectedPayment = await FinanceApiClient.GetPaymentDetailAsync(companyId, paymentId);
+            SelectedPayment = await FinanceApiClient.GetPaymentDetailAsync(companyId, paymentId, sourceFilter: OperationalSource);
             if (SelectedPayment is null)
             {
                 DetailErrorMessage = "The selected payment could not be found in the active company context.";
@@ -120,7 +120,7 @@ public partial class PaymentsPage : FinancePageBase
             query.Add($"type={Uri.EscapeDataString(TypeFilterValue)}");
         }
 
-        return $"{path}?{string.Join("&", query)}";
+        return BuildFinancePath($"{path}?{string.Join("&", query)}");
     }
 
     private bool IsTypeSelected(string option) =>

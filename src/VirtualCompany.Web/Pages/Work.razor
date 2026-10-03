@@ -1,5 +1,7 @@
+@inject ICompanyPresentationContext PriorityPresentation
 @page "/work"
 @rendermode InteractiveServer
+@implements IDisposable
 @inject OnboardingApiClient OnboardingApiClient
 @inject TaskApiClient TaskApiClient
 @inject NavigationManager Navigation
@@ -13,12 +15,18 @@
             <span class="vc-kicker">@UiText["WorkKicker"]</span>
             <h1>@UiText["Work"]</h1>
             <p>@UiText["WorkDescription"]</p>
+            <small>@CommonText["OnboardingTimezone"]: @(PriorityPresentation.TimeZoneId ?? "UTC")</small>
         </div>
     </header>
 
     @if (CompanyId is Guid companyId)
     {
         <nav class="vc-section-tabs" aria-label="@UiText["WorkSections"]">
+            <AgentWorkReturnLink CompanyId="companyId" />
+            @if ((SalesJourneyRoutes.Normalize(RecordReturnUrl, companyId) ?? SalesJourneyRoutes.Normalize(SalesReturnUrl, companyId)) is string salesOrigin)
+            { <a href="@salesOrigin">@SalesText["BackToSalesOrigin"]</a> }
+            @if ((FinanceJourneyRoutes.Normalize(RecordReturnUrl, companyId) ?? FinanceJourneyRoutes.Normalize(FinanceReturnUrl, companyId)) is string financeOrigin)
+            { <a href="@financeOrigin">Back to Finance review</a> }
             <a class="@TabClass("tasks")" href="@BuildHref("tasks")">@UiText["Tasks"]</a>
             <a class="@TabClass("approvals")" href="@BuildHref("approvals")">@UiText["Approvals"]</a>
             <a class="@TabClass("messages")" href="@BuildHref("messages")">@UiText["Messages"]</a>
@@ -48,7 +56,7 @@
         }
         else if (!string.IsNullOrWhiteSpace(errorMessage))
         {
-            <div class="alert alert-danger" role="alert">@errorMessage</div>
+            <div class="alert alert-danger" role="alert">@errorMessage <button type="button" class="btn btn-outline-secondary" @onclick="OnParametersSetAsync">@CommonText["Retry"]</button></div>
         }
         else
         {
@@ -57,6 +65,12 @@
                     <form class="vc-filter-row" method="get">
                         <input type="hidden" name="companyId" value="@companyId" />
                         <input type="hidden" name="tab" value="tasks" />
+                        <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+                        <input type="hidden" name="priorityReturnUrl" value="@PriorityReturnUrl" />
+                        <input type="hidden" name="financeReturnUrl" value="@FinanceReturnUrl" />
+                        <input type="hidden" name="boardReturnUrl" value="@(AgentWorkRoutes.Board(BoardReturnUrl,companyId))" />
+                        <input type="hidden" name="agentWorkReturnUrl" value="@(AgentWorkRoutes.Record(AgentWorkReturnUrl,companyId))" />
+                        <input type="hidden" name="recordReturnUrl" value="@(AgentWorkRoutes.Record(RecordReturnUrl,companyId) ?? SalesJourneyRoutes.Normalize(RecordReturnUrl,companyId) ?? FinanceJourneyRoutes.Normalize(RecordReturnUrl,companyId))" />
                         <label>
                             <span>@UiText["Status"]</span>
                             <select class="form-select" name="status">
@@ -109,16 +123,29 @@
                     {
                         <span class="vc-kicker">@Display(selectedTask.Status)</span>
                         <h2>@selectedTask.Title</h2>
+                        <a class="btn btn-outline-primary" href="@AgentWorkRoutes.Detail("task", selectedTask.Id, companyId, Navigation.Uri)">Open durable work detail →</a>
                         <dl class="vc-detail-list">
                             <dt>@UiText["Priority"]</dt><dd>@Display(selectedTask.Priority)</dd>
-                            <dt>@UiText["Owner"]</dt><dd>@(selectedTask.AssignedAgent?.DisplayName ?? UiText["Unassigned"].Value)</dd>
-                            <dt>@UiText["Due"]</dt><dd>@(selectedTask.DueAt?.ToLocalTime().ToString("g") ?? UiText["NoDueDate"].Value)</dd>
-                            <dt>@UiText["Updated"]</dt><dd>@selectedTask.UpdatedAt.ToLocalTime().ToString("g")</dd>
+                            <dt>@CommonText["PriorityAgent"]</dt><dd>@(selectedTask.AssignedAgent?.DisplayName ?? CommonText["PriorityAgentUnassigned"].Value)</dd>
+                            <dt>@CommonText["PriorityDeadline"]</dt><dd>@LocalDateTime.Optional(selectedTask.DueAt, empty: UiText["NoDueDate"])</dd>
+                            <dt>@CommonText["PrioritySourceTime"]</dt><dd>@LocalDateTime.DateTime(selectedTask.UpdatedAt)</dd>
                         </dl>
                         @if (!string.IsNullOrWhiteSpace(selectedTask.Description))
                         {
                             <h3>@UiText["Description"]</h3>
                             <p>@selectedTask.Description</p>
+                        }
+                        @if (selectedTask.InputPayload.TryGetValue("priorityEvidenceKey", out var evidenceKey) &&
+                            selectedTask.InputPayload.TryGetValue("sourceCompanyId", out var sourceCompany) &&
+                            Guid.TryParse(sourceCompany?.ToString(), out var evidenceCompany) && evidenceCompany == companyId)
+                        {
+                            <section data-testid="work-risk-evidence"><h3>@CommonText["HealthRiskEvidence"]</h3>
+                                <p>@evidenceKey?.ToString()</p>
+                                @if (selectedTask.InputPayload.TryGetValue("sourceObservedUtc", out var observed) && DateTime.TryParse(observed?.ToString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var observedUtc))
+                                { <p>@CommonText["PrioritySourceTime"]: @LocalDateTime.DateTime(observedUtc)</p> }
+                                <a href="@DashboardRoutes.BuildPriorityPath(companyId, "company", evidenceKey?.ToString() ?? "", ReturnUrl)">@CommonText["PriorityDetails"] →</a>
+                                <p>@CommonText["HealthFollowUpHelp"]</p>
+                            </section>
                         }
                         @if (!string.IsNullOrWhiteSpace(selectedTask.RationaleSummary))
                         {
@@ -129,6 +156,11 @@
                         {
                             <a class="btn btn-outline-secondary" href="@($"/workflows?companyId={companyId:D}&workflowInstanceId={workflowId:D}")">@UiText["OpenWorkflow"]</a>
                         }
+                        @if (CanCompleteFollowUp)
+                        {
+                            <p>@CommonText["PriorityCompleteHelp"]</p>
+                            <button type="button" class="btn btn-primary" disabled="@isSaving" @onclick="CompleteFollowUpAsync" data-testid="complete-follow-up">@CommonText["PriorityCompleteTask"]</button>
+                        }
                     }
                 </aside>
             </div>
@@ -137,18 +169,30 @@
 </section>
 
 @code {
-    private static readonly string[] SupportedStatuses = ["pending", "in_progress", "blocked", "awaiting_approval", "completed", "failed"];
+    private static readonly string[] SupportedStatuses = ["new", "in_progress", "blocked", "awaiting_approval", "completed", "failed"];
 
     [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
     [SupplyParameterFromQuery(Name = "tab")] public string? Tab { get; set; }
     [SupplyParameterFromQuery(Name = "status")] public string? Status { get; set; }
     [SupplyParameterFromQuery(Name = "taskId")] public Guid? TaskId { get; set; }
     [SupplyParameterFromQuery(Name = "itemId")] public Guid? ItemId { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "priorityReturnUrl")] public string? PriorityReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "salesReturnUrl")] public string? SalesReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "recordReturnUrl")] public string? RecordReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? BoardReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? AgentWorkReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "financeReturnUrl")] public string? FinanceReturnUrl { get; set; }
 
     private bool isLoading = true;
     private string? errorMessage;
     private List<TaskListItemViewModel> tasks = [];
     private TaskDetailViewModel? selectedTask;
+    private bool isSaving, disposed;
+    private int loadVersion;
+    private CancellationTokenSource? loadCancellation;
+    private bool CanCompleteFollowUp => selectedTask is { Type: "follow_up", AssignedAgentId: null, WorkflowInstanceId: null, ParentTaskId: null, CreatedByActorType: "user" }
+        && selectedTask.Status is "new" or "pending" or "in_progress" or "blocked";
     private string ActiveTab => Tab?.Trim().ToLowerInvariant() switch
     {
         "approvals" => "approvals",
@@ -159,13 +203,22 @@
 
     protected override async Task OnParametersSetAsync()
     {
+        loadCancellation?.Cancel(); loadCancellation?.Dispose();
+        var token = (loadCancellation = new CancellationTokenSource()).Token;
+        var version = ++loadVersion;
+        var company = CompanyId;
+        var tab = ActiveTab;
+        var taskSelection = TaskId;
+        bool Current() => !disposed && version == loadVersion && !token.IsCancellationRequested;
         errorMessage = null;
         isLoading = true;
+        tasks = []; selectedTask = null;
         try
         {
             if (CompanyId is null)
             {
-                var context = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
+                var context = await OnboardingApiClient.GetCurrentUserContextAsync(company, token);
+                if (!Current()) return;
                 if (context?.ActiveCompany is { } activeCompany)
                 {
                     Navigation.NavigateTo($"/work?companyId={activeCompany.CompanyId:D}", replace: true);
@@ -173,32 +226,56 @@
                 return;
             }
 
-            if (ActiveTab == "tasks")
+            if (tab == "tasks")
             {
-                var result = await TaskApiClient.ListAsync(CompanyId.Value, Status, null);
+                var result = await TaskApiClient.ListAsync(company!.Value, Status, null, token);
+                var detail = taskSelection is Guid taskId
+                    ? await TaskApiClient.GetAsync(company.Value, taskId, token) : null;
+                if (!Current()) return;
                 tasks = result.Items;
-                selectedTask = TaskId is Guid taskId
-                    ? await TaskApiClient.GetAsync(CompanyId.Value, taskId)
-                    : null;
+                selectedTask = detail;
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (OnboardingApiException ex)
         {
-            errorMessage = ex.Message;
+            if (Current()) errorMessage = ex.Message;
         }
         finally
         {
-            isLoading = false;
+            if (Current()) isLoading = false;
         }
     }
 
-    private string BuildHref(string tab) => $"/work?companyId={CompanyId:D}&tab={tab}";
+    private string BuildHref(string tab) => DashboardRoutes.WithQuery($"/work?companyId={CompanyId:D}&tab={tab}",
+        ("returnUrl", CompanyId is Guid id ? DashboardRoutes.NormalizeOverviewPath(ReturnUrl, id) : null),
+        ("priorityReturnUrl", CompanyId is Guid company ? DashboardRoutes.NormalizePriorityPath(PriorityReturnUrl, company) : null),
+        ("salesReturnUrl", CompanyId is Guid salesCompany ? SalesJourneyRoutes.Normalize(SalesReturnUrl, salesCompany) : null),
+        ("financeReturnUrl", CompanyId is Guid financeCompany ? FinanceJourneyRoutes.Normalize(FinanceReturnUrl, financeCompany) : null),
+        ("boardReturnUrl", CompanyId is Guid boardCompany ? AgentWorkRoutes.Board(BoardReturnUrl, boardCompany) : null),
+        ("agentWorkReturnUrl", CompanyId is Guid agentCompany ? AgentWorkRoutes.Record(AgentWorkReturnUrl, agentCompany) : null),
+        ("recordReturnUrl", CompanyId is Guid recordCompany ? AgentWorkRoutes.Record(RecordReturnUrl,recordCompany) ?? SalesJourneyRoutes.Normalize(RecordReturnUrl, recordCompany) ?? FinanceJourneyRoutes.Normalize(RecordReturnUrl, recordCompany) : null));
     private string BuildTaskHref(Guid taskId) => $"{BuildHref("tasks")}&taskId={taskId:D}{(string.IsNullOrWhiteSpace(Status) ? string.Empty : $"&status={Uri.EscapeDataString(Status)}")}";
     private Task SelectWorkItemAsync(Guid itemId)
     {
         Navigation.NavigateTo($"{BuildHref(ActiveTab)}&itemId={itemId:D}");
         return Task.CompletedTask;
     }
+
+    private async Task CompleteFollowUpAsync()
+    {
+        if (!CanCompleteFollowUp || isSaving || CompanyId is not Guid company || selectedTask is not { } task) return;
+        isSaving = true; errorMessage = null;
+        var version = loadVersion;
+        try
+        {
+            await TaskApiClient.CompleteFollowUpAsync(company, task.Id);
+            if (!disposed && version == loadVersion) await OnParametersSetAsync();
+        }
+        catch (OnboardingApiException ex) { if (!disposed && version == loadVersion) errorMessage = ex.Message; }
+        finally { if (!disposed) isSaving = false; }
+    }
+    public void Dispose() { disposed = true; loadCancellation?.Cancel(); loadCancellation?.Dispose(); }
 
     private string TabClass(string tab) => ActiveTab == tab ? "active" : string.Empty;
     private string TaskClass(Guid taskId) => TaskId == taskId ? "vc-list-item selected" : "vc-list-item";
@@ -207,7 +284,7 @@
     {
         var key = value.Trim().ToLowerInvariant() switch
         {
-            "pending" => "StatusPending",
+            "new" or "pending" => "StatusPending",
             "in_progress" => "StatusInProgress",
             "blocked" => "StatusBlocked",
             "awaiting_approval" => "StatusAwaitingApproval",

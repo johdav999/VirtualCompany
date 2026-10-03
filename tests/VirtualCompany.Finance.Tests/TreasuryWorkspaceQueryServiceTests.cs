@@ -15,6 +15,38 @@ public sealed class TreasuryWorkspaceQueryServiceTests
 {
     private static readonly DateTime AsOfUtc = new(2026, 8, 29, 8, 0, 0, DateTimeKind.Utc);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Missing_or_mixed_cash_has_no_healthy_projection_citation_or_current_source_claim(bool mixed)
+    {
+        await using var db = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite("Data Source=:memory:;Foreign Keys=False").Options);
+        await db.Database.OpenConnectionAsync(); await db.Database.EnsureCreatedAsync();
+        var company = Guid.NewGuid(); var finance = CashPosition(company);
+        var proxy = (FinanceProxy)(object)finance;
+        var dashboard = Dashboard(company);
+        if (mixed)
+        {
+            var dashboardProxy = (DashboardProxy)(object)dashboard;
+            dashboardProxy.Value = dashboardProxy.Value with { Currency = "MIXED" };
+        }
+        else
+            proxy.Value = proxy.Value with { WorkflowOutput = new("cash_position_unavailable", "unknown", "review_cash_evidence", "Cash evidence missing", 0m, "test") };
+        var service = new TreasuryWorkspaceQueryService(db, dashboard, finance, new TreasuryWorkspacePolicy(), new FixedTimeProvider(AsOfUtc), new TreasuryWorkspaceTelemetry(), new Context(company));
+        var result = await service.GetAsync(new(company, CanEdit: true), default);
+        Assert.Equal("missing", result.Liquidity.RiskLevel);
+        Assert.Empty(result.Liquidity.Projection);
+        Assert.DoesNotContain(result.Laura.Citations, x => x.SourceType == "cash_projection");
+        Assert.DoesNotContain("current for this review", result.Laura.Summary);
+        Assert.True(result.HasMissingEvidence);
+        Assert.DoesNotContain("Healthy", result.Laura.MissingEvidence);
+        Assert.Null(result.FreshestEvidenceUtc); Assert.Null(result.StalestEvidenceUtc);
+        Assert.Null(result.Liquidity.WarningCashAmount); Assert.Null(result.Liquidity.CriticalCashAmount);
+        var exception = Assert.Single(result.Exceptions, x => x.Kind == "liquidity");
+        Assert.Null(exception.Amount);
+        Assert.DoesNotContain("Projected cash is", exception.Explanation);
+    }
+
     [Fact]
     public async Task Read_model_is_tenant_scoped_bounded_and_reports_source_freshness_and_gap_recovery()
     {

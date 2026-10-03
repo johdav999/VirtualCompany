@@ -5,6 +5,7 @@
 @using VirtualCompany.Web.Components.Sales
 @inject SalesPresentationPresetApiClient PresentationPresetApi
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@SalesText["SalesCampaigns"]</PageTitle>
 
 <div class="sales-workspace">
@@ -744,7 +745,7 @@
         }
     }
 
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private string CampaignRowClass(Guid campaignId) => $"sales-list-row sales-list-row--button{(selectedCampaign?.Id == campaignId ? " sales-list-row--selected" : "")}";
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
     private static string PolicySummary(OutboundPolicyResponse policy) => $"{(policy.OutboundEnabled ? "Outbound enabled" : "Outbound disabled")}, {policy.MaxEmailsPerDay} emails per day, {(policy.ApprovalRequired ? "approval required" : "no launch approval required")}";

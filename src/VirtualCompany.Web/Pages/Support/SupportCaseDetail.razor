@@ -6,7 +6,8 @@
 <PageTitle>@SupportText["SupportCase"]</PageTitle>
 
 <section class="py-4 dashboard-hero">
-    <div class="dashboard-shell">
+    <div class="support-case-shell">
+        <VirtualCompany.Web.Components.Work.AgentWorkReturnLink CompanyId="ResolvedCompanyId" />
         <div class="wizard-card dashboard-summary">
             @if (isLoading)
             {
@@ -14,7 +15,7 @@
             }
             else if (!string.IsNullOrWhiteSpace(ShellErrorMessage) || !string.IsNullOrWhiteSpace(errorMessage))
             {
-                <div class="alert alert-danger mb-0">@(ShellErrorMessage ?? errorMessage)</div>
+                <div class="alert alert-danger mb-0" role="alert">@(ShellErrorMessage ?? errorMessage)<button class="btn btn-outline-secondary ms-2" @onclick="LoadAsync">Reload current case</button></div>
             }
             else if (supportCase is not null)
             {
@@ -39,6 +40,14 @@
                     </div>
                 </div>
 
+                <nav class="vc-section-tabs mt-3" aria-label="Support journey">
+                    @if (PriorityPath is string priorityPath) { <a href="@priorityPath">Back to priority</a> }
+                    @if (HealthPath is string healthPath) { <a href="@healthPath">Back to company health</a> }
+                    <a href="@BackPath">Back to filtered queue or report</a>
+                    <a href="@RecordPath("/support/knowledge")">Knowledge</a>
+                    <a href="@RecordPath("/support/reports?view=sla")">Operational reports</a>
+                    <a href="@OverviewPath">Back to Overview</a>
+                </nav>
                 <div class="row g-4 mt-2">
                     <div class="col-12 col-xl-8">
                         <section class="border rounded bg-white p-3 mb-4">
@@ -64,6 +73,18 @@
                             }
                         </section>
 
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Knowledge evidence</h2>
+                            @if (knowledge is null) { <p>Knowledge is unavailable. Review is required.</p> }
+                            else {
+                                <p>@knowledge.RationaleSummary</p>
+                                @foreach (var source in knowledge.Sources.Where(x => x.IsTrusted)) {
+                                    <details><summary>@source.Label · @(source.Type == "knowledge_chunk" ? "Knowledge citation" : "Business evidence")</summary><p>@source.Excerpt</p></details>
+                                }
+                                @if (!knowledge.Sources.Any(x => x.IsTrusted && x.Relevance >= .55m)) { <div class="alert alert-warning">No accessible, processed and indexed sources support an answer. Request missing information or hand off for review.</div> }
+                            }
+                            @foreach (var gap in supportCase.KnowledgeGaps) { <p class="alert alert-warning">@gap.MissingInformationSummary</p> }
+                        </section>
                         <section class="border rounded bg-white p-3 mb-4">
                             <h2 class="h5">@SupportText["InternalNote"]</h2>
         <textarea class="form-control" rows="4" @bind="noteBody" placeholder="@SupportText["NotePlaceholder"]"></textarea>
@@ -142,7 +163,7 @@
                                             @if (DraftEditable(draft))
                                             {
                                                 <label class="form-label mt-3" for="@($"support-draft-{draft.Id:D}")">@SupportText["ReplyText"]</label>
-                                                <textarea id="@($"support-draft-{draft.Id:D}")" class="form-control" rows="8" value="@DraftBody(draft)" @onchange="eventArgs => SetDraftBody(draft.Id, eventArgs.Value?.ToString())"></textarea>
+                                                <textarea id="@($"support-draft-{draft.Id:D}")" class="form-control" rows="8" value="@DraftBody(draft)" @oninput="eventArgs => SetDraftBody(draft.Id, eventArgs.Value?.ToString())"></textarea>
                                                 <label class="form-label mt-2" for="@($"support-tone-{draft.Id:D}")">@SupportText["Tone"]</label>
                                                 <select id="@($"support-tone-{draft.Id:D}")" class="form-select" value="@DraftTone(draft)" @onchange="eventArgs => SetDraftTone(draft.Id, eventArgs.Value?.ToString())">
                                                     <option value="Helpful">@SupportText["ToneHelpful"]</option>
@@ -160,6 +181,7 @@
                                                 <p class="small text-body-secondary">@draft.RationaleSummary</p>
                                             }
                                             <p class="small text-body-secondary">@DraftSourceSummary(draft)</p>
+                                            <p role="status">@DeliveryLabel(draft)</p>
                                             @if (!string.IsNullOrWhiteSpace(draft.SafetyDecision))
                                             {
                                                 <div class="@SafetyAlertClass(draft.SafetyDecision)">
@@ -178,13 +200,13 @@
                                                 @if (DraftEditable(draft))
                                                 {
                                                     <button class="btn btn-sm btn-outline-secondary" @onclick="() => SaveDraftAsync(draft.Id)" disabled="@isBusy">@SupportText["SaveDraft"]</button>
-                                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@isBusy">@SupportText["Approve"]</button>
+                                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@(isBusy || DraftDirty(draft))">@SupportText["Approve"]</button>
                                                     <button class="btn btn-sm btn-outline-danger" @onclick="() => RejectDraftAsync(draft.Id)" disabled="@isBusy">@SupportText["Reject"]</button>
                                                 }
-                                                @if (draft.Status == "approved" && !draft.SentUtc.HasValue)
+                                                @if (draft.Status == "approved" && !draft.SentUtc.HasValue && !draft.DeliveryRequested && draft.DeliveryStatus != "reconciliation_required")
                                                 {
-                                                    <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">@SupportText["Send"]</button>
-                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">@SupportText["SendAndResolve"]</button>
+                                                    <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">Request delivery</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">Request delivery and then resolve</button>
                                                 }
                                             </div>
                                         </div>
@@ -273,8 +295,9 @@
                                     <option value="@AssigneeKey(option)" disabled="@(!option.Available)">@option.DisplayName · @option.SecondaryText · @option.OpenCaseCount open</option>
                                 }
                             </select>
-            <input class="form-control mt-2" @bind="assignmentReason" placeholder="@SupportText["AssignmentReasonPlaceholder"]" />
-                            <button class="btn btn-outline-primary w-100 mt-2" @onclick="SaveAssignmentAsync" disabled="@isBusy">@SupportText["SaveOwner"]</button>
+            <label class="form-label mt-2" for="support-handoff-reason">Handoff reason</label>
+            <input id="support-handoff-reason" class="form-control mt-2" @bind="assignmentReason" @bind:event="oninput" placeholder="@SupportText["AssignmentReasonPlaceholder"]" />
+                            <button class="btn btn-outline-primary w-100 mt-2" @onclick="SaveAssignmentAsync" disabled="@(isBusy || string.IsNullOrWhiteSpace(assignmentReason))">@SupportText["SaveOwner"]</button>
 
                             <label class="form-label mt-3">@SupportText["Priority"]</label>
                             <select class="form-select" @bind="selectedPriority">
@@ -340,6 +363,10 @@
 
                         <section class="border rounded bg-white p-3 mb-4">
                             <h2 class="h5">@SupportText["CustomerContext"]</h2>
+                            <p>Response due: @(supportCase.FirstResponseDueUtc is DateTime first ? LocalDateTime.DateTime(first) : "Not set")<br />Resolution due: @(supportCase.ResolutionDueUtc is DateTime due ? LocalDateTime.DateTime(due) : "Not set")</p>
+                            <p class="small">Waiting and paused owners do not pause targets. Reopened cases keep original deadlines.</p>
+                            @if (supportCase.ContactId is Guid contactId) { <a href="@RecordPath($"/support/reports?view=all&contactId={contactId:D}")">Customer case history</a> }
+                            @foreach(var item in customerHistory) { <p><a href="@RecordPath($"/support/cases/{item.Case.Id:D}")">@item.Case.CaseNumber · @item.Case.Subject</a> · @item.Case.StatusLabel</p> }
                             <dl class="mb-0">
                                 <dt>@SupportText["Customer"]</dt>
                                 <dd>@(supportCase.CustomerName ?? "No customer linked")</dd>
@@ -394,6 +421,10 @@
     [Parameter] public Guid CaseId { get; set; }
 
     private SupportCaseDetailResponse? supportCase;
+    private SupportKnowledgeContext? knowledge;
+    private IReadOnlyList<SupportOperationalCase> customerHistory = [];
+    private Guid? loadedCompanyId;
+    private int readVersion;
     private bool isLoading = true;
     private bool isBusy;
     private string? errorMessage;
@@ -426,54 +457,36 @@
 
     private async Task LoadAsync()
     {
-        isLoading = supportCase is null;
-        errorMessage = null;
-
+        var version = ++readVersion; var location = Navigation.Uri; var caseId = CaseId;
+        isLoading = true; errorMessage = null; supportCase = null; knowledge = null; customerHistory = []; answerability = null;
         try
         {
-            if (!await ResolveCompanyAsync() || ResolvedCompanyId is not Guid companyId)
-            {
-                return;
+            if (!await ResolveCompanyAsync() || ResolvedCompanyId is not Guid companyId) return;
+            var data = await SupportApiClient.GetCaseAsync(companyId, caseId);
+            if (data is null) { errorMessage = "The support case was not found."; return; }
+            var owners = await SupportApiClient.ListAssigneesAsync(companyId);
+            var sources = await SupportApiClient.GetCaseKnowledgeAsync(companyId, caseId);
+            IReadOnlyList<SupportOperationalCase> historyRows = [];
+            if (data.ContactId is not null || data.CustomerCompanyId is not null) {
+                var history = await SupportApiClient.GetOperationalReportAsync(companyId, new("all", ContactId: data.ContactId,
+                    CustomerCompanyId: data.ContactId is null ? data.CustomerCompanyId : null));
+                historyRows = history.Cases.Where(x => x.Case.Id != caseId).ToList();
             }
-
-            supportCase = await SupportApiClient.GetCaseAsync(companyId, CaseId);
-            if (supportCase is null)
-            {
-                errorMessage = "The support case was not found.";
-                return;
+            var agent = data.AssignedAgentId ?? await ResolveSupportAgentIdAsync(companyId);
+            if (version != readVersion || location != Navigation.Uri || companyId != ResolvedCompanyId || caseId != CaseId) return;
+            supportCase = data; assignees = owners; knowledge = sources; customerHistory = historyRows; supportAgentId = agent;
+            if (loadedCaseId != data.Id || loadedCompanyId != companyId) {
+                replyToEmail = null; loadedCaseId = data.Id; loadedCompanyId = companyId;
+                draftBodies.Clear(); draftTones.Clear(); assignmentReason = noteBody = caseActionNote = resolutionSummary = null;
             }
-
-            if (loadedCaseId != supportCase.Id)
-            {
-                replyToEmail = null;
-                loadedCaseId = supportCase.Id;
-            }
-
-            assignees = await SupportApiClient.ListAssigneesAsync(companyId);
-            selectedAssignee = supportCase.AssignedAgentId is Guid agentId
-                ? $"agent:{agentId:D}"
-                : supportCase.AssignedUserId is Guid userId
-                    ? $"user:{userId:D}"
-                    : string.Empty;
-            selectedPriority = supportCase.Priority;
-            selectedCategory = supportCase.Category;
-            replyToEmail = FirstNonBlank(replyToEmail, supportCase.ContactEmail, LatestInboundMessage()?.Sender);
-            foreach (var draft in supportCase.ReplyDrafts)
-            {
-                draftBodies.TryAdd(draft.Id, draft.DraftBody);
-                draftTones.TryAdd(draft.Id, draft.Tone);
-            }
-
-            supportAgentId = supportCase.AssignedAgentId ?? await ResolveSupportAgentIdAsync(companyId);
+            selectedAssignee = data.AssignedAgentId is Guid agentId ? $"agent:{agentId:D}"
+                : data.AssignedUserId is Guid userId ? $"user:{userId:D}" : string.Empty;
+            selectedPriority = data.Priority; selectedCategory = data.Category;
+            replyToEmail = FirstNonBlank(replyToEmail, data.ContactEmail, LatestInboundMessage()?.Sender);
+            foreach (var draft in data.ReplyDrafts) { draftBodies.TryAdd(draft.Id, draft.DraftBody); draftTones.TryAdd(draft.Id, draft.Tone); }
         }
-        catch (SupportApiException ex)
-        {
-            errorMessage = ex.Message;
-        }
-        finally
-        {
-            isLoading = false;
-        }
+        catch (SupportApiException ex) { if (version == readVersion) errorMessage = ex.Message; }
+        finally { if (version == readVersion) isLoading = false; }
     }
 
     private async Task RunActionAsync(Func<Guid, Task> action)
@@ -538,10 +551,16 @@
 
     private static string AssigneeKey(SupportAssigneeOptionDto option) => $"{option.Type}:{option.Id:D}";
 
+    private bool DraftDirty(SupportReplyDraftDto draft) => DraftBody(draft) != draft.DraftBody || DraftTone(draft) != draft.Tone;
+    private static string DeliveryLabel(SupportReplyDraftDto draft) => draft.SentUtc.HasValue ? "Provider confirmed delivery."
+        : draft.DeliveryStatus == "reconciliation_required" ? "Delivery uncertain. Reconcile the provider outcome before retry."
+        : draft.DeliveryStatus == "failed" ? "Delivery failed. Review the failure and the existing delivery request before retry."
+        : draft.DeliveryRequested ? "Delivery requested; confirmation is pending. This does not resolve the case."
+        : "Draft only. Review is separate from delivered reply and case resolution.";
     private static bool DraftEditable(SupportReplyDraftDto draft) =>
         (draft.Status is "draft" or "needs_review") && !draft.SentUtc.HasValue;
     private IReadOnlyList<SupportReplyDraftDto> ActiveReplyDrafts => supportCase?.ReplyDrafts
-        .Where(draft => draft.Status is not "rejected")
+        .Where(draft => draft.Status is not "superseded")
         .OrderByDescending(draft => draft.UpdatedUtc)
         .ToList() ?? [];
     private string DraftBody(SupportReplyDraftDto draft) => draftBodies.GetValueOrDefault(draft.Id, draft.DraftBody);
@@ -662,7 +681,7 @@
 
     private string BuildApprovalHref(Guid approvalId) =>
         ResolvedCompanyId is Guid companyId
-            ? $"/approvals?companyId={companyId:D}&approvalId={approvalId:D}"
+            ? ReturnUrlNavigation.AppendReturnUrl($"/work?tab=approvals&companyId={companyId:D}&approvalId={approvalId:D}", RecordPath($"/support/cases/{CaseId:D}"))
             : "/approvals";
 
     private static Guid? RefundApprovalId(SupportRefundRequestDto refund) =>

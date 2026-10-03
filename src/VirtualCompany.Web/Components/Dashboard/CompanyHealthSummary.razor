@@ -1,0 +1,90 @@
+@inject ICompanyPresentationContext Presentation
+@if (Workspace.ActiveLens == "company")
+{
+    <section class="company-summary" data-testid="company-health-summary" aria-label="@CommonText["HealthTitle"]">
+        @if (!InReport)
+        {
+        <div class="company-summary__heading"><h2>@CommonText["HealthTitle"]</h2>
+            <a href="@DashboardRoutes.BuildHealthPath(Workspace.CompanyId, returnUrl: Origin)">@CommonText["HealthOpenReport"] →</a>
+        </div>
+        }
+        <div class="company-summary__metrics">
+            <article><span>@CommonText["HealthCash"]</span><strong data-testid="health-cash">@(Workspace.Finance?.IsAvailable == true && Workspace.Finance.CashBalance is decimal cash ? (Workspace.Finance.Currency is { } currency ? LocalMoney.Format(cash, currency) : cash.ToString("N2") + " (" + CommonText["HealthUnavailable"] + ")") : CommonText["HealthUnavailable"].Value)</strong>
+                <small>@(Workspace.Finance?.IsAvailable == true && Workspace.Finance.RunwayDays is int days ? CommonText["HealthRunway", days] : CommonText["HealthNoRunway"])</small>
+                @if (Workspace.Finance?.IsAvailable == true) { <a href="@Link("/finance/cash-position")">@CommonText["PriorityOpenRecord"] →</a> }
+            </article>
+            <article><span>@CommonText["HealthForecast"]</span><strong data-testid="health-forecast">@(Workspace.Sales?.IsAvailable == true ? LocalMoney.Format(Workspace.Sales.ForecastRevenue, Workspace.Sales.Currency) : CommonText["HealthUnavailable"].Value)</strong>
+                <small>@CommonText["HealthForecastMeaning"]</small>
+                @if (Workspace.Sales?.IsAvailable == true) { <a href="@Link("/app/sales")">@CommonText["PriorityOpenRecord"] →</a> }
+            </article>
+            <article><span>@CommonText["HealthAttention"]</span><strong>@(Workspace.CompanyRisks?.Count ?? 0)</strong><small>@CommonText["HealthRiskMeaning"]</small></article>
+            <article class="company-summary__gap"><span>@CommonText["HealthPlan"]</span><strong>@CommonText["HealthNoApprovedBaseline"]</strong><small>@CommonText[Workspace.Finance?.IsAvailable != true ? "HealthPlanUnavailable" : Workspace.Finance.PlanComparison?.State switch { "recorded_unapproved" => "HealthRecordedPlan", "selection_required" => "HealthSelectPlan", "unavailable" => "HealthPlanUnavailable", _ => "HealthNoPlan" }]</small></article>
+        </div>
+        @if (Workspace.RiskFollowUps?.Count > 0)
+        {
+            <div class="company-summary__followups" data-testid="health-follow-ups"><h3>@CommonText["HealthMyFollowUps"]</h3><p>@CommonText["HealthMyFollowUpsMeaning"]</p>
+                @foreach (var followUp in Workspace.RiskFollowUps.Take(5))
+                { <article><a href="@Link(followUp.DeepLink)">@followUp.Title →</a><small>@Time(followUp.ObservedAtUtc)</small></article> }
+            </div>
+        }
+        @if (!InReport)
+        {
+            <div class="company-summary__departments">
+                @foreach (var lens in new[] { "finance", "sales", "marketing", "customers" })
+                {
+                    var authorized = Workspace.AvailableLenses.Any(x => x.Value == lens);
+                    var available = authorized && CompanyHealthPresentation.Available(Workspace, lens);
+                    var sourceTime = CompanyHealthPresentation.Observed(Workspace, lens);
+                    var owner = Workspace.Departments?.FirstOrDefault(x => x.Lens == lens);
+                    <article data-testid="health-department" data-department="@lens" class="@(available ? "" : "company-summary__gap")"><h3>@CommonText[CompanyHealthPresentation.DepartmentTitle(lens)]</h3>
+                        @if (available)
+                        {
+                            <dl class="company-summary__indicators">
+                                @foreach (var indicator in CompanyHealthPresentation.Indicators(Workspace, lens))
+                                {
+                                    <div><dt>@CommonText[indicator.Label]</dt><dd>@IndicatorValue(indicator)</dd></div>
+                                }
+                            </dl>
+                            @if (lens == "finance" && Workspace.Finance?.CoverageGaps?.Count > 0)
+                            { <small class="company-summary__coverage">@CommonText["HealthPartialCoverage"]</small> }
+                            <div class="company-summary__next-action">
+                                @if (CompanyHealthPresentation.DepartmentPriority(Workspace, lens) is { } priority)
+                                {
+                                    <span>@CommonText["HealthNextAction"]</span>
+                                    <h4>@priority.WhatHappened</h4>
+                                    <p>@priority.RequiredHumanAction</p>
+                                    <a data-testid="health-department-review" href="@DashboardRoutes.BuildPriorityPath(Workspace.CompanyId, "company", priority.Key, Origin)">@CommonText["TodayReviewAction"] →</a>
+                                }
+                                else
+                                { <small>@CommonText["HealthNoDepartmentPriority"]</small> }
+                            </div>
+                        }
+                        else
+                        { <span>@CommonText[authorized ? "HealthUnavailable" : "HealthRestrictedCoverage"]</span> }
+                        <div class="company-summary__department-footer">
+                            @if (owner is not null) { <small>@CommonText["PriorityHuman"]: @owner.ResponsiblePerson</small> }
+                            @if (available)
+                            {
+                                @if (CompanyHealthPresentation.Stale(Workspace, sourceTime)) { <small>@CommonText["TodayStatusStale"]</small> }
+                                <small>@CommonText["HealthObservationTime"]: @Time(sourceTime)</small>
+                                <a href="@Link(CompanyHealthPresentation.Route(Workspace.CompanyId, lens))">@CommonText["HealthOpenDepartment"] →</a>
+                            }
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    </section>
+}
+@code {
+    [Parameter, EditorRequired] public TodayWorkspaceViewModel Workspace { get; set; } = default!;
+    [Parameter] public bool InReport { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
+    private string Origin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, Workspace.CompanyId) ?? DashboardRoutes.BuildTodayPath(Workspace.CompanyId, "company");
+    private string Link(string route) => DashboardRoutes.EnsureWorkspaceContext(route, Workspace.CompanyId, Origin);
+    private string Time(DateTime date) => date == DateTime.MinValue ? CommonText["PriorityUnknownTime"] : LocalDateTime.DateTime(date);
+    private string IndicatorValue(CompanyHealthPresentation.DepartmentIndicator indicator) =>
+        indicator.Count is int count ? LocalNumber.Integer(count) :
+        indicator.Amount is decimal amount && !string.IsNullOrWhiteSpace(indicator.Currency) ? LocalMoney.Format(amount, indicator.Currency) :
+        CommonText["HealthUnavailable"].Value;
+}

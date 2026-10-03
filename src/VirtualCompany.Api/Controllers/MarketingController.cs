@@ -12,6 +12,7 @@ namespace VirtualCompany.Api.Controllers;
 [Route("api/marketing")]
 [Authorize(Policy = CompanyPolicies.CompanyMember)]
 [RequireCompanyContext]
+[TypeFilter(typeof(MarketingResponsibilityFilter))]
 public sealed class MarketingController : ControllerBase
 {
     private readonly ICompanyContextAccessor _context;
@@ -173,7 +174,8 @@ public sealed class MarketingController : ControllerBase
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<MarketingContentVariantDto>> CreateVariantVersionAsync(Guid variantId,
         CreateMarketingContentVariantVersionRequest request, CancellationToken ct)
-    { var result = await _marketing.CreateContentVariantVersionAsync(CompanyId(), variantId, request, ct); return result is null ? NotFound() : Ok(result); }
+    { try { var result = await _marketing.CreateContentVariantVersionAsync(CompanyId(), variantId, request, ct); return result is null ? NotFound() : Ok(result); }
+      catch (InvalidOperationException ex) { return Conflict(new ProblemDetails { Status = 409, Title = "Reload content before revising", Detail = ex.Message }); } }
     [HttpPost("content-variants/{variantId:guid}/retire")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<IActionResult> RetireVariantAsync(Guid variantId, CancellationToken ct) =>
@@ -185,8 +187,11 @@ public sealed class MarketingController : ControllerBase
         Ok(await _marketing.GenerateContentVariantsAsync(CompanyId(), UserId(), briefId, request, ct));
     [HttpPost("content/{briefId:guid}/review")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
-    public async Task<IActionResult> ReviewContentAsync(Guid briefId, ReviewMarketingContentRequest request, CancellationToken ct) =>
-        await _marketing.ReviewContentAsync(CompanyId(), briefId, request, ct) ? NoContent() : NotFound();
+    public async Task<IActionResult> ReviewContentAsync(Guid briefId, ReviewMarketingContentRequest request, CancellationToken ct)
+    {
+        try { return await _marketing.ReviewContentAsync(CompanyId(), briefId, request, ct) ? NoContent() : NotFound(); }
+        catch (InvalidOperationException ex) { return Conflict(new ProblemDetails { Status = 409, Title = "Reload content before reviewing", Detail = ex.Message }); }
+    }
     [HttpPost("content/{briefId:guid}/submit")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<IActionResult> SubmitContentAsync(Guid briefId, CancellationToken ct) =>
@@ -480,11 +485,11 @@ public sealed class MarketingController : ControllerBase
     [HttpPost("channel-actions/{actionId:guid}/submit")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<MarketingChannelActionDto>> SubmitChannelActionAsync(Guid actionId, CancellationToken ct)
-    { var result=await _delivery.SubmitActionAsync(CompanyId(),UserId(),actionId,ct);return result is null?NotFound():Ok(result); }
+    { try { var result=await _delivery.SubmitActionAsync(CompanyId(),UserId(),actionId,ct);return result is null?NotFound():Ok(result); } catch (InvalidOperationException ex) { return Conflict(new ProblemDetails { Status=409, Title="Launch approval unavailable", Detail=ex.Message }); } }
     [HttpPost("channel-actions/{actionId:guid}/synchronize-approval")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<MarketingChannelActionDto>> SynchronizeChannelActionAsync(Guid actionId, CancellationToken ct)
-    { var result=await _delivery.SynchronizeApprovedActionAsync(CompanyId(),actionId,ct);return result is null?NotFound():Ok(result); }
+    { try { var result=await _delivery.SynchronizeApprovedActionAsync(CompanyId(),actionId,ct);return result is null?NotFound():Ok(result); } catch (InvalidOperationException ex) { return Conflict(new ProblemDetails { Status=409, Title="Delivery authority changed", Detail=ex.Message }); } }
     [HttpPost("channel-actions/{actionId:guid}/cancel")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<MarketingChannelActionDto>> CancelChannelActionAsync(Guid actionId, CancellationToken ct)

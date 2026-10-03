@@ -17,14 +17,20 @@ public abstract class SalesPageBase : ComponentBase
     protected string? ShellErrorMessage { get; private set; }
     protected SalesDashboardResponse? AgentPanelDashboard { get; set; }
     protected string? AgentPanelErrorMessage { get; set; }
+    protected string BuildSalesPath(string path) => ResolvedCompanyId is Guid company
+        ? SalesJourneyRoutes.Build(path, company, Navigation.Uri) : path;
 
     protected async Task<bool> ResolveCompanyAsync(CancellationToken cancellationToken = default)
     {
+        var location = Navigation.Uri;
+        var requestedCompany = CompanyId;
+        ResolvedCompanyId = null;
         ShellErrorMessage = null;
 
         try
         {
             var context = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId, cancellationToken);
+            if (location != Navigation.Uri || requestedCompany != CompanyId) return false;
             ResolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
             if (ResolvedCompanyId is not Guid companyId)
             {
@@ -46,6 +52,10 @@ public abstract class SalesPageBase : ComponentBase
         }
     }
 
+    private int readVersion;
+    protected (int Version, string Location) BeginSalesRead() => (++readVersion, Navigation.Uri);
+    protected bool SalesReadIsCurrent((int Version, string Location) read) => read.Version == readVersion && Navigation.Uri == read.Location;
+
     protected async Task RefreshAgentPanelAsync(CancellationToken cancellationToken = default)
     {
         if (ResolvedCompanyId is not Guid companyId)
@@ -54,7 +64,9 @@ public abstract class SalesPageBase : ComponentBase
         }
 
         AgentPanelErrorMessage = null;
-        AgentPanelDashboard = await SalesApiClient.GetDashboardAsync(companyId, cancellationToken);
+        var location = Navigation.Uri;
+        var result = await SalesApiClient.GetDashboardAsync(companyId, cancellationToken);
+        if (ResolvedCompanyId == companyId && Navigation.Uri == location) AgentPanelDashboard = result;
     }
 
     protected async Task<Guid?> ResolveSalesAgentIdAsync(Guid companyId, CancellationToken cancellationToken = default)

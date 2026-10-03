@@ -8,15 +8,39 @@ public sealed class TodayWorkspacePriorityOrderingTests
     private static readonly DateTime Now = new(2026, 9, 2, 8, 0, 0, DateTimeKind.Utc);
 
     [Fact]
-    public void Decision_required_precedes_deadline_and_impact()
+    public void Overdue_work_precedes_an_undated_decision_even_with_small_impact()
     {
         var urgent = Candidate("urgent", due: Now.AddMinutes(-1), impact: 10_000);
         var decision = Candidate("decision", decision: true, impact: 1);
 
         var result = TodayWorkspacePriorityOrdering.Select([urgent, decision], Now);
 
-        Assert.Equal("decision", result[0].Key);
-        Assert.Equal("urgent", result[1].Key);
+        Assert.Equal("urgent", result[0].Key);
+        Assert.Equal("decision", result[1].Key);
+    }
+
+    [Theory]
+    [InlineData(0, "Overdue")]
+    [InlineData(4, "four hours")]
+    [InlineData(24, "within a day")]
+    [InlineData(72, "three days")]
+    [InlineData(73, "later")]
+    public void Deadline_bands_include_their_boundary_and_have_an_explanation(int hours, string expected)
+    {
+        var candidate = Candidate("boundary", due: Now.AddHours(hours));
+        Assert.Contains(expected, TodayWorkspacePriorityOrdering.Explain(candidate, Now));
+        var later = Candidate("later", due: Now.AddHours(hours).AddSeconds(1), impact: 50000);
+        var result = TodayWorkspacePriorityOrdering.Select([later, candidate], Now);
+        if (hours <= 72) Assert.Equal("boundary", result[0].Key);
+    }
+
+    [Fact]
+    public void Overdue_remains_visible_when_five_decisions_compete()
+    {
+        var candidates = Enumerable.Range(1, 5).Select(x => Candidate($"decision{x}", decision: true)).Append(Candidate("overdue", due: Now.AddDays(-2)));
+        var result = TodayWorkspacePriorityOrdering.Select(candidates, Now);
+        Assert.Equal("overdue", result[0].Key);
+        Assert.Equal(5, result.Count);
     }
 
     [Fact]

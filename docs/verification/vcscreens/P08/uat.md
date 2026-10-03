@@ -1,0 +1,33 @@
+# P08 local browser acceptance
+
+Date 2026-10-02; same checkout baseline `37834c7f` plus preserved P01–P08 work. Real Web/composed API, disposable SQLite fixture, owner plus restricted member, background workers disabled. Use `profile.md` and `commands.md`. Every flow below passed within its stated local boundary; human acceptance is pending. No outbound live send was attempted. Reload persists within a host session; a new fixture host resets its synthetic database.
+
+## F08-01 — Support Now priority to owning case
+
+Given North Company's customers lens and current cases, open the reopened case priority, inspect its source/deadline, follow Open related source record, then Back to priority. Expected: original company/lens/key and exact Overview origin survive, and deadline matches the report's earliest outstanding target. Observed: exact priority URL round trip passed on final build; overdue response target is now used rather than later resolution target. Support Today metrics use the same five unresolved records (one risk, three breached, one waiting). Artifacts: `priority-deadline-final.jpg`, `case-priority-return-final.jpg`, `support-now-mobile.jpg`; wire assertion verifies the same target.
+
+## F08-02 — Customer history and accessible knowledge
+
+From SLA report, open P08-ACCESS, expand Customer account access guide, follow Customer case history, return to case, open Knowledge and return again. Expected: only same-customer history and currently accessible processed/indexed evidence; bounded parent and original company/Overview retained. Observed: history has P08-ACCESS/P08-HISTORY; the guide excerpt is visible. The indexed restricted Private account credentials document is absent from both retrieval and knowledge listing. Artifacts: `customer-history.jpg`, `knowledge-access.jpg`, `knowledge-authorized.json`; exact report/case return checks. Previous-prompt Finance/Monthly/source utilities remain present.
+
+## F08-03 — Reasoned owner handoff and reviewed/rejected draft
+
+In P08-ACCESS choose the available human owner, enter a reason, save and reload. Generate the owning reply draft, edit its text, save, reject and reload. Expected: durable owner/reason and reviewed text/rejected history remain; no sent/resolved claim. Observed: Alice Admin owns the case after reload; assignment event/reason and saved rejected draft are persisted in owning records. Public guide supports evidence but the configured local reasoning composition could not produce a reliable answer, so the owning service requires review. Artifacts: `case-reviewed-authorized.json`, `source-reconciliation.json`, `case-evidence-final.jpg`, `reply-review-history.jpg`. Component test verifies unsaved input blocks approval and rejected history remains. No provider send requested. Final assignment activity now exposes the saved reason; its API read-back assertion is the verification for this last presentation-data change, rather than a repeated browser run.
+
+## F08-04 — Unsupported answer, refusal and recovery
+
+Open P08-GAP from backlog, draft reply, inspect missing knowledge/targets, attempt approval, then Reload current case. Expected: unsupported answer remains reviewable with durable evidence gap; approval fails safely and no delivery occurs. Observed: no trusted source, durable knowledge gap, needs-review draft; HTTP 409 feedback explains lack of processed/indexed/accessible knowledge and offers reload. No SentUtc, provider message or case resolution is fabricated. Artifacts: `grounding-gap.jpg`, `unsupported-approval-refused.jpg`, `case-gap-refused-authorized.json`. API dispatcher checks independently cover current-source revocation, already-sent duplication and uncertain retry refusal with a controlled sender double.
+
+## F08-05 — Operational reports, filters and export
+
+Open SLA/backlog/unresolved/aging from Support; select Waiting internally and 7–30 days, open the included case and return. Also filter the queue to Waiting internally and open aging. Expected: count/rows/as-of/definition/calendar reconcile; status, priority, category, search and owner queue scope carry to reports, exact return retains filters. Observed: five backlog/unresolved/aging cases; four SLA cases; one missing-target row. Waiting/reopened semantics are disclosed. Aging filter includes exactly P08-WAITING with one breach/one waiting. Exact report and queue URL round trips pass; queue-to-report carries status and includes the same single case. Artifacts: `aging-filter-final.jpg`, `queue-final.jpg`, `queue-to-report-scope-final.jpg`, `report-*-authorized.json`, `source-reconciliation.json`. Automated tests cover more than 200 cases, UTC bucket boundaries, formula-safe CSV and current-access reread. Export CSV refreshed as-of and completed the production JS handoff; browser download observation timed out, so physical file saving is unverified.
+
+## F08-06 — Responsibility and company isolation
+
+Restricted member opens North backlog directly. Owner switches from North Support report to South Company. Expected: member sees no report rows/export; company switch clears prior evidence. Observed: member HTTP 403 feedback, Export disabled, no rows; South Today has no P08/North case text. Artifacts: `restricted-member.jpg`, `company-switch-final.jpg`. API tests also deny foreign cases, knowledge and assignments and ensure company-scoped manual SLA scanning does not mutate another company's case. Export revocation test refuses cached-data download.
+
+## F08-07 — Reference comparison, responsive and keyboard
+
+Compare final desktop reports/case with their generated references, use actual 390×844 viewport, then reset. Expected: usable hierarchy, responsive controls and contained table scrolling; keyboard can reach controls. Observed: corrected outer dashboard-grid collision, full-width case content and wrapped navigation; mobile report document width 375 inside 390 viewport, table scroll width 650 contained in 237px region; mobile case document width 390. Queue Apply + Tab focuses Clear. Artifacts: `customer-history.jpg`, `case-evidence-final.jpg`, `sla-mobile.jpg`, `case-mobile.jpg`, `support-now-mobile.jpg`. The initial override targeted a second tab; the desktop-sized attempted capture is explicitly excluded from mobile acceptance.
+
+Screenshots live under `screenshots/`. Earlier layout/mapping/host attempts are diagnostic only. Independent gates: controlled configured support channel/test recipient/provider confirmation, physical CSV save, production SQL Server/deployed tenant and actual human Release 1 review. P07 statutory acceptance remains separate. Cleanup records only owned processes and temporary tabs.

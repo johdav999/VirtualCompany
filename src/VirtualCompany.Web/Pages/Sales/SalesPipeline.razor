@@ -4,6 +4,7 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@SalesText["SalesPipeline"]</PageTitle>
 
 <div class="sales-workspace">
@@ -44,7 +45,7 @@
                                 <h2>@stage.Name</h2>
                                 <span>@SalesText["DealCount", stage.DealCount]</span>
                             </div>
-                            <strong>@Money(stage.TotalValue, StageCurrency(stage))</strong>
+                            <strong>@string.Join(" · ", stage.Deals.GroupBy(x => x.Currency).Select(x => Money(x.Sum(d => d.Amount), x.Key)))</strong>
                         </header>
 
                         @if (stage.Deals.Count == 0)
@@ -109,7 +110,9 @@
 
     private async Task LoadAsync()
     {
+        var read = BeginSalesRead();
         isLoading = true;
+        pipeline = null;
         errorMessage = null;
         try
         {
@@ -119,17 +122,20 @@
                 return;
             }
 
-            pipeline = await SalesApiClient.GetPipelineAsync(ResolvedCompanyId!.Value);
+            var result = await SalesApiClient.GetPipelineAsync(ResolvedCompanyId!.Value);
+            if (!SalesReadIsCurrent(read)) return;
+            pipeline = result;
             await RefreshAgentPanelAsync();
         }
         catch (SalesApiException ex)
         {
+            if (!SalesReadIsCurrent(read)) return;
             errorMessage = ex.Message;
             AgentPanelErrorMessage = ex.Message;
         }
         finally
         {
-            isLoading = false;
+            if (SalesReadIsCurrent(read)) isLoading = false;
         }
     }
 
@@ -189,7 +195,7 @@
     }
 
     private bool IsMoving(Guid dealId) => movingDealId == dealId;
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private static string StageCurrency(SalesPipelineStageResponse stage) => stage.Deals.FirstOrDefault()?.Currency ?? "USD";
     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
     private string CloseDate(DateTime? value) => value.HasValue ? LocalDateTime.DateTime(value.Value) : SalesText["NoCloseDate"];

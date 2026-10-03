@@ -1,18 +1,27 @@
 <TodayFeatureSection TestId="marketing-today-section" Title="@CommonText["TodayMarketing"]" Icon="marketing"
                      Summary="@Section.StatusMessage"
                      StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
-                     IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items"
-                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                     IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items" ShowDetails="true" ItemLimit="6"
+                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ReturnUrl="@ReturnUrl" ActionSelected="ActionSelected" />
+@if (Section.IsAvailable)
+{
+    <section class="vc-panel marketing-today-reports" data-testid="marketing-today-reports">
+        <h2>Campaign evidence and next steps</h2><p>Maya coordinates today's work. Content review, launch approval and provider-confirmed delivery remain separate.</p>
+        @foreach (var kind in new[] { "delivery", "spend", "leads" })
+        { <a class="btn btn-outline-primary" href="@MarketingJourneyRoutes.Report(CompanyId, kind, ReturnUrl ?? DashboardRoutes.BuildTodayPath(CompanyId, "marketing"))">@(kind == "delivery" ? "Campaign delivery" : kind == "spend" ? "Spend versus budget" : "Available lead results")</a> }
+    </section>
+}
 
 @code {
     [Parameter, EditorRequired] public TodayWorkspaceMarketingSectionViewModel Section { get; set; } = default!;
     [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
     private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
     [
-        new(CommonText["TodayActiveObjectives"], LocalNumber.Integer(Section.ActiveObjectives)),
-        new(CommonText["TodayActivePlans"], LocalNumber.Integer(Section.ActivePlans)),
+        new("Due launches", LocalNumber.Integer(Section.DueLaunches)),
         new(CommonText["TodayContentDue"], LocalNumber.Integer(Section.DueContentItems)),
-        new(CommonText["TodayExperiments"], LocalNumber.Integer(Section.ActiveExperiments))
+        new("Spend exceptions", LocalNumber.Integer(Section.SpendExceptions)),
+        new("Attribution gaps", LocalNumber.Integer(Section.AttributionGaps))
     ];
 }

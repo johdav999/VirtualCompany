@@ -1,18 +1,30 @@
 <TodayFeatureSection TestId="support-today-section" Title="@CommonText["TodayCustomerSupport"]" Icon="support"
                      Summary="@Section.StatusMessage"
                      StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
-                     IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items"
-                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                     IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items" ShowDetails="true" ItemLimit="6"
+                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ReturnUrl="@ReturnUrl" ActionSelected="ActionSelected" />
+
+@if (Section.IsAvailable)
+{
+    <section class="vc-panel support-today-reports" data-testid="support-today-reports">
+        <h2>Keep customers moving</h2><p>Review Ben's prepared replies and accountable handoffs. Waiting does not stop service deadlines. Review, requested delivery and resolution remain separate.</p>
+        @foreach (var view in new[] { "sla", "backlog", "unresolved", "aging" })
+        { <a class="btn btn-outline-primary" href="@SupportJourneyRoutes.Build($"/support/reports?view={view}", CompanyId, ReturnUrl)">@(view == "sla" ? "SLA risk" : view == "aging" ? "Case aging" : view == "unresolved" ? "Unresolved cases" : "Backlog")</a> }
+    </section>
+}
 
 @code {
     [Parameter, EditorRequired] public TodayWorkspaceSupportSectionViewModel Section { get; set; } = default!;
     [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
     private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
     [
         new(CommonText["TodayOpenCases"], LocalNumber.Integer(Section.OpenCases)),
         new(CommonText["TodaySlaRisk"], LocalNumber.Integer(Section.SlaAtRisk)),
         new(CommonText["TodaySlaBreached"], LocalNumber.Integer(Section.SlaBreached)),
+        new("Waiting for customer or specialist", LocalNumber.Integer(Section.WaitingCases)),
+        new("Escalated", LocalNumber.Integer(Section.EscalatedCases)),
         new(CommonText["TodayAwaitingApproval"], LocalNumber.Integer(Section.AwaitingApproval))
     ];
 }

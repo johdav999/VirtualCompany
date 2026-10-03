@@ -16,11 +16,12 @@ public sealed class TodayWorkspaceController(ITodayWorkspaceQueryService workspa
     public async Task<ActionResult<TodayWorkspaceDto>> GetAsync(
         Guid companyId,
         [FromQuery] string? lens,
+        [FromQuery] bool refresh,
         CancellationToken cancellationToken)
     {
         try
         {
-            return Ok(await workspace.GetAsync(new GetTodayWorkspaceQuery(companyId, lens), cancellationToken));
+            return Ok(await workspace.GetAsync(new GetTodayWorkspaceQuery(companyId, lens, refresh), cancellationToken));
         }
         catch (ArgumentException exception)
         {

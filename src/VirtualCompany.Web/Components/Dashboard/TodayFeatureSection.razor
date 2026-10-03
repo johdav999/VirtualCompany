@@ -1,4 +1,4 @@
-<article class="today-feature @(IsAvailable ? string.Empty : "today-feature--unavailable")" data-testid="@TestId">
+<article class="today-feature @(IsAvailable ? string.Empty : "today-feature--unavailable") @(ShowDetails ? "today-feature--detailed" : null)" data-testid="@TestId">
     <header class="today-feature__header">
         <span class="today-feature__icon today-feature__icon--@Icon" aria-hidden="true"><MonthlyWorkspaceIcon Kind="@Icon" Size="20" /></span>
         <div class="today-feature__heading">
@@ -23,7 +23,7 @@
         @if (Items.Count > 0)
         {
             <div class="today-feature__items">
-                @foreach (var item in Items.Take(2))
+                @foreach (var item in Items.Take(ItemLimit))
                 {
                     <a href="@ResolveRoute(item.DeepLink)" @onclick="() => SelectAsync(item)">
                         <span>
@@ -59,10 +59,14 @@
     [Parameter, EditorRequired] public Guid CompanyId { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
 
-    private string ResolveRoute(string? route) => DashboardRoutes.EnsureCompanyContext(
+    [Parameter] public string? ReturnUrl { get; set; }
+    [Parameter] public bool ShowDetails { get; set; }
+    [Parameter] public int ItemLimit { get; set; } = 2;
+
+    private string ResolveRoute(string? route) => DashboardRoutes.EnsureWorkspaceContext(
         route,
         CompanyId,
-        DashboardRoutes.BuildTodayPath(CompanyId));
+        ReturnUrl ?? DashboardRoutes.BuildTodayPath(CompanyId));
 
     private Task OpenWorkspaceAsync() => ActionSelected.InvokeAsync(new(
         "responsibility-section", "open-workspace", ResolveRoute(DeepLink), SourceType: TestId, Label: Title));

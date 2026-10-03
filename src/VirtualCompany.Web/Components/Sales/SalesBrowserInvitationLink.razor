@@ -1,7 +1,8 @@
 @inject SalesBrowserMeetingApiClient BrowserMeetings
 @inject Microsoft.JSInterop.IJSRuntime JS
+@inject NavigationManager Navigation
 <button type="button" class="sales-button" disabled="@busy" @onclick="Copy">@(busy?"Copying…":"Copy invitation link")</button>
-@if(RoomId is Guid room){<a class="sales-button" href="@($"/app/sales/rooms/{room:D}?companyId={CompanyId:D}")">Open host room</a>}
+@if(RoomId is Guid room){<a class="sales-button" href="@SalesJourneyRoutes.Build($"/app/sales/rooms/{room:D}", CompanyId, Navigation.Uri)">Open host room</a>}
 @if(message!=null){<span role="status">@message</span>}
 @code {
     [Parameter] public Guid CompanyId {get;set;}

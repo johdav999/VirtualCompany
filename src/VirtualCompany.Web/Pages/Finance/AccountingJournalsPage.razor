@@ -1,6 +1,7 @@
 @page "/finance/accounting/journal"
 @page "/finance/accounting/journals"
 @inherits FinancePageBase
+@rendermode InteractiveServer
 
 <PageTitle>@FinanceText["JournalTitle"]</PageTitle>
 
@@ -11,7 +12,7 @@
         <div><span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span><h2>@FinanceText["JournalTitle"]</h2><p>@FinanceText["JournalHelp"]</p></div>
         @if (CanManageAccounting)
         {
-            <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingManualJournal, AccessState.CompanyId)">@FinanceText["NewManualJournal"]</a>
+            <a class="btn btn-primary" href="@BuildAccountingPath(FinanceRoutes.AccountingManualJournal)">@FinanceText["NewManualJournal"]</a>
         }
     </div>
 
@@ -33,7 +34,7 @@
             <div class="journal-draft-grid">
                 @foreach (var draft in Drafts)
                 {
-                    <a href="@FinanceRoutes.BuildManualJournalDraftPath(draft.Id, AccessState.CompanyId)" class="journal-draft-card">
+                    <a href="@BuildAccountingPath(FinanceRoutes.BuildManualJournalDraftPath(draft.Id, AccessState.CompanyId))" class="journal-draft-card">
                         <span class="@StatusClass(draft.Status)">@StatusText(draft.Status)</span>
                         <strong>@draft.Explanation</strong>
                         <small>@draft.PostingDate.ToString("d") · @LocalMoney.Format(draft.DebitTotal, draft.Currency)</small>

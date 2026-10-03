@@ -50,7 +50,7 @@ public partial class TransactionsPage : FinancePageBase
     private string? AccountFilterValue => NormalizeOptionalText(Account);
     private string? SearchFilterValue => NormalizeOptionalText(Search);
     private string FlaggedFilterValue => NormalizeFlaggedState(Flagged);
-    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? DashboardRoutes.OverviewPathFromLocation(Navigation.Uri, companyId) ?? DashboardRoutes.BuildTodayPath(companyId, "finance") : "/dashboard";
     private IReadOnlyList<FinanceTransactionResponse> DisplayedTransactions =>
         Transactions.Where(MatchesClientFilters).ToArray();
     private IReadOnlyList<TransactionRowViewModel> TransactionRows =>
@@ -87,7 +87,7 @@ public partial class TransactionsPage : FinancePageBase
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
         .ToArray();
-    private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, AccessState.CompanyId);
+    private string ClearFiltersHref => BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, AccessState.CompanyId));
 
     protected override async Task OnParametersSetAsync()
     {
@@ -141,7 +141,7 @@ public partial class TransactionsPage : FinancePageBase
                 NormalizeEndExclusiveUtc(To),
                 CategoryFilterValue,
                 FlaggedFilterValue == "all" ? null : FlaggedFilterValue,
-                200);
+                200, sourceFilter: OperationalSource);
         }
         catch (FinanceApiException ex)
         {
@@ -161,7 +161,7 @@ public partial class TransactionsPage : FinancePageBase
 
         try
         {
-            SelectedTransaction = await FinanceApiClient.GetTransactionDetailAsync(companyId, transactionId);
+            SelectedTransaction = await FinanceApiClient.GetTransactionDetailAsync(companyId, transactionId, sourceFilter: OperationalSource);
             if (SelectedTransaction is null)
             {
                 DetailErrorMessage = "The selected transaction could not be found for this company.";
@@ -258,7 +258,7 @@ public partial class TransactionsPage : FinancePageBase
             query.Add($"search={Uri.EscapeDataString(SearchFilterValue)}");
         }
 
-        return $"{path}?{string.Join("&", query)}";
+        return BuildFinancePath($"{path}?{string.Join("&", query)}");
     }
 
     private string BuildDocumentHref(Guid documentId) =>

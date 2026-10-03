@@ -20,7 +20,6 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
 {
     private const int PreviewItemsPerStage = 2;
     private const int CandidateLimitPerStage = 2000;
-    private const string SupplierPaymentProposalApprovalType = "supplier_invoice_payment_proposal";
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
@@ -31,6 +30,7 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
     private readonly ISupportAnalyticsService _supportAnalyticsService;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyAgentStaffOverviewQueryService> _logger;
+    private readonly CompanyWorkVisibility _visibility;
 
     public CompanyAgentStaffOverviewQueryService(
         VirtualCompanyDbContext dbContext,
@@ -41,7 +41,8 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
         ISalesOperationsService salesOperationsService,
         ISupportAnalyticsService supportAnalyticsService,
         TimeProvider timeProvider,
-        ILogger<CompanyAgentStaffOverviewQueryService> logger)
+        ILogger<CompanyAgentStaffOverviewQueryService> logger,
+        CompanyWorkVisibility visibility)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
@@ -52,6 +53,7 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
         _supportAnalyticsService = supportAnalyticsService;
         _timeProvider = timeProvider;
         _logger = logger;
+        _visibility = visibility;
     }
 
     public async Task<AgentStaffOverviewDto> GetAsync(
@@ -69,7 +71,10 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             .SingleOrDefaultAsync(cancellationToken)
             ?? throw new KeyNotFoundException("Company not found.");
 
-        var periodStartUtc = await ResolvePeriodStartUtcAsync(query, cancellationToken);
+        var scope = await _visibility.ResolveAsync(query.CompanyId, cancellationToken);
+        var periodStartUtc = scope.Allows("finance") || query.Year.HasValue
+            ? await ResolvePeriodStartUtcAsync(query, cancellationToken)
+            : new DateTime(_timeProvider.GetUtcNow().Year, _timeProvider.GetUtcNow().Month, 1, 0, 0, 0, DateTimeKind.Utc);
         var periodEndUtc = periodStartUtc.AddMonths(1);
         var period = new AgentStaffOverviewPeriodDto(
             periodStartUtc.Year,
@@ -78,11 +83,12 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             periodEndUtc,
             periodStartUtc.ToString("MMMM yyyy", System.Globalization.CultureInfo.InvariantCulture));
 
-        var finance = await BuildFinanceSummaryAsync(query.CompanyId, membership, period, cancellationToken);
-        var sales = await _salesOperationsService.GetDashboardAsync(query.CompanyId, cancellationToken);
-        var support = await _supportAnalyticsService.GetDashboardAsync(query.CompanyId, cancellationToken);
+        var finance = scope.Allows("finance") ? await BuildFinanceSummaryAsync(query.CompanyId, membership, period, cancellationToken)
+            : FinanceUnavailable(query.CompanyId, "Finance evidence is outside your current responsibility and access scope.");
+        var sales = scope.Allows("sales") ? await _salesOperationsService.GetDashboardAsync(query.CompanyId, cancellationToken) : null;
+        var support = scope.Allows("support") ? await _supportAnalyticsService.GetDashboardAsync(query.CompanyId, cancellationToken) : null;
 
-        var agents = await _dbContext.Agents
+        var agents = await scope.Agents(_dbContext.Agents)
             .AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId)
             .Select(x => new AgentProjection(
@@ -109,9 +115,7 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             .Where(x =>
                 x.CompanyId == query.CompanyId &&
                 x.TargetEntityType == ApprovalTargetEntityType.Task.ToStorageValue() &&
-                (x.Status == ApprovalRequestStatus.Pending ||
-                 (x.Status == ApprovalRequestStatus.Approved &&
-                  x.ApprovalType == SupplierPaymentProposalApprovalType)))
+                x.Status == ApprovalRequestStatus.Pending)
             .OrderBy(x => x.CreatedUtc)
             .Take(CandidateLimitPerStage)
             .Select(x => new TaskApprovalProjection(
@@ -128,14 +132,6 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             .GroupBy(x => x.TaskId)
             .ToDictionary(x => x.Key, x => x.First().ApprovalId);
         var pendingApprovalTaskIds = pendingApprovalByTaskId.Keys.ToArray();
-        var approvedPaymentApprovalByTaskId = relevantTaskApprovalRows
-            .Where(x =>
-                x.Status == ApprovalRequestStatus.Approved &&
-                string.Equals(x.ApprovalType, SupplierPaymentProposalApprovalType, StringComparison.OrdinalIgnoreCase) &&
-                !pendingApprovalByTaskId.ContainsKey(x.TaskId))
-            .GroupBy(x => x.TaskId)
-            .ToDictionary(x => x.Key, x => x.Last());
-        var approvedPaymentTaskIds = approvedPaymentApprovalByTaskId.Keys.ToArray();
 
         var plannedCandidates = await LoadTaskCandidatesAsync(
             query.CompanyId,
@@ -143,7 +139,6 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             defaultAgentByDepartment,
             x =>
                 !pendingApprovalTaskIds.Contains(x.Id) &&
-                !approvedPaymentTaskIds.Contains(x.Id) &&
                 x.Status != WorkTaskStatus.InProgress &&
                 x.Status != WorkTaskStatus.AwaitingApproval &&
                 x.Status != WorkTaskStatus.Completed,
@@ -154,7 +149,6 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             defaultAgentByDepartment,
             x =>
                 !pendingApprovalTaskIds.Contains(x.Id) &&
-                !approvedPaymentTaskIds.Contains(x.Id) &&
                 x.Status == WorkTaskStatus.InProgress,
             cancellationToken);
         var approvalCandidates = await LoadTaskCandidatesAsync(
@@ -162,7 +156,6 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             agentIds,
             defaultAgentByDepartment,
             x =>
-                !approvedPaymentTaskIds.Contains(x.Id) &&
                 (pendingApprovalTaskIds.Contains(x.Id) || x.Status == WorkTaskStatus.AwaitingApproval),
             cancellationToken);
         approvalCandidates = approvalCandidates
@@ -174,29 +167,10 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             defaultAgentByDepartment,
             x =>
                 !pendingApprovalTaskIds.Contains(x.Id) &&
-                (approvedPaymentTaskIds.Contains(x.Id) ||
                  (x.Status == WorkTaskStatus.Completed &&
                   x.CompletedUtc >= periodStartUtc &&
-                  x.CompletedUtc < periodEndUtc)),
+                  x.CompletedUtc < periodEndUtc),
             cancellationToken);
-        completedCandidates = completedCandidates
-            .Select(task =>
-            {
-                if (!approvedPaymentApprovalByTaskId.TryGetValue(task.Id, out var approval))
-                {
-                    return task;
-                }
-
-                var completedUtc = approval.DecidedUtc ?? task.UpdatedUtc;
-                return task with
-                {
-                    Status = WorkTaskStatus.Completed,
-                    UpdatedUtc = completedUtc,
-                    CompletedUtc = completedUtc
-                };
-            })
-            .Where(task => task.CompletedUtc >= periodStartUtc && task.CompletedUtc < periodEndUtc)
-            .ToList();
 
         await AddDepartmentWorkAsync(
             query.CompanyId,
@@ -251,16 +225,16 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             counts.Sum(x => x.Completed));
 
         var salesSummary = new AgentStaffSalesSummaryDto(
-            sales.PipelineValue > 0,
-            sales.PipelineValue,
-            sales.ForecastRevenue,
-            sales.Currency,
-            sales.DealsNeedingAttention,
+            sales?.PipelineValue > 0,
+            sales?.PipelineValue ?? 0,
+            sales?.ForecastRevenue ?? 0,
+            sales?.Currency ?? string.Empty,
+            sales?.DealsNeedingAttention ?? 0,
             $"/app/sales?companyId={query.CompanyId:D}");
         var supportSummary = new AgentStaffSupportSummaryDto(
-            support.Summary.SlaRisk,
-            support.Summary.SlaBreached,
-            support.Summary.Open,
+            support?.Summary.SlaRisk ?? 0,
+            support?.Summary.SlaBreached ?? 0,
+            support?.Summary.Open ?? 0,
             $"/support?companyId={query.CompanyId:D}&slaRisk=true");
 
         var attention = BuildAttentionItems(query.CompanyId, stageCounts, salesSummary, supportSummary);
@@ -353,7 +327,8 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             return [];
         }
 
-        var rows = await _dbContext.WorkTasks
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
+        var rows = await scope.Tasks(_dbContext.WorkTasks)
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&

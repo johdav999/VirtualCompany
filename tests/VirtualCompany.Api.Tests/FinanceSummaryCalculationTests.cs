@@ -10,6 +10,61 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class FinanceSummaryCalculationTests
 {
+    [Theory]
+    [InlineData(0, "unknown", false)]
+    [InlineData(1, "critical", true)]
+    [InlineData(2, "unknown", false)]
+    public async Task Cash_risk_distinguishes_missing_and_mixed_evidence_from_measured_zero(int accountCount, string risk, bool lowCash)
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var dbContext = CreateContext(connection);
+        await dbContext.Database.EnsureCreatedAsync();
+        var company = new Company(companyId, "Cash evidence company");
+        company.SetFinanceSeedStatus(VirtualCompany.Domain.Enums.FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+        dbContext.Companies.Add(company);
+        for (var i = 0; i < accountCount; i++)
+            dbContext.FinanceAccounts.Add(new FinanceAccount(Guid.NewGuid(), companyId, $"193{i}", "Business bank account", "asset", i == 0 ? "SEK" : "USD", 0m,
+                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        await dbContext.SaveChangesAsync();
+        var service = new CompanyFinanceReadService(dbContext);
+        var result = await new CompanyFinanceCashPositionWorkflowService(dbContext, service).EvaluateAsync(new(companyId), default);
+        Assert.Equal(risk, result.RiskLevel);
+        Assert.Equal(lowCash, result.AlertState.IsLowCash);
+        Assert.Equal(lowCash ? 1 : 0, await dbContext.Alerts.IgnoreQueryFilters().CountAsync());
+        if (!lowCash)
+        {
+            Assert.Equal("cash_position_unavailable", result.Classification);
+            Assert.Null(result.EstimatedRunwayDays);
+            Assert.Contains("unavailable", result.Rationale);
+            Assert.DoesNotContain("Available cash is 0", result.Rationale);
+        }
+    }
+
+    [Fact]
+    public async Task Invalid_legacy_cash_alert_is_retained_but_does_not_rank_and_other_company_is_excluded()
+    {
+        var company = Guid.NewGuid(); var other = Guid.NewGuid();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        var context = new VirtualCompany.Infrastructure.Auth.RequestCompanyContextAccessor();
+        await using var db = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options, context);
+        await db.Database.EnsureCreatedAsync();
+        db.Companies.AddRange(new Company(company, "Cash"), new Company(other, "Other"));
+        var invalid = Guid.NewGuid(); var valid = Guid.NewGuid();
+        foreach (var (id, tenant, currency) in new[] { (invalid, company, "MIXED"), (valid, company, "SEK"), (Guid.NewGuid(), other, "SEK") })
+            db.Alerts.Add(new Alert(id, tenant, VirtualCompany.Domain.Enums.AlertType.Risk, VirtualCompany.Domain.Enums.AlertSeverity.Critical,
+                "Low cash position", "Retained source", new Dictionary<string, System.Text.Json.Nodes.JsonNode?> { ["currency"] = System.Text.Json.Nodes.JsonValue.Create(currency) },
+                "cash-test", $"finance-cash-position:{tenant:N}:low-cash:{currency}"));
+        await db.SaveChangesAsync();
+        context.SetCompanyId(company);
+        var candidates = await new VirtualCompany.Infrastructure.Companies.FinanceAlertFocusCandidateSource(db)
+            .GetCandidatesAsync(new(company, Guid.NewGuid()), default);
+        Assert.Equal(valid.ToString("N"), Assert.Single(candidates).Id);
+        Assert.Equal(3, await db.Alerts.IgnoreQueryFilters().CountAsync());
+    }
+
     [Fact]
     public async Task Cash_balance_matches_seeded_account_balance_source_data()
     {

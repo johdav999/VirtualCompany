@@ -1,0 +1,44 @@
+@page "/dashboard/company-health"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject ITodayWorkspaceApiClient WorkspaceApi
+@inject OnboardingApiClient CompanyContextApi
+@inject NavigationManager Navigation
+<PageTitle>@CommonText["HealthTitle"]</PageTitle>
+<CompanyHealthReport CompanyId="@(CompanyId ?? Guid.Empty)" Workspace="workspace" ReturnUrl="@ReturnUrl" Department="@Department"
+    IsLoading="loading" IsRestricted="restricted" ErrorMessage="@error" RefreshRequested="LoadAsync" DepartmentChanged="ChangeDepartment" />
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "department")] public string? Department { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    private TodayWorkspaceViewModel? workspace;
+    private bool loading = true, restricted, disposed;
+    private string? error;
+    private CancellationTokenSource? cancellation;
+    private int version;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync()
+    {
+        if (new Uri(Navigation.Uri).AbsolutePath != "/dashboard/company-health") { version++; cancellation?.Cancel(); return; }
+        cancellation?.Cancel(); cancellation?.Dispose();
+        var token = (cancellation = new()).Token; var requestVersion = ++version; var company = CompanyId;
+        bool Current() => !disposed && !token.IsCancellationRequested && requestVersion == version &&
+            new Uri(Navigation.Uri).AbsolutePath == "/dashboard/company-health";
+        loading = true; restricted = false; error = null; workspace = null;
+        try {
+            if (company is not Guid id || id == Guid.Empty) { restricted = true; return; }
+            await CompanyContextApi.GetCurrentUserContextAsync(id, token);
+            if (!Current()) return;
+            var result = await WorkspaceApi.RefreshAsync(id, "company", token);
+            if (!Current()) return;
+            if (result?.CompanyId == id && result.ActiveLens == "company") workspace = result;
+            else if (result is not null) restricted = true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (TodayWorkspaceAccessException) { if (Current()) restricted = true; }
+        catch (Exception ex) when (ex is HttpRequestException or OnboardingApiException) { if (Current()) error = CommonText["TodayErrorDescription"]; }
+        finally { if (Current()) loading = false; }
+    }
+    private void ChangeDepartment(string department) => Navigation.NavigateTo(DashboardRoutes.BuildHealthPath(CompanyId ?? Guid.Empty, department, ReturnUrl));
+    public void Dispose() { disposed = true; cancellation?.Cancel(); cancellation?.Dispose(); }
+}

@@ -26,7 +26,7 @@ public sealed record MarketingContentBriefDto(Guid Id, Guid? CampaignId, Guid? P
     string Offer = "", string RequiredClaimsJson = "[]", string ProhibitedClaimsJson = "[]",
     string SeoRequirementsJson = "{}", string VisualDirection = "", string DesiredFormatsJson = "[]",
     string VariantRequirementsJson = "{}", string EvidenceRequirementsJson = "{}",
-    string ApprovalPolicyJson = "{}");
+    string ApprovalPolicyJson = "{}", DateTime? UpdatedUtc = null);
 public sealed record MarketingContentVariantDto(Guid Id, Guid VariantFamilyId, int VersionNumber, string Name,
     string Body, string ContentFormat, string SourceReferences, bool GeneratedByAi, Guid? GenerationRunId,
     string CapabilityVersion, string PromptVersion, string Status, DateTime CreatedUtc);
@@ -40,12 +40,12 @@ public sealed record CreateMarketingContentBriefRequest(Guid? CampaignId, Guid? 
     string ApprovalPolicyJson = "{}");
 public sealed record CreateMarketingContentVariantRequest(string Name, string Body, string SourceReferences,
     bool GeneratedByAi = false);
-public sealed record CreateMarketingContentVariantVersionRequest(string Name, string Body, string SourceReferences);
+public sealed record CreateMarketingContentVariantVersionRequest(string Name, string Body, string SourceReferences, int? ExpectedBriefVersion = null);
 public sealed record GenerateMarketingContentVariantsRequest(Guid AgentId, string ContentFormat, int VariantCount,
     string Instructions, string IdempotencyKey);
 public sealed record GenerateMarketingContentVariantsResult(Guid RunId, string Status,
     IReadOnlyList<MarketingContentVariantDto> Variants, IReadOnlyList<string> MissingEvidence, bool RequiresReview);
-public sealed record ReviewMarketingContentRequest(bool Approved);
+public sealed record ReviewMarketingContentRequest(bool Approved, int? ExpectedVersion = null);
 public sealed record CompleteMarketingExperimentRequest(string Decision);
 public sealed record MarketingContentPreflightIssueDto(string Code, string Severity, string Explanation,
     Guid? VariantId = null);
@@ -69,7 +69,7 @@ public sealed record CreateMarketingObservationRequest(Guid? CampaignId, Guid? A
 
 public sealed record MarketingExperimentDto(Guid Id, Guid? CampaignId, string Name, string Hypothesis,
     string PrimaryMetric, string GuardrailMetric, int MinimumSampleSize, DateTime StartsUtc, DateTime EndsUtc,
-    string Status, string? Decision);
+    string Status, string? Decision, DateTime? UpdatedUtc = null);
 public sealed record CreateMarketingExperimentRequest(Guid? CampaignId, string Name, string Hypothesis,
     string PrimaryMetric, string GuardrailMetric, int MinimumSampleSize, DateTime StartsUtc, DateTime EndsUtc);
 

@@ -745,6 +745,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
         services.AddSingleton<ITreasuryWorkspacePolicy, TreasuryWorkspacePolicy>();
         services.AddScoped<ITreasuryWorkspaceQueryService, TreasuryWorkspaceQueryService>();
+        services.AddScoped<IFinanceOperationalReportService, FinanceOperationalReportService>();
         services.AddScoped<IConnectedBankingReadinessService, ConnectedBankingReadinessService>();
         services.AddScoped<IConnectedBankingRecoveryVerificationService, ConnectedBankingRecoveryVerificationService>();
         services.AddScoped<IReconciliationScoringSettingsProvider, CompanyReconciliationScoringSettingsProvider>();

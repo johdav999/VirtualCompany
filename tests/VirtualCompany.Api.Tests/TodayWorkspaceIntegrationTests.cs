@@ -11,6 +11,60 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class TodayWorkspaceIntegrationTests : IDisposable
 {
+    [Fact]
+    public async Task Priority_source_time_deadline_and_task_state_refresh_after_a_persisted_command()
+    {
+        var seed = await SeedAsync();
+        using var owner = Client("today-owner", "today-owner@example.com", "Owner");
+        var due = DateTime.UtcNow.AddHours(-2);
+        var create = await owner.PostAsJsonAsync($"/api/companies/{seed.CompanyId:D}/tasks",
+            new VirtualCompany.Application.Tasks.CreateTaskCommand("follow_up", "Verify renewal terms", "Check the recorded terms.", "high", due, null, null));
+        create.EnsureSuccessStatusCode();
+        var task = (await create.Content.ReadFromJsonAsync<VirtualCompany.Application.Tasks.TaskCommandResultDto>())!;
+        var before = (await (await owner.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?refresh=true"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        var priority = Assert.Single(before.Priorities, x => x.RelatedTaskId == task.Id);
+        Assert.Equal(task.UpdatedAt, priority.ObservedAtUtc);
+        Assert.Equal(due, priority.DueUtc);
+        Assert.Equal("new", priority.SourceState);
+        Assert.Equal("Owner", priority.ResponsiblePerson);
+        Assert.Null(priority.WorkingAgent);
+        Assert.Contains($"/work?companyId={seed.CompanyId:D}&tab=tasks&taskId={task.Id:D}", priority.DeepLink);
+        Assert.Contains("Overdue", priority.RankingReason);
+        using var peer = Client("today-manager", "today-manager@example.com", "Sales Manager");
+        var peerWorkspace = (await (await peer.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?refresh=true"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.DoesNotContain(peerWorkspace.Priorities, x => x.RelatedTaskId == task.Id || x.WhatHappened == "Verify renewal terms");
+        var foreign = await owner.PatchAsJsonAsync($"/api/companies/{seed.OtherCompanyId:D}/tasks/{task.Id:D}/status",
+            new VirtualCompany.Application.Tasks.UpdateTaskStatusCommand("completed", null, null, null));
+        Assert.Equal(HttpStatusCode.Forbidden, foreign.StatusCode);
+        var update = await owner.PatchAsJsonAsync($"/api/companies/{seed.CompanyId:D}/tasks/{task.Id:D}/status",
+            new VirtualCompany.Application.Tasks.UpdateTaskStatusCommand("completed", null, null, null));
+        update.EnsureSuccessStatusCode();
+        var persisted = (await (await owner.GetAsync($"/api/companies/{seed.CompanyId:D}/tasks/{task.Id:D}"))
+            .Content.ReadFromJsonAsync<VirtualCompany.Application.Tasks.TaskDetailDto>())!;
+        Assert.Equal("completed", persisted.Status);
+        var after = (await (await owner.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?refresh=true"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.DoesNotContain(after.Priorities, x => x.RelatedTaskId == task.Id);
+    }
+
+    [Fact]
+    public async Task Configured_member_without_finance_responsibility_receives_no_finance_evidence_summary()
+    {
+        var seed = await SeedAsync();
+        await _factory.SeedAsync(db =>
+        {
+            db.Alerts.Add(new Alert(Guid.NewGuid(), seed.CompanyId, AlertType.Risk, AlertSeverity.Critical,
+                "Protected financial exposure", "Confidential treasury evidence", new Dictionary<string, System.Text.Json.Nodes.JsonNode?> { ["source"] = System.Text.Json.Nodes.JsonValue.Create("test-ledger") }, "p02-finance", "p02-finance"));
+            return Task.CompletedTask;
+        });
+        using var member = Client("today-member", "today-member@example.com", "Member");
+        var workspace = (await (await member.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?refresh=true"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.DoesNotContain(workspace.Priorities, x => x.WhatHappened.Contains("Protected financial"));
+        Assert.DoesNotContain(workspace.Decisions, x => x.Title.Contains("Protected financial"));
+    }
     private readonly TestWebApplicationFactory _factory = new();
     public void Dispose() => _factory.Dispose();
 
@@ -32,6 +86,38 @@ public sealed class TodayWorkspaceIntegrationTests : IDisposable
         Assert.True(workspace.Metrics.Count <= 4);
         Assert.True(workspace.Priorities.Count <= 5);
         Assert.All(workspace.Priorities, item => Assert.Equal(TodayWorkspaceLenses.Sales, item.Lens));
+    }
+
+    [Fact]
+    public async Task Dual_responsibility_switches_are_scoped_and_do_not_reuse_another_company_lens()
+    {
+        var seed = await SeedAsync();
+        await _factory.SeedAsync(db =>
+        {
+            db.CompanyResponsibilityAssignments.Add(new CompanyResponsibilityAssignment(Guid.NewGuid(), seed.CompanyId,
+                ResponsibilityArea.Marketing, ResponsibilityAssignmentKind.Primary, seed.ManagerMembershipId,
+                null, AgentAutonomyLevel.Level1, null, seed.OwnerMembershipId));
+            return Task.CompletedTask;
+        });
+        using var manager = Client("today-manager", "today-manager@example.com", "Sales and Marketing Manager");
+        foreach (var lens in new[] { TodayWorkspaceLenses.Sales, TodayWorkspaceLenses.Marketing })
+        {
+            using var response = await manager.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens={lens}");
+            response.EnsureSuccessStatusCode();
+            var workspace = (await response.Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+            Assert.Equal(lens, workspace.ActiveLens);
+            Assert.Equal(seed.CompanyId, workspace.CompanyId);
+            Assert.Equal(2, workspace.AvailableLenses.Count);
+            Assert.Null(workspace.Finance);
+        }
+        var other = await (await manager.GetAsync($"/api/companies/{seed.UnconfiguredCompanyId:D}/workspace/today"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>();
+        Assert.Equal(seed.UnconfiguredCompanyId, other!.CompanyId);
+        Assert.Equal(TodayWorkspaceLenses.Company, other.ActiveLens);
+        var restored = await (await manager.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>();
+        Assert.Equal(TodayWorkspaceLenses.Sales, restored!.ActiveLens);
+        Assert.DoesNotContain(restored.AvailableLenses, x => x.Value == TodayWorkspaceLenses.Finance);
     }
 
     [Fact]
@@ -232,6 +318,50 @@ public sealed class TodayWorkspaceIntegrationTests : IDisposable
         Assert.Contains(workspace!.AgentUpdates, x => x.Title == "Critical renewal risk" &&
             x.VisibilityReason!.Contains("executive oversight", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(workspace.AgentUpdates, x => x.Title == "Routine account notes");
+    }
+
+    [Fact]
+    public async Task Company_health_retains_authorized_risks_beyond_top_five_and_persists_evidence_follow_up()
+    {
+        var seed = await SeedAsync(); var dealIds = Enumerable.Range(0, 8).Select(_ => Guid.NewGuid()).ToList();
+        await _factory.SeedAsync(db => {
+            foreach (var id in dealIds) {
+                var deal = new Deal(id, seed.CompanyId, $"Renewal {id:D}", SalesPipelineStage.QualifiedStageId, 1000, "SEK", expectedCloseUtc: DateTime.UtcNow.AddHours(-1));
+                db.Deals.Add(deal); db.Entry(deal).Property(x => x.UpdatedUtc).CurrentValue = DateTime.UtcNow.AddDays(-8);
+
+                db.SalesAgentRecommendations.Add(new SalesAgentRecommendation(Guid.NewGuid(), seed.CompanyId, "Review renewal", "Recorded revenue exposure", null, id));
+            }
+            return Task.CompletedTask;
+        });
+        using var owner = Client("today-owner", "today-owner@example.com", "Owner");
+        var workspace = (await (await owner.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens=company&refresh=true")).Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.Equal(8, workspace.CompanyRisks!.Count(x => x.Lens == "sales"));
+        Assert.True(workspace.CompanyRisks.Count > workspace.Priorities.Count);
+        Assert.Equal(workspace.CompanyRisks.Count, workspace.CompanyRisks.Select(x => x.EvidenceSourceId).Distinct().Count());
+        Assert.Null(workspace.Finance); Assert.DoesNotContain(workspace.Departments!, x => x.Lens == "finance");
+        var risk = workspace.CompanyRisks.First();
+        var payload = new Dictionary<string,System.Text.Json.Nodes.JsonNode?> {
+            ["priorityEvidenceKey"] = System.Text.Json.Nodes.JsonValue.Create(risk.Key),
+            ["sourceCompanyId"] = System.Text.Json.Nodes.JsonValue.Create(seed.CompanyId),
+            ["sourceObservedUtc"] = System.Text.Json.Nodes.JsonValue.Create(risk.ObservedAtUtc) };
+        var create = await owner.PostAsync($"/api/companies/{seed.CompanyId:D}/tasks",
+            JsonContent.Create(new VirtualCompany.Application.Tasks.CreateTaskCommand("follow_up", risk.WhatHappened, risk.RequiredHumanAction, "high", risk.DueUtc, null, payload)));
+        create.EnsureSuccessStatusCode(); var task = (await create.Content.ReadFromJsonAsync<VirtualCompany.Application.Tasks.TaskCommandResultDto>())!;
+        var persisted = (await (await owner.GetAsync($"/api/companies/{seed.CompanyId:D}/tasks/{task.Id:D}")).Content.ReadFromJsonAsync<VirtualCompany.Application.Tasks.TaskDetailDto>())!;
+        Assert.Equal(risk.Key, persisted.InputPayload["priorityEvidenceKey"]!.ToString());
+        Assert.Equal("user", persisted.CreatedByActorType); Assert.Null(persisted.AssignedAgentId); Assert.Null(persisted.WorkflowInstanceId);
+        using var foreign = Client("today-other", "today-other@example.com", "Other");
+        Assert.Equal(HttpStatusCode.Forbidden, (await foreign.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens=company&refresh=true")).StatusCode);
+        var refreshed = (await (await owner.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens=company&refresh=true")).Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.Contains(refreshed.CompanyRisks!, x => x.Key == risk.Key); // Creating work does not resolve a deal.
+        Assert.Contains(refreshed.RiskFollowUps!, x => x.TaskId == task.Id && x.EvidenceKey == risk.Key);
+        Assert.DoesNotContain(refreshed.Priorities, x => x.RelatedTaskId == task.Id); // Linked next step does not rank the same initiative twice.
+        using var manager = Client("today-manager", "today-manager@example.com", "Sales Manager");
+        var scoped = (await (await manager.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens=company&refresh=true")).Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.Equal("sales", scoped.ActiveLens); Assert.Null(scoped.CompanyRisks); Assert.Null(scoped.Finance); Assert.Null(scoped.RiskFollowUps);
+        using var member = Client("today-member", "today-member@example.com", "Member");
+        var memberScope = (await (await member.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens=company&refresh=true")).Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.Empty(memberScope.RiskFollowUps!);
     }
 
     private HttpClient Client(string subject, string email, string name)

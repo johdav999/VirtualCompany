@@ -1,4 +1,5 @@
 @page "/dashboard"
+@inject TodayPriorityChanges PriorityChanges
 @rendermode InteractiveServer
 @implements IAsyncDisposable
 @inject OnboardingApiClient ApiClient
@@ -86,6 +87,7 @@ else
                             PeriodChanged="ChangePeriodAsync"
                             LensChanged="ChangeLensAsync"
                             ReviewRequested="RequestReviewAsync"
+                            ChangedCount="priorityChanges.Changed" RemovedCount="priorityChanges.Removed" PreviousCheck="priorityChanges.PreviousCheck"
                             ActionSelected="HandleWorkspaceActionAsync" />
         }
     </section>
@@ -124,6 +126,7 @@ else
     private CompanyDashboardEntryViewModel? dashboardEntry;
     private TodayWorkspaceViewModel? todayWorkspace;
     private MonthlyWorkspaceViewModel? monthlyWorkspace;
+    private (int Changed, int Removed, DateTime? PreviousCheck) priorityChanges;
     private string? errorMessage;
     private IJSObjectReference? telemetryModule;
     private DotNetObjectReference<Dashboard>? dotNetReference;
@@ -140,110 +143,175 @@ else
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
-    private async Task LoadAsync()
+    private CancellationTokenSource? loadCancellation;
+    private int loadVersion;
+    private bool disposed;
+    private bool IsDashboardLocation => string.Equals(new Uri(Navigation.Uri).AbsolutePath, "/dashboard", StringComparison.OrdinalIgnoreCase);
+
+    private Task LoadAsync() => LoadWorkspaceAsync(false);
+    private async Task LoadWorkspaceAsync(bool refresh)
     {
+        // Query subscriptions can update the departing component before the router disposes it.
+        // Never canonicalize the Overview over a business-record navigation.
+        if (!IsDashboardLocation)
+        {
+            loadVersion++;
+            loadCancellation?.Cancel();
+            return;
+        }
+        loadCancellation?.Cancel();
+        loadCancellation?.Dispose();
+        var cancellation = loadCancellation = new CancellationTokenSource();
+        var token = cancellation.Token;
+        var version = ++loadVersion;
+        var requestedCompany = CompanyId;
+        var requestedLens = TodayWorkspaceLensValues.Normalize(Lens);
+        var requestedMonthly = IsMonthly;
+        var requestedYear = Year;
+        var requestedMonth = Month;
+        bool IsCurrent() => !disposed && IsDashboardLocation && version == loadVersion && !token.IsCancellationRequested;
+
         isLoading = true;
         isUnauthorized = false;
         errorMessage = null;
         todayWorkspace = null;
         monthlyWorkspace = null;
+        companyAccess = null;
+        dashboardEntry = null;
+        onboardingProgress = null;
 
         try
         {
-            currentUser = await ApiClient.GetCurrentUserContextAsync(CompanyId);
-            onboardingProgress = CompanyId is Guid scopedCompanyId
-                ? await ApiClient.GetProgressAsync(scopedCompanyId)
-                : currentUser?.ActiveCompany is { } activeCompany
-                    ? await ApiClient.GetProgressAsync(activeCompany.CompanyId)
-                    : null;
+            var user = await ApiClient.GetCurrentUserContextAsync(requestedCompany, token);
+            if (!IsCurrent()) return;
+            currentUser = user;
 
-            if (CompanyId is not Guid companyId)
-            {
-                if (onboardingProgress?.CanResume == true || string.Equals(onboardingProgress?.Status, "in_progress", StringComparison.OrdinalIgnoreCase))
-                {
-                    Navigation.NavigateTo("/onboarding", replace: true);
-                    return;
-                }
-
-                if (currentUser?.ActiveCompany is not null)
-                {
-                    Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(currentUser.ActiveCompany.CompanyId), replace: true);
-                }
-                return;
-            }
-
-            companyAccess = await ApiClient.GetCompanyAccessAsync(companyId);
-            if (companyAccess is null)
+            if (requestedCompany is Guid selected &&
+                (selected == Guid.Empty || !ActiveMemberships.Any(x => x.CompanyId == selected)))
             {
                 isUnauthorized = true;
                 return;
             }
 
-            dashboardEntry = await ApiClient.GetDashboardEntryAsync(companyId);
-            if (dashboardEntry?.RequiresOnboarding == true)
+            var progress = requestedCompany is Guid scopedCompanyId
+                ? await ApiClient.GetProgressAsync(scopedCompanyId, token)
+                : user?.ActiveCompany is { } activeCompany
+                    ? await ApiClient.GetProgressAsync(activeCompany.CompanyId, token)
+                    : null;
+            if (!IsCurrent()) return;
+            onboardingProgress = progress;
+
+            if (requestedCompany is not Guid companyId)
+            {
+                if (progress?.CanResume == true || string.Equals(progress?.Status, "in_progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    Navigation.NavigateTo("/onboarding", replace: true);
+                    return;
+                }
+                if (user?.ActiveCompany is { } active && ActiveMemberships.Any(x => x.CompanyId == active.CompanyId))
+                    Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(active.CompanyId), replace: true);
+                return;
+            }
+
+            var access = await ApiClient.GetCompanyAccessAsync(companyId, token);
+            if (!IsCurrent()) return;
+            companyAccess = access;
+            if (access is null)
+            {
+                isUnauthorized = true;
+                return;
+            }
+
+            var entry = await ApiClient.GetDashboardEntryAsync(companyId, token);
+            if (!IsCurrent()) return;
+            dashboardEntry = entry;
+            if (entry is null)
+            {
+                isUnauthorized = true;
+                return;
+            }
+            if (entry.RequiresOnboarding)
             {
                 Navigation.NavigateTo("/onboarding", replace: true);
                 return;
             }
 
-            var requestedLens = TodayWorkspaceLensValues.All.Contains(TodayWorkspaceLensValues.Normalize(Lens))
-                ? Lens
-                : null;
-            if (IsMonthly)
+            var supportedLens = TodayWorkspaceLensValues.All.Contains(requestedLens) ? requestedLens : null;
+            if (requestedMonthly)
             {
-                monthlyWorkspace = await MonthlyWorkspaceApiClient.GetAsync(companyId, requestedLens, Year, Month);
-                if (monthlyWorkspace is null)
+                if (IsInvalidMonthlyPeriod(requestedYear, requestedMonth))
+                {
+                    errorMessage = CommonText["MonthlyInvalidPeriod"];
+                    return;
+                }
+                var workspace = await MonthlyWorkspaceApiClient.GetAsync(companyId, supportedLens, requestedYear, requestedMonth, token);
+                if (!IsCurrent()) return;
+                if (workspace is null)
                 {
                     errorMessage = CommonText["MonthlyEmptyDescription"];
                     return;
                 }
-                var normalizedMonthlyLens = TodayWorkspaceLensValues.Normalize(Lens);
-                if (normalizedMonthlyLens.Length > 0 &&
-                    !string.Equals(normalizedMonthlyLens, monthlyWorkspace.ActiveLens, StringComparison.OrdinalIgnoreCase))
-                {
-                    Navigation.NavigateTo(DashboardRoutes.BuildMonthlyPath(companyId, monthlyWorkspace.ActiveLens,
-                        monthlyWorkspace.Period.Year, monthlyWorkspace.Period.Month), replace: true);
-                }
+                monthlyWorkspace = workspace;
+                if (!string.Equals(requestedLens, workspace.ActiveLens, StringComparison.OrdinalIgnoreCase) ||
+                    requestedYear != workspace.Period.Year || requestedMonth != workspace.Period.Month)
+                    Navigation.NavigateTo(DashboardRoutes.BuildMonthlyPath(companyId, workspace.ActiveLens,
+                        workspace.Period.Year, workspace.Period.Month), replace: true);
             }
             else
             {
-                todayWorkspace = await TodayWorkspaceApiClient.GetAsync(companyId, requestedLens);
-                if (todayWorkspace is null)
+                var workspace = refresh || PriorityChanges.HasSeen(companyId, supportedLens)
+                    ? await TodayWorkspaceApiClient.RefreshAsync(companyId, supportedLens, token)
+                    : await TodayWorkspaceApiClient.GetAsync(companyId, supportedLens, token);
+                if (!IsCurrent()) return;
+                if (workspace is null)
                 {
                     errorMessage = CommonText["TodayEmptyDescription"];
                     return;
                 }
-                var normalizedRequested = TodayWorkspaceLensValues.Normalize(Lens);
-                if (normalizedRequested.Length > 0 &&
-                    !string.Equals(normalizedRequested, todayWorkspace.ActiveLens, StringComparison.OrdinalIgnoreCase))
-                {
-                    Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(companyId, todayWorkspace.ActiveLens), replace: true);
-                }
+                todayWorkspace = workspace;
+                priorityChanges = PriorityChanges.Observe(workspace);
+                if (!string.Equals(requestedLens, workspace.ActiveLens, StringComparison.OrdinalIgnoreCase))
+                    Navigation.NavigateTo(DashboardRoutes.BuildTodayPath(companyId, workspace.ActiveLens), replace: true);
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (TodayWorkspaceAccessException)
         {
-            isUnauthorized = true;
+            if (IsCurrent()) isUnauthorized = true;
         }
         catch (OnboardingApiException ex)
         {
-            errorMessage = ex.Message;
+            if (IsCurrent()) errorMessage = ex.Message;
         }
         catch (HttpRequestException)
         {
-            errorMessage = IsMonthly ? CommonText["MonthlyErrorDescription"] : CommonText["TodayErrorDescription"];
+            if (IsCurrent()) errorMessage = requestedMonthly ? CommonText["MonthlyErrorDescription"] : CommonText["TodayErrorDescription"];
         }
         finally
         {
-            isLoading = false;
+            if (IsCurrent()) isLoading = false;
         }
     }
 
-    private Task ReloadAsync() => LoadAsync();
+    private static bool IsInvalidMonthlyPeriod(int? year, int? month) =>
+        year.HasValue != month.HasValue || month is < 1 or > 12 || year is < 1 or > 9999;
+
+    private Task ReloadAsync()
+    {
+        if (IsMonthly && IsInvalidMonthlyPeriod(Year, Month) && CompanyId is Guid companyId)
+        {
+            Navigation.NavigateTo(DashboardRoutes.BuildMonthlyPath(companyId, Lens), replace: true);
+            return Task.CompletedTask;
+        }
+        return LoadWorkspaceAsync(true);
+    }
 
     private Task ChangeLensAsync(string lens)
     {
         if (CompanyId is not Guid companyId) return Task.CompletedTask;
+        var available = monthlyWorkspace?.AvailableLenses ?? todayWorkspace?.AvailableLenses;
+        if (available is null || !available.Any(x => string.Equals(x.Value, lens, StringComparison.OrdinalIgnoreCase)))
+            return Task.CompletedTask;
         var path = IsMonthly
             ? DashboardRoutes.BuildMonthlyPath(companyId, lens, monthlyWorkspace?.Period.Year ?? Year, monthlyWorkspace?.Period.Month ?? Month)
             : DashboardRoutes.BuildTodayPath(companyId, lens);
@@ -277,9 +345,11 @@ else
     private async Task RequestReviewAsync()
     {
         if (CompanyId is not Guid companyId || todayWorkspace is null) return;
+        var version = loadVersion;
         try
         {
             var review = await TodayWorkspaceApiClient.RequestReviewAsync(companyId);
+            if (disposed || version != loadVersion || todayWorkspace?.CompanyId != companyId) return;
             todayWorkspace = todayWorkspace with { ManualReview = review };
             DashboardInteractionService.RecordAction(new(
                 "review", "request-company-review", "/company-operation", review.RequestId?.ToString("D"),
@@ -287,10 +357,12 @@ else
         }
         catch (TodayWorkspaceAccessException)
         {
+            if (disposed || version != loadVersion) return;
             isUnauthorized = true;
         }
         catch (HttpRequestException)
         {
+            if (disposed || version != loadVersion) return;
             todayWorkspace = todayWorkspace with
             {
                 ManualReview = todayWorkspace.ManualReview is { } existing
@@ -382,6 +454,9 @@ else
 
     public async ValueTask DisposeAsync()
     {
+        disposed = true;
+        loadCancellation?.Cancel();
+        loadCancellation?.Dispose();
         await DisposeScrollTrackerAsync();
         dotNetReference?.Dispose();
         dotNetReference = null;

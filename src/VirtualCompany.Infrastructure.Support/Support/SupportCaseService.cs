@@ -28,13 +28,14 @@ public sealed class SupportCaseService : ISupportCaseService
     private readonly IAuditEventWriter _audit;
     private readonly ISupportSlaPolicyService? _slaPolicies;
     private readonly ICompanyOutboxEnqueuer? _outbox;
+    private readonly ISupportReplySourceAccess? _sources;
 
-    public SupportCaseService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit, ISupportSlaPolicyService? slaPolicies = null, ICompanyOutboxEnqueuer? outbox = null)
+    public SupportCaseService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit, ISupportSlaPolicyService? slaPolicies = null, ICompanyOutboxEnqueuer? outbox = null, ISupportReplySourceAccess? sources = null)
     {
         _dbContext = dbContext;
         _audit = audit;
         _slaPolicies = slaPolicies;
-        _outbox = outbox;
+        _outbox = outbox; _sources = sources;
     }
 
     public async Task<SupportCaseListResponse> ListCasesAsync(Guid companyId, SupportCaseListQuery query, CancellationToken cancellationToken)
@@ -174,9 +175,12 @@ public sealed class SupportCaseService : ISupportCaseService
         }
 
         supportCase.Assign(request.AssignedAgentId, request.AssignedUserId);
-        _dbContext.SupportCaseAssignments.Add(new SupportCaseAssignment(Guid.NewGuid(), companyId, supportCase.Id, request.AssignedAgentId, request.AssignedUserId, userId, DateTime.UtcNow, request.Reason));
+        var assignment = new SupportCaseAssignment(Guid.NewGuid(), companyId, supportCase.Id, request.AssignedAgentId, request.AssignedUserId, userId, DateTime.UtcNow, request.Reason);
+        _dbContext.SupportCaseAssignments.Add(assignment);
         var summary = request.AssignedAgentId is null && request.AssignedUserId is null ? "Support case unassigned." : "Support case assigned.";
-        _dbContext.SupportCaseEvents.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Assigned, summary, AuditActorTypes.Human, userId, DateTime.UtcNow));
+        var eventSummary = string.IsNullOrWhiteSpace(assignment.Reason) ? summary : $"{summary} Reason: {assignment.Reason}";
+        _dbContext.SupportCaseEvents.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Assigned,
+            eventSummary.Length > 1000 ? eventSummary[..999] + "…" : eventSummary, AuditActorTypes.Human, userId, DateTime.UtcNow));
         await AddAuditAsync(companyId, userId, "support.case.assigned", supportCase.Id, AuditEventOutcomes.Succeeded, summary, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return await GetCaseAsync(companyId, supportCase.Id, cancellationToken);
@@ -408,6 +412,15 @@ public sealed class SupportCaseService : ISupportCaseService
             .Select(x => x.Language)
             .SingleOrDefaultAsync(cancellationToken);
         var communicationLanguage = CommunicationLanguageResolver.Resolve(contact?.PreferredLanguage, supportCase.ConversationLanguage, null, companyLanguage);
+        var deliveryKeys = await _dbContext.CompanyOutboxMessages.AsNoTracking()
+            .Where(x => x.CompanyId == supportCase.CompanyId && x.Topic == CompanyOutboxTopics.SupportReplyDeliveryRequested)
+            .Select(x => x.IdempotencyKey).ToListAsync(cancellationToken);
+        var drafts = supportCase.ReplyDrafts.OrderByDescending(x => x.CreatedUtc).Select(x => MapDraft(x) with {
+            DeliveryRequested = deliveryKeys.Contains($"support:{supportCase.CompanyId:N}:{supportCase.Id:N}:{x.Id:N}") }).ToList();
+        if (_sources is not null)
+            for (var i = 0; i < drafts.Count; i++) drafts[i] = drafts[i] with { SourceReferencesJson = await _sources.FilterAsync(supportCase.CompanyId, drafts[i].SourceReferencesJson, cancellationToken) };
+        var state = _slaPolicies is null ? null : SupportSlaState.Evaluate(supportCase, DateTime.UtcNow,
+            (await _slaPolicies.ResolveAsync(supportCase.CompanyId, supportCase.Category, supportCase.Priority, null, supportCase.CreatedUtc, cancellationToken)).RiskThresholdMinutes);
         return new SupportCaseDetailResponse(
             supportCase.Id,
             supportCase.CaseNumber,
@@ -436,8 +449,8 @@ public sealed class SupportCaseService : ISupportCaseService
             supportCase.AssignedUserId,
             supportCase.FirstResponseDueUtc,
             supportCase.ResolutionDueUtc,
-            supportCase.IsSlaRisk,
-            supportCase.IsSlaBreached,
+            state?.AtRisk ?? supportCase.IsSlaRisk,
+            state?.Breached ?? supportCase.IsSlaBreached,
             supportCase.IsChurnRisk,
             supportCase.IsVipRisk,
             ResolveCaseAllowedActions(supportCase),
@@ -445,7 +458,7 @@ public sealed class SupportCaseService : ISupportCaseService
             supportCase.UpdatedUtc,
             supportCase.Messages.OrderBy(x => x.OccurredUtc).Select(MapMessage).ToList(),
             supportCase.Events.OrderByDescending(x => x.OccurredUtc).Select(MapEvent).ToList(),
-            supportCase.ReplyDrafts.OrderByDescending(x => x.CreatedUtc).Select(MapDraft).ToList(),
+            drafts,
             supportCase.RefundRequests.OrderByDescending(x => x.CreatedUtc).Select(MapRefund).ToList(),
             supportCase.KnowledgeGaps.OrderByDescending(x => x.CreatedUtc).Select(MapGap).ToList(),
             context,
@@ -510,7 +523,7 @@ public sealed class SupportCaseService : ISupportCaseService
         new(evt.Id, evt.EventType, SupportLabels.Event(evt.EventType), evt.Summary, evt.ActorType, evt.ActorId, evt.OccurredUtc);
 
     internal static SupportReplyDraftDto MapDraft(SupportReplyDraft draft) =>
-        new(draft.Id, draft.SupportCaseId, draft.DraftBody, draft.Tone, draft.Status, SupportLabels.DraftStatus(draft.Status), draft.Confidence, draft.Answerability, draft.RationaleSummary, draft.SourceReferencesJson, draft.CreatedByAgentId, draft.CreatedByUserId, draft.ApprovedByUserId, draft.ApprovedUtc, draft.SentUtc, draft.SendFailureSummary, draft.CreatedUtc, draft.UpdatedUtc, draft.SafetyDecision, draft.SafetyReasonCodesJson, draft.SafetyPolicyVersion, draft.SafetyEvaluatedUtc);
+        new(draft.Id, draft.SupportCaseId, draft.DraftBody, draft.Tone, draft.Status, SupportLabels.DraftStatus(draft.Status), draft.Confidence, draft.Answerability, draft.RationaleSummary, draft.SourceReferencesJson, draft.CreatedByAgentId, draft.CreatedByUserId, draft.ApprovedByUserId, draft.ApprovedUtc, draft.SentUtc, draft.SendFailureSummary, draft.CreatedUtc, draft.UpdatedUtc, draft.SafetyDecision, draft.SafetyReasonCodesJson, draft.SafetyPolicyVersion, draft.SafetyEvaluatedUtc, draft.DeliveryStatus, draft.LastDeliveryAttemptUtc);
 
     internal static SupportRefundRequestDto MapRefund(SupportRefundRequest refund) =>
         new(

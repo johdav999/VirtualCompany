@@ -9,6 +9,7 @@ public partial class AccountingJournalsPage : FinancePageBase
 {
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
     [SupplyParameterFromQuery(Name = "journalId")] public Guid? JournalId { get; set; }
+    [SupplyParameterFromQuery(Name = "periodId")] public Guid? RequestedPeriodId { get; set; }
     private IReadOnlyList<AccountingJournalResponse> Journals { get; set; } = [];
     private IReadOnlyList<ManualJournalDraftResponse> Drafts { get; set; } = [];
     private AccountingJournalResponse? Selected { get; set; }
@@ -25,22 +26,35 @@ public partial class AccountingJournalsPage : FinancePageBase
     private string? ListError { get; set; }
     private string? ActionError { get; set; }
     private string? ActionMessage { get; set; }
+    private Guid? LoadedCompany;
+    private int readVersion;
     private bool CanManageAccounting => FinanceAccess.CanManageAccounting(AccessState.MembershipRole);
 
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
+        if (LoadedCompany != AccessState.CompanyId) { ++readVersion; Journals = []; Drafts = []; Selected = null; LoadedCompany = AccessState.CompanyId; }
         if (AccessState.IsAllowed && AccessState.CompanyId is Guid companyId) await LoadAsync(companyId, true);
     }
 
     private async Task LoadAsync(Guid companyId, bool selectFirst)
     {
+        var read = ++readVersion; var location = Navigation.Uri;
         IsListLoading = true; ListError = null;
+        if (selectFirst) Selected = null;
         try
         {
+            if (RequestedPeriodId is Guid periodId)
+            {
+                var period = await FinanceApiClient.GetAccountingPeriodAsync(companyId, periodId);
+                if (read != readVersion || location != Navigation.Uri) return;
+                if (period is null) throw new InvalidOperationException("The requested period is unavailable in this company.");
+                From = period.StartDate; To = period.EndDate;
+            }
             var journalsTask = FinanceApiClient.ListAccountingJournalsAsync(companyId, From, To, 0, 100, Search, null, PostingType);
             var draftsTask = FinanceApiClient.ListManualJournalDraftsAsync(companyId, null, 0, 50);
             await Task.WhenAll(journalsTask, draftsTask);
+            if (read != readVersion || location != Navigation.Uri) return;
             var result = await journalsTask;
             Journals = result?.Items ?? []; TotalCount = result?.TotalCount ?? 0;
             Drafts = (await draftsTask)?.Items.Where(item => item.Status != "posted" && item.Status != "discarded").ToArray() ?? [];
@@ -49,15 +63,22 @@ public partial class AccountingJournalsPage : FinancePageBase
             else if (selectFirst && Selected is null && Journals.FirstOrDefault() is { } first)
                 await SelectJournalAsync(first.Id);
         }
-        catch (FinanceApiException ex) { ListError = ex.Message; Journals = []; Drafts = []; }
-        finally { IsListLoading = false; }
+        catch (Exception ex) when (ex is FinanceApiException or InvalidOperationException or HttpRequestException)
+        { if (read == readVersion) { ListError = ex.Message; Journals = []; Drafts = []; Selected = null; } }
+        finally { if (read == readVersion) IsListLoading = false; }
     }
 
     private async Task SelectJournalAsync(Guid id)
     {
         if (AccessState.CompanyId is not Guid companyId) return;
         IsDetailLoading = true; ActionError = null; ShowReversal = false;
-        try { Selected = await FinanceApiClient.GetAccountingJournalAsync(companyId, id); }
+        var read = readVersion; var location = Navigation.Uri; Selected = null;
+        try
+        {
+            var journal = await FinanceApiClient.GetAccountingJournalAsync(companyId, id);
+            if (read != readVersion || location != Navigation.Uri) return;
+            Selected = journal;
+        }
         catch (FinanceApiException ex) { ActionError = ex.Message; }
         finally { IsDetailLoading = false; }
     }
@@ -86,10 +107,10 @@ public partial class AccountingJournalsPage : FinancePageBase
         finally { IsSaving = false; }
     }
 
-    private string AdjustmentPath(Guid id) => FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingManualJournal}?originalJournalId={id:D}", AccessState.CompanyId);
+    private string AdjustmentPath(Guid id) => BuildAccountingPath($"{FinanceRoutes.AccountingManualJournal}?originalJournalId={id:D}");
     private string? SourceInvoicePath(AccountingJournalResponse journal) =>
         string.Equals(journal.SourceType, "customer_invoice", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(journal.SourceId, out var invoiceId)
-            ? FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId)
+            ? BuildAccountingPath(FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId))
             : null;
     private string Amount(decimal value) => value == 0 ? "—" : LocalMoney.Format(value, Selected?.BaseCurrency ?? "USD");
     private string StatusText(string? status) => FinanceText[AccountingPresentation.JournalStatusResourceKey(status)];

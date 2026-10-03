@@ -1,0 +1,151 @@
+@inject ICompanyPresentationContext PriorityPresentation
+@inject NavigationManager Navigation
+@using System.Globalization
+
+<section class="priority-detail" data-testid="priority-detail">
+    <a class="priority-detail__back" href="@BackPath">← @CommonText[DashboardRoutes.NormalizeHealthPath(HealthReturnUrl, CompanyId) is null ? "PriorityBack" : "HealthBackReport"]</a>
+    <header class="priority-detail__header">
+        <div><h1>@CommonText["PriorityDetails"]</h1><p>@CommonText["PriorityDescription"] · @CommonText["OnboardingTimezone"]: @(PriorityPresentation.TimeZoneId ?? "UTC")</p></div>
+        <button type="button" class="btn btn-outline-primary" disabled="@IsLoading" @onclick="RefreshRequested">@CommonText["TodayRefresh"]</button>
+    </header>
+    @if (IsLoading)
+    {
+        <div class="priority-detail__card" role="status" aria-live="polite" aria-busy="true">@CommonText["TodayLoadingDescription"]</div>
+    }
+    else if (IsUnauthorized)
+    {
+        <div class="priority-detail__card" role="alert"><h2>@CommonText["TodayAccessRestricted"]</h2><p>@CommonText["TodayAccessRestrictedDescription"]</p></div>
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="priority-detail__card" role="alert"><h2>@CommonText["TodayErrorTitle"]</h2><p>@ErrorMessage</p><button class="btn btn-primary" @onclick="RefreshRequested">@CommonText["Retry"]</button></div>
+    }
+    else if (Priority is not { } priority || Workspace is null)
+    {
+        <div class="priority-detail__card" role="status" data-testid="priority-unavailable"><h2>@CommonText["PriorityUnavailable"]</h2><p>@CommonText["PriorityUnavailableDescription"]</p><a class="btn btn-primary" href="@BackPath">@CommonText[DashboardRoutes.NormalizeHealthPath(HealthReturnUrl, CompanyId) is null ? "PriorityBack" : "HealthBackReport"]</a></div>
+    }
+    else
+    {
+        <article class="priority-detail__card priority-detail__summary">
+            <div>
+                <span class="vc-kicker">@CommonText[Workspace.Priorities.Any(x => x.Key == priority.Key) ? "PriorityRank" : "HealthRiskRank", priority.Rank]</span>
+                <h2>@priority.WhatHappened</h2>
+                @if (priority.DueUtc is DateTime due && due <= Workspace.GeneratedAtUtc)
+                { <span class="priority-detail__badge priority-detail__badge--warning">@CommonText["TodayOverdue"]</span> }
+                <h3>@CommonText["PriorityWhy"]</h3><p>@priority.WhyItMatters</p>
+                <h3>@CommonText["PriorityOrdering"]</h3><p data-testid="priority-ordering">@priority.RankingReason</p>
+                @if (!string.IsNullOrWhiteSpace(priority.VisibilityReason)) { <small>@priority.VisibilityReason</small> }
+            </div>
+            <dl class="priority-detail__ownership">
+                <dt>@CommonText["PriorityHuman"]</dt><dd>@priority.ResponsiblePerson</dd>
+                <dt>@CommonText["PriorityAgent"]</dt><dd>@(priority.WorkingAgent ?? CommonText["PriorityAgentUnassigned"].Value)</dd>
+                <dt>@CommonText["PriorityDeadline"]</dt><dd>@LocalDateTime.Optional(priority.DueUtc, empty: CommonText["PriorityNoDeadline"])</dd>
+                <dt>@CommonText["PrioritySourceTime"]</dt><dd>@Timestamp(priority.ObservedAtUtc)</dd>
+            </dl>
+        </article>
+        <div class="priority-detail__columns">
+            <section class="priority-detail__card" aria-labelledby="priority-data-title">
+                <h2 id="priority-data-title">@CommonText["PriorityData"]</h2>
+                <p>@CommonText["PriorityEvidenceExplanation"]</p>
+                <div class="priority-detail__record" data-testid="priority-evidence">
+                    <strong>@SourceLabel(priority.EvidenceSourceType)</strong>
+                    <p>@priority.WhatHappened</p>
+                    <span>@CommonText["PrioritySourceTime"]: @Timestamp(priority.ObservedAtUtc)</span>
+                    @if (string.IsNullOrWhiteSpace(priority.EvidenceSourceId))
+                    { <p class="priority-detail__warning">@CommonText["PriorityAggregateEvidence"]</p> }
+                    <a href="@ActionPath">@CommonText["PriorityOpenRecord"] →</a>
+                </div>
+                @if (priority.Freshness is "stale" or "unknown")
+                {
+                    <div class="priority-detail__notice" role="status" data-testid="priority-stale"><strong>@CommonText[priority.Freshness == "unknown" ? "PriorityUnknownTime" : "TodayStaleTitle"]</strong><p>@CommonText["PriorityStaleDescription"]</p></div>
+                }
+                @if (Workspace.IsPartial)
+                {
+                    <div class="priority-detail__notice" role="status" data-testid="priority-partial"><strong>@CommonText["TodayPartialTitle"]</strong><p>@CommonText["TodayPartialDescription"]</p>
+                        <ul>@foreach (var diagnostic in Workspace.Diagnostics) { <li>@diagnostic.Message</li> }</ul>
+                    </div>
+                }
+            </section>
+            <section class="priority-detail__card" aria-labelledby="priority-action-title">
+                <h2 id="priority-action-title">@CommonText["PriorityNextAction"]</h2>
+                <p>@priority.RequiredHumanAction</p>
+                <a class="btn btn-primary priority-detail__primary" href="@ActionPath" data-testid="priority-next-action">@CommonText["PriorityOpenAction"] →</a>
+                <dl class="priority-detail__state" data-testid="priority-work-state">
+                    <dt>@CommonText["PriorityRecordState"]</dt><dd>@StateLabel(priority.SourceState)</dd>
+                    <dt>@CommonText["PriorityDecision"]</dt><dd>@CommonText[priority.DecisionRequired ? "TodayDecisionRequired" : "PriorityDecisionOwningRecord"]</dd>
+                </dl>
+                @if (priority.RelatedTaskId is Guid taskId)
+                {
+                    <a class="priority-detail__related" href="@RelatedPath($"/work?companyId={CompanyId:D}&tab=tasks&taskId={taskId:D}")">@CommonText["PriorityOpenTask"] →</a>
+                }
+                @if (priority.RelatedApprovalId is Guid approvalId)
+                { <a class="priority-detail__related" href="@RelatedPath($"/work?companyId={CompanyId:D}&tab=approvals&itemId={approvalId:D}")">@CommonText["PriorityOpenApproval"] →</a> }
+                @if (priority.RelatedTaskId is Guid detailTaskId)
+                { <a class="priority-detail__related" href="@AgentWorkRoutes.Detail("task",detailTaskId,CompanyId,Navigation.Uri)">Open durable work detail →</a> }
+                @if (Workspace.ActiveLens == "company" && FollowUpRequested.HasDelegate)
+                {
+                    <p>@CommonText["HealthFollowUpHelp"]</p>
+                    @if (Workspace.RiskFollowUps?.Any(x => x.EvidenceKey == priority.Key) == true)
+                    {
+                        @foreach (var followUp in Workspace.RiskFollowUps.Where(x => x.EvidenceKey == priority.Key))
+                        { <a class="priority-detail__related" href="@RelatedPath(followUp.DeepLink)" data-testid="existing-risk-follow-up">@CommonText["HealthMyFollowUps"] →</a> }
+                    }
+                    else
+                    { <button type="button" class="btn btn-outline-primary" disabled="@FollowUpBusy" @onclick="FollowUpRequested" data-testid="record-risk-follow-up">@CommonText["HealthFollowUp"]</button> }
+                    @if (!string.IsNullOrWhiteSpace(FollowUpError)) { <p role="alert">@FollowUpError</p> }
+                }
+                <p class="priority-detail__safe-note">@CommonText["PriorityReadOnly"]</p>
+            </section>
+        </div>
+        <section class="priority-detail__card priority-detail__changes" aria-labelledby="priority-changes-title">
+            <h2 id="priority-changes-title">@CommonText["PriorityChanges"]</h2>
+            <p>@CommonText["PriorityChangesDescription"]</p>
+            <dl><dt>@CommonText["PrioritySourceTime"]</dt><dd>@Timestamp(priority.ObservedAtUtc)</dd><dt>@CommonText["PrioritySnapshotTime"]</dt><dd>@Timestamp(Workspace.GeneratedAtUtc)</dd></dl>
+            @if (PreviousCheck.HasValue)
+            { <p role="status" data-testid="priority-change-result">@CommonText["PriorityChangeResult", ChangedCount, RemovedCount, Timestamp(PreviousCheck.Value)]</p> }
+        </section>
+    }
+</section>
+
+@code {
+    [Parameter] public EventCallback FollowUpRequested { get; set; }
+    [Parameter] public bool FollowUpBusy { get; set; }
+    [Parameter] public string? FollowUpError { get; set; }
+    [Parameter] public string? HealthReturnUrl { get; set; }
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public string? PriorityKey { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
+    [Parameter] public TodayWorkspaceViewModel? Workspace { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsUnauthorized { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public EventCallback RefreshRequested { get; set; }
+    [Parameter] public int ChangedCount { get; set; }
+    [Parameter] public int RemovedCount { get; set; }
+    [Parameter] public DateTime? PreviousCheck { get; set; }
+    private TodayWorkspacePriorityViewModel? Priority => Workspace?.CompanyId == CompanyId
+        ? CompanyHealthPresentation.FindRisk(Workspace, PriorityKey) : null;
+    private string ReturnPath => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, CompanyId)
+        ?? DashboardRoutes.BuildTodayPath(CompanyId, Workspace?.ActiveLens);
+    private string BackPath => DashboardRoutes.NormalizeHealthPath(HealthReturnUrl, CompanyId) ?? ReturnPath;
+    private string DetailPath => DashboardRoutes.WithQuery(DashboardRoutes.BuildPriorityPath(CompanyId, Workspace?.ActiveLens ?? "company", PriorityKey ?? "", ReturnPath), ("healthReturnUrl", DashboardRoutes.NormalizeHealthPath(HealthReturnUrl, CompanyId)));
+    // Business modules receive both the exact Overview origin and a separate return to evidence.
+    private string RelatedPath(string route) => DashboardRoutes.WithQuery(
+        DashboardRoutes.EnsureWorkspaceContext(route, CompanyId, ReturnPath), ("priorityReturnUrl", DetailPath));
+    private string ActionPath => RelatedPath(Priority?.DeepLink ?? ReturnPath);
+    private string Timestamp(DateTime timestamp) => timestamp == DateTime.MinValue ? CommonText["PriorityUnknownTime"] : LocalDateTime.DateTime(timestamp);
+    private string SourceLabel(string value) => CommonText[value switch {
+        "task" => "PrioritySourceTask", "approval" => "PrioritySourceApproval",
+        "sales_deal" => "PrioritySourceDeal", "sales_recommendation" => "PrioritySourceRecommendation",
+        "support_case" => "PrioritySourceCase", "support_root_cause" => "PrioritySourceSupportAnalysis",
+        "marketing_sales_handoff" => "PrioritySourceHandoff", "marketing_content_brief" => "PrioritySourceContent",
+        "marketing_experiment" => "PrioritySourceExperiment", "finance_insight" => "PrioritySourceFinanceInsight",
+        "finance_alert" or "finance-alert" or "anomaly" => "PrioritySourceFinanceAlert", _ => "PrioritySourceRecord" }];
+    private string StateLabel(string? value) => CommonText[value?.Trim().ToLowerInvariant() switch {
+        "new" or "open" => "PriorityStateOpen", "in_progress" or "active" => "PriorityStateInProgress",
+        "pending" or "awaiting_approval" or "submitted" or "changes_requested" => "PriorityStateReview",
+        "approved" => "PriorityStateApproved", "completed" or "published" or "won" or "resolved" or "closed" => "PriorityStateCompleted",
+        "blocked" or "failed" or "escalated" => "PriorityStateBlocked", "proposed" or "draft" => "PriorityStateDraft",
+        "dismissed" or "rejected" or "lost" => "PriorityStateClosed", "acknowledged" => "PriorityStateAcknowledged",
+        _ => "PriorityStateOwningRecord" }];
+}

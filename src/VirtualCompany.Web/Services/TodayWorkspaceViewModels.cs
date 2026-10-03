@@ -31,7 +31,14 @@ public sealed record TodayWorkspaceViewModel(
     bool IsPartial,
     IReadOnlyList<TodayWorkspaceDiagnosticViewModel> Diagnostics,
     TodayWorkspaceResponsibilitySetupViewModel? ResponsibilitySetup = null,
-    TodayWorkspaceManualReviewViewModel? ManualReview = null);
+    TodayWorkspaceManualReviewViewModel? ManualReview = null,
+    IReadOnlyList<TodayWorkspacePriorityViewModel>? CompanyRisks = null,
+    IReadOnlyList<TodayWorkspaceDepartmentViewModel>? Departments = null,
+    IReadOnlyList<TodayWorkspaceRiskFollowUpViewModel>? RiskFollowUps = null);
+
+public sealed record TodayWorkspaceRiskFollowUpViewModel(Guid TaskId, string EvidenceKey, string Title, string State, DateTime ObservedAtUtc, string DeepLink);
+
+public sealed record TodayWorkspaceDepartmentViewModel(string Lens, string ResponsiblePerson, string? WorkingAgent, bool IsAvailable);
 
 public sealed record TodayWorkspaceHeaderViewModel(string CompanyName, string Title, string Subtitle);
 public sealed record TodayWorkspaceLensViewModel(string Value, string Label, bool IsDefault, string AvailabilityReason);
@@ -41,7 +48,8 @@ public sealed record TodayWorkspacePriorityViewModel(
     string Key, int Rank, string Lens, string WhatHappened, string WhyItMatters, string ResponsiblePerson,
     string? WorkingAgent, string RequiredHumanAction, DateTime ObservedAtUtc, string Freshness,
     string EvidenceSourceType, string? EvidenceSourceId, string DeepLink, bool DecisionRequired,
-    DateTime? DueUtc, bool DirectlyOwned, decimal Confidence, string? VisibilityReason = null);
+    DateTime? DueUtc, bool DirectlyOwned, decimal Confidence, string? VisibilityReason = null,
+    string? RankingReason = null, string? SourceState = null, Guid? RelatedTaskId = null, Guid? RelatedApprovalId = null);
 public sealed record TodayWorkspaceMetricViewModel(
     string Key, string Label, decimal? Value, string DisplayValue, string? Unit, string Status,
     DateTime ObservedAtUtc, string EvidenceSourceType, string DeepLink);
@@ -50,19 +58,23 @@ public sealed record TodayWorkspaceFeatureItemViewModel(
 public sealed record TodayWorkspaceFinanceSectionViewModel(
     bool IsAvailable, string StatusMessage, DateTime ObservedAtUtc, decimal? CashBalance, string? Currency,
     int? RunwayDays, string FinancialHealth, int OpenInsightCount,
-    IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items, string DeepLink);
+    IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items, string DeepLink, TodayWorkspacePlanComparisonViewModel? PlanComparison = null,
+    int? OverdueReceivables = null, int? DuePayables = null, int? ReconciliationExceptions = null,
+    IReadOnlyList<string>? CoverageGaps = null, string? WorkingAgent = null);
 public sealed record TodayWorkspaceSalesSectionViewModel(
     bool IsAvailable, string StatusMessage, DateTime ObservedAtUtc, decimal PipelineValue, string Currency,
     int NewLeads, int HotLeads, int DealsNeedingAttention, decimal ForecastRevenue,
-    IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items, string DeepLink);
+    IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items, string DeepLink,
+    IReadOnlyList<TodaySalesAgendaItemViewModel>? Agenda = null);
+public sealed record TodaySalesAgendaItemViewModel(string Title, DateTime DueUtc, string State, string DeepLink, bool IsMeeting);
 public sealed record TodayWorkspaceSupportSectionViewModel(
     bool IsAvailable, string StatusMessage, DateTime ObservedAtUtc, int OpenCases, int AwaitingApproval,
     int EscalatedCases, int SlaAtRisk, int SlaBreached,
-    IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items, string DeepLink);
+    IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items, string DeepLink, int WaitingCases = 0);
 public sealed record TodayWorkspaceMarketingSectionViewModel(
     bool IsAvailable, string StatusMessage, DateTime ObservedAtUtc, int ActiveObjectives, int ActivePlans,
     int DueContentItems, int ActiveExperiments, IReadOnlyList<TodayWorkspaceFeatureItemViewModel> Items,
-    string DeepLink);
+    string DeepLink, int DueLaunches = 0, int SpendExceptions = 0, int AttributionGaps = 0);
 public sealed record TodayWorkspaceDecisionViewModel(
     string Key, string Title, string Summary, DateTime ObservedAtUtc, string DeepLink,
     string? VisibilityReason = null, Guid? RelatedApprovalId = null);
@@ -78,3 +90,11 @@ public sealed record TodayWorkspaceResponsibilitySetupViewModel(
 public sealed record TodayWorkspaceManualReviewViewModel(
     bool CanRequest, string? UnavailableReasonCode, string? UnavailableReason,
     Guid? RequestId, Guid? OperatingCycleId, string State, string StatusMessage, DateTime? UpdatedUtc);
+
+public sealed record TodayWorkspacePlanComparisonViewModel(string State, DateTime PeriodStartUtc, DateTime PeriodEndUtc,
+    DateTime? SourceUpdatedUtc, IReadOnlyList<string> RecordedVersions, TodayRecordedComparisonViewModel? RecordedComparison);
+public sealed record TodayRecordedComparisonViewModel(Guid CompanyId, string ComparisonType, DateTime PeriodStartUtc,
+    DateTime PeriodEndUtc, string? Version, bool IncludesCostCenters, IReadOnlyList<TodayRecordedVarianceRowViewModel> Rows);
+public sealed record TodayRecordedVarianceRowViewModel(DateTime PeriodStartUtc, Guid FinanceAccountId, string AccountCode,
+    string AccountName, string CategoryKey, string CategoryName, Guid? CostCenterId, string? CostCenterCode, string? CostCenterName,
+    decimal ActualAmount, decimal ComparisonAmount, decimal VarianceAmount, decimal? VariancePercentage, string Currency);

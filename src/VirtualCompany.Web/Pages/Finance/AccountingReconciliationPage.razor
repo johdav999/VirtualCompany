@@ -1,5 +1,6 @@
 @page "/finance/accounting/reconciliation"
 @page "/finance/accounting/reconciliation/{TransactionId:guid}"
+@rendermode InteractiveServer
 @inherits FinancePageBase
 
 <PageTitle>@FinanceText["BankReconciliationTitle"]</PageTitle>
@@ -11,7 +12,7 @@
 
     <div class="reconciliation-heading">
         <div><span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span><h2>@FinanceText["BankReconciliationTitle"]</h2><p>@FinanceText["BankReconciliationHelp"]</p></div>
-        <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, AccessState.CompanyId)">@FinanceText["OpenJournals"]</a>
+        <a class="btn btn-outline-primary" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, AccessState.CompanyId))">@FinanceText["OpenJournals"]</a>
     </div>
 
     @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
@@ -150,7 +151,7 @@
                         </div>
                         <div class="treasury-evidence-list">
                             @foreach (var evidence in SelectedTreasury.BankEvidence)
-                            { <a href="@FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingReconciliation}/{evidence.BankTransactionId:D}", AccessState.CompanyId)"><span>@TreasuryStatusLabel(evidence.LegRole == "outbound" || evidence.LegRole == "inbound" ? "in_transit" : SelectedTreasury.Summary.Status)</span><strong>@Money(evidence.Amount, evidence.Currency)</strong><small>@evidence.BookingDate.ToString("d") · @evidence.Counterparty</small></a> }
+                            { <a href="@BuildFinancePath(FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingReconciliation}/{evidence.BankTransactionId:D}", AccessState.CompanyId))"><span>@TreasuryStatusLabel(evidence.LegRole == "outbound" || evidence.LegRole == "inbound" ? "in_transit" : SelectedTreasury.Summary.Status)</span><strong>@Money(evidence.Amount, evidence.Currency)</strong><small>@evidence.BookingDate.ToString("d") · @evidence.Counterparty</small></a> }
                             @if (SelectedTreasury.Evidence.Count > SelectedTreasury.BankEvidence.Count)
                             { <div><span>@FinanceText["TreasuryProviderEvidence"]</span><strong>@FinanceText["TreasuryEvidenceCount", SelectedTreasury.Evidence.Count - SelectedTreasury.BankEvidence.Count]</strong></div> }
                         </div>

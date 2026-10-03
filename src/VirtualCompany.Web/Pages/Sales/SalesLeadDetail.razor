@@ -4,6 +4,7 @@
 @using System.Text.RegularExpressions
 @inject SalesBrowserMeetingApiClient BrowserMeetings
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@(lead?.Title ?? "Sales lead")</PageTitle>
 
 <div class="sales-workspace sales-lead-workspace">
@@ -1052,7 +1053,7 @@
         _ => "bi-clock"
     };
 
-    private string ApprovalPath(Guid approvalId) => $"/work?companyId={ResolvedCompanyId:D}&tab=approvals&itemId={approvalId:D}";
+    private string ApprovalPath(Guid approvalId) => BuildSalesPath($"/work?tab=approvals&itemId={approvalId:D}");
     private string ConnectGoogleCalendarPath => ResolvedCompanyId is Guid companyId
         ? $"/settings/calendar-connections?companyId={companyId:D}"
         : "/settings/calendar-connections";
@@ -1074,8 +1075,8 @@
         <div><dt>Message ID</dt><dd>@(email.InternetMessageId ?? email.ProviderMessageId)</dd></div>
     </dl>;
 
-    private string LeadsPath => ResolvedCompanyId is Guid companyId ? $"/app/sales/prospects?companyId={companyId:D}" : "/app/sales/prospects";
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string LeadsPath => BuildPath("/app/sales/prospects");
+    private string BuildPath(string path) => BuildSalesPath(path);
     private string Confidence(decimal? confidence) => confidence.HasValue ? LocalNumber.Percentage(confidence.Value) : "Not scored";
     private string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? LocalMoney.Format(value.Value, currency ?? "USD") : "Not estimated";
     private string ReceivedLabel(SalesLeadSourceEmailResponse? email) => email?.ReceivedUtc is DateTime received ? LocalDateTime.DateTime(received) : "Time unavailable";

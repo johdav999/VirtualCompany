@@ -30,6 +30,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     private readonly IExecutiveCockpitDashboardCache _dashboardCache;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
     private readonly ICompanyOperatingEventService _operatingEvents;
+    private readonly CompanyWorkVisibility _visibility;
 
     public CompanyTaskService(
         VirtualCompanyDbContext dbContext,
@@ -37,7 +38,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         IAgentAssignmentGuard agentAssignmentGuard,
         IExecutiveCockpitDashboardCache dashboardCache,
         ICompanyOutboxEnqueuer outboxEnqueuer,
-        ICompanyOperatingEventService operatingEvents)
+        ICompanyOperatingEventService operatingEvents,
+        CompanyWorkVisibility visibility)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -45,6 +47,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         _agentAssignmentGuard = agentAssignmentGuard;
         _dashboardCache = dashboardCache;
         _operatingEvents = operatingEvents;
+        _visibility = visibility;
     }
 
     public async Task<TaskDetailDto> CreateTaskAsync(
@@ -54,6 +57,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     {
         var membership = await RequireMembershipAsync(companyId, cancellationToken);
         Validate(command);
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
 
         var priority = ResolvePriority(command.Priority);
         if (command.AssignedAgentId.HasValue)
@@ -64,6 +68,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
                 nameof(command.AssignedAgentId),
                 cancellationToken);
         }
+        await EnsureAssignmentScopeAsync(scope, command.Type, command.AssignedAgentId, cancellationToken);
 
         var parentTask = command.ParentTaskId.HasValue
             ? await GetParentTaskAsync(companyId, command.ParentTaskId.Value, cancellationToken)
@@ -144,7 +149,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         await RequireMembershipAsync(companyId, cancellationToken);
         Validate(command);
 
-        var task = await _dbContext.WorkTasks
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
+        var task = await scope.Tasks(_dbContext.WorkTasks)
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == taskId, cancellationToken);
 
         if (task is null)
@@ -187,6 +193,10 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         CancellationToken cancellationToken)
     {
         await RequireMembershipAsync(companyId, cancellationToken);
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
+        var task = await scope.Tasks(_dbContext.WorkTasks)
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == taskId, cancellationToken)
+            ?? throw new KeyNotFoundException("Task not found.");
 
         if (command.AssignedAgentId.HasValue)
         {
@@ -197,14 +207,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
                 cancellationToken);
         }
 
-        var task = await _dbContext.WorkTasks
-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == taskId, cancellationToken);
-
-        if (task is null)
-        {
-            throw new KeyNotFoundException("Task not found.");
-        }
-
+        await EnsureAssignmentScopeAsync(scope, task.Type, command.AssignedAgentId, cancellationToken);
         task.AssignTo(command.AssignedAgentId);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
@@ -236,7 +239,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     {
         await RequireMembershipAsync(companyId, cancellationToken);
 
-        var task = await _dbContext.WorkTasks
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
+        var task = await scope.Tasks(_dbContext.WorkTasks)
             .AsNoTracking()
             .Include(x => x.AssignedAgent)
             .Include(x => x.ParentTask)
@@ -244,9 +248,17 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
                 .ThenInclude(x => x.AssignedAgent)
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == taskId, cancellationToken);
 
-        return task is null
-            ? throw new KeyNotFoundException("Task not found.")
-            : ToDetailDto(task);
+        if (task is null) throw new KeyNotFoundException("Task not found.");
+        var relatedIds = task.Subtasks.Select(x => x.Id).Concat(task.ParentTaskId is Guid parent ? [parent] : []).ToArray();
+        var visibleIds = (await scope.Tasks(_dbContext.WorkTasks).Where(x => x.CompanyId == companyId && relatedIds.Contains(x.Id))
+            .Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
+        var result = ToDetailDto(task);
+        return result with
+        {
+            ParentTask = result.ParentTask is { } parentTask && visibleIds.Contains(parentTask.Id) ? parentTask : null,
+            ParentTaskId = result.ParentTaskId is Guid parentId && visibleIds.Contains(parentId) ? parentId : null,
+            Subtasks = result.Subtasks?.Where(x => visibleIds.Contains(x.Id)).ToList()
+        };
     }
 
     public async Task<TaskListResultDto> ListAsync(
@@ -257,7 +269,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         await RequireMembershipAsync(companyId, cancellationToken);
         Validate(filter);
 
-        var query = _dbContext.WorkTasks
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
+        var query = scope.Tasks(_dbContext.WorkTasks)
             .AsNoTracking()
             .Include(x => x.AssignedAgent)
             .Where(x => x.CompanyId == companyId);
@@ -317,7 +330,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         Guid parentTaskId,
         CancellationToken cancellationToken)
     {
-        var parentTask = await _dbContext.WorkTasks
+        var scope = await _visibility.ResolveAsync(companyId, cancellationToken);
+        var parentTask = await scope.Tasks(_dbContext.WorkTasks)
             .AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == parentTaskId, cancellationToken);
 
@@ -331,6 +345,14 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             {
                 [nameof(CreateTaskCommand.ParentTaskId)] = ["ParentTaskId must reference a task in the same company."]
             });
+    }
+
+    private async Task EnsureAssignmentScopeAsync(CompanyWorkScope scope, string type, Guid? agentId, CancellationToken token)
+    {
+        var area = CompanyWorkScope.Area(null, type);
+        if (area != "company" && !scope.Allows(area) || agentId.HasValue &&
+            !await scope.Agents(_dbContext.Agents).AnyAsync(x => x.Id == agentId, token))
+            throw new UnauthorizedAccessException("This task is outside the current responsibility and access scope.");
     }
 
     private async Task EnsureWorkflowInstanceExistsAsync(

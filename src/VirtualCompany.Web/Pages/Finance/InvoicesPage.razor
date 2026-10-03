@@ -1,5 +1,6 @@
 @page "/finance/invoices"
 @page "/finance/invoices/{InvoiceId:guid}"
+@rendermode InteractiveServer
 @inherits FinancePageBase
 
 <PageTitle>@FinanceText["Invoices"]</PageTitle>
@@ -21,15 +22,15 @@
                 <p class="finance-overview-subtitle">@FinanceText["InvoicesDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.InvoiceDraftNew, AccessState.CompanyId)">@FinanceText["NewInvoice"]</a>
-                <a class="btn finance-overview-button finance-overview-button--secondary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.InvoiceDraftNew, AccessState.CompanyId))">@FinanceText["NewInvoice"]</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId))">@FinanceText["FinanceOverview"]</a>
                 <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>
 
         <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
         <ReceivablesNavigation CompanyId="@AccessState.CompanyId!.Value" ActiveView="invoices" />
-        <div class="finance-subtab-nav" aria-label="@FinanceText["InvoiceReviewsTitle"]"><a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId)">@FinanceText["Review"]</a></div>
+        <div class="finance-subtab-nav" aria-label="@FinanceText["InvoiceReviewsTitle"]"><a class="finance-subtab-nav__link" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId))">@FinanceText["Review"]</a></div>
 
         <div class="invoices-layout">
             <article class="invoice-list-card">

@@ -85,6 +85,25 @@ public sealed class RevenueForecastServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Scheduling_or_reviewing_internal_work_does_not_invent_customer_engagement()
+    {
+        var seed = await SeedForecastAsync("internal-risk");
+        using var scope = CreateCompanyScope(seed.CompanyAId);
+        var runner = scope.ServiceProvider.GetRequiredService<IPipelineRiskScoringJobRunner>();
+        var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        await runner.RunDailyAsync(seed.AsOfUtc, CancellationToken.None);
+        var before = await db.DealRiskScoreSnapshots.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == seed.CompanyAId && x.DealId == seed.HighRiskDealId);
+        db.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), seed.CompanyAId, "internal_follow_up", "Prepare review",
+            seed.AsOfUtc.AddDays(2), dealId: seed.HighRiskDealId, status: SalesStatuses.Pending));
+        await db.SaveChangesAsync();
+        await runner.RunDailyAsync(seed.AsOfUtc, CancellationToken.None);
+        var after = await db.DealRiskScoreSnapshots.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == seed.CompanyAId && x.DealId == seed.HighRiskDealId);
+        Assert.Equal(before.Score, after.Score);
+    }
+
+    [Fact]
     public async Task Sales_model_declares_forecast_and_risk_indexes()
     {
         using var scope = _factory.Services.CreateScope();

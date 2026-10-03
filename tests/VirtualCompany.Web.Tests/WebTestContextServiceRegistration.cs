@@ -12,6 +12,8 @@ internal static class WebTestContextServiceRegistration
     public static TestContext AddVirtualCompanyWebPresentationServices(this TestContext context)
     {
         context.Services.AddLocalization();
+        context.Services.AddScoped<TodayPriorityChanges>();
+        context.Services.AddSingleton(new TaskApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
         var presentationContext = new CompanyPresentationContext();
         presentationContext.SetFormattingCulture("en-US");
         context.Services.AddSingleton<ICompanyPresentationContext>(presentationContext);

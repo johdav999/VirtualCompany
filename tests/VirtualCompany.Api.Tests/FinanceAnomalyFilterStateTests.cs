@@ -64,7 +64,10 @@ public sealed class FinanceAnomalyFilterStateTests
         Assert.Null(ReturnUrlNavigation.NormalizeLocalReturnUrl("//example.com/finance/anomalies"));
 
         var href = ReturnUrlNavigation.AppendReturnUrl($"/tasks?companyId={companyId:D}&taskId={taskId:D}", returnUrl);
-        Assert.Contains($"returnUrl={Uri.EscapeDataString(returnUrl)}", href);
+        var query = System.Web.HttpUtility.ParseQueryString(new Uri("https://local.test" + href).Query);
+        Assert.Equal(returnUrl, query["returnUrl"]);
+        Assert.Equal(companyId.ToString("D"), query["companyId"]);
+        Assert.Equal(taskId.ToString("D"), query["taskId"]);
 
         Assert.Equal($"/tasks?companyId={companyId:D}&taskId={taskId:D}", ReturnUrlNavigation.AppendReturnUrl($"/tasks?companyId={companyId:D}&taskId={taskId:D}", "https://example.com/finance/anomalies"));
     }

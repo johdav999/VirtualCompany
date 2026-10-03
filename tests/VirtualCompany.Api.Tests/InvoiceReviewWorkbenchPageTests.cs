@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Web;
 using Bunit;
 using Bunit.TestDoubles;
 using Microsoft.Extensions.DependencyInjection;
@@ -157,9 +158,9 @@ public sealed class InvoiceReviewWorkbenchPageTests
         cut.WaitForAssertion(() =>
         {
             var href = cut.FindAll("a").Single(link => link.TextContent.Trim() == "View full details").GetAttribute("href");
-            Assert.Equal(
-                $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval",
-                href);
+            var uri = new Uri("http://localhost" + href);
+            Assert.Equal($"/finance/reviews/{invoiceId:D}", uri.AbsolutePath);
+            AssertReviewQuery(uri.Query, companyId);
         });
     }
 
@@ -192,9 +193,20 @@ public sealed class InvoiceReviewWorkbenchPageTests
             Assert.Contains("Open related approval", cut.Markup);
             Assert.Contains("Back to review list", cut.Markup);
             Assert.Contains($"/finance/invoices/{invoiceId:D}?companyId={companyId:D}", cut.Markup);
-            Assert.Contains($"/approvals?companyId={companyId:D}&amp;approvalId={relatedApprovalId:D}", cut.Markup);
-            Assert.Contains($"/finance/reviews?companyId={companyId:D}&amp;status=pending_approval&amp;supplier=Contoso%20Supplies&amp;riskLevel=high&amp;outcome=request_human_approval", cut.Markup);
+            var approval = cut.FindAll("a").Single(x => x.TextContent.Trim() == "Open related approval").GetAttribute("href");
+            var query = HttpUtility.ParseQueryString(new Uri("http://localhost" + approval).Query);
+            Assert.Equal(companyId.ToString(), query["companyId"]); Assert.Equal(relatedApprovalId.ToString(), query["itemId"]);
+            Assert.NotNull(FinanceJourneyRoutes.Normalize(query["recordReturnUrl"], companyId));
+            var back = cut.FindAll("a").Single(x => x.TextContent.Trim() == "Back to review list").GetAttribute("href");
+            var uri = new Uri("http://localhost" + back); Assert.Equal("/finance/reviews", uri.AbsolutePath); AssertReviewQuery(uri.Query, companyId);
         });
+    }
+
+    private static void AssertReviewQuery(string queryString, Guid company)
+    {
+        var query = HttpUtility.ParseQueryString(queryString);
+        Assert.Equal(company.ToString(), query["companyId"]); Assert.Equal("pending_approval", query["status"]);
+        Assert.Equal("Contoso Supplies", query["supplier"]); Assert.Equal("high", query["riskLevel"]); Assert.Equal("request_human_approval", query["outcome"]);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+@inject ICompanyPresentationContext PriorityPresentation
 @using System.Globalization
 
 @if (IsLoading)
@@ -35,22 +36,23 @@ else if (Workspace is null)
 }
 else
 {
-    <div class="today-workspace" data-testid="today-workspace" aria-label="@CommonText["TodayWorkspaceAriaLabel"]">
+    <div class="today-workspace @(Workspace.ActiveLens == "company" ? "today-workspace--company" : "")" data-testid="today-workspace" aria-label="@CommonText["TodayWorkspaceAriaLabel"]">
         <header class="today-header">
             <div class="today-header__identity">
-                <h1>@CommonText["TodayWorkspaceTitle"]</h1>
+                <h1>@(Workspace.ActiveLens == "sales" ? SalesText["MoveTodaysDealsForward"] : CommonText["TodayWorkspaceTitle"])</h1>
                 <div class="today-header__meta">
-                    <span><MonthlyWorkspaceIcon Kind="calendar" Size="17" /> @Workspace.GeneratedAtUtc.ToLocalTime().ToString("MMMM d, yyyy", CultureInfo.CurrentCulture)</span>
+                    <span><MonthlyWorkspaceIcon Kind="calendar" Size="17" /> @LocalDateTime.DateTime(Workspace.GeneratedAtUtc)</span>
                     <i aria-hidden="true"></i>
-                    <span><MonthlyWorkspaceIcon Kind="company" Size="17" /> @Workspace.Header.CompanyName</span>
+                    <span><MonthlyWorkspaceIcon Kind="company" Size="17" /> @Workspace.Header.CompanyName</span><span>@CommonText["OnboardingTimezone"]: @(PriorityPresentation.TimeZoneId ?? "UTC")</span>
                 </div>
             </div>
             <span class="today-freshness @FreshnessClass(Workspace.SituationSummary.Freshness)" data-testid="today-freshness">
                 <span aria-hidden="true">●</span>
-                <strong>@CommonText["TodayStatusLive"]</strong>
+                <strong>@CommonText[IsStale ? "TodayStaleTitle" : "PrioritySnapshotTime"]</strong>
                 <small>@LocalDateTime.Relative(Workspace.SituationSummary.AsOfUtc)</small>
                 <MonthlyWorkspaceIcon Kind="refresh" Size="16" />
             </span>
+            <button type="button" class="btn btn-outline-primary" @onclick="RetryRequested">@CommonText["TodayRefresh"]</button>
         </header>
 
         <div class="today-controls">
@@ -77,6 +79,13 @@ else
                             }
                         </button>
                     }
+                </div>
+            }
+            @if (Workspace.AvailableLenses.Count == 1)
+            {
+                <div class="workspace-current-responsibility" data-testid="today-active-responsibility">
+                    <strong>@LensLabel(Workspace.ActiveLens)</strong>
+                    <small>@Workspace.AvailableLenses[0].AvailabilityReason</small>
                 </div>
             }
         </div>
@@ -121,9 +130,11 @@ else
         <section class="today-situation" aria-labelledby="today-situation-title">
             <h2 id="today-situation-title" class="visually-hidden">@CommonText["TodaySituationLabel"]</h2>
             <p>@SituationCopy</p>
+            @if (PreviousCheck.HasValue)
+            { <small role="status" data-testid="today-changes">@CommonText["PriorityChangeResult", ChangedCount, RemovedCount, LocalDateTime.DateTime(PreviousCheck.Value)]</small> }
         </section>
 
-        @if (Workspace.Metrics.Count > 0)
+        @if (Workspace.ActiveLens != "company" && Workspace.Metrics.Count > 0)
         {
             <section class="today-metrics" aria-label="@CommonText["TodayMetricsLabel"]">
                 @foreach (var metric in Workspace.Metrics.Take(4))
@@ -138,8 +149,9 @@ else
             </section>
         }
 
+        @if (Workspace.ActiveLens == "company") { <CompanyHealthSummary Workspace="Workspace" /> }
         <div class="today-layout">
-            <main class="today-main">
+            <div class="today-main">
                 <section class="today-priorities" aria-labelledby="today-priorities-title">
                     <div class="today-section-heading">
                         <div>
@@ -164,11 +176,14 @@ else
                                 <article class="today-priority @PriorityClass(priority)" data-testid="today-priority">
                                     <div class="today-priority__body">
                                         <div class="today-priority__topline">
-                                            <span><MonthlyWorkspaceIcon Kind="@PriorityIcon(priority)" Size="12" /> @PrioritySeverity(priority)</span>
+                                            <span>@CommonText["PriorityRank", priority.Rank] · <MonthlyWorkspaceIcon Kind="@PriorityIcon(priority)" Size="12" /> @PrioritySeverity(priority)</span>
                                         </div>
                                         <h3>@priority.WhatHappened</h3>
                                         <p>@PrioritySummary(priority)</p>
                                         <p class="today-priority__action-copy"><strong>@PriorityActionLabel(priority)</strong> @priority.RequiredHumanAction</p>
+                                        <p class="today-priority__ownership">@CommonText["PriorityHuman"]: @priority.ResponsiblePerson · @CommonText["PriorityDeadline"]: @LocalDateTime.Optional(priority.DueUtc, empty: CommonText["PriorityNoDeadline"])</p>
+                                        @if (string.IsNullOrWhiteSpace(priority.WorkingAgent))
+                                        { <p class="today-priority__ownership">@CommonText["PriorityAgent"]: @CommonText["PriorityAgentUnassigned"]</p> }
                                         @if (!string.IsNullOrWhiteSpace(priority.VisibilityReason))
                                         {
                                             <p class="today-visibility-reason">@priority.VisibilityReason</p>
@@ -179,10 +194,12 @@ else
                                                 <img src="@AgentPortrait(priority.WorkingAgent, priority.Lens)" alt="" />
                                                 <span><strong>@priority.WorkingAgent</strong><small>@AgentRole(priority.Lens)</small></span>
                                             }
-                                            <time datetime="@priority.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@LocalDateTime.Relative(priority.ObservedAtUtc)</time>
+                                            @if (priority.ObservedAtUtc != DateTime.MinValue)
+                                            { <time datetime="@priority.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture)">@LocalDateTime.Relative(priority.ObservedAtUtc)</time> }
+                                            @if (priority.Freshness is "stale" or "unknown") { <small>@CommonText[priority.Freshness == "unknown" ? "PriorityUnknownTime" : "TodayStaleTitle"]</small> }
                                         </div>
                                     </div>
-                                    <a class="today-priority__button" href="@ResolveRoute(priority.DeepLink)"
+                                    <a class="today-priority__button" href="@DashboardRoutes.BuildPriorityPath(CompanyId, Workspace.ActiveLens, priority.Key, OverviewPath)"
                                        aria-label="@CommonText["TodayOpenPriorityAria", priority.WhatHappened]"
                                        @onclick='() => RecordAsync("priority", "open-priority", priority.DeepLink, priority.EvidenceSourceId ?? priority.Key, priority.EvidenceSourceType, priority.WhatHappened, priority.Rank)'>
                                         <MonthlyWorkspaceIcon Kind="review" Size="16" /> @CommonText["TodayReviewAction"] <span class="today-priority__chevron" aria-hidden="true"><MonthlyWorkspaceIcon Kind="chevron-right" Size="17" /></span>
@@ -203,23 +220,23 @@ else
                     <div class="today-responsibility-grid">
                         @if (Workspace.Finance is not null)
                         {
-                            <FinanceTodaySection Section="Workspace.Finance" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                            <FinanceTodaySection Section="Workspace.Finance" CompanyId="CompanyId" ReturnUrl="@OverviewPath" ActionSelected="ActionSelected" />
                         }
                         @if (Workspace.Sales is not null)
                         {
-                            <SalesTodaySection Section="Workspace.Sales" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                            <SalesTodaySection Section="Workspace.Sales" CompanyId="CompanyId" ReturnUrl="@OverviewPath" ActionSelected="ActionSelected" />
                         }
                         @if (Workspace.Marketing is not null)
                         {
-                            <MarketingTodaySection Section="Workspace.Marketing" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                            <MarketingTodaySection Section="Workspace.Marketing" CompanyId="CompanyId" ReturnUrl="@OverviewPath" ActionSelected="ActionSelected" />
                         }
                         @if (Workspace.Support is not null)
                         {
-                            <SupportTodaySection Section="Workspace.Support" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                            <SupportTodaySection Section="Workspace.Support" CompanyId="CompanyId" ReturnUrl="@OverviewPath" ActionSelected="ActionSelected" />
                         }
                     </div>
                 </section>
-            </main>
+            </div>
 
             <aside class="today-rail" aria-label="@CommonText["TodayContextRailLabel"]">
                 @if (Workspace.ManualReview is { } review && (!string.Equals(review.State, "idle", StringComparison.OrdinalIgnoreCase) || !review.CanRequest))
@@ -246,7 +263,7 @@ else
                             }
                             @if (!review.CanRequest || review.State is "blocked" or "failed")
                             {
-                                <a href="@($"/company-operation?companyId={CompanyId:D}&source=dashboard")">@CommonText["TodayManualReviewRecovery"]</a>
+                                <a href="@ResolveRoute("/company-operation")">@CommonText["TodayManualReviewRecovery"]</a>
                             }
                         </div>
                     </section>
@@ -284,7 +301,7 @@ else
                             </article>
                         }
                     }
-                    <a class="today-rail-card__footer" href="@DashboardRoutes.BuildApprovalsPath(CompanyId)"
+                    <a class="today-rail-card__footer" href="@ResolveRoute(DashboardRoutes.BuildApprovalsPath(CompanyId))"
                        @onclick='() => RecordAsync("decision", "open-all", DashboardRoutes.BuildApprovalsPath(CompanyId), null, "approval", CommonText["TodayViewAllDecisions"])'>
                         @CommonText["TodayViewAllDecisions"] <span aria-hidden="true">→</span>
                     </a>
@@ -358,6 +375,9 @@ else
     [Parameter] public bool IsUnauthorized { get; set; }
     [Parameter] public string? ErrorMessage { get; set; }
     [Parameter] public EventCallback RetryRequested { get; set; }
+    [Parameter] public int ChangedCount { get; set; }
+    [Parameter] public int RemovedCount { get; set; }
+    [Parameter] public DateTime? PreviousCheck { get; set; }
     [Parameter] public EventCallback<string> LensChanged { get; set; }
     [Parameter] public EventCallback<string> PeriodChanged { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
@@ -377,10 +397,11 @@ else
         .Where(update => !string.IsNullOrWhiteSpace(update.WorkingAgent))
         .ToList() ?? [];
 
-    private string ResolveRoute(string? route) => DashboardRoutes.EnsureCompanyContext(
+    private string OverviewPath => DashboardRoutes.BuildTodayPath(CompanyId, Workspace?.ActiveLens);
+    private string ResolveRoute(string? route) => DashboardRoutes.EnsureWorkspaceContext(
         route,
         CompanyId,
-        DashboardRoutes.BuildTodayPath(CompanyId, Workspace?.ActiveLens));
+        OverviewPath);
 
     private Task RecordAsync(string area, string action, string target, string? itemId, string? sourceType, string? label, int? position = null) =>
         ActionSelected.InvokeAsync(new DashboardActionTelemetryContext(
@@ -440,7 +461,7 @@ else
         "finance" => CommonText["TodayFinance"],
         "sales" => CommonText["TodaySales"],
         "marketing" => CommonText["TodayMarketing"],
-        "customers" => CommonText["TodayCustomers"],
+        "customers" => CommonText["TodayCustomerSupport"],
         _ => CommonText["TodayCompany"]
     };
 

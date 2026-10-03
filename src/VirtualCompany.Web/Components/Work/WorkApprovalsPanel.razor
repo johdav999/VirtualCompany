@@ -1,4 +1,5 @@
 @inject ApprovalApiClient ApprovalApiClient
+@implements IDisposable
 @inject IStringLocalizer<UiConsolidationResources> UiText
 
 <div class="vc-work-layout">
@@ -9,7 +10,7 @@
         }
         else if (!string.IsNullOrWhiteSpace(errorMessage))
         {
-            <div class="alert alert-danger mb-0">@errorMessage</div>
+            <div class="alert alert-danger mb-0" role="alert">@errorMessage <button type="button" class="btn btn-outline-secondary" @onclick="OnParametersSetAsync">@CommonText["Retry"]</button></div>
         }
         else if (approvals.Count == 0)
         {
@@ -25,8 +26,8 @@
                 {
                     <button type="button" class="@ItemClass(approval.Id)" @onclick="() => SelectAsync(approval.Id)">
                         <div>
-                            <strong>@approval.DisplayTitle</strong>
-                            <span>@approval.DisplayReason</span>
+                            <strong>@Title(approval)</strong>
+                            <span>@Reason(approval)</span>
                         </div>
                         <div class="vc-list-meta">
                             @if (!string.IsNullOrWhiteSpace(approval.DisplayAmount))
@@ -42,6 +43,7 @@
     </section>
 
     <aside class="vc-panel vc-work-detail" aria-label="@UiText["ApprovalDetails"]">
+        @if (decisionRecorded) { <p class="alert alert-info" role="status">@CommonText["PriorityDecisionRecorded"]</p> }
         @if (selected is null)
         {
             <div class="vc-empty-state">
@@ -52,15 +54,15 @@
         else
         {
             <span class="vc-kicker">@selected.DisplayStatus</span>
-            <h2>@selected.DisplayTitle</h2>
-            <p>@selected.DisplayReason</p>
+            <h2>@Title(selected)</h2>
+            <p>@Reason(selected)</p>
             <dl class="vc-detail-list">
                 <dt>@UiText["Reference"]</dt><dd>@selected.DisplayReference</dd>
                 @if (!string.IsNullOrWhiteSpace(selected.DisplayAmount))
                 {
                     <dt>@UiText["Amount"]</dt><dd>@selected.DisplayAmount</dd>
                 }
-                <dt>@UiText["Requested"]</dt><dd>@selected.CreatedAt.ToLocalTime().ToString("g")</dd>
+                <dt>@UiText["Requested"]</dt><dd>@LocalDateTime.DateTime(selected.CreatedAt)</dd>
                 <dt>@UiText["AffectedData"]</dt><dd>@selected.AffectedDataSummary</dd>
             </dl>
             @if (selected.CurrentStep is not null && IsPending(selected))
@@ -81,81 +83,111 @@
     [Parameter] public Guid? SelectedId { get; set; }
     [Parameter] public EventCallback<Guid> SelectedIdChanged { get; set; }
 
+    private static bool IsTaskReview(ApprovalRequestViewModel item) => item.TargetEntityType == "task" && !item.ApprovalType.Contains("payment", StringComparison.OrdinalIgnoreCase);
+    private string Title(ApprovalRequestViewModel item) => IsTaskReview(item) ? CommonText["PriorityTaskReview"] : item.DisplayTitle;
+    private string Reason(ApprovalRequestViewModel item) => IsTaskReview(item)
+        ? item.ThresholdContext.TryGetValue("reason", out var reason) && reason is not null ? reason.ToString() : CommonText["PriorityTaskReviewReason"].Value
+        : item.DisplayReason;
     private List<ApprovalRequestViewModel> approvals = [];
     private ApprovalRequestViewModel? selected;
     private bool isLoading = true;
     private bool isDeciding;
     private string? decisionComment;
     private string? errorMessage;
+    private int loadVersion;
+    private bool disposed;
+    private bool decisionRecorded;
+    private CancellationTokenSource? cancellation;
 
     protected override async Task OnParametersSetAsync()
     {
+        cancellation?.Cancel(); cancellation?.Dispose();
+        var token = (cancellation = new CancellationTokenSource()).Token;
+        var version = ++loadVersion;
+        var company = CompanyId;
+        var selectedId = SelectedId;
+        bool Current() => !disposed && version == loadVersion && !token.IsCancellationRequested;
         isLoading = true;
         errorMessage = null;
+        selected = null; approvals = []; decisionComment = null; decisionRecorded = false;
         try
         {
-            approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(CompanyId, "pending"));
-            if (SelectedId is Guid selectedId)
+            var items = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(company, "pending", token));
+            var detail = selectedId is Guid id
+                ? ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(company, id, token)) : null;
+            if (!Current()) return;
+            approvals = items;
+            if (selectedId.HasValue)
             {
-                selected = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(CompanyId, selectedId));
-            }
-            else if (selected is not null && approvals.All(item => item.Id != selected.Id))
-            {
-                selected = null;
+                selected = detail;
             }
         }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception ex)
         {
+            if (!Current()) return;
             errorMessage = ex.Message;
             approvals = [];
             selected = null;
         }
         finally
         {
-            isLoading = false;
+            if (Current()) isLoading = false;
         }
     }
 
     private async Task SelectAsync(Guid id)
     {
-        selected = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(CompanyId, id));
-        decisionComment = null;
-        await SelectedIdChanged.InvokeAsync(id);
+        var company = CompanyId; var version = loadVersion;
+        try
+        {
+            var detail = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(company, id));
+            if (disposed || version != loadVersion || company != CompanyId) return;
+            selected = detail; decisionComment = null; errorMessage = null;
+            await SelectedIdChanged.InvokeAsync(id);
+        }
+        catch (Exception ex) { if (!disposed && version == loadVersion) errorMessage = ex.Message; }
     }
 
     private async Task DecideAsync(string decision)
     {
-        if (selected?.CurrentStep is null)
+        if (selected?.CurrentStep is null || isDeciding)
         {
             return;
         }
 
         isDeciding = true;
         errorMessage = null;
+        var company = CompanyId; var version = loadVersion;
+        var approval = selected;
         try
         {
-            await ApprovalApiClient.DecideAsync(CompanyId, selected.Id, new ApprovalDecisionRequest
+            await ApprovalApiClient.DecideAsync(company, approval.Id, new ApprovalDecisionRequest
             {
-                ApprovalId = selected.Id,
-                StepId = selected.CurrentStep.Id,
+                ApprovalId = approval.Id,
+                StepId = approval.CurrentStep.Id,
                 Decision = decision,
                 Comment = decisionComment
             });
-            approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(CompanyId, "pending"));
+            var items = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(company, "pending"));
+            if (disposed || version != loadVersion) return;
+            approvals = items;
             selected = null;
             decisionComment = null;
+            decisionRecorded = true;
         }
         catch (Exception ex)
         {
-            errorMessage = ex.Message;
+            if (!disposed && version == loadVersion) errorMessage = ex.Message;
         }
         finally
         {
-            isDeciding = false;
+            if (!disposed) isDeciding = false;
         }
     }
 
     private string ItemClass(Guid id) => selected?.Id == id ? "vc-list-item selected" : "vc-list-item";
     private static bool IsPending(ApprovalRequestViewModel approval) =>
         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+    public void Dispose() { disposed = true; cancellation?.Cancel(); cancellation?.Dispose(); }
 }

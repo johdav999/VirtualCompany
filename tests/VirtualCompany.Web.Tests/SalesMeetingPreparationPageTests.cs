@@ -164,9 +164,11 @@ public sealed partial class SalesMeetingPreparationPageTests
         {
             var link = cut.FindAll("a").Single(x =>
                 x.TextContent.Contains("Return to lead and review approval", StringComparison.Ordinal));
-            Assert.Equal(
-                $"/app/sales/leads/55555555-5555-5555-5555-555555555555?companyId={CompanyId:D}",
-                link.GetAttribute("href"));
+            var target = new Uri("https://example.test" + link.GetAttribute("href"));
+            Assert.Equal("/app/sales/leads/55555555-5555-5555-5555-555555555555", target.AbsolutePath);
+            var query = System.Web.HttpUtility.ParseQueryString(target.Query);
+            Assert.Equal(CompanyId.ToString("D"), query["companyId"]);
+            Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "sales"), query["returnUrl"]);
         });
     }
 

@@ -25,13 +25,15 @@ public sealed class DeterministicSupportReplySafetyPolicy : ISupportReplySafetyP
 {
     public const string Version = SupportReplySafetyRules.PolicyVersion;
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly ISupportReplySourceAccess? _sources;
 
-    public DeterministicSupportReplySafetyPolicy(VirtualCompanyDbContext dbContext) => _dbContext = dbContext;
+    public DeterministicSupportReplySafetyPolicy(VirtualCompanyDbContext dbContext, ISupportReplySourceAccess? sources = null) { _dbContext = dbContext; _sources = sources; }
 
     public async Task<SupportReplySafetyDecision> EvaluateAsync(Guid companyId, Guid supportCaseId, string draftBody, string? sourceReferencesJson, CancellationToken cancellationToken)
     {
         var supportCase = await _dbContext.SupportCases.AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == supportCaseId, cancellationToken)
             ?? throw new InvalidOperationException("Support case was not found for safety evaluation.");
-        return SupportReplySafetyRules.Evaluate(supportCase.Category, draftBody, sourceReferencesJson);
+        var currentSources = _sources is null ? sourceReferencesJson : await _sources.FilterAsync(companyId, sourceReferencesJson, cancellationToken);
+        return SupportReplySafetyRules.Evaluate(supportCase.Category, draftBody, currentSources);
     }
 }

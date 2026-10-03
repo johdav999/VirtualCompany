@@ -14,6 +14,8 @@ public partial class AccountingCloseWorkspacePage : FinancePageBase
     private AccountingCloseWorkspaceTaskResponse? CompletingTask;
     private Guid? LoadedCompanyId;
     private Guid? LoadedPeriodId;
+    private Guid? LoadedCloseId;
+    private int readVersion;
     private bool WorkspaceLoading;
     private bool Acting;
     private bool ActionFailed;
@@ -30,18 +32,27 @@ public partial class AccountingCloseWorkspacePage : FinancePageBase
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
-        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
-        if (LoadedCompanyId == companyId && LoadedPeriodId == RequestedPeriodId && Workspace is not null) return;
-        LoadedCompanyId = companyId; LoadedPeriodId = RequestedPeriodId;
+        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) { ++readVersion; Workspace = null; CompletingTask = null; return; }
+        if (LoadedCompanyId == companyId && LoadedPeriodId == RequestedPeriodId && LoadedCloseId == RequestedCloseInstanceId && Workspace is not null) return;
+        LoadedCompanyId = companyId; LoadedPeriodId = RequestedPeriodId; LoadedCloseId = RequestedCloseInstanceId;
         await LoadAsync(companyId, RequestedPeriodId, RequestedCloseInstanceId);
     }
 
     private async Task LoadAsync(Guid companyId, Guid? periodId, Guid? closeInstanceId = null)
     {
-        WorkspaceLoading = true; WorkspaceError = null;
-        try { Workspace = await FinanceApi.GetAccountingCloseWorkspaceAsync(companyId, periodId, closeInstanceId); }
-        catch (FinanceApiException exception) { WorkspaceError = exception.Message; Workspace = null; }
-        finally { WorkspaceLoading = false; }
+        var read = ++readVersion; var location = Navigation.Uri;
+        WorkspaceLoading = true; WorkspaceError = null; Workspace = null; CompletingTask = null;
+        try
+        {
+            var workspace = await FinanceApi.GetAccountingCloseWorkspaceAsync(companyId, periodId, closeInstanceId);
+            if (read != readVersion || location != Navigation.Uri) return;
+            Workspace = workspace ?? throw new InvalidOperationException("Close evidence is unavailable. Retry the read.");
+            if (RequestedPeriodId is null && Workspace.SelectedPeriod is { } selected)
+                Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("periodId", selected.FiscalPeriodId), replace: true);
+        }
+        catch (Exception exception) when (exception is FinanceApiException or InvalidOperationException or HttpRequestException)
+        { if (read == readVersion && location == Navigation.Uri) WorkspaceError = exception.Message; }
+        finally { if (read == readVersion) WorkspaceLoading = false; }
     }
 
     private Task ReloadAsync() => AccessState.CompanyId is Guid companyId
@@ -51,9 +62,9 @@ public partial class AccountingCloseWorkspacePage : FinancePageBase
     private async Task ChangePeriodAsync(ChangeEventArgs args)
     {
         if (!Guid.TryParse(args.Value?.ToString(), out var periodId) || AccessState.CompanyId is not Guid companyId) return;
-        LoadedPeriodId = periodId;
-        Navigation.NavigateTo(FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingCloseWorkspace}?periodId={periodId:D}", companyId), replace: true);
-        await LoadAsync(companyId, periodId);
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+            { ["periodId"] = periodId, ["closeInstanceId"] = null, ["taskId"] = null }), replace: true);
+        await Task.CompletedTask;
     }
 
     private bool CanComplete(AccountingCloseWorkspaceTaskResponse task) =>
@@ -122,7 +133,7 @@ public partial class AccountingCloseWorkspacePage : FinancePageBase
         finally { Acting = false; }
     }
 
-    private string Scoped(string path) => FinanceRoutes.WithCompanyContext(path, AccessState.CompanyId);
+    private string Scoped(string path) => BuildAccountingPath(path);
     private static string Friendly(string value) => value.Replace('_', ' ').Replace('-', ' ');
     private static string StatusClass(string value) => value.ToLowerInvariant() switch
     {
@@ -133,6 +144,6 @@ public partial class AccountingCloseWorkspacePage : FinancePageBase
     };
     private static string Short(Guid? id) => id.HasValue ? id.Value.ToString("N")[..8] : "—";
     private static string ShortHash(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value[..Math.Min(10, value.Length)];
-    private static string Local(DateTime value) => value.ToLocalTime().ToString("g");
+    private string Local(DateTime value) => LocalDateTime.DateTime(value);
     private string PanelTitle(AccountingCloseWorkspacePanelResponse panel) => FinanceText[$"ClosePanel_{panel.Key}"];
 }

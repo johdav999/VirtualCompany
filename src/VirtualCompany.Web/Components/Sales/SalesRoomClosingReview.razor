@@ -2,9 +2,10 @@
 @inject SalesMeetingCaptureApiClient Capture
 @inject SalesMeetingClosingApiClient Closing
 @inject SalesMeetingChangeProposalApiClient Changes
+@inject NavigationManager Navigation
 
 <main class="closing-review">
-    <a href="@($"/app/sales/rooms/{RoomId}")">Back to meeting</a>
+    <a href="@SalesJourneyRoutes.Build($"/app/sales/rooms/{RoomId:D}", CompanyId, Navigation.Uri)">Back to meeting</a>
     <h1>Review this meeting</h1>
     <p>Only consented evidence is available. Ending the call does not authorize a message or a sales-record change.</p>
     @if (error is not null) { <p class="review-alert" role="alert">@error</p> }
@@ -96,7 +97,7 @@
                         <strong>@proposal.AfterDisplayValue</strong><p>@Status(proposal.Status)</p>
                         @if (proposal.LastErrorSummary is not null) { <p role="alert">@proposal.LastErrorSummary</p> }
                         <button disabled="@(busy || proposal.Status is not ("draft" or "waiting_for_approval"))" @onclick="() => RequestApproval(proposal)">@(proposal.Status == "draft" ? "Request owner approval" : "Check owner approval")</button>
-                        @if (proposal.Status == "waiting_for_approval") { <a href="/approvals">Open approvals</a> }
+                        @if (proposal.Status == "waiting_for_approval") { <a href="@SalesJourneyRoutes.Build($"/work?tab=approvals&itemId={proposal.ApprovalRequestId}", CompanyId, Navigation.Uri)">Open approvals</a> }
                         <button disabled="@(busy || proposal.Status != "approved")" @onclick="() => QueueDelivery(proposal)">Queue approved delivery</button>
                     </article>
                 }

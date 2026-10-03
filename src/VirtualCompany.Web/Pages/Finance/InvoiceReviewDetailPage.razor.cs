@@ -29,11 +29,11 @@ public partial class InvoiceReviewDetailPage : FinancePageBase
     private string BackToListHref => BuildBackToListHref();
     private string? SourceInvoiceHref =>
         ReviewDetail?.SourceInvoiceId is Guid sourceInvoiceId && sourceInvoiceId != Guid.Empty
-            ? FinanceRoutes.BuildInvoiceDetailPath(sourceInvoiceId, AccessState.CompanyId)
+            ? BuildFinancePath(FinanceRoutes.BuildInvoiceDetailPath(sourceInvoiceId, AccessState.CompanyId))
             : null;
     private string? RelatedApprovalHref =>
         ReviewDetail?.RelatedApprovalId is Guid approvalId && AccessState.CompanyId is Guid companyId
-            ? $"/approvals?companyId={companyId:D}&approvalId={approvalId:D}"
+            ? BuildFinancePath($"/work?companyId={companyId:D}&tab=approvals&itemId={approvalId:D}")
             : null;
 
     protected override async Task OnParametersSetAsync()
@@ -129,9 +129,9 @@ public partial class InvoiceReviewDetailPage : FinancePageBase
             RecommendationOutcome = Outcome
         }.Normalize().ToQueryString(AccessState.CompanyId);
 
-        return string.IsNullOrWhiteSpace(query)
+        return BuildFinancePath(string.IsNullOrWhiteSpace(query)
             ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId)
-            : $"{FinanceRoutes.Reviews}?{query}";
+            : $"{FinanceRoutes.Reviews}?{query}");
     }
 
     private FinanceInvoiceReviewDetailResponse? NormalizeDetail(FinanceInvoiceReviewDetailResponse? detail)

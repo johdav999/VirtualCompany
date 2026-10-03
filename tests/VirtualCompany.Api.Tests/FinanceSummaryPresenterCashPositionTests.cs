@@ -6,6 +6,21 @@ namespace VirtualCompany.Api.Tests;
 public sealed class FinanceSummaryPresenterCashPositionTests
 {
     [Fact]
+    public void Unavailable_cash_evidence_does_not_display_legacy_numeric_placeholders()
+    {
+        var response = CreateCashPosition(riskLevel: "unknown", confidence: 0m, estimatedRunwayDays: null);
+        response.Classification = "cash_position_unavailable";
+        response.Currency = "MIXED";
+        response.AvailableBalance = 0m;
+        response.AverageMonthlyBurn = 0m;
+        var view = FinanceSummaryPresenter.ToCashPositionViewModel(response)!;
+        Assert.Equal("Not available", view.AvailableBalance);
+        Assert.Equal("Not available", view.AverageMonthlyBurn);
+        Assert.Equal("Not available", view.MeaningStatus);
+        Assert.DoesNotContain(view.MeaningParagraphs, text => text.Contains("MIXED"));
+    }
+
+    [Fact]
     public void Cash_position_presenter_maps_low_risk_to_friendly_healthy_text()
     {
         var viewModel = FinanceSummaryPresenter.ToCashPositionViewModel(CreateCashPosition(riskLevel: "low", isLowCash: false));

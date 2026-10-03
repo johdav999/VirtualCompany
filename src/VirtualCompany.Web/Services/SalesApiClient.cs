@@ -319,7 +319,8 @@ public sealed record SalesDashboardResponse(
     decimal ForecastRevenue,
     IReadOnlyList<SalesDealSummaryResponse> DealsRequiringAction,
     IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
-    IReadOnlyList<SalesActivityResponse> RecentActivity);
+    IReadOnlyList<SalesActivityResponse> RecentActivity,
+    IReadOnlyList<string>? Currencies = null);
 
 public sealed record PerformanceFunnelCounts(int Sent, int Delivered, int Bounced, int Opened, int Replied, int DealCreated, int Converted);
 public sealed record PerformanceFunnelRates(decimal DeliveryRate, decimal OpenRate, decimal ReplyRate, decimal ConversionRate);

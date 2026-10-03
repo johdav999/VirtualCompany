@@ -13,18 +13,34 @@ public abstract class SupportPageBase : ComponentBase
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
 
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "supportReturnUrl")] public string? SupportReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "priorityReturnUrl")] public string? PriorityReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "healthReturnUrl")] public string? HealthReturnUrl { get; set; }
+    protected string? PriorityPath => ResolvedCompanyId is Guid id ? DashboardRoutes.NormalizePriorityPath(PriorityReturnUrl, id) : null;
+    protected string? HealthPath => ResolvedCompanyId is Guid id ? DashboardRoutes.NormalizeHealthPath(HealthReturnUrl, id) : null;
+    protected string BackPath => ResolvedCompanyId is Guid id
+        ? SupportJourneyRoutes.NormalizeReturn(SupportReturnUrl, id) ?? BuildPath("/support") : "/support";
+    protected string OverviewPath => ResolvedCompanyId is Guid id
+        ? DashboardRoutes.NormalizeOverviewPath(ReturnUrl, id) ?? DashboardRoutes.BuildTodayPath(id, "customers") : "/dashboard";
+    protected string RecordPath(string path) => ResolvedCompanyId is Guid id
+        ? SupportJourneyRoutes.Record(path, id, Navigation.Uri) : path;
     protected Guid? ResolvedCompanyId { get; private set; }
     protected string? ShellErrorMessage { get; private set; }
 
+    private int resolveVersion;
     protected async Task<bool> ResolveCompanyAsync(CancellationToken cancellationToken = default)
     {
+        var version = ++resolveVersion; var location = Navigation.Uri;
         ShellErrorMessage = null;
+        ResolvedCompanyId = null;
 
         try
         {
             var context = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId, cancellationToken);
+            if (version != resolveVersion || location != Navigation.Uri) return false;
             ResolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
-            if (ResolvedCompanyId is not Guid companyId)
+            if (ResolvedCompanyId is not Guid companyId || companyId == Guid.Empty)
             {
                 ShellErrorMessage = "Choose or create a company before opening support.";
                 return false;
@@ -45,7 +61,7 @@ public abstract class SupportPageBase : ComponentBase
     }
 
     protected string BuildPath(string path) =>
-        ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+        ResolvedCompanyId is Guid companyId ? SupportJourneyRoutes.Build(path, companyId, ReturnUrl, SupportReturnUrl) : path;
 
     protected async Task<Guid?> ResolveSupportAgentIdAsync(Guid companyId, CancellationToken cancellationToken = default)
     {

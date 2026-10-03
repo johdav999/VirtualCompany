@@ -80,6 +80,7 @@ public static class SalesModuleRegistration
         services.AddScoped<IDealIntelligenceSignalRepository, DealIntelligenceSignalRepository>();
         services.AddScoped<ISalesPersistenceRepository, SalesPersistenceRepository>();
         services.AddScoped<ISalesOperationsService, SalesOperationsService>();
+        services.AddScoped<ISalesOperationalReportService, SalesOperationalReportService>();
         services.AddOptions<DemoScenarioOptions>()
             .Bind(configuration.GetSection(DemoScenarioOptions.SectionName));
         services.AddSingleton<IDemoScenarioCatalog, DemoScenarioCatalog>();
@@ -274,6 +275,7 @@ public static class SalesModuleRegistration
         services.AddScoped<ISalesAgentAnalysisService, SalesAgentAnalysisService>();
         services.AddScoped<ISalesAgentDecisionService, SalesAgentDecisionService>();
         services.AddScoped<IMarketingOperationsService, MarketingOperationsService>();
+        services.AddScoped<IMarketingOperationalReportService, MarketingOperationalReportService>();
         services.AddScoped<IMarketingStrategyService, MarketingStrategyService>();
         services.AddScoped<IGuidedArtifactDefinition, MarketingStrategyGuidedArtifactDefinition>();
         services.AddScoped<IGuidedArtifactDefinition, MarketingSegmentGuidedArtifactDefinition>();

@@ -528,6 +528,8 @@ public static class OperationsModuleRegistration
         services.AddScoped<IMonthlyWorkspaceContributor, CompanyOperationMonthlyWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceQueryService, CompanyMonthlyWorkspaceQueryService>();
         services.AddScoped<IAgentStaffOverviewQueryService, CompanyAgentStaffOverviewQueryService>();
+        services.AddScoped<CompanyWorkVisibility>();
+        services.AddScoped<IAgentWorkQueryService, CompanyAgentWorkQueryService>();
 
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();

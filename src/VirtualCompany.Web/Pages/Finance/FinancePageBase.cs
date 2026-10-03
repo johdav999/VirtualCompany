@@ -34,20 +34,36 @@ public abstract class FinancePageBase : ComponentBase
     [SupplyParameterFromQuery(Name = DashboardRoutes.RangeQueryKey)]
     public string? Range { get; set; }
 
+    [SupplyParameterFromQuery(Name = "financeSource")]
+    public string? FinanceSource { get; set; }
+    protected string? OperationalSource => FinanceSource is "operational" or "fortnox" ? FinanceSource : null;
+
     protected bool IsLoading { get; private set; } = true;
     protected CurrentUserContextViewModel? CurrentUserContext { get; private set; }
     protected string? ErrorMessage { get; private set; }
     protected FinanceAccessState AccessState { get; private set; } =
         FinanceAccessState.Forbidden("Finance access is unavailable.");
 
+    protected string BuildFinancePath(string path) => AccessState.CompanyId is Guid company
+        ? FinanceJourneyRoutes.Build(path, company, Navigation.Uri) : path;
+
+    protected string BuildAccountingPath(string path) => AccessState.CompanyId is Guid company
+        ? AccountingJourneyRoutes.Build(path, company, Navigation.Uri) : path;
+
+    private int contextVersion;
+
     protected override async Task OnParametersSetAsync()
     {
         IsLoading = true;
         ErrorMessage = null;
+        var read = ++contextVersion; var location = Navigation.Uri;
+        CurrentUserContext = null; AccessState = FinanceAccessState.Forbidden("Finance access is unavailable.");
 
         try
         {
-            CurrentUserContext = await ApiClient.GetCurrentUserContextAsync(CompanyId);
+            var context = await ApiClient.GetCurrentUserContextAsync(CompanyId);
+            if (read != contextVersion || location != Navigation.Uri) return;
+            CurrentUserContext = context;
 
             AccessState = FinanceAccessResolver.Resolve(CurrentUserContext, CompanyId);
 
@@ -59,10 +75,11 @@ public abstract class FinancePageBase : ComponentBase
         }
         catch (OnboardingApiException ex)
         {
+            if (read != contextVersion || location != Navigation.Uri) return;
             ErrorMessage = ex.Message;
             CurrentUserContext = null;
             AccessState = FinanceAccessState.Forbidden("Finance is unavailable while the active company context cannot be resolved.");
         }
-        finally { IsLoading = false; }
+        finally { if (read == contextVersion) IsLoading = false; }
     }
 }

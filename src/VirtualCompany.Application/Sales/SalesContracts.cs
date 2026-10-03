@@ -50,6 +50,7 @@ public interface ISalesOperationsService
 
 public interface IRevenueForecastService
 {
+    Task<RevenueForecastSnapshotDto> CalculateForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken);
     Task<RevenueForecastSnapshotDto> CalculateAndPersistForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken);
     Task<RevenueForecastSnapshotDto?> GetLatestForecastAsync(Guid companyId, CancellationToken cancellationToken);
     Task<DealRiskScoreDto?> GetLatestDealRiskScoreAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
@@ -88,7 +89,8 @@ public sealed record SalesDashboardResponse(
     decimal ForecastRevenue,
     IReadOnlyList<SalesDealSummaryResponse> DealsRequiringAction,
     IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
-    IReadOnlyList<SalesActivityResponse> RecentActivity);
+    IReadOnlyList<SalesActivityResponse> RecentActivity,
+    IReadOnlyList<string>? Currencies = null);
 
 public sealed record SalesLeadSummaryResponse(
     Guid Id,

@@ -8,7 +8,7 @@ public static class SupportStatusPresenter
     {
         ["new"] = "StatusNew", ["triaged"] = "StatusTriaged", ["waiting_for_customer"] = "StatusWaitingCustomer",
         ["waiting_internal"] = "StatusWaitingInternal", ["escalated"] = "StatusEscalated", ["awaiting_approval"] = "StatusAwaitingApproval",
-        ["resolved"] = "StatusResolved", ["urgent"] = "PriorityUrgent", ["high"] = "PriorityHigh", ["normal"] = "PriorityNormal", ["low"] = "PriorityLow",
+        ["reopened"] = "StatusReopened", ["closed"] = "StatusClosed", ["resolved"] = "StatusResolved", ["urgent"] = "PriorityUrgent", ["high"] = "PriorityHigh", ["normal"] = "PriorityNormal", ["low"] = "PriorityLow",
         ["billing"] = "CategoryBilling", ["refund"] = "CategoryRefund", ["technical_issue"] = "CategoryTechnicalIssue", ["account_access"] = "CategoryAccountAccess",
         ["complaint"] = "CategoryComplaint", ["bug_report"] = "CategoryBugReport", ["churn_risk"] = "CategoryChurnRisk",
         ["general_question"] = "CategoryGeneralQuestion", ["review"] = "NeedsReview", ["approved"] = "StatusApproved",

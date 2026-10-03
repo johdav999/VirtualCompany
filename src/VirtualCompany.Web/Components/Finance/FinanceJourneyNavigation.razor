@@ -1,0 +1,13 @@
+@inject NavigationManager Navigation
+<nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Finance journey">
+    <a class="btn btn-outline-primary" data-testid="finance-journey-return" href="@FinanceJourneyRoutes.Back(Navigation.Uri, CompanyId)">← Back to previous view</a>
+    <a class="btn btn-outline-secondary" href="@Link("/finance/receivables-aging")">Receivables aging</a>
+    <a class="btn btn-outline-secondary" href="@Link("/finance/payables-aging")">Payables aging</a>
+    <a class="btn btn-outline-secondary" href="@Link("/finance/cash-forecast")">Cash forecast</a>
+</nav>
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    private string Link(string path) => new Uri(Navigation.Uri).AbsolutePath.StartsWith("/finance/accounting/", StringComparison.Ordinal)
+        ? AccountingJourneyRoutes.Build(path, CompanyId, Navigation.Uri)
+        : FinanceJourneyRoutes.Build(path, CompanyId, Navigation.Uri);
+}

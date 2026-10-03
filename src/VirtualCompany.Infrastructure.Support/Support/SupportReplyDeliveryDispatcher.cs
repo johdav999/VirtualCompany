@@ -13,7 +13,7 @@ public sealed class SupportReplyDeliveryDispatcher(
     VirtualCompanyDbContext dbContext,
     ISupportOutboundEmailSender outboundEmailSender,
     IAuditEventWriter audit,
-    TimeProvider timeProvider) : ISupportReplyDeliveryDispatcher
+    TimeProvider timeProvider, ISupportReplySafetyPolicy? safety = null) : ISupportReplyDeliveryDispatcher
 {
     public async Task DispatchAsync(
         SupportReplyDeliveryRequestedMessage message,
@@ -45,6 +45,13 @@ public sealed class SupportReplyDeliveryDispatcher(
                 cancellationToken)
             ?? throw new InvalidOperationException("The queued support case no longer exists.");
 
+        if (draft.SupportCaseId != supportCase.Id) throw new InvalidOperationException("The queued reply does not belong to this case.");
+        if (draft.DeliveryStatus == SupportReplyDeliveryStatuses.ReconciliationRequired)
+            throw new InvalidOperationException("Reconcile the uncertain delivery outcome before retrying.");
+        if (safety is not null) {
+            var decision = await safety.EvaluateAsync(message.CompanyId, supportCase.Id, draft.DraftBody, draft.SourceReferencesJson, cancellationToken);
+            if (decision.Decision != "allow") throw new InvalidOperationException("The queued reply no longer passes safety review: " + string.Join(" ", decision.Explanations));
+        }
         try
         {
             var sendResult = await outboundEmailSender.SendReplyAsync(

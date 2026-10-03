@@ -21,13 +21,19 @@ public sealed class TodayWorkspaceComponentTests
         Assert.Equal(5, cut.FindAll("[data-testid='today-lens-picker'] button").Count);
         Assert.Equal("true", cut.Find("[data-testid='today-lens-picker'] button").GetAttribute("aria-pressed"));
         Assert.Equal(3, cut.FindAll("[data-testid='today-priority']").Count);
-        Assert.Equal(4, cut.FindAll(".today-metric").Count);
+        Assert.Equal(4, cut.FindAll(".company-summary__metrics article").Count);
+        cut.Find("[data-testid='company-health-summary']");
         cut.Find("[data-testid='finance-today-section']");
         cut.Find("[data-testid='sales-today-section']");
         cut.Find("[data-testid='marketing-today-section']");
         cut.Find("[data-testid='support-today-section']");
         Assert.Contains("Finley", cut.Find("[data-testid='today-agent-briefings']").TextContent);
         Assert.DoesNotContain("Laura", cut.Markup, StringComparison.OrdinalIgnoreCase);
+        foreach (var link in cut.FindAll(".today-feature__action"))
+        {
+            var query = System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost" + link.GetAttribute("href")).Query);
+            Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "company"), query["returnUrl"]);
+        }
     }
 
     [Fact]
@@ -114,8 +120,10 @@ public sealed class TodayWorkspaceComponentTests
         var route = cut.Find("[data-testid='today-priority'] .today-priority__button").GetAttribute("href");
 
         Assert.Contains($"companyId={CompanyId:D}", route, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("source=dashboard", route, StringComparison.OrdinalIgnoreCase);
-        Assert.StartsWith("/tasks", route, StringComparison.OrdinalIgnoreCase);
+        Assert.StartsWith("/dashboard/priorities", route, StringComparison.OrdinalIgnoreCase);
+        var query = System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost" + route).Query);
+        Assert.Equal(CreateOwnerWorkspace().Priorities[0].Key, query["key"]);
+        Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "company"), query["returnUrl"]);
     }
 
     [Fact]

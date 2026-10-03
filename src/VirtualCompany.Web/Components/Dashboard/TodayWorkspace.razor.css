@@ -8,8 +8,11 @@
     width: 100%;
 }
 
+.workspace-current-responsibility { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.workspace-current-responsibility strong { font-size: 13px; color: #0f172a; }
+.workspace-current-responsibility small { font-size: 11px; color: #64748b; overflow-wrap: anywhere; }
 .today-header { align-items: center; display: flex; gap: 24px; grid-column: 1 / -1; justify-content: space-between; min-height: 70px; }
-.today-header__identity { align-items: center; display: flex; gap: 22px; min-width: 0; }
+.today-header__identity { align-items: flex-start; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .today-header h1 { font-size: clamp(2rem, 3vw, 2.65rem); font-weight: 700; letter-spacing: -.045em; margin: 0; }
 .today-header__meta { align-items: center; color: #334155; display: flex; font-size: .82rem; gap: 13px; white-space: nowrap; }
 .today-header__meta span { align-items: center; display: inline-flex; gap: 8px; }
@@ -167,7 +170,9 @@
     .today-workspace { display: flex; flex-direction: column; gap: 12px; }
     .today-header { align-items: flex-start; flex-direction: column; gap: 8px; min-height: 0; }
     .today-header h1 { font-size: 1.55rem; }
-    .today-header__meta { font-size: .68rem; gap: 8px; }
+    .today-header__identity { max-width: 100%; }
+    .today-header__meta { flex-wrap: wrap; font-size: .68rem; gap: 8px; min-width: 0; white-space: normal; }
+    .today-header__meta span { max-width: 100%; overflow-wrap: anywhere; }
     .today-header__meta i { height: 15px; }
     .today-header__meta svg { height: 13px; width: 13px; }
     .today-freshness { min-height: 34px; padding: 0 9px; }
@@ -216,3 +221,11 @@
     .today-state__spinner { animation: none; }
     .today-metric:hover { transform: none; }
 }
+
+/* Reference 01: company priorities read as an ordered decision list. */
+.today-workspace--company .today-priority-list { display:flex; flex-direction:column; gap:.7rem; }
+.today-workspace--company .today-priority { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; padding:1rem 1.1rem; }
+.today-workspace--company .today-priority__button { width:auto; margin-left:1rem; }
+.today-workspace--company .today-priority__context { margin-top:.45rem; }
+.today-workspace--company .today-priority__action-copy { margin-bottom:.35rem; }
+@media(max-width:700px) { .today-workspace--company .today-priority { grid-template-columns:1fr; } .today-workspace--company .today-priority__button { margin-left:0; margin-top:.75rem; width:100%; } }

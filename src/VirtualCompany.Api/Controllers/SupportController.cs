@@ -12,6 +12,7 @@ namespace VirtualCompany.Api.Controllers;
 [Route("api/support")]
 [Authorize(Policy = CompanyPolicies.CompanyMember)]
 [RequireCompanyContext]
+[TypeFilter(typeof(SupportResponsibilityFilter))]
 public sealed class SupportController : ControllerBase
 {
     private readonly ICompanyContextAccessor _companyContextAccessor;
@@ -86,6 +87,14 @@ public sealed class SupportController : ControllerBase
     {
         var result = await _cases.GetCaseAsync(CompanyId(), id, cancellationToken);
         return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpGet("cases/{id:guid}/knowledge")]
+    public async Task<ActionResult<SupportKnowledgeContext>> GetKnowledgeAsync(Guid id,
+        [FromServices] ISupportKnowledgeContextProvider knowledge, CancellationToken cancellationToken)
+    {
+        if (await _cases.GetCaseAsync(CompanyId(), id, cancellationToken) is null) return NotFound();
+        return Ok(await knowledge.RetrieveAsync(CompanyId(), id, cancellationToken));
     }
 
     [HttpPost("cases/{id:guid}/notes")]
@@ -192,8 +201,11 @@ public sealed class SupportController : ControllerBase
     [HttpPost("reply-drafts/{draftId:guid}/approve")]
     public async Task<ActionResult<SupportReplyDraftDto>> ApproveDraftAsync(Guid draftId, [FromBody] SupportActionRequest request, CancellationToken cancellationToken)
     {
-        var result = await _drafts.ApproveDraftAsync(CompanyId(), UserId(), draftId, request, cancellationToken);
-        return result is null ? NotFound() : Ok(result);
+        try {
+            var result = await _drafts.ApproveDraftAsync(CompanyId(), UserId(), draftId, request, cancellationToken);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (InvalidOperationException ex) { return Problem(title: "Reply needs changes before approval.", detail: ex.Message, statusCode: 409); }
     }
 
     [HttpPost("reply-drafts/{draftId:guid}/reject")]
@@ -265,7 +277,7 @@ public sealed class SupportController : ControllerBase
 
     [HttpPost("sla/run")]
     public Task<SupportSlaMonitorResult> RunSlaAsync(CancellationToken cancellationToken) =>
-        _sla.RunAsync(DateTime.UtcNow, cancellationToken);
+        _sla.RunForCompanyAsync(CompanyId(), DateTime.UtcNow, cancellationToken);
 
     [HttpGet("sla/policies")]
     public Task<IReadOnlyList<SupportSlaPolicyDto>> ListSlaPoliciesAsync(CancellationToken cancellationToken) =>

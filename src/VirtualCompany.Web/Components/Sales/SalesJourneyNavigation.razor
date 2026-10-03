@@ -1,0 +1,15 @@
+@inject NavigationManager Navigation
+@if (CompanyId is Guid company)
+{
+    <nav class="vc-section-tabs" aria-label="@SalesText["OperationalNavigation"]">
+        <VirtualCompany.Web.Components.Work.AgentWorkReturnLink CompanyId="company" />
+        <a href="@SalesJourneyRoutes.Back(Navigation.Uri, company)">@SalesText["BackToSalesOrigin"]</a>
+        <a href="@Path("/app/sales/pipeline/report")">@SalesText["PipelineReport"]</a>
+        <a href="@Path("/app/sales/activities?status=overdue")">@SalesText["ActivityReport"]</a>
+        <a href="@Path("/app/sales/forecast")">@SalesText["NearTermForecast"]</a>
+    </nav>
+}
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    private string Path(string path) => SalesJourneyRoutes.Build(path, CompanyId!.Value, Navigation.Uri);
+}

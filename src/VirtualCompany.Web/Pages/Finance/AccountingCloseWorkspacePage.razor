@@ -1,12 +1,13 @@
 @page "/finance/accounting/close-workspace"
 @inherits FinancePageBase
+@rendermode InteractiveServer
 
 <PageTitle>@FinanceText["CloseWorkspaceTitle"]</PageTitle>
 
 <FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
                    Title="@FinanceText["CloseWorkspaceTitle"]" Description="@FinanceText["CloseWorkspaceDescription"]"
                    LoadingMessage="@FinanceText["CloseWorkspaceLoading"]">
-    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" PeriodId="@Workspace?.SelectedPeriod?.FiscalPeriodId" />
 
     @if (WorkspaceLoading)
     {
@@ -28,6 +29,10 @@
             <div>
                 <span class="close-kicker">@Workspace.CompanyName · @Friendly(Workspace.MembershipRole)</span>
                 <h2>@FinanceText["CloseWorkspaceTitle"]</h2>
+                @if (Workspace.SelectedPeriod is { } selectedPeriod)
+                {
+                    <p>@Local(selectedPeriod.StartUtc) – @Local(selectedPeriod.EndUtc.AddTicks(-1))</p>
+                }
                 <p>@Workspace.EvidenceNotice</p>
             </div>
             <div class="close-workspace-toolbar">
@@ -39,7 +44,7 @@
                     }
                 </select>
                 <button class="btn btn-outline-secondary" type="button" disabled="@(Acting || !CanRefreshReadiness)" @onclick="RefreshReadinessAsync">@FinanceText["RefreshReadiness"]</button>
-                <a class="btn btn-outline-primary" href="@Scoped("/inbox")">@FinanceText["ActionCenter"]</a>
+                <a class="btn btn-outline-primary" href="@Scoped("/work")">@FinanceText["ActionCenter"]</a>
             </div>
         </header>
 
@@ -75,7 +80,7 @@
                     <div class="readiness-metrics">
                         <article class="metric blocked"><span aria-hidden="true">!</span><div><strong>@Workspace.Readiness.BlockingCount</strong><small>@FinanceText["Blockers"]</small></div></article>
                         <article class="metric attention"><span aria-hidden="true">△</span><div><strong>@Workspace.Readiness.WarningCount</strong><small>@FinanceText["NeedsAttention"]</small></div></article>
-                        <article class="metric neutral"><span aria-hidden="true">○</span><div><strong>@Workspace.Tasks.Count(x => x.Status == "not_started")</strong><small>@FinanceText["NotStarted"]</small></div></article>
+<article class="metric neutral"><span aria-hidden="true">○</span><div><strong>@Workspace.Tasks.Count(x => x.Status is "not_started" or "pending")</strong><small>@FinanceText["NotStarted"]</small></div></article>
                         <article class="metric current"><span aria-hidden="true">✓</span><div><strong>@Workspace.Tasks.Count(x => x.Status == "completed")</strong><small>@FinanceText["CompletedAtEvidenceTime"]</small></div><time>@Local(Workspace.Readiness.PreparedUtc)</time></article>
                     </div>
                 }
@@ -99,7 +104,9 @@
                                     <span>@(task.OwnerRole ?? Short(task.OwnerUserId))</span>
                                     <time datetime="@task.DueUtc.ToString("O")">@Local(task.DueUtc)</time>
                                     <span class="status-pill @StatusClass(task.Status)">@Friendly(task.Status)</span>
-                                    <span><strong>@task.Evidence.Count</strong> @FinanceText["Items"]</span>
+                    <span><strong>@task.Evidence.Count</strong> @FinanceText["Items"]
+                        @foreach (var evidence in task.Evidence) { <a href="@Scoped(evidence.DrilldownUrl)">@evidence.Title</a> }
+                    </span>
                                     <div class="task-actions">
                                         @if (CanComplete(task))
                                         {
@@ -164,7 +171,7 @@
 
             <div class="close-bottom-grid">
                 <section class="close-history"><div class="close-section-heading"><h3>@FinanceText["SignOffs"]</h3><span>@Workspace.SignOffs.Count</span></div>@if(Workspace.SignOffs.Count==0){<div class="close-empty">@FinanceText["NoSignOffs"]</div>}else{@foreach(var signoff in Workspace.SignOffs.Take(8)){<article><span class="history-dot"></span><div><strong>@Friendly(signoff.Action)</strong><small>@Friendly(signoff.ActorRole) · @Local(signoff.OccurredUtc)</small><code>@ShortHash(signoff.EvidenceHash)</code></div></article>}}</section>
-                <section class="close-notifications"><div class="close-section-heading"><h3>@FinanceText["ActionCenter"]</h3><a href="@Scoped("/inbox")">@FinanceText["ViewAll"]</a></div>@if(Workspace.Notifications.Count==0){<div class="close-empty">@FinanceText["NoCloseNotifications"]</div>}else{@foreach(var item in Workspace.Notifications.Take(6)){<article><span class="notification-dot @StatusClass(item.Priority)"></span><div><strong>@item.Title</strong><p>@item.Body</p><small>@Local(item.CreatedUtc)</small></div>@if(!string.IsNullOrWhiteSpace(item.ActionUrl)){<a href="@Scoped(item.ActionUrl)">@FinanceText["Open"]</a>}</article>}}</section>
+                <section class="close-notifications"><div class="close-section-heading"><h3>@FinanceText["ActionCenter"]</h3><a href="@Scoped("/work")">@FinanceText["ViewAll"]</a></div>@if(Workspace.Notifications.Count==0){<div class="close-empty">@FinanceText["NoCloseNotifications"]</div>}else{@foreach(var item in Workspace.Notifications.Take(6)){<article><span class="notification-dot @StatusClass(item.Priority)"></span><div><strong>@item.Title</strong><p>@item.Body</p><small>@Local(item.CreatedUtc)</small></div>@if(!string.IsNullOrWhiteSpace(item.ActionUrl)){<a href="@Scoped(item.ActionUrl)">@FinanceText["Open"]</a>}</article>}}</section>
             </div>
         }
     }

@@ -1,4 +1,5 @@
 @page "/finance/cash-position"
+@rendermode InteractiveServer
 @inherits FinanceSummaryPageBase<TreasuryWorkspaceResponse>
 
 <PageTitle>@FinanceText["TreasuryDailyCash"]</PageTitle>
@@ -26,6 +27,7 @@
         @if (ViewModel is not null)
         {
             <div class="treasury-workspace" aria-labelledby="treasury-heading" data-testid="daily-treasury-workspace">
+                @if (ViewModel.Liquidity.Currency == "MIXED") { <div class="alert alert-warning" role="status">Cash sources use different currencies. <a href="@BuildFinancePath("/finance/cash-forecast")">Review currency-separated cash and forecast sources</a>.</div> }
                 <header class="treasury-header">
                     <div>
                         <span class="treasury-kicker">@FinanceText["FinanceModule"]</span>
@@ -36,7 +38,7 @@
                         <button class="btn btn-outline-secondary" type="button" @onclick="RetryAsync">
                             @FinanceText["TreasuryRefreshEvidence"]
                         </button>
-                        <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId)">
+                        <a class="btn btn-primary" href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId))">
                             @FinanceText["TreasuryOpenPayments"]
                         </a>
                     </div>
@@ -56,22 +58,22 @@
                 <section class="treasury-kpis" aria-label="@FinanceText["TreasuryCashSummary"]">
                     <article class="treasury-card treasury-kpi">
                         <span>@FinanceText["TreasuryAvailableCash"]</span>
-                        <strong>@FormatMoney(ViewModel.Liquidity.AvailableCash, ViewModel.Liquidity.Currency)</strong>
+                        <strong>@FormatLiquidityMoney(ViewModel.Liquidity.AvailableCash, ViewModel.Liquidity.Currency)</strong>
                         <small>@FinanceText["TreasuryFreshestEvidence", FormatDateTime(ViewModel.FreshestEvidenceUtc)]</small>
                     </article>
                     <article class="treasury-card treasury-kpi">
                         <span>@FinanceText["TreasuryProjectedCash"]</span>
-                        <strong>@FormatMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency)</strong>
+                        <strong>@FormatLiquidityMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency)</strong>
                         <small>@FinanceText["TreasuryProjectionThrough", FormatDateTime(ViewModel.Liquidity.ProjectionThroughUtc)]</small>
                     </article>
                     <article class="treasury-card treasury-kpi">
                         <span>@FinanceText["TreasuryExpectedIn"]</span>
-                        <strong class="is-positive">@FormatMoney(ViewModel.Liquidity.ExpectedInflows, ViewModel.Liquidity.Currency)</strong>
+                        <strong class="is-positive">@FormatLiquidityMoney(ViewModel.Liquidity.ExpectedInflows, ViewModel.Liquidity.Currency)</strong>
                         <small>@FinanceText["TreasuryProjectionWindow", ViewModel.Liquidity.HorizonDays]</small>
                     </article>
                     <article class="treasury-card treasury-kpi">
                         <span>@FinanceText["TreasuryExpectedOut"]</span>
-                        <strong>@FormatMoney(ViewModel.Liquidity.ExpectedOutflows, ViewModel.Liquidity.Currency)</strong>
+                        <strong>@FormatLiquidityMoney(ViewModel.Liquidity.ExpectedOutflows, ViewModel.Liquidity.Currency)</strong>
                         <small class="treasury-risk treasury-risk--@ViewModel.Liquidity.RiskLevel">@RiskLabel(ViewModel.Liquidity.RiskLevel)</small>
                     </article>
                 </section>
@@ -124,7 +126,7 @@
                                                 <td>
                                                     @if (accountAction is { IsAllowed: true } && !string.IsNullOrWhiteSpace(accountAction.NavigationTarget))
                                                     {
-                                                        <a href="@accountAction.NavigationTarget" @onclick="() => TrackAction(accountAction)">@ActionLabel(accountAction.Action)</a>
+                                                        <a href="@BuildFinancePath(accountAction.NavigationTarget)" @onclick="() => TrackAction(accountAction)">@ActionLabel(accountAction.Action)</a>
                                                     }
                                                     else if (accountAction is not null)
                                                     {
@@ -172,7 +174,7 @@
                                         </div>
                                         @if (item.Action.IsAllowed && !string.IsNullOrWhiteSpace(item.Action.NavigationTarget))
                                         {
-                                            <a href="@item.Action.NavigationTarget" @onclick="() => TrackAction(item.Action)">@ActionLabel(item.Action.Action)</a>
+                                            <a href="@BuildFinancePath(item.Action.NavigationTarget)" @onclick="() => TrackAction(item.Action)">@ActionLabel(item.Action.Action)</a>
                                         }
                                         else
                                         {
@@ -195,8 +197,8 @@
                             <span class="treasury-risk treasury-risk--@ViewModel.Liquidity.RiskLevel">@RiskLabel(ViewModel.Liquidity.RiskLevel)</span>
                         </div>
                         <dl class="treasury-outlook">
-                            <div><dt>@FinanceText["TreasuryStartingCash"]</dt><dd>@FormatMoney(ViewModel.Liquidity.AvailableCash, ViewModel.Liquidity.Currency)</dd></div>
-                            <div><dt>@FinanceText["TreasuryProjectedCash"]</dt><dd>@FormatMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency)</dd></div>
+                            <div><dt>@FinanceText["TreasuryStartingCash"]</dt><dd>@FormatLiquidityMoney(ViewModel.Liquidity.AvailableCash, ViewModel.Liquidity.Currency)</dd></div>
+                            <div><dt>@FinanceText["TreasuryProjectedCash"]</dt><dd>@FormatLiquidityMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency)</dd></div>
                             <div><dt>@FinanceText["TreasuryWarningThreshold"]</dt><dd>@FormatOptionalMoney(ViewModel.Liquidity.WarningCashAmount, ViewModel.Liquidity.Currency)</dd></div>
                             <div><dt>@FinanceText["TreasuryCriticalThreshold"]</dt><dd>@FormatOptionalMoney(ViewModel.Liquidity.CriticalCashAmount, ViewModel.Liquidity.Currency)</dd></div>
                         </dl>
@@ -214,7 +216,7 @@
                                 <h2 id="treasury-payments-heading">@FinanceText["TreasuryPaymentWork"]</h2>
                                 <p>@FinanceText["TreasuryPaymentWorkDescription"]</p>
                             </div>
-                            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId)">@FinanceText["TreasuryOpenPayments"]</a>
+                            <a href="@BuildFinancePath(FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId))">@FinanceText["TreasuryOpenPayments"]</a>
                         </div>
                         <dl class="treasury-payment-counts">
                             <div><dt>@FinanceText["TreasuryApproved"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.Approved)</dd></div>
@@ -231,7 +233,7 @@
                                 {
                                     <li>
                                         <div><strong>@payment.Reference</strong><small>@PaymentExplanation(payment)</small></div>
-                                        <a href="@payment.ReviewAction.NavigationTarget" @onclick="() => TrackAction(payment.ReviewAction)">@FinanceText["TreasuryReviewPayment"]</a>
+                                        <a href="@BuildFinancePath(payment.ReviewAction.NavigationTarget ?? FinanceRoutes.Payments)" @onclick="() => TrackAction(payment.ReviewAction)">@FinanceText["TreasuryReviewPayment"]</a>
                                     </li>
                                 }
                             </ul>
@@ -257,7 +259,7 @@
                             <ul class="treasury-task-list">
                                 @foreach (var task in ViewModel.Tasks)
                                 {
-                                    <li><div><strong>@task.Title</strong><small>@task.Owner · @task.Status</small></div><a href="@task.NavigationTarget">@FinanceText["TreasuryReviewTask"]</a></li>
+                                    <li><div><strong>@task.Title</strong><small>@task.Owner · @task.Status</small></div><a href="@BuildFinancePath(task.NavigationTarget)">@FinanceText["TreasuryReviewTask"]</a></li>
                                 }
                             </ul>
                         }
@@ -275,7 +277,7 @@
                                 <ul>
                                     @foreach (var citation in ViewModel.Laura.Citations)
                                     {
-                                        <li><a href="@citation.NavigationTarget">@CitationLabel(citation)</a><small>@FormatDateTime(citation.ObservedUtc)</small></li>
+                                        <li><a href="@BuildFinancePath(citation.NavigationTarget)">@CitationLabel(citation)</a><small>@FormatDateTime(citation.ObservedUtc)</small></li>
                                     }
                                 </ul>
                             </section>

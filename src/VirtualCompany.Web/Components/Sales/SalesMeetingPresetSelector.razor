@@ -1,6 +1,7 @@
 @using VirtualCompany.Web.Services
 @inject SalesPresentationPresetApiClient Presets
 @inject SalesPresentationRunApiClient Runs
+@inject NavigationManager Navigation
 
 <section class="meeting-preset-selector" aria-labelledby="meeting-preset-title">
  <header><div><span>PRESENTATION</span><h2 id="meeting-preset-title">Choose a presentation preset</h2><p>PowerPoint, presenter settings, scripts and audio are prepared in the preset library.</p></div><a href="@LibraryPath">Edit presentation presets</a></header>
@@ -46,8 +47,8 @@
  private bool IsLocked=>CanChangePreset.HasValue ? !CanChangePreset.Value : SessionId.HasValue && SessionStatus is not (null or "ready");
  private string LifecycleMessage=>SessionStatus is "completed" or "cancelled" or "failed"
   ? "This meeting has ended. Its presentation history is read-only. Schedule a new meeting to use a preset."
-  : "Leave the meeting room and stop the agent before changing its presentation preset.";
- private string LibraryPath=>$"/app/sales/presentation-presets?companyId={CompanyId:D}";
+  : "This meeting has already started. Leave the meeting room and stop the agent before changing its presentation preset.";
+ private string LibraryPath=>SalesJourneyRoutes.Build("/app/sales/presentation-presets", CompanyId, Navigation.Uri);
  protected override Task OnParametersSetAsync()=>LoadAsync();
  private async Task LoadAsync(){
   loading=true;error=null;

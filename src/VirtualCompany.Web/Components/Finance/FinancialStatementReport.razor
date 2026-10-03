@@ -1,12 +1,13 @@
 @using System.Globalization
 @using VirtualCompany.Shared
+@inject NavigationManager Navigation
 
 <div class="statement-workspace @(IsBalance ? "statement-workspace--balance" : "statement-workspace--profit")" aria-busy="@IsLoading">
     <section class="statement-main">
         <nav class="statement-tabs" aria-label="@T("Rapporter", "Reports")">
             <a class="@(!IsBalance ? "active" : null)" aria-current="@(!IsBalance ? "page" : null)" href="@ReportHref("profit-loss")">@T("Resultaträkning", "Profit and loss")</a>
             <a class="@(IsBalance ? "active" : null)" aria-current="@(IsBalance ? "page" : null)" href="@ReportHref("balance-sheet")">@T("Balansräkning", "Balance sheet")</a>
-            <a class="statement-more" href="@FinanceRoutes.WithCompanyContext("/finance/accounting/reports?view=trial", CompanyId)">@T("Övriga rapporter och periodstängning", "Other reports and period close")</a>
+            <a class="statement-more" href="@Link("/finance/accounting/reports?view=trial")">@T("Övriga rapporter och periodstängning", "Other reports and period close")</a>
         </nav>
         <header class="statement-heading">
             <div><h1>@Title</h1><p>@(IsBalance ? T("Tillgångar, skulder och eget kapital vid periodens slut", "Assets, liabilities and equity at period end") : T("Se företagets resultat och förändringar mot jämförelseperioden", "Review company performance and changes against the comparison period"))</p></div>
@@ -89,9 +90,9 @@
                     <dl><div><dt>@T("Ingående saldo", "Opening balance")</dt><dd>@Money(EvidenceSign * Evidence.OpeningBalanceAdjustment, 2) @Unit</dd></div><div><dt>@T("Periodens förändring", "Journal contribution")</dt><dd>@SignedMoney(EvidenceSign * Evidence.JournalLineTotal) @Unit</dd></div><div><dt>@T("Rapportbelopp", "Statement amount")</dt><dd>@Money(SelectedAccount.Amount, 2) @Unit</dd></div></dl>
                     <small>@T("Underlag för", "Evidence for") @Report?.PeriodName</small>
                     <p class="@(EvidenceDifference == 0 ? "positive" : "negative")">@T("Avstämningsdifferens", "Reconciliation difference"): @Money(EvidenceDifference, 2)</p>
-                    @foreach (var entry in Evidence.Entries.Take(3)) { <a class="statement-voucher" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?journalId={entry.LedgerEntryId:D}", CompanyId)">@entry.EntryNumber <span>@Money(EvidenceSign * entry.TotalContributionAmount, 2)</span></a> }
+                    @foreach (var entry in Evidence.Entries.Take(3)) { <a class="statement-voucher" href="@Link($"/finance/accounting/journals?journalId={entry.LedgerEntryId:D}")">@entry.EntryNumber <span>@Money(EvidenceSign * entry.TotalContributionAmount, 2)</span></a> }
                 }
-                @if (SelectedAccount.AccountId is Guid accountId) { <a class="statement-button secondary" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/reports?view=ledger&accountId={accountId:D}&periodId={SelectedPeriodId:D}", CompanyId)">@T("Visa huvudbok", "View general ledger") →</a> }
+                @if (SelectedAccount.AccountId is Guid accountId) { <a class="statement-button secondary" href="@Link($"/finance/accounting/reports?view=ledger&accountId={accountId:D}&periodId={SelectedPeriodId:D}")">@T("Visa huvudbok", "View general ledger") →</a> }
                 @if (Report?.Snapshot is not null) { <small>@T("Huvudboken visar aktuell bokföring. Underlaget ovan avser den sparade rapportversionen.", "The ledger shows current accounting. Evidence above belongs to the saved report version.")</small> }
             }
             else if (SelectedRow is not null)
@@ -161,14 +162,11 @@
     private string SignedMoney(decimal n) => (n > 0 ? "+ " : "") + Money(n, 2);
     private string Change(StatementWorkspaceRow row) => IsBalance ? row.ComparisonAmount.HasValue ? SignedMoney(row.Amount - row.ComparisonAmount.Value) : "—" : row.ChangePercent.HasValue ? (row.ChangePercent > 0 ? "+" : "") + row.ChangePercent.Value.ToString("N1", Culture) + " %" : "—";
     private string ChangeClass(StatementWorkspaceRow row) => !row.ComparisonAmount.HasValue || row.Amount == row.ComparisonAmount ? "neutral" : row.Amount > row.ComparisonAmount ? "positive" : "negative";
-    private string ReportHref(string kind) => FinanceRoutes.WithCompanyContext($"/finance/accounting/reports?view={kind}&periodId={SelectedPeriodId:D}", CompanyId);
+    private string Link(string path) => AccountingJourneyRoutes.Build(path, CompanyId, Navigation.Uri);
+    private string ReportHref(string kind) => Link($"/finance/accounting/reports?view={kind}&periodId={SelectedPeriodId:D}");
     private string PeriodLabel(AccountingPeriodResponse p) => IsBalance ? p.EndDate.ToString("d MMMM yyyy", Culture) : $"{p.StartDate.ToString("d MMM yyyy", Culture)}–{p.EndDate.ToString("d MMM yyyy", Culture)}";
     private string ColumnLabel(DateTime start, DateTime end) => IsBalance ? end.AddTicks(-1).ToString("d MMM yyyy", Culture) : $"{start.ToString("d MMM", Culture)}–{end.AddTicks(-1).ToString("d MMM yyyy", Culture)}";
     private void Toggle(string key) { if (!Expanded.Add(key)) Expanded.Remove(key); }
     private string Insight => Report is null ? T("Välj en period för att granska rapporten.", "Select a period to review the report.") : Report.Warnings.Count > 0 ? T("Rapportunderlaget behöver granskas innan du använder resultatet.", "Review the report evidence before relying on the results.") : IsBalance ? Report.BalanceDifference != 0 ? T("Balansen har en differens. Granska bokföringen före periodstängning.", "The balance has a difference. Review accounting before close.") : T("Tillgångar stämmer med eget kapital och skulder. Granska kundfordringar inför periodstängning.", "Assets reconcile to equity and liabilities. Review receivables before closing.") : Report.Kpis.FirstOrDefault()?.ChangePercent is decimal change ? T($"Nettoomsättningen har förändrats med {change.ToString("N1", Culture)} %. Granska kostnader inför nästa period.", $"Net sales changed by {change.ToString("N1", Culture)}%. Review expenses before the next period.") : T("Rapporten visar bokförda intäkter och kostnader. Välj en jämförelseperiod för mer analys.", "The report shows booked income and expenses. Select a comparison period for more analysis.");
-    private string InsightHref => FinanceRoutes.WithCompanyContext(IsBalance ? "/finance/invoices" : "/finance/transactions", CompanyId);
+    private string InsightHref => Link(IsBalance ? "/finance/invoices" : "/finance/transactions");
 }
-
-
-
-

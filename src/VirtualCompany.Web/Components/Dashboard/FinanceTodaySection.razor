@@ -1,37 +1,36 @@
-<TodayFeatureSection TestId="finance-today-section"
-                     Title="@CommonText["TodayFinance"]"
-                     Icon="finance"
-                     Summary="@Section.StatusMessage"
-                     StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
-                     IsAvailable="Section.IsAvailable"
-                     Stats="Stats"
-                     Items="Section.Items"
-                     DeepLink="@Section.DeepLink"
-                     CompanyId="CompanyId"
-                     ActionSelected="ActionSelected" />
-
+<section class="finance-today" data-testid="finance-today-section">
+    <header><div><span class="vc-kicker">FINANCE</span><h2>@CommonText["TodayFinance"]</h2><p>@Section.StatusMessage</p></div><a class="btn btn-outline-primary" href="@Link(Section.DeepLink)">Open Finance</a></header>
+    <div class="finance-today-stats">
+        <article><span>@CommonText["TodayAvailableCash"]</span><strong>@(Section.CashBalance.HasValue && Section.Currency is not null ? LocalMoney.Format(Section.CashBalance.Value, Section.Currency) : CommonText["NotAvailable"])</strong><small>Separate currencies · check cash sources</small></article>
+        <article><span>Overdue receivables</span><strong>@Count(Section.OverdueReceivables)</strong><a href="@Link("/finance/receivables-aging?bucket=overdue")">Review invoices</a></article>
+        <article><span>Due supplier bills</span><strong>@Count(Section.DuePayables)</strong><a href="@Link("/finance/payables-aging")">Review obligations</a></article>
+        <article><span>Reconciliation exceptions</span><strong>@Count(Section.ReconciliationExceptions)</strong><a href="@Link(FinanceRoutes.AccountingReconciliation)">Review bank evidence</a></article>
+    </div>
+    <div class="finance-today-body">
+        <article><h3>Due obligations and next actions</h3>
+            @if (!Section.IsAvailable) { <p role="status">Finance evidence is unavailable. Open Finance to retry.</p> }
+            @if (Section.Items.Count == 0) { <p>No recorded items in this observation. Check source coverage before concluding that nothing is due.</p> }
+            @foreach (var item in Section.Items) { <div class="finance-today-row"><div><strong>@item.Title</strong><p>@item.Summary</p><small>@LocalDateTime.DateTime(item.ObservedAtUtc)</small></div><a href="@Link(item.DeepLink)">Review →</a></div> }
+        </article>
+        <aside><div class="finance-today-agent"><span aria-hidden="true">F</span><div><h3>@(Section.WorkingAgent ?? "Finance review")</h3><p>Finance Manager</p></div></div><p>Inspect the recorded balance, due date and approval evidence before the next action.</p>
+            @foreach (var gap in Section.CoverageGaps ?? []) { <p class="finance-coverage-gap" role="status">@gap</p> }
+            <a class="btn btn-primary" href="@Link("/finance/cash-forecast")">Review cash forecast</a><p class="finance-coverage-gap">A requested payment remains pending until provider settlement is confirmed.</p>
+        </aside>
+    </div>
+    <nav aria-label="Finance reports and close work">
+        @foreach (var route in Routes) { <a href="@Link(route.Path)">@route.Label</a> }
+    </nav>
+</section>
 @code {
     [Parameter, EditorRequired] public TodayWorkspaceFinanceSectionViewModel Section { get; set; } = default!;
     [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
-
-    private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
-    [
-        new(CommonText["TodayAvailableCash"], Section.CashBalance.HasValue && !string.IsNullOrWhiteSpace(Section.Currency)
-            ? LocalMoney.Format(Section.CashBalance.Value, Section.Currency)
-            : CommonText["NotAvailable"]),
-        new(CommonText["TodayRunway"], Section.RunwayDays.HasValue
-            ? CommonText["TodayDays", Section.RunwayDays.Value]
-            : CommonText["NotAvailable"]),
-        new(CommonText["TodayOpenInsights"], LocalNumber.Integer(Section.OpenInsightCount)),
-        new(CommonText["TodayHealth"], PresentStatus(Section.FinancialHealth))
-    ];
-
-    private string PresentStatus(string? status) => status?.Trim().ToLowerInvariant() switch
-    {
-        "healthy" or "clear" or "good" => CommonText["TodayStatusHealthy"],
-        "critical" or "danger" => CommonText["TodayStatusCritical"],
-        "warning" or "attention" => CommonText["TodayStatusAttention"],
-        _ => CommonText["TodayStatusCurrent"]
-    };
+    private string Count(int? value) => value.HasValue ? LocalNumber.Integer(value.Value) : CommonText["NotAvailable"];
+    private string Link(string path) => DashboardRoutes.EnsureWorkspaceContext(
+        path.Contains("financeSource=") ? path : path + (path.Contains('?') ? "&" : "?") + "financeSource=operational",
+        CompanyId, ReturnUrl ?? DashboardRoutes.BuildTodayPath(CompanyId, "finance"));
+    private static readonly (string Label, string Path)[] Routes = [ ("Receivables aging", "/finance/receivables-aging"), ("Payables aging", "/finance/payables-aging"),
+        ("Cash forecast", "/finance/cash-forecast"), ("Payment review", FinanceRoutes.Payments), ("Bank reconciliation", FinanceRoutes.AccountingReconciliation),
+        ("Accounting close", FinanceRoutes.AccountingCloseWorkspace), ("Income statement", FinanceRoutes.AccountingReports + "?view=profit-loss"), ("Balance sheet", FinanceRoutes.AccountingReports + "?view=balance-sheet") ];
 }

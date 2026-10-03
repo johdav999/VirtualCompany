@@ -1,0 +1,11 @@
+# P08 verification profile
+
+Product: real Blazor Server Web and composed authenticated API; same Windows/PowerShell checkout, baseline `37834c7f`, P01–P08 uncommitted. No production deployment.
+
+Fixture: `tests/VirtualCompany.Workspace.Uat/Program.cs` plus additive `SupportFixture.cs`; disposable SQLite, background workers disabled, no controlled outbound mailbox/channel. North Company `11111111-1111-1111-1111-111111111111`, P01 owner and restricted member. API 5319, owner Web 5079, restricted member 5080. P01–P07 seeds remain. Account access case, reopened customer history, breached waiting case, missing-target unsupported case, accessible indexed guide and protected indexed document. Seed documents/embedding vectors are test fixtures, never production fallback knowledge. The owner is displayed as Alice Admin by the existing development-header identity composition.
+
+Launch: build API/Web/UAT, start the UAT DLL and Web DLL directly using the commands in `commands.md`. Fresh host process IDs are recorded; fixture database resets on restart. Windows listener/process inspection and Web DPAPI/EventLog access required the documented escalation after normal sandbox failure. Builds and focused tests use the ordinary workspace sandbox. No blanket process termination.
+
+Adapter: Codex in-app browser. Desktop default 1280 wide; actual responsive override 390×844 was confirmed by DOM `innerWidth`, then reset. A second member tab initially received the global viewport override; that capture was not used as mobile evidence. Final `sla-mobile.jpg`, `case-mobile.jpg` and `support-now-mobile.jpg` use confirmed 390px viewport. Screenshots are JPEG. Browser controls sometimes needed native keyboard input or a fresh navigation observation; these are adapter findings, not fabricated clicks.
+
+Flows F08-01–07 are in `uat.md`. Automated tests cover report boundaries, company/responsibility isolation, source revocation, calendar holidays/weekends, draft review, navigation, export refresh/revocation, duplicate/uncertain delivery and typed wire compatibility. External send uses a controlled test double only. Live provider/channel, deployed tenant, physical downloaded file and human approval are unverified.

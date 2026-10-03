@@ -10,7 +10,11 @@ public static class ReturnUrlNavigation
         }
 
         var normalized = returnUrl.Trim();
-        if (!normalized.StartsWith("/", StringComparison.Ordinal) || normalized.StartsWith("//", StringComparison.Ordinal))
+        var path = normalized.Split('?', '#')[0];
+        var decodedPath = Uri.UnescapeDataString(path);
+        if (!normalized.StartsWith("/", StringComparison.Ordinal) ||
+            decodedPath.StartsWith("//", StringComparison.Ordinal) ||
+            decodedPath.Contains('\\') || decodedPath.Any(char.IsControl) || normalized.Any(char.IsControl))
         {
             return null;
         }
@@ -26,7 +30,12 @@ public static class ReturnUrlNavigation
             return path;
         }
 
-        var separator = path.Contains('?', StringComparison.Ordinal) ? "&" : "?";
-        return $"{path}{separator}returnUrl={Uri.EscapeDataString(normalizedReturnUrl)}";
+        var fragmentIndex = path.IndexOf('#');
+        var route = fragmentIndex < 0 ? path : path[..fragmentIndex];
+        var fragment = fragmentIndex < 0 ? string.Empty : path[fragmentIndex..];
+        var queryIndex = route.IndexOf('?');
+        var query = System.Web.HttpUtility.ParseQueryString(queryIndex < 0 ? string.Empty : route[(queryIndex + 1)..]);
+        query["returnUrl"] = normalizedReturnUrl;
+        return $"{(queryIndex < 0 ? route : route[..queryIndex])}?{query}{fragment}";
     }
 }

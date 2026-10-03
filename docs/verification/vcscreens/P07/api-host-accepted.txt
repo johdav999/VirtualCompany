@@ -1,0 +1,84 @@
+info: VirtualCompany.Api[0]
+      ASP.NET Core Data Protection keys are persisted to C:\Users\Johan\AppData\Local\Temp\virtual-company-tests\data-protection-e1a8848343d047afabb7452bdfd6e73f. Preserve this directory across restarts and deployments.
+info: DatabaseInitializationService[0]
+      Database initialization is disabled for this host.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'BankTransaction' has a global query filter defined and is the required end of a relationship with the entity 'BankReconciliationFollowUp'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'CompanyBankAccount' has a global query filter defined and is the required end of a relationship with the entity 'BankStatementImport'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'CompanyBankAccount' has a global query filter defined and is the required end of a relationship with the entity 'BankStatementImportJob'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'BankTransaction' has a global query filter defined and is the required end of a relationship with the entity 'BankStatementImportRow'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'CompanyDocumentRepositoryOnboardingSession' has a global query filter defined and is the required end of a relationship with the entity 'CompanyDocumentRepositoryProvisioning'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'Agent' has a global query filter defined and is the required end of a relationship with the entity 'CompanyDocumentRepositoryProvisioningAgent'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'OperatingInitiative' has a global query filter defined and is the required end of a relationship with the entity 'OperatingDispatch'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]
+      Entity 'Agent' has a global query filter defined and is the required end of a relationship with the entity 'OperatingInitiativeCollaborator'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.
+warn: Microsoft.EntityFrameworkCore.Model.Validation[20601]
+      The 'SalesMeetingConfirmationStatus' property 'ConfirmationStatus' on entity type 'SalesMeetingInvitation' is configured with a database-generated default, but has no configured sentinel value. The database-generated default will always be used for inserts when the property has the value '0', since this is the CLR default for the 'SalesMeetingConfirmationStatus' type. Consider using a nullable type, using a nullable backing field, or setting the sentinel value for the property to ensure the database default is used when, and only when, appropriate. See https://aka.ms/efcore-docs-default-values for more information.
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]
+      Invalidated executive cockpit cache namespace for company 11111111-1111-1111-1111-111111111111 from trigger direct; lag 2.3124 ms.
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]
+      Invalidated executive cockpit cache namespace for company 22222222-2222-2222-2222-222222222222 from trigger direct; lag 0.0274 ms.
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]
+      Invalidated executive cockpit cache namespace for company 77777777-7777-7777-7777-777777777777 from trigger direct; lag 0.0052 ms.
+warn: Microsoft.AspNetCore.HttpsPolicy.HttpsRedirectionMiddleware[3]
+      Failed to determine the https port for redirect.
+info: VirtualCompany.Infrastructure.Companies.CompanyOutboxEnqueuer[0]
+      Enqueued company outbox message company.notification.delivery_requested (VirtualCompany.Application.Companies.NotificationDeliveryRequestedMessage) for company 77777777-7777-7777-7777-777777777777.
+fail: Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware[1]
+      An unhandled exception has occurred while executing the request.
+      System.InvalidOperationException: A different authorized user must approve the grant.
+         at VirtualCompany.Domain.Entities.AccountantCompanyGrant.Approve(Guid actorUserId, DateTime utcNow) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\AccountantCollaborationEntities.cs:line 94
+         at VirtualCompany.Infrastructure.Companies.AccountantCollaborationService.ApproveGrantAsync(ApproveAccountantGrantCommand command, CancellationToken cancellationToken) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\AccountantCollaborationService.cs:line 129
+         at VirtualCompany.Api.Controllers.AccountantCollaborationController.ExecuteAsync[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\AccountantCollaborationController.cs:line 93
+         at VirtualCompany.Api.Controllers.AccountantCollaborationController.ApproveGrantAsync(Guid companyId, Guid grantId, VersionedAccountantRequest request, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\AccountantCollaborationController.cs:line 41
+         at lambda_method12190(Closure, Object)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeActionMethodAsync>g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeNextActionFilterAsync>g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State& next, Scope& scope, Object& state, Boolean& isCompleted)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeFilterPipelineAsync>g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeAsync>g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeAsync>g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+         at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76
+         at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.<>c__DisplayClass2_0.<<CreateMiddleware>b__0>d.MoveNext()
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+         at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+fail: VirtualCompany.Infrastructure.Observability.GlobalExceptionHandler[0]
+      Unhandled exception System.InvalidOperationException for HTTP POST /api/companies/77777777-7777-7777-7777-777777777777/accountant-collaboration/grants/89199709-3bf1-4124-9ecc-d2dac10c926a/approve. TraceId: d3b27cd3451744fd8acb4943ba98cbe3.
+      System.InvalidOperationException: A different authorized user must approve the grant.
+         at VirtualCompany.Domain.Entities.AccountantCompanyGrant.Approve(Guid actorUserId, DateTime utcNow) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\AccountantCollaborationEntities.cs:line 94
+         at VirtualCompany.Infrastructure.Companies.AccountantCollaborationService.ApproveGrantAsync(ApproveAccountantGrantCommand command, CancellationToken cancellationToken) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\AccountantCollaborationService.cs:line 129
+         at VirtualCompany.Api.Controllers.AccountantCollaborationController.ExecuteAsync[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\AccountantCollaborationController.cs:line 93
+         at VirtualCompany.Api.Controllers.AccountantCollaborationController.ApproveGrantAsync(Guid companyId, Guid grantId, VersionedAccountantRequest request, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\AccountantCollaborationController.cs:line 41
+         at lambda_method12190(Closure, Object)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeActionMethodAsync>g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.<InvokeNextActionFilterAsync>g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State& next, Scope& scope, Object& state, Boolean& isCompleted)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeFilterPipelineAsync>g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeAsync>g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.<InvokeAsync>g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)
+         at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76
+         at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.<>c__DisplayClass2_0.<<CreateMiddleware>b__0>d.MoveNext()
+      --- End of stack trace from previous location ---
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)
+         at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.<Invoke>g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)
+Unhandled exception. System.InvalidOperationException: P07 accountant grant approval failed: {"type":"https://httpstatuses.com/500","title":"An unexpected error occurred.","status":500,"detail":"The server encountered an unexpected error. Use the provided identifiers when contacting support.","instance":"/api/companies/77777777-7777-7777-7777-777777777777/accountant-collaboration/grants/89199709-3bf1-4124-9ecc-d2dac10c926a/approve","correlationId":"d3b27cd3451744fd8acb4943ba98cbe3","traceId":"d3b27cd3451744fd8acb4943ba98cbe3"}
+   at AccountingFixture.InitializeAsync(TestWebApplicationFactory factory) in C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Workspace.Uat\AccountingFixture.cs:line 76
+   at Program.<Main>$(String[] args) in C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Workspace.Uat\Program.cs:line 140
+   at Program.<Main>(String[] args)

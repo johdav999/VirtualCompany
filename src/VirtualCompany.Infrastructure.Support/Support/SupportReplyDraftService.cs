@@ -25,6 +25,7 @@ namespace VirtualCompany.Infrastructure.Support;
 public sealed class SupportReplyDraftService : ISupportReplyDraftService
 {
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly ISupportReplySourceAccess? _sourceAccess;
     private readonly IAuditEventWriter _audit;
     private readonly ISupportOutboundEmailSender _outboundEmailSender;
     private readonly ISupportKnowledgeContextProvider _knowledgeContextProvider;
@@ -41,9 +42,9 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
         ISupportKnowledgeGapService knowledgeGaps,
         ISupportReplySafetyPolicy? safetyPolicy = null,
         ICompanyOutboxEnqueuer? outboxEnqueuer = null,
-        IAgentReasoningGateway? reasoningGateway = null)
+        IAgentReasoningGateway? reasoningGateway = null, ISupportReplySourceAccess? sourceAccess = null)
     {
-        _dbContext = dbContext;
+        _dbContext = dbContext; _sourceAccess = sourceAccess;
         _audit = audit;
         _outboundEmailSender = outboundEmailSender;
         _knowledgeContextProvider = knowledgeContextProvider;
@@ -97,7 +98,7 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
 
         await _audit.WriteAsync(new AuditEventWriteRequest(companyId, userId == Guid.Empty ? AuditActorTypes.System : AuditActorTypes.Human, userId == Guid.Empty ? null : userId, "support.reply.drafted", "support_case", supportCase.Id.ToString("D"), AuditEventOutcomes.Succeeded, draft.RationaleSummary, ["support", "knowledge"], DataSourcesUsed: context.Sources.Select(x => new AuditDataSourceUsed(x.Type, x.EntityId?.ToString("D") ?? supportCase.Id.ToString("D"), x.Label, x.Excerpt)).ToList()), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return SupportCaseService.MapDraft(draft);
+        return await ProjectDraftAsync(companyId, draft, cancellationToken);
     }
 
     private static decimal ResolveAnswerability(SupportCase supportCase, SupportKnowledgeContext context, bool forceReview)
@@ -209,12 +210,19 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
 
         return array.ToJsonString();
     }
-    public async Task<IReadOnlyList<SupportReplyDraftDto>> ListDraftsAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken) =>
-        await _dbContext.SupportReplyDrafts.AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.SupportCaseId == supportCaseId)
-            .OrderByDescending(x => x.CreatedUtc)
-            .Select(x => SupportCaseService.MapDraft(x))
-            .ToListAsync(cancellationToken);
+    public async Task<IReadOnlyList<SupportReplyDraftDto>> ListDraftsAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken)
+    {
+        var drafts = await _dbContext.SupportReplyDrafts.AsNoTracking().Where(x => x.CompanyId == companyId && x.SupportCaseId == supportCaseId)
+            .OrderByDescending(x => x.CreatedUtc).ToListAsync(cancellationToken);
+        var result = new List<SupportReplyDraftDto>();
+        foreach (var draft in drafts) result.Add(await ProjectDraftAsync(companyId, draft, cancellationToken));
+        return result;
+    }
+    private async Task<SupportReplyDraftDto> ProjectDraftAsync(Guid companyId, SupportReplyDraft draft, CancellationToken cancellationToken)
+    {
+        var dto = SupportCaseService.MapDraft(draft);
+        return _sourceAccess is null ? dto : dto with { SourceReferencesJson = await _sourceAccess.FilterAsync(companyId, dto.SourceReferencesJson, cancellationToken) };
+    }
 
     public async Task<SupportReplyDraftDto?> EditDraftAsync(Guid companyId, Guid userId, Guid draftId, EditSupportReplyDraftRequest request, CancellationToken cancellationToken)
     {
@@ -223,7 +231,7 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
         draft.Edit(request.DraftBody, request.Tone);
         await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.reply.edited", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Support reply draft edited.", ["support"]), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return SupportCaseService.MapDraft(draft);
+        return await ProjectDraftAsync(companyId, draft, cancellationToken);
     }
 
     public async Task<SupportReplyDraftDto?> ApproveDraftAsync(Guid companyId, Guid userId, Guid draftId, SupportActionRequest request, CancellationToken cancellationToken)
@@ -242,7 +250,7 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
         draft.Approve(userId);
         await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.reply.approved", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Approved, request.Note ?? "Support reply approved.", ["support"]), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return SupportCaseService.MapDraft(draft);
+        return await ProjectDraftAsync(companyId, draft, cancellationToken);
     }
 
     public async Task<SupportReplyDraftDto?> RejectDraftAsync(Guid companyId, Guid userId, Guid draftId, SupportActionRequest request, CancellationToken cancellationToken)
@@ -252,7 +260,7 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
         draft.Reject();
         await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.reply.rejected", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Rejected, request.Note ?? "Support reply rejected.", ["support"]), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return SupportCaseService.MapDraft(draft);
+        return await ProjectDraftAsync(companyId, draft, cancellationToken);
     }
 
     public async Task<SupportCaseDetailResponse?> SendDraftAsync(Guid companyId, Guid userId, Guid draftId, SendSupportReplyDraftRequest request, CancellationToken cancellationToken)

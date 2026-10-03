@@ -73,6 +73,17 @@ public sealed partial class CompanyFinanceReadService
             cancellationToken);
         var policy = await LoadPolicyAsync(query.CompanyId, cancellationToken);
 
+        // An empty account set and an aggregate across currencies are not a measured
+        // zero balance. Keep the legacy DTO shape, but provide no risk conclusion.
+        if (cashBalance.Accounts.Count == 0 || string.Equals(cashBalance.Currency, "MIXED", StringComparison.OrdinalIgnoreCase))
+        {
+            const string unavailableRationale = "Cash risk is unavailable. Retained cash evidence is missing or spans currencies; review the separate currency evidence in the cash forecast.";
+            return new FinanceCashPositionDto(query.CompanyId, asOfUtc, cashBalance.Amount, cashBalance.Currency,
+                0m, null, new(policy.CashRunwayWarningThresholdDays, policy.CashRunwayCriticalThresholdDays, null, null, cashBalance.Currency),
+                new(false, "unknown", false, false, null, null, unavailableRationale),
+                FinanceWorkflowOutputSchemas.Create("cash_position_unavailable", "unknown", "review_cash_evidence", unavailableRationale, 0m, "cash_position_monitoring"));
+        }
+
         var estimatedRunwayDays = averageMonthlyBurn <= 0m
             ? (int?)null
             : (int)Math.Floor(cashBalance.Amount / averageMonthlyBurn * 30m);

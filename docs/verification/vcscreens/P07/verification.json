@@ -1,0 +1,26 @@
+{
+  "prompt": "P07",
+  "date": "2026-10-02",
+  "baseline": "37834c7f",
+  "implementation": "complete within recorded P07 scope",
+  "workingTree": "P01-P07 preserved and uncommitted; no deployment",
+  "tests": [
+    { "suite": "Web", "results": "p07-web-final.trx", "passed": 63, "failed": 0, "notExecuted": 0 },
+    { "suite": "Finance", "results": "p07-finance.trx", "passed": 24, "failed": 0, "notExecuted": 0 },
+    { "suite": "API", "results": "p07-api.trx", "passed": 52, "failed": 0, "notExecuted": 0 },
+    { "suite": "API close projection recheck (overlaps API selection)", "results": "p07-api-projection-recheck.trx", "passed": 18, "failed": 0, "notExecuted": 0 }
+  ],
+  "builds": [
+    { "project": "API", "log": "api-build.txt", "result": "passed" },
+    { "project": "Web", "log": "web-build-final.txt", "result": "passed; final incremental build has zero warnings/errors" },
+    { "project": "UAT adapter", "log": "uat-build-final.txt", "result": "passed", "warnings": "NU1900 vulnerability feed unavailable; prior full compiler logs contain existing nullable/analyzer warnings" }
+  ],
+  "schema": "no entity/migration or API contract shape change",
+  "browser": { "flows": "uat.md", "checks": "browser-checks.json", "profile": "profile.md", "issues": "issue-ledger.md", "result": "F07-01-07 passed within recorded local scope", "persistedAction": "close task completion survives reload; remaining readiness blockers remain", "reports": "September net profit 1000 SEK; assets/equity 1600 SEK; August retained comparison 600 SEK; owning CSV and journals reconcile", "screenshots": "screenshots/", "csv": "authorized refreshed payload/handoff passed; physical save unverified", "print": "existing callback/styles preserved; physical output unverified" },
+  "sourceArtifacts": [ "journal-authorized.json", "profit-loss-authorized.json", "profit-loss-authorized.csv", "balance-sheet-authorized.json", "balance-sheet-authorized.csv", "export-reconciliation.json", "export-reconciliation-check.txt" ],
+  "independentGates": [ "physical browser CSV save", "native print/PDF", "production SQL Server/deployed tenant", "live provider confirmation/sync", "qualified statutory and human release approval" ],
+  "hostReadiness": "host-health.json: authenticated fixture readiness and Web roots returned 200; final accepted API and owner health recorded in cleanup.json",
+  "cleanup": "cleanup.json",
+  "diffCheck": "diff-check.txt",
+  "handoff": "docs/vcscreens/implementation-status.md: P08 prerequisite handoff"
+}

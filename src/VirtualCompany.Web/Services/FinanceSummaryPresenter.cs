@@ -14,8 +14,9 @@ public static class FinanceSummaryPresenter
             return null;
         }
 
-        var formattedAvailableBalance = FormatCurrency(response.AvailableBalance, response.Currency);
-        var formattedAverageMonthlyBurn = FormatCurrency(response.AverageMonthlyBurn, response.Currency);
+        var unavailable = string.Equals(response.Classification, "cash_position_unavailable", StringComparison.OrdinalIgnoreCase);
+        var formattedAvailableBalance = unavailable ? "Not available" : FormatCurrency(response.AvailableBalance, response.Currency);
+        var formattedAverageMonthlyBurn = unavailable ? "Not available" : FormatCurrency(response.AverageMonthlyBurn, response.Currency);
         var estimatedRunway = response.EstimatedRunwayDays is int runwayDays ? $"{runwayDays:N0} days" : "n/a";
         var health = BuildCashPositionHealth(response, formattedAvailableBalance, formattedAverageMonthlyBurn, estimatedRunway);
 

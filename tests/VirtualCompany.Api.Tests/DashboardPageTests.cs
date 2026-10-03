@@ -11,7 +11,7 @@ namespace VirtualCompany.Api.Tests;
 public sealed class DashboardPageTests
 {
     [Fact]
-    public void Dashboard_renders_required_section_order_for_action_first_layout()
+    public void Dashboard_renders_current_action_first_workspace_through_typed_client()
     {
         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
         using var context = CreateContext(companyId);
@@ -23,21 +23,14 @@ public sealed class DashboardPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.NotNull(cut.Find("[data-testid='dashboard-finance-strip']"));
-            Assert.NotNull(cut.Find("[data-testid='latest-briefing-panel']"));
-            Assert.NotNull(cut.Find("[data-testid='latest-briefing-summary-panel']"));
-            Assert.Contains("What to do next", cut.Markup);
+            cut.Find("[data-testid='today-workspace']");
+            Assert.Contains("Contoso Labs", cut.Markup);
+            Assert.Single(cut.FindAll("[data-testid='today-priority']"));
+            Assert.Contains("returnUrl=", cut.Find(".today-priority a").GetAttribute("href"));
         });
-
-        Assert.True(
-            cut.Markup.IndexOf("data-testid=\"dashboard-finance-strip\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"latest-briefing-panel\"", StringComparison.Ordinal) &&
-            cut.Markup.IndexOf("data-testid=\"latest-briefing-panel\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"latest-briefing-summary-panel\"", StringComparison.Ordinal) &&
-            cut.Markup.IndexOf("data-testid=\"latest-briefing-summary-panel\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("What to do next", StringComparison.Ordinal));
+        Assert.True(cut.Markup.IndexOf("today-situation-title", StringComparison.Ordinal) <
+                    cut.Markup.IndexOf("today-priorities-title", StringComparison.Ordinal));
     }
-
     private static TestContext CreateContext(Guid companyId)
     {
         var context = new TestContext().AddVirtualCompanyWebPresentationServices();
@@ -59,6 +52,7 @@ public sealed class DashboardPageTests
                         AuthProvider = "dev-header",
                         AuthSubject = "founder"
                     },
+                    ActiveCompany = new() { CompanyId = companyId, CompanyName = "Contoso Labs", Status = "active" },
                     Memberships =
                     [
                         new CompanyMembershipViewModel
@@ -71,6 +65,13 @@ public sealed class DashboardPageTests
                         }
                     ]
                 }),
+                var candidate when candidate == $"/api/companies/{companyId:D}/workspace/today" => CreateJsonResponse(new TodayWorkspaceViewModel(
+                    companyId, new("Contoso Labs", "Today", "Your work"), "company",
+                    [new("company", "Company", true, "Active membership")],
+                    new("Current work", "Source-linked work", DateTime.UtcNow, "current", true),
+                    [new("priority", 1, "company", "Review work", "Deadline approaching", "Owner", null, "Open record",
+                        DateTime.UtcNow, "current", "work_task", null, "/work?tab=tasks", false, null, true, 1m)],
+                    [], null, null, null, null, [], [], DateTime.UtcNow, null, false, [])),
                 "/api/onboarding/progress" => new HttpResponseMessage(HttpStatusCode.NotFound),
                 var candidate when candidate == $"/api/companies/{companyId:D}/access" => CreateJsonResponse(new CompanyAccessViewModel
                 {
@@ -95,11 +96,9 @@ public sealed class DashboardPageTests
         };
 
         context.Services.AddSingleton(new OnboardingApiClient(onboardingHttpClient));
-        context.Services.AddSingleton(new ActionInsightApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
-        context.Services.AddSingleton(new TodayFocusApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
-        context.Services.AddSingleton(new ExecutiveCockpitApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
-        context.Services.AddSingleton(new FinanceApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, logger: null, useOfflineMode: true));
-
+        var transport = new CompanyApiTransport(onboardingHttpClient);
+        context.Services.AddSingleton<ITodayWorkspaceApiClient>(new TodayWorkspaceApiClient(transport, false));
+        context.Services.AddSingleton<IMonthlyWorkspaceApiClient>(new MonthlyWorkspaceApiClient(transport, false));
         return context;
     }
 

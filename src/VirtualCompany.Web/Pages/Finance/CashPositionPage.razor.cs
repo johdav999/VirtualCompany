@@ -29,7 +29,9 @@ public partial class CashPositionPage : FinanceSummaryPageBase<TreasuryWorkspace
         return workspace;
     }
 
-    private string FormatMoney(decimal amount, string currency) => LocalMoney.Format(amount, currency);
+    private string FormatMoney(decimal amount, string currency) => currency == "MIXED" ? "Review by currency" : LocalMoney.Format(amount, currency);
+    private string FormatLiquidityMoney(decimal amount, string currency) => ViewModel?.Liquidity.RiskLevel == "missing"
+        ? FinanceText["NotAvailable"] : FormatMoney(amount, currency);
     private string FormatOptionalMoney(decimal? amount, string currency) =>
         amount.HasValue ? LocalMoney.Format(amount.Value, currency) : FinanceText["TreasuryNotConfigured"];
     private string FormatDateTime(DateTime? value) => value.HasValue
@@ -46,7 +48,7 @@ public partial class CashPositionPage : FinanceSummaryPageBase<TreasuryWorkspace
         _ => FinanceText["TreasuryEvidenceMissing"]
     };
 
-    private string RiskLabel(string value) => value switch
+    private string RiskLabel(string value) => ViewModel?.Liquidity.Currency == "MIXED" ? "Separate currency review required" : value switch
     {
         "critical" => FinanceText["TreasuryRiskCritical"],
         "warning" => FinanceText["TreasuryRiskWarning"],
@@ -106,9 +108,12 @@ public partial class CashPositionPage : FinanceSummaryPageBase<TreasuryWorkspace
                 : FinanceText["TreasuryReconciliationReviewDescription"];
         if (item.Kind == "payment" && FindPayment(item) is { } payment) return PaymentExplanation(payment);
         if (item.Kind == "liquidity" && ViewModel is not null)
+        {
+            if (ViewModel.Liquidity.RiskLevel == "missing") return FinanceText["TreasuryLauraRecoverEvidence"];
             return FinanceText["TreasuryLiquidityExceptionDescription",
                 FormatMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency),
                 FormatDateTime(ViewModel.Liquidity.ProjectionThroughUtc)];
+        }
         return item.Explanation;
     }
 
@@ -137,6 +142,8 @@ public partial class CashPositionPage : FinanceSummaryPageBase<TreasuryWorkspace
     private string LauraSummary()
     {
         if (ViewModel is null) return string.Empty;
+        if (ViewModel.Liquidity.RiskLevel == "missing" || ViewModel.HasMissingEvidence) return FinanceText["TreasuryLauraRecoverEvidence"];
+        if (ViewModel.Liquidity.Currency == "MIXED") return "Review the cash forecast by currency. No currency conversion has been applied to these sources.";
         if (ViewModel.Accounts.Any(account =>
                 !string.Equals(account.ConnectionStatus, "active", StringComparison.OrdinalIgnoreCase) ||
                 account.AllowedActions.Any(action => action.ReasonCode == TreasuryWorkspaceReasonCodes.FeedGapOpen)))

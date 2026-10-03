@@ -4,6 +4,7 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
+<SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
 <PageTitle>@SalesText["CustomerProfile"]</PageTitle>
 
 <div class="sales-workspace">
@@ -182,6 +183,7 @@
 
     private async Task LoadAsync()
     {
+        var read = BeginSalesRead();
         isLoading = true;
         errorMessage = null;
         try
@@ -192,7 +194,9 @@
                 return;
             }
 
-            profile = await SalesApiClient.GetContactProfileAsync(ResolvedCompanyId!.Value, ContactId);
+            var result = await SalesApiClient.GetContactProfileAsync(ResolvedCompanyId!.Value, ContactId);
+            if (!SalesReadIsCurrent(read)) return;
+            profile = result;
             if (profile is null)
             {
                 errorMessage = SalesText["ContactNotFound"];
@@ -202,16 +206,17 @@
         }
         catch (SalesApiException ex)
         {
+            if (!SalesReadIsCurrent(read)) return;
             errorMessage = ex.Message;
             AgentPanelErrorMessage = ex.Message;
         }
         finally
         {
-            isLoading = false;
+            if (SalesReadIsCurrent(read)) isLoading = false;
         }
     }
 
-    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildPath(string path) => BuildSalesPath(path);
     private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
     private string EngagementBand(decimal score) => score >= 75m ? SalesText["StrongEngagement"] : score >= 45m ? SalesText["ModerateEngagement"] : SalesText["LightEngagement"];
     private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;

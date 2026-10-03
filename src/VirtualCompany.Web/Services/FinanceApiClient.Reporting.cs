@@ -79,41 +79,41 @@ public sealed partial class FinanceApiClient
         string? category = null,
         string? flagged = null,
         int limit = 100,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? sourceFilter = null)
     {
         if (_useOfflineMode)
         {
             return Task.FromResult<IReadOnlyList<FinanceTransactionResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/transactions{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("category", category), ("flagged", flagged), ("limit", limit.ToString()), ("source", _financeDataSourceFilter))}";
+        var uri = $"internal/companies/{companyId}/finance/transactions{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("category", category), ("flagged", flagged), ("limit", limit.ToString()), ("source", sourceFilter ?? _financeDataSourceFilter))}";
         return GetListAsync<FinanceTransactionResponse>(companyId, uri, cancellationToken);
     }
 
-    public Task<FinanceTransactionDetailResponse?> GetTransactionDetailAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default) =>
+    public Task<FinanceTransactionDetailResponse?> GetTransactionDetailAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default, string? sourceFilter = null) =>
         _useOfflineMode
             ? Task.FromResult<FinanceTransactionDetailResponse?>(null)
-            : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}{BuildQuery(("source", sourceFilter ?? _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
     public Task<IReadOnlyList<FinancePaymentResponse>> GetPaymentsAsync(
         Guid companyId,
         string? paymentType = null,
         int limit = 100,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? sourceFilter = null)
     {
         if (_useOfflineMode)
         {
             return Task.FromResult<IReadOnlyList<FinancePaymentResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)), ("source", _financeDataSourceFilter))}";
+        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)), ("source", sourceFilter ?? _financeDataSourceFilter))}";
         return GetListAsync<FinancePaymentResponse>(companyId, uri, cancellationToken);
     }
 
-    public Task<FinancePaymentResponse?> GetPaymentDetailAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken = default) =>
+    public Task<FinancePaymentResponse?> GetPaymentDetailAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken = default, string? sourceFilter = null) =>
         _useOfflineMode
             ? Task.FromResult<FinancePaymentResponse?>(null)
-            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}{BuildQuery(("source", sourceFilter ?? _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
 }
 

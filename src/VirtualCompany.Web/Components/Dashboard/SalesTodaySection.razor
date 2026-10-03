@@ -2,11 +2,23 @@
                      Summary="@Section.StatusMessage"
                      StatusLabel="@(Section.IsAvailable ? CommonText["TodayStatusCurrent"] : CommonText["TodayStatusUnavailable"])"
                      IsAvailable="Section.IsAvailable" Stats="Stats" Items="Section.Items"
-                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ActionSelected="ActionSelected" />
+                     DeepLink="@Section.DeepLink" CompanyId="CompanyId" ReturnUrl="@ReturnUrl" ActionSelected="ActionSelected" />
+@if (Section.IsAvailable)
+{
+    <section class="today-sales-agenda vc-panel" data-testid="sales-today-agenda">
+        <h2>@SalesText["TodaysCommitments"]</h2><p>@SalesText["ActivityMeaning"]</p>
+        @foreach (var item in Section.Agenda ?? [])
+        { <article><div><a href="@DashboardRoutes.EnsureWorkspaceContext(item.DeepLink, CompanyId, ReturnUrl ?? DashboardRoutes.BuildTodayPath(CompanyId, "sales"))">@item.Title</a><small>@LocalDateTime.DateTime(item.DueUtc) · @SalesStatusPresenter.Present(item.State, SalesText)</small></div><span>@SalesText[item.IsMeeting ? "Meeting" : "InternalFollowUp"]</span></article> }
+        @if (Section.Agenda is null || Section.Agenda.Count == 0) { <p>@SalesText["NoDueCommitments"]</p> }
+        <a href="@DashboardRoutes.EnsureWorkspaceContext($"/app/sales/activities?status=overdue", CompanyId, ReturnUrl ?? DashboardRoutes.BuildTodayPath(CompanyId, "sales"))">@SalesText["ActivityReport"]</a>
+        <a href="@DashboardRoutes.EnsureWorkspaceContext("/app/sales/forecast", CompanyId, ReturnUrl ?? DashboardRoutes.BuildTodayPath(CompanyId, "sales"))">@SalesText["NearTermForecast"]</a>
+    </section>
+}
 
 @code {
     [Parameter, EditorRequired] public TodayWorkspaceSalesSectionViewModel Section { get; set; } = default!;
     [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> ActionSelected { get; set; }
     private IReadOnlyList<TodayWorkspaceStatViewModel> Stats =>
     [

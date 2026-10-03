@@ -44,6 +44,7 @@ public partial class BillsPage : FinancePageBase
     private string? EnrichmentMessage { get; set; }
     private string? SubscriptionContextMessage { get; set; }
     private string? NativeAccountingMessage { get; set; }
+    [SupplyParameterFromQuery(Name = "filter")] public string? BillFilter { get; set; }
     private string ActiveBillFilter { get; set; } = BillLifecycleFilters.All;
     private SupplierBillSubscriptionContextResponse? BillSubscriptionContext { get; set; }
     private SupplierBillAccountingReferenceDataResponse? NativeAccountingReferenceData { get; set; }
@@ -70,11 +71,12 @@ public partial class BillsPage : FinancePageBase
             : ToDetailViewModel(
                 SelectedBill,
                 Bills.FirstOrDefault(bill => bill.Id == SelectedBill.Id)?.PaymentContext);
-    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? DashboardRoutes.OverviewPathFromLocation(Navigation.Uri, companyId) ?? DashboardRoutes.BuildTodayPath(companyId, "finance") : "/dashboard";
 
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
+        ActiveBillFilter = string.IsNullOrWhiteSpace(BillFilter) ? BillLifecycleFilters.All : BillFilter;
 
         Bills = [];
         SelectedBill = null;
@@ -114,7 +116,7 @@ public partial class BillsPage : FinancePageBase
 
         try
         {
-            Bills = await FinanceApiClient.GetBillsAsync(companyId, 200);
+            Bills = await FinanceApiClient.GetBillsAsync(companyId, 200, sourceFilter: OperationalSource);
         }
         catch (FinanceApiException ex)
         {
@@ -134,7 +136,7 @@ public partial class BillsPage : FinancePageBase
 
         try
         {
-            SelectedBill = await FinanceApiClient.GetBillDetailAsync(companyId, billId);
+            SelectedBill = await FinanceApiClient.GetBillDetailAsync(companyId, billId, sourceFilter: OperationalSource);
             BillSubscriptionContext = null;
             SubscriptionContextMessage = null;
             if (SelectedBill is not null)
@@ -353,18 +355,19 @@ public partial class BillsPage : FinancePageBase
 
     private string BuildSupplierSubscriptionHref(Guid subscriptionId) =>
         FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierSubscriptions, AccessState.CompanyId);
-    private string BuildBillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
+    private string BuildBillHref(Guid billId) => BuildFinancePath(FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId));
     private string BuildDocumentHref(Guid documentId) => $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
     private string BuildTransactionHref(Guid transactionId) =>
-        FinanceRoutes.BuildTransactionDetailPath(transactionId, AccessState.CompanyId);
+        BuildFinancePath(FinanceRoutes.BuildTransactionDetailPath(transactionId, AccessState.CompanyId));
     private string BuildBillReviewHref() =>
         SelectedBill is null || AccessState.CompanyId is not Guid companyId
             ? "/finance/supplier-bills/review"
-            : $"/finance/supplier-bills/review/{SelectedBill.Id:D}?companyId={companyId:D}";
+            : BuildFinancePath($"/finance/supplier-bills/review/{SelectedBill.Id:D}?companyId={companyId:D}");
 
     private void SetBillFilter(string filter)
     {
         ActiveBillFilter = string.IsNullOrWhiteSpace(filter) ? BillLifecycleFilters.All : filter;
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("filter", ActiveBillFilter));
     }
 
     private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
@@ -477,6 +480,12 @@ public partial class BillsPage : FinancePageBase
                 effectiveFallbackStatus,
                 paymentSummary?.RemainingAmount ?? bill.Amount);
         var paidExpensePosting = BuildPaidExpensePostingViewModel(bill.PaidExpensePostingAvailability);
+        if (!string.Equals(bill.Source, "fortnox", StringComparison.OrdinalIgnoreCase))
+            paidExpensePosting = paidExpensePosting with
+            {
+                Message = paidExpensePosting.Message.Replace("in Fortnox", "in retained booking records", StringComparison.Ordinal),
+                BlockingReasons = paidExpensePosting.BlockingReasons.Select(x => x.Replace("in Fortnox", "in retained booking records", StringComparison.Ordinal)).ToArray()
+            };
         return new BillDetailViewModel(
             string.IsNullOrWhiteSpace(bill.BillNumber) ? "Bill" : bill.BillNumber,
             string.IsNullOrWhiteSpace(bill.CounterpartyName) ? "Supplier not available" : bill.CounterpartyName,
@@ -1328,10 +1337,9 @@ public partial class BillsPage : FinancePageBase
         var billApproved = billStatus is "approved" or "paid" ||
             detail.PaymentProposal is not null ||
             detail.DraftAction.StatusTone == "success";
-        var sentToFortnox = postingStatus == "booked" ||
+        var sentToFortnox = string.Equals(SelectedBill.Source, "fortnox", StringComparison.OrdinalIgnoreCase) ||
             detail.DraftAction.StatusTone == "success" ||
-            detail.DraftAction.StatusLabel is "Updated" or "Booked" ||
-            detail.PaymentProposal is not null;
+            detail.DraftAction.StatusLabel is "Updated" or "Booked";
         var paymentStatus = detail.PaymentProposal?.Status ?? string.Empty;
         var paymentApprovalComplete = paymentStatus is "ready_for_payment" or "exported";
         var paymentApprovalBlocked = paymentStatus is "rejected" or "cancelled";

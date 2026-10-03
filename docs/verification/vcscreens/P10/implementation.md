@@ -1,0 +1,29 @@
+# P10 implementation and P11 handoff
+
+P10 extends the canonical `/agents/staff` entry with durable work across seven states and adds `/agents/work/{kind}/{id}`. Monthly measures and the authorized roster remain at `/agents/staff/summary`. Production uses authenticated company APIs and retained tasks, operating initiatives, dispatches, goals, reviews, collaborators, dependencies, cases and deals. Synthetic acceptance rows exist only under `tests/`.
+
+## Identity, lifecycle and evidence
+
+The board includes standalone root tasks and company outcomes. Initiative-linked tasks, dispatched workers and subtasks do not become additional board cards. Participants are joined by agent ID and deduplicated. Direct task detail remains available and links back to a permitted owning initiative. A completed worker is separate from an active company outcome; the detail explains this and retains the owning completion criteria. Task completion uses its persisted lifecycle, initiative completion requires the initiative's own completed state, and approval/artifact/inactive-agent/review success does not establish completion. Terminal outcomes take precedence over historical pause/review observations.
+
+Paused goals/reviews, waiting approval, blocked/retry dispatches, failed/dead-letter dispatches and owning task failures remain distinct. Blocked work names its retained rationale, current review next action or permitted dependency title/link. Missing reasons, evidence, expected links and old observations remain explicit gaps. Latest outcome review summary, actual/expected evidence, output review links and source dates appear in detail. Support waits use the owning `waiting_for_customer`/`waiting_internal` values; new cases are Planned and reopened cases do not expose historical resolution as current completion. Lost deals are failures, not completed outcomes.
+
+## Access, reads and commands
+
+`CompanyWorkVisibility` composes the existing membership/responsibility resolver and FinanceView authorization. Assigned agent department and task type are both scoped. Board/detail, retained task reads and monthly agent summaries share this boundary; hidden child/parent IDs are removed before returning task detail. An initiative with a hidden owning task, owner or participant is unavailable. A department owner can read its permitted agent-owned outcome before a task is linked. Dependency targets pass the same final area filter as board/detail, so hidden company dependency names/IDs are not returned. Existing task create/status/reassignment/parent checks reject inaccessible work before persistence; they do not add execution rights or replace owning approval/dispatch policy. The obsolete approved-payment-proposal-to-completed inference was removed from the retained summary.
+
+Filters are responsibility, participating agent, objective text and state. URL state survives Apply, page navigation, Refresh and reload. Results sort by last update, kind and durable ID. Page size is 1–100 (Web 24). Source reads are bounded to 2,000 records per family; filters/counts/pages describe that window and partial coverage is disclosed. Older known IDs can be read directly. No claim of an unrestricted whole-company total is made for a partial window. Metrics record missing/stale projections, failed board/detail refreshes and query latency; logs contain failure type, not record payloads.
+
+`AgentWorkApiClient` uses company transport/correlation headers, preserves cancellation and treats denied/missing records as unavailable. Offline, malformed/incomplete/mismatched responses and failed refreshes produce retry states, with previous evidence cleared. Board dropdowns are recreated after asynchronous option loading; objective text binds on input. These fixes came from the actual filter replay, not reference screenshots.
+
+## Navigation and preservation
+
+Board/detail preserve exact filtered board and validated same-company Overview/previous-view origins. Work carries these through tabs, record selection and filter submission. Separate `agentWorkReturnUrl` context lets linked Sales/Support records return to agent detail without replacing earlier module-specific parents. Nested parents are bounded. Today priority evidence and selected Work tasks link to durable detail. Reads and navigation perform no approval, provider send, payment, posting, pause or resume.
+
+No entity/schema/migration, provider, execution engine, role or persisted lifecycle token was added. Existing P01–P09 working-tree changes and evidence packets stay in this checkout. Reference prompts and two separate built-in ImageGen references were saved before substantive UI implementation; reference comparison and actual captures are indexed in `uat.md`.
+
+## P11 continuation
+
+Continue in this same checkout after the final P10 verification entry. Read `vcscreens-prompts.md` shared contract, P11/C2/C3, scoped instructions, status/register and this packet. Reuse `AgentWorkItemDto` kind/ID, initiative/collaborator/dispatch associations, permission-filtered queries, lifecycle explanations and bounded company-specific return context. P11 owns contribution artifacts, collaboration plans/worker detail, handoff sequences and disagreements. Resolve these through existing durable correlation and owning collaboration services; do not duplicate a shared company outcome or infer outcome completion from a finished contributor.
+
+The additive `AgentWorkLifecycleFixture` and `AgentWorkFixture` provide seven states, two participants, a completed worker with active outcome, explicit dependency, output without completion and pagination. Restarting the disposable API resets its IDs; use current board/source data, never historical capture URLs or PIDs. Independent deployed-tenant/SQL Server, controlled provider, physical output, native and human/statutory gates from P09 remain unverified/pending. P10 introduces no new credential prerequisite for P11.

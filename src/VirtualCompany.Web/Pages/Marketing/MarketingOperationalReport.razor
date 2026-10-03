@@ -1,0 +1,124 @@
+@page "/marketing/reports/{Kind}"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject MarketingOperationalApiClient Reports
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@using System.Globalization
+
+<PageTitle>@Title</PageTitle>
+<main class="vc-page marketing-report" data-testid="marketing-operational-report">
+    <header class="vc-page-header"><div><span class="vc-kicker">MARKETING</span><h1>@Title</h1><p>Inspect current evidence and continue to its exact campaign.</p></div>@if (PreviousView is not null) { <a class="btn btn-outline-primary" href="@PreviousView">Back to previous view</a> }<a class="btn btn-outline-primary" href="@Origin">Back to Overview</a></header>
+    <nav class="vc-section-tabs" aria-label="Marketing reports">
+        @foreach (var kind in new[] { "delivery", "spend", "leads" }) { <a class="@(Kind == kind ? "active" : null)" href="@ReportPath(kind)">@ReportTitle(kind)</a> }
+        <a href="@DashboardRoutes.EnsureWorkspaceContext("/marketing", CompanyId ?? Guid.Empty, Origin)">Marketing workspace</a>
+    </nav>
+    <section class="vc-panel marketing-report-filters">
+        <label>From (UTC)<input type="date" @bind="from" /></label><label>Until, exclusive (UTC)<input type="date" @bind="to" /></label>
+        <label>Campaign<select @bind="campaign"><option value="">All campaigns</option>@foreach (var item in campaignChoices) { <option value="@item.Id">@item.Name</option> }</select></label>
+        <label>Currency<input @bind="currency" @bind:event="oninput" maxlength="3" placeholder="Separate currencies" /></label>
+        @if (Kind == "delivery") { <label>Delivery state<select @bind="state"><option value="">All states</option>@foreach (var item in DeliveryStates) { <option value="@item">@MarketingJourneyRoutes.State(item)</option> }</select></label> }
+        <button class="btn btn-primary" disabled="@loading" @onclick="Apply">Apply filters</button><button class="btn btn-outline-primary" disabled="@loading" @onclick="LoadAsync">Refresh</button>
+    </section>
+    @if (loading) { <section class="vc-panel" role="status">Loading current Marketing evidence…</section> }
+    else if (error is not null) { <section class="vc-panel" role="alert"><h2>Marketing evidence unavailable</h2><p>@error</p><button class="btn btn-primary" @onclick="LoadAsync">Retry</button></section> }
+    else if (report is not null)
+    {
+        <section class="vc-panel"><p>As of @report.AsOfUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) UTC · @report.CalculationVersion</p>
+            <p>@report.Filter.FromUtc.ToString("yyyy-MM-dd") through @report.Filter.ToUtc.ToString("yyyy-MM-dd") (exclusive) UTC · @report.Campaigns.Count campaigns</p>
+            <p>@report.Coverage[Kind == "delivery" ? 0 : Kind == "spend" ? 1 : 2]</p>
+            <button class="btn btn-outline-primary" disabled="@loading" @onclick="Prepare">Refresh and prepare CSV</button>
+            @if (prepared) { <button class="btn btn-primary" disabled="@loading" @onclick="Download">Download current CSV</button><span role="status">Prepared. Download rechecks access and refreshes these filters.</span> }
+        </section>
+        <section class="marketing-report-totals" aria-label="Report totals">
+            @if (Kind == "delivery") { @foreach (var group in report.Deliveries.GroupBy(x => x.State)) { <article class="vc-panel"><span>@MarketingJourneyRoutes.State(group.Key)</span><strong>@group.Count()</strong></article> } }
+            else if (Kind == "spend") { @foreach (var group in report.Spend.Where(x => x.Cost.HasValue && x.Currency is not null).GroupBy(x => x.Currency)) { <article class="vc-panel"><span>Known cost · @group.Key</span><strong>@group.Sum(x => x.Cost!.Value).ToString("N2")</strong><small>Recorded entries only</small></article> } }
+            else { <article class="vc-panel"><span>Campaigns with usable observed leads</span><strong>@report.Campaigns.Count(x => x.ObservedLeads.HasValue)</strong><small>Unavailable outcomes remain unknown</small></article> }
+            <article class="vc-panel"><span>Missing campaign budget</span><strong>@report.Campaigns.Count(x => !x.Budget.HasValue)</strong></article>
+        </section>
+        <section class="vc-panel marketing-report-table">
+            @if (Kind == "delivery")
+            {
+                <h2>Delivery records (@report.Deliveries.Count)</h2>
+                @if (report.Deliveries.Count == 0) { <p>No records in these filters.</p> }
+                <table><thead><tr><th>Campaign / content</th><th>Current state</th><th>Updated UTC</th><th>Attempts</th><th>Next step</th></tr></thead><tbody>
+                @foreach (var item in report.Deliveries) { <tr><td><a href="@ReviewPath(item.CampaignId, item.BriefId)">@CampaignName(item.CampaignId)</a></td><td>@MarketingJourneyRoutes.State(item.State)</td><td>@item.UpdatedUtc.ToString("yyyy-MM-dd HH:mm")</td><td>@item.Attempts</td><td>@(item.FailureCode is null ? "Review delivery authority and evidence" : "Delivery needs recovery")</td></tr> }
+                </tbody></table>
+            }
+            else
+            {
+                <h2>Included campaigns</h2>@if (report.Campaigns.Count == 0) { <p>No records in these filters.</p> }
+                <table><thead><tr><th>Campaign</th><th>Recorded budget</th><th>Known spend</th><th>Known spend minus budget</th><th>Available leads</th><th>Attribution contacts</th><th>Coverage</th></tr></thead><tbody>
+                @foreach (var item in report.Campaigns) { <tr><td><a href="@ReviewPath(item.Id, null)">@item.Name</a></td><td>@Amount(item.Budget, item.Currency, "Missing budget")</td><td>@Amount(item.KnownSpend, item.Currency, "Unknown spend")</td><td>@Amount(item.KnownSpend.HasValue && item.Budget.HasValue ? item.KnownSpend - item.Budget : null, item.Currency, "Unavailable") · recorded cost only</td><td>@(item.ObservedLeads?.ToString("N0") ?? "Unavailable outcomes")</td><td>@item.AttributedSubjects / @item.OutcomeSubjects</td><td>@string.Join(" ", item.Gaps)</td></tr> }
+                </tbody></table>
+                @if (Kind == "spend") { <h3>Cost evidence</h3><ul>@foreach (var item in report.Spend) { <li>@CampaignName(item.CampaignId) · @Amount(item.Cost, item.Currency, "Unknown cost") · @item.SourceReference · @item.OccurredUtc.ToString("yyyy-MM-dd HH:mm") UTC</li> }</ul> }
+                else { <h3>Outcome evidence</h3><ul>@foreach (var item in report.Leads) { <li>@CampaignName(item.CampaignId) · @item.Value @item.Unit · @item.Classification · @item.SourceReference · @item.ObservedUtc.ToString("yyyy-MM-dd HH:mm") UTC</li> }</ul> }
+            }
+        </section>
+    }
+</main>
+
+@code {
+    [Parameter] public string Kind { get; set; } = "delivery";
+    [SupplyParameterFromQuery] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery] public DateTime? FromUtc { get; set; }
+    [SupplyParameterFromQuery] public DateTime? ToUtc { get; set; }
+    [SupplyParameterFromQuery] public Guid? CampaignId { get; set; }
+    [SupplyParameterFromQuery] public string? Currency { get; set; }
+    [SupplyParameterFromQuery] public string? State { get; set; }
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? RecordReturnUrl { get; set; }
+    private MarketingOperationalReportViewModel? report;
+    private IReadOnlyList<MarketingCampaignEvidenceViewModel> campaignChoices = [];
+    private Guid? choicesCompany;
+    private DateTime from, to; private string campaign = "", currency = "", state = "";
+    private bool loading, prepared; private string? error; private int version; private bool disposed;
+    private CancellationTokenSource? read;
+    private static readonly string[] DeliveryStates = ["proposed", "awaiting_approval", "queued", "dispatching", "dispatched", "delivered", "failed", "retry_scheduled", "ambiguous", "cancelled"];
+    private string Origin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, CompanyId ?? Guid.Empty) ?? DashboardRoutes.BuildTodayPath(CompanyId ?? Guid.Empty, "marketing");
+    private string? PreviousView => MarketingJourneyRoutes.NormalizeRecordReturn(RecordReturnUrl, CompanyId ?? Guid.Empty);
+    private string Title => ReportTitle(Kind);
+    private static string ReportTitle(string kind) => kind == "delivery" ? "Campaign delivery" : kind == "spend" ? "Spend versus budget" : "Available lead results";
+    protected override async Task OnParametersSetAsync()
+    {
+        from = FromUtc ?? DateTime.UtcNow.Date.AddDays(-30); to = ToUtc ?? DateTime.UtcNow.Date.AddDays(1);
+        campaign = CampaignId?.ToString("D") ?? ""; currency = Currency ?? ""; state = State ?? "";
+        await LoadAsync();
+    }
+    private MarketingOperationalFilterViewModel Filter => new(DateTime.SpecifyKind(from, DateTimeKind.Utc), DateTime.SpecifyKind(to, DateTimeKind.Utc),
+        string.IsNullOrWhiteSpace(campaign) ? null : Guid.Parse(campaign), currency, Kind == "delivery" ? state : null);
+    private async Task LoadAsync()
+    {
+        var current = ++version; read?.Cancel(); read?.Dispose(); read = new(); var ct = read.Token;
+        loading = true; prepared = false; error = null; report = null;
+        if (choicesCompany != CompanyId) { campaignChoices = []; choicesCompany = CompanyId; }
+        try
+        {
+            if (CompanyId is not Guid id || id == Guid.Empty) throw new MarketingApiException("Choose a company before opening this report.");
+            if (Kind is not ("delivery" or "spend" or "leads")) throw new MarketingApiException("Choose a Marketing report.");
+            var result = await Reports.ReportAsync(id, Filter, ct);
+            if (!disposed && current == version) { report = result; campaignChoices = result.Campaigns.Concat(Filter.CampaignId.HasValue ? campaignChoices : []).DistinctBy(x => x.Id).OrderBy(x => x.Name).ToArray(); }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is MarketingApiException or FormatException or ArgumentException)
+        { if (current == version) { error = ex is FormatException ? "Choose a valid campaign or choose all campaigns." : ex.Message; campaignChoices = []; } }
+        finally { if (!disposed && current == version) loading = false; }
+    }
+    private void Apply()
+    {
+        try { var filter = Filter; Navigation.NavigateTo(ReportPath(Kind)); }
+        catch (FormatException) { error = "Choose a valid campaign ID or leave it empty."; report = null; prepared = false; }
+    }
+    private string ReportPath(string kind) => MarketingJourneyRoutes.Build($"/marketing/reports/{kind}?fromUtc={from:yyyy-MM-dd}&toUtc={to:yyyy-MM-dd}&campaignId={campaign}&currency={Uri.EscapeDataString(currency)}&state={Uri.EscapeDataString(kind == "delivery" ? state : "")}", CompanyId ?? Guid.Empty, Navigation.Uri);
+    private string ReviewPath(Guid? campaignId, Guid? briefId) => MarketingJourneyRoutes.Build(MarketingJourneyRoutes.Review(CompanyId ?? Guid.Empty, campaignId, briefId, Origin), CompanyId ?? Guid.Empty, Navigation.Uri, returnToCurrent: true);
+    private string CampaignName(Guid? id) => report?.Campaigns.FirstOrDefault(x => x.Id == id)?.Name ?? "Content delivery";
+    private static string Amount(decimal? value, string? unit, string missing) => value.HasValue ? $"{value.Value:N2} {unit ?? "Unknown currency"}" : missing;
+    private async Task Prepare() { await LoadAsync(); prepared = report is not null; }
+    private async Task Download()
+    {
+        await LoadAsync(); if (report is null || CompanyId != report.CompanyId) return;
+        try { var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/reportDownload.js"); await module.InvokeVoidAsync("downloadReport", "marketing-" + Kind + ".csv", MarketingReportCsv.Create(report, Kind)); await module.DisposeAsync(); }
+        catch (JSException) { error = "The browser could not start the download. Refresh and retry."; }
+    }
+    public void Dispose() { disposed = true; ++version; read?.Cancel(); read?.Dispose(); }
+}

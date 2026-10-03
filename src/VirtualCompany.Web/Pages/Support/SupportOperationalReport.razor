@@ -1,0 +1,116 @@
+@page "/support/reports"
+@rendermode InteractiveServer
+@inherits SupportPageBase
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<PageTitle>Support service commitments</PageTitle>
+<section class="support-report py-4" data-testid="support-operational-report">
+    <header class="d-flex flex-wrap justify-content-between gap-3">
+        <div><span class="dashboard-kicker">Support</span><h1>Service commitments</h1><p>Current cases and recorded deadlines. Choose the next response or handoff.</p></div>
+        <div class="d-flex flex-wrap align-items-start gap-2"><a class="btn btn-outline-secondary" href="@BackPath">Back to support</a><a class="btn btn-outline-secondary" href="@OverviewPath">Back to Overview</a><button class="btn btn-primary" @onclick="ExportAsync" disabled="@(loading || exporting || report is null)">Export CSV</button></div>
+    </header>
+    <nav class="vc-section-tabs my-3" aria-label="Support reports">
+        @foreach (var view in new[] { "sla", "backlog", "unresolved", "aging" })
+        { <a class="@(View == view ? "active" : null)" href="@ViewPath(view)">@Label(view)</a> }
+    </nav>
+    <section class="vc-panel support-report-filters">
+        <label>Search<input class="form-control" @bind="search" /></label>
+        <label>Status<select class="form-select" @bind="status"><option value="">All</option>@foreach (var value in new[] { "new", "triaged", "waiting_for_customer", "waiting_internal", "awaiting_approval", "escalated", "reopened" }) { <option value="@value">@SupportStatusPresenter.Present(value, SupportText)</option> }</select></label>
+        <label>Owner<select class="form-select" @bind="owner"><option value="">All</option><option value="mine">Assigned to me</option><option value="unassigned">Unassigned</option></select></label>
+        <label>Age<select class="form-select" @bind="ageBucket"><option value="">All</option><option value="under-1d">Under 1 day</option><option value="1-7d">1–7 days</option><option value="7-30d">7–30 days</option><option value="30d-plus">30 days or more</option></select></label>
+        <button class="btn btn-primary" @onclick="ApplyAsync" disabled="@loading">Apply</button>
+        <button class="btn btn-outline-secondary" @onclick="ClearAsync" disabled="@loading">Clear</button>
+    </section>
+    @if (!string.IsNullOrWhiteSpace(PriorityQuery) || !string.IsNullOrWhiteSpace(CategoryQuery))
+    { <p class="small">Queue scope: priority @(PriorityQuery ?? "all"), category @(CategoryQuery ?? "all"). Clear removes these filters.</p> }
+    @if (loading) { <p role="status">Loading support evidence…</p> }
+    else if (error is not null || ShellErrorMessage is not null)
+    { <div class="alert alert-danger" role="alert">@(error ?? ShellErrorMessage)<button class="btn btn-outline-secondary ms-2" @onclick="LoadAsync">Retry</button></div> }
+    else if (report is not null)
+    {
+        <p class="small text-body-secondary mt-3">As of @LocalDateTime.DateTime(report.AsOfUtc) · Calendar: @report.Calendar.TimeZoneId · Current recorded case state; no historical reconstruction.</p>
+        <div class="support-report-metrics">
+            @Metric("Included cases", report.Cases.Count) @Metric("At risk", report.AtRisk) @Metric("Breached", report.Breached) @Metric("Waiting", report.Waiting)
+        </div>
+        <div class="support-report-layout mt-3">
+            <section class="vc-panel support-report-cases">
+                <h2>@Label(View)</h2><p>@report.Definition</p>
+                @if (report.Cases.Count == 0) { <p class="alert alert-info">No cases match this scope. Change the filters or return to the queue.</p> }
+                else
+                {
+                    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Case / customer</th><th>Owner</th><th>Status</th><th>Next deadline</th><th>Elapsed age</th><th></th></tr></thead><tbody>
+                        @foreach (var row in report.Cases)
+                        {
+                            <tr><td><strong>@row.Case.CaseNumber</strong><div>@row.Case.Subject</div><small>@(row.Case.CustomerName ?? row.Case.ContactName ?? "Unmatched customer")</small></td><td>@row.Owner</td>
+                            <td>@row.Case.StatusLabel @if(row.Case.IsSlaBreached) { <span class="badge text-bg-danger">Breached</span> } else if(row.Case.IsSlaRisk) { <span class="badge text-bg-warning">At risk</span> }</td>
+                            <td>@(row.NextDeadlineUtc is DateTime due ? LocalDateTime.DateTime(due) : "No outstanding target") @if(row.MissingTarget) { <span class="badge text-bg-warning">Target missing</span> }</td>
+                            <td>@row.AgeHours.ToString("N2") hours</td><td><a class="btn btn-sm btn-outline-primary" href="@RecordPath($"/support/cases/{row.Case.Id:D}")">Open case</a></td></tr>
+                        }
+                    </tbody></table></div>
+                }
+            </section>
+            <aside class="vc-panel"><h2>Ben · Support</h2><p>@report.ClockRules</p><p>@report.MissingTargets cases have incomplete recorded targets. Missing targets cannot prove SLA compliance.</p>
+                <h3 class="h6">Age coverage</h3>@foreach(var bucket in report.AgeBuckets) { <p>@bucket.Label: <strong>@bucket.Count</strong></p> }
+                <p class="small">Working time @report.Calendar.WorkdayStart–@report.Calendar.WorkdayEnd · @string.Join(", ", report.Calendar.WorkingDays) · @report.Calendar.Holidays.Count holidays.</p>
+                <a href="@RecordPath("/support/knowledge")">Review knowledge gaps</a>
+            </aside>
+        </div>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "view")] public string? ViewQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "q")] public string? SearchQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "status")] public string? StatusQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "priority")] public string? PriorityQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "category")] public string? CategoryQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "owner")] public string? OwnerQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "ageBucket")] public string? AgeQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "contactId")] public Guid? ContactQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "customerCompanyId")] public Guid? CustomerQuery { get; set; }
+    private string View => ViewQuery ?? "sla";
+    private string? search, status, priority, category, owner, ageBucket, error;
+    private VirtualCompany.Web.Services.SupportOperationalReport? report;
+    private bool loading = true, exporting;
+    private int readVersion;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private SupportOperationalReportQuery Query => new(View, Status: StatusQuery, Priority: PriorityQuery, Category: CategoryQuery, Search: SearchQuery, Unassigned: OwnerQuery == "unassigned", AgeBucket: AgeQuery, ContactId: ContactQuery, CustomerCompanyId: CustomerQuery);
+    private async Task LoadAsync()
+    {
+        var version = ++readVersion; var location = Navigation.Uri;
+        report = null; error = null; loading = true;
+        search = SearchQuery; status = StatusQuery; priority = PriorityQuery; category = CategoryQuery; owner = OwnerQuery; ageBucket = AgeQuery;
+        try {
+            if (!await ResolveCompanyAsync() || ResolvedCompanyId is not Guid id) return;
+            var data = await SupportApiClient.GetOperationalReportAsync(id, Query, OwnerQuery == "mine");
+            if (version == readVersion && location == Navigation.Uri && id == ResolvedCompanyId) report = data;
+        }
+        catch (SupportApiException ex) { if (version == readVersion) error = ex.Message; }
+        finally { if (version == readVersion) loading = false; }
+    }
+    private string ViewPath(string view) => new Uri(Navigation.GetUriWithQueryParameter("view", view)).PathAndQuery;
+    private Task ApplyAsync()
+    {
+        var uri = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["q"] = search, ["status"] = status, ["priority"] = priority, ["category"] = category, ["owner"] = owner, ["ageBucket"] = ageBucket });
+        if (uri == Navigation.Uri) return LoadAsync();
+        Navigation.NavigateTo(uri); return Task.CompletedTask;
+    }
+    private Task ClearAsync() { search = status = priority = category = owner = ageBucket = null; return ApplyAsync(); }
+    private async Task ExportAsync()
+    {
+        if (ResolvedCompanyId is not Guid id || exporting) return;
+        exporting = true; error = null; var location = Navigation.Uri;
+        try {
+            var current = await SupportApiClient.GetOperationalReportAsync(id, Query, OwnerQuery == "mine");
+            if (location != Navigation.Uri || id != ResolvedCompanyId) return;
+            report = current;
+            await using var module = await JS.InvokeAsync<Microsoft.JSInterop.IJSObjectReference>("import", "./js/reportDownload.js");
+            await module.InvokeVoidAsync("downloadReport", $"support-{View}-{current.AsOfUtc:yyyyMMdd}.csv", SupportReportCsv.Build(current));
+        }
+        catch (SupportApiException ex) { report = null; error = ex.Message; }
+        catch (Microsoft.JSInterop.JSException) { error = "The download could not start. Retry export."; }
+        finally { exporting = false; }
+    }
+    private static string Label(string view) => view switch { "sla" => "SLA risk", "backlog" => "Backlog", "unresolved" => "Unresolved cases", "aging" => "Case aging", _ => "Support cases" };
+    private RenderFragment Metric(string label, int value) => @<div class="vc-panel"><small>@label</small><strong class="d-block fs-3">@value</strong></div>;
+}
