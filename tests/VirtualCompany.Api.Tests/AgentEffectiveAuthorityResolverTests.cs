@@ -48,6 +48,7 @@ public sealed class AgentEffectiveAuthorityResolverTests
 
         Assert.Null(authority.Find(newTool, ToolActionType.Execute, "finance"));
         Assert.DoesNotContain(authority.Tools, tool => tool.ToolName == newTool);
+        Assert.Contains(newTool, authority.ExcludedConfiguredTools);
     }
 
     [Fact]
@@ -74,6 +75,7 @@ public sealed class AgentEffectiveAuthorityResolverTests
         Assert.Equal(AgentCapabilityStates.PermissionDenied,
             authority.Find("list_transactions", ToolActionType.Read, "finance")!.State);
         Assert.DoesNotContain(authority.Tools, item => item.ToolName == "finance.removed_tool");
+        Assert.Contains("finance.removed_tool", authority.ExcludedConfiguredTools);
         Assert.Contains(authority.Tools, item => item.State == AgentCapabilityStates.Available);
     }
 

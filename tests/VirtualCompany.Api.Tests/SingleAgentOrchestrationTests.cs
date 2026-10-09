@@ -186,7 +186,7 @@ public sealed class SingleAgentOrchestrationTests : IDisposable
 
         var payload = await response.Content.ReadFromJsonAsync<OrchestrationResponse>();
         Assert.NotNull(payload);
-        Assert.Equal("completed", payload!.Status);
+        Assert.Equal("failed", payload!.Status);
         Assert.Contains("blocked by policy", payload.UserFacingOutput, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("outside the agent's allowed tool scope", payload.UserFacingOutput, StringComparison.OrdinalIgnoreCase);
         Assert.Single(payload.ToolExecutions);

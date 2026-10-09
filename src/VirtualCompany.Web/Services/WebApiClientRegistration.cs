@@ -9,6 +9,15 @@ public static class WebApiClientRegistration
         IConfiguration configuration)
     {
         services.AddScoped<ICompanyApiTransport, CompanyApiTransport>();
+        services.AddScoped(sp => new DecisionWorkApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new BriefingCadenceApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new AnnualPlanningApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new StrategicScenarioApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new QuarterlyPlanningApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new SalesManagementApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new MarketingManagementApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new FinanceRollingPlanningApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new SupportQualityApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesOperationalApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped<DocumentRepositoryApiClient>(sp => new(
             sp.GetRequiredService<ICompanyApiTransport>(),
@@ -36,6 +45,9 @@ public static class WebApiClientRegistration
             IsOffline(sp),
             sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new AgentWorkApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new TaskTypePolicyApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new ExecutionControlApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new AgentSupervisionApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new ActionInsightApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new TodayFocusApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped<TodayWorkspaceApiClient>(sp => new(
@@ -45,6 +57,9 @@ public static class WebApiClientRegistration
         services.AddScoped<MonthlyWorkspaceApiClient>(sp => new(
             sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped<IMonthlyWorkspaceApiClient>(sp => sp.GetRequiredService<MonthlyWorkspaceApiClient>());
+        services.AddScoped<IMonthlyReviewApiClient>(sp => new MonthlyReviewApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped<IWeeklyWorkspaceApiClient>(sp => new WeeklyWorkspaceApiClient(
+            sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped<ResponsibilitySettingsApiClient>(sp => new ResponsibilitySettingsApiClient(
             sp.GetRequiredService<ICompanyApiTransport>(),
             IsOffline(sp),

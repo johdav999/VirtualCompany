@@ -12,9 +12,9 @@ namespace VirtualCompany.Web.Tests;
 public sealed class CompanyHealthTests
 {
     private static readonly Guid Company = Guid.Parse("11111111-1111-1111-1111-111111111111");
-    private static TodayWorkspaceViewModel Workspace() => PriorityEvidenceTests.Workspace() with {
+    private static TodayWorkspaceViewModel Workspace() => TodayPriorityChangesTests.Workspace() with {
         ActiveLens="company", AvailableLenses=[new("company","Company",true,"Oversight"),new("sales","Sales",false,"Oversight")],
-        CompanyRisks=PriorityEvidenceTests.Workspace().Priorities,
+        CompanyRisks=TodayPriorityChangesTests.Workspace().Priorities,
         Departments=[new("sales","Sales owner",null,true)],
         Sales=new(true,"Recorded",DateTime.UtcNow,12000,"SEK",0,0,1,3000,[],"/app/sales") };
 
@@ -44,19 +44,107 @@ public sealed class CompanyHealthTests
         Assert.DoesNotContain("Observed</span>",cut.Markup);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Finance_indicator_links_open_owning_screens_with_company_and_exact_overview_return_even_for_zero_counts(bool zeroCounts)
+    {
+        using var ctx = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace = AllDepartments();
+        if (zeroCounts)
+            workspace = workspace with { Finance = workspace.Finance! with { OverdueReceivables = 0, DuePayables = 0, ReconciliationExceptions = 0 } };
+        var origin = DashboardRoutes.BuildTodayPath(Company, "company") + "&filter=owned";
+        var cut = ctx.RenderComponent<CompanyHealthSummary>(p => p.Add(x => x.Workspace, workspace).Add(x => x.ReturnUrl, origin));
+        var links = cut.FindAll("[data-department='finance'] .company-summary__indicators a");
+        Assert.Equal(new[] { "Overdue invoices", "Supplier bills due", "Reconciliation exceptions" }, links.Select(x => x.TextContent));
+        var paths = new[] { "/finance/invoices", "/finance/supplier-bills", "/finance/accounting/reconciliation" };
+        for (var i = 0; i < paths.Length; i++)
+        {
+            var destination = new Uri("http://localhost" + links[i].GetAttribute("href"));
+            var query = System.Web.HttpUtility.ParseQueryString(destination.Query);
+            Assert.Equal(paths[i], destination.AbsolutePath);
+            Assert.Equal(Company.ToString("D"), query["companyId"]);
+            Assert.Equal(origin, query["returnUrl"]);
+        }
+        if (zeroCounts)
+            Assert.All(cut.FindAll("[data-department='finance'] dd"), x => Assert.Equal("0", x.TextContent));
+    }
+
+    [Theory]
+    [InlineData("sales", false)]
+    [InlineData("marketing", false)]
+    [InlineData("customers", false)]
+    [InlineData("sales", true)]
+    [InlineData("marketing", true)]
+    [InlineData("customers", true)]
+    public void Other_department_indicators_link_to_relevant_screens_and_keep_filters_and_overview_return(string lens, bool zeroCounts)
+    {
+        using var ctx = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace = AllDepartments();
+        if (zeroCounts)
+            workspace = workspace with {
+                Sales = workspace.Sales! with { PipelineValue = 0, DealsNeedingAttention = 0, HotLeads = 0 },
+                Marketing = workspace.Marketing! with { DueLaunches = 0, DueContentItems = 0, SpendExceptions = 0, AttributionGaps = 0 },
+                Support = workspace.Support! with { OpenCases = 0, SlaBreached = 0, SlaAtRisk = 0, WaitingCases = 0, AwaitingApproval = 0 }
+            };
+        var expected = lens switch {
+            "sales" => new[] { "/app/sales/pipeline", "/app/sales#sales-deals-attention", "/app/sales/prospects?view=leads" },
+            "marketing" => new[] { "/marketing?section=Calendar", "/marketing?section=Content", "/marketing/reports/spend", "/marketing?section=Performance" },
+            _ => new[] { "/support?view=open", "/support?view=breached", "/support?view=sla-risk", "/support/reports?view=backlog", "/support?view=approvals" }
+        };
+        var origin = DashboardRoutes.BuildTodayPath(Company, "company") + "&filter=owned";
+        var cut = ctx.RenderComponent<CompanyHealthSummary>(p => p.Add(x => x.Workspace, workspace).Add(x => x.ReturnUrl, origin));
+        var links = cut.FindAll($"[data-department='{lens}'] .company-summary__indicators a");
+        Assert.Equal(expected.Length, links.Count);
+        for (var i = 0; i < expected.Length; i++)
+        {
+            var target = new Uri("http://localhost" + links[i].GetAttribute("href"));
+            var wanted = new Uri("http://localhost" + expected[i]);
+            Assert.Equal(wanted.AbsolutePath, target.AbsolutePath);
+            Assert.Equal(wanted.Fragment, target.Fragment);
+            var query = System.Web.HttpUtility.ParseQueryString(target.Query);
+            Assert.Equal(Company.ToString("D"), query["companyId"]);
+            Assert.Equal(origin, query["returnUrl"]);
+            var filters = System.Web.HttpUtility.ParseQueryString(wanted.Query);
+            foreach (var key in filters.AllKeys) Assert.Equal(filters[key], query[key]);
+        }
+    }
+
     [Fact] public void Department_review_uses_existing_ranked_evidence_and_preserves_company_overview_return()
     {
         using var ctx = new TestContext().AddVirtualCompanyWebPresentationServices(); var w=AllDepartments();
         var priority=w.Priorities[0];
-        w=w with {Priorities=[priority with {Rank=9,Key="later",WhatHappened="Later Sales action"}],CompanyRisks=[priority,priority with {Lens="finance",Key="invoice:1",WhatHappened="Overdue invoice"}]};
+        w=w with {Priorities=[priority with {Rank=9,Key="later",WhatHappened="Later Sales action"}],CompanyRisks=[priority,priority with {Lens="finance",Key="invoice:1",WhatHappened="Overdue invoice",DeepLink="/finance/invoices/22222222-2222-2222-2222-222222222222?financeSource=operational"}]};
         var origin=DashboardRoutes.BuildTodayPath(Company,"company")+"&filter=owned";
         var cut=ctx.RenderComponent<CompanyHealthSummary>(p=>p.Add(x=>x.Workspace,w).Add(x=>x.ReturnUrl,origin));
         var sales=cut.Find("[data-department='sales']");
         Assert.Contains("Renewal needs attention",sales.TextContent);Assert.DoesNotContain("Later Sales action",sales.TextContent);
         var query=System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost"+sales.QuerySelector("[data-testid='health-department-review']")!.GetAttribute("href")).Query);
-        Assert.Equal(Company.ToString("D"),query["companyId"]);Assert.Equal("company",query["lens"]);Assert.Equal("deal:1",query["key"]);Assert.Equal(origin,query["returnUrl"]);
+        Assert.Equal(Company.ToString("D"),query["companyId"]);Assert.Equal(origin,query["returnUrl"]);
+        Assert.Equal(DashboardRoutes.EnsureWorkspaceContext(priority.DeepLink,Company,origin),sales.QuerySelector("[data-testid='health-department-review']")!.GetAttribute("href"));
+        Assert.Null(sales.QuerySelector("[data-testid='health-department-evidence']"));
+        var financeReview=cut.Find("[data-department='finance'] [data-testid='health-department-review']").GetAttribute("href")!;
+        Assert.StartsWith("/finance/invoices/",financeReview,StringComparison.Ordinal);
+        Assert.Equal("operational",System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost"+financeReview).Query)["financeSource"]);
         Assert.Contains("Overdue invoice",cut.Find("[data-department='finance']").TextContent);
         Assert.Contains("No priority recorded in this summary",cut.Find("[data-department='customers']").TextContent);
+    }
+
+    [Theory]
+    [InlineData("finance", "/finance/invoices/22222222-2222-2222-2222-222222222222?financeSource=operational")]
+    [InlineData("marketing", "/marketing/review?campaignId=22222222-2222-2222-2222-222222222222")]
+    [InlineData("customers", "/support/cases/22222222-2222-2222-2222-222222222222")]
+    public void Company_department_review_opens_action_record_without_priority_detail_link(string lens, string source)
+    {
+        using var ctx = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace=AllDepartments();
+        var priority=workspace.Priorities[0] with {Lens=lens,DeepLink=source};
+        workspace=workspace with {CompanyRisks=[priority]};
+        var origin=DashboardRoutes.BuildTodayPath(Company,"company")+"&filter=owned";
+        var cut=ctx.RenderComponent<CompanyHealthSummary>(p=>p.Add(x=>x.Workspace,workspace).Add(x=>x.ReturnUrl,origin));
+        var department=cut.Find($"[data-department='{lens}']");
+        Assert.Equal(DashboardRoutes.EnsureWorkspaceContext(source,Company,origin),department.QuerySelector("[data-testid='health-department-review']")!.GetAttribute("href"));
+        Assert.Null(department.QuerySelector("[data-testid='health-department-evidence']"));
     }
 
     [Fact] public void Missing_counts_are_unavailable_and_revoked_or_unavailable_departments_hide_previous_indicators_and_actions()
@@ -93,18 +181,9 @@ public sealed class CompanyHealthTests
         Assert.Empty(report.FindAll("[data-testid='health-variance']"));
         var risk=report.Find("[data-testid='health-risk'] a").GetAttribute("href")!;
         var query=System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost"+risk).Query);
-        Assert.Equal("deal:1",query["key"]); Assert.NotNull(DashboardRoutes.NormalizeHealthPath(query["healthReturnUrl"],Company));
-        var detail=ctx.RenderComponent<PriorityEvidenceDetail>(p=>p.Add(x=>x.CompanyId,Company).Add(x=>x.PriorityKey,"deal:1").Add(x=>x.Workspace,w).Add(x=>x.HealthReturnUrl,query["healthReturnUrl"]));
-        Assert.Equal(query["healthReturnUrl"],detail.Find("a").GetAttribute("href"));
+        Assert.Equal(new Uri("http://localhost"+w.CompanyRisks![0].DeepLink).AbsolutePath,new Uri("http://localhost"+risk).AbsolutePath); Assert.NotNull(DashboardRoutes.NormalizeHealthPath(query["healthReturnUrl"],Company));
     }
-    [Fact] public void Company_risk_outside_top_five_is_available_only_in_company_perspective()
-    {
-        using var ctx = new TestContext().AddVirtualCompanyWebPresentationServices(); var w=Workspace() with { Priorities=[] };
-        var cut=ctx.RenderComponent<PriorityEvidenceDetail>(p=>p.Add(x=>x.CompanyId,Company).Add(x=>x.PriorityKey,"deal:1").Add(x=>x.Workspace,w));
-        cut.Find("[data-testid='priority-evidence']");
-        cut.SetParametersAndRender(p=>p.Add(x=>x.Workspace,w with {ActiveLens="sales"}));
-        cut.Find("[data-testid='priority-unavailable']"); Assert.DoesNotContain("Renewal needs attention",cut.Markup);
-    }
+
     [Theory] [InlineData("no_baseline")] [InlineData("selection_required")] [InlineData("unavailable")]
     public void Missing_or_ambiguous_plan_never_renders_favorable_variance(string state)
     {
@@ -156,52 +235,12 @@ public sealed class CompanyHealthTests
         Assert.Equal("deal:1",root.GetProperty("inputPayload").GetProperty("priorityEvidenceKey").GetString());Assert.Equal(Company,root.GetProperty("inputPayload").GetProperty("sourceCompanyId").GetGuid());
         Assert.Equal("2026-09-23T16:49:00Z",root.GetProperty("inputPayload").GetProperty("sourceObservedUtc").GetString());
     }
-    [Theory] [InlineData(false)] [InlineData(true)]
-    public void Follow_up_revalidates_missing_or_revoked_evidence_before_any_task_write(bool revoked)
-    {
-        using var ctx=new TestContext().AddVirtualCompanyWebPresentationServices();var reads=0;var handler=new CommandHandler();
-        ctx.Services.AddSingleton(new TaskApiClient(new HttpClient(handler){BaseAddress=new("http://localhost/")}));
-        ctx.Services.AddSingleton<ITodayWorkspaceApiClient>(new ReadClient(_=> {
-            if (++reads==1) return Task.FromResult<TodayWorkspaceViewModel?>(Workspace());
-            if (revoked) throw new TodayWorkspaceAccessException(HttpStatusCode.Forbidden);
-            return Task.FromResult<TodayWorkspaceViewModel?>(Workspace() with {Priorities=[],CompanyRisks=[]});
-        }));
-        ctx.Services.AddSingleton(new OnboardingApiClient(new HttpClient{BaseAddress=new("http://localhost/")},useOfflineMode:true));
-        ctx.Services.GetRequiredService<NavigationManager>().NavigateTo(DashboardRoutes.BuildPriorityPath(Company,"company","deal:1"));
-        var cut=ctx.RenderComponent<PriorityDetails>();cut.WaitForAssertion(()=>cut.Find("[data-testid='record-risk-follow-up']"));
-        cut.Find("[data-testid='record-risk-follow-up']").Click();
-        cut.WaitForAssertion(()=>Assert.DoesNotContain("Renewal needs attention",cut.Markup));
-        Assert.Equal(0,handler.Writes);Assert.True(reads>=2);
-    }
-    [Fact] public void Uncertain_follow_up_result_does_not_retry_the_existing_nonidempotent_command()
-    {
-        using var ctx=new TestContext().AddVirtualCompanyWebPresentationServices();var handler=new CommandHandler{Fail=true};
-        ctx.Services.AddSingleton(new TaskApiClient(new HttpClient(handler){BaseAddress=new("http://localhost/")}));
-        ctx.Services.AddSingleton<ITodayWorkspaceApiClient>(new ReadClient(_=>Task.FromResult<TodayWorkspaceViewModel?>(Workspace())));
-        ctx.Services.AddSingleton(new OnboardingApiClient(new HttpClient{BaseAddress=new("http://localhost/")},useOfflineMode:true));
-        ctx.Services.GetRequiredService<NavigationManager>().NavigateTo(DashboardRoutes.BuildPriorityPath(Company,"company","deal:1"));
-        var cut=ctx.RenderComponent<PriorityDetails>();cut.WaitForAssertion(()=>cut.Find("[data-testid='record-risk-follow-up']"));
-        cut.Find("[data-testid='record-risk-follow-up']").Click();
-        cut.WaitForAssertion(()=>Assert.Contains("check existing tasks",cut.Markup));
-        Assert.True(cut.Find("[data-testid='record-risk-follow-up']").HasAttribute("disabled"));Assert.Equal(1,handler.Writes);
-    }
-
-    [Fact] public void A_follow_up_created_in_another_tab_is_reused_after_fresh_evidence_validation()
-    {
-        using var ctx=new TestContext().AddVirtualCompanyWebPresentationServices();var handler=new CommandHandler();var reads=0;var task=Guid.NewGuid();
-        ctx.Services.AddSingleton(new TaskApiClient(new HttpClient(handler){BaseAddress=new("http://localhost/")}));
-        ctx.Services.AddSingleton<ITodayWorkspaceApiClient>(new ReadClient(_=>Task.FromResult<TodayWorkspaceViewModel?>(++reads==1 ? Workspace() : Workspace() with {RiskFollowUps=[new(task,"deal:1","Renewal follow-up","new",DateTime.UtcNow,$"/work?companyId={Company:D}&tab=tasks&taskId={task:D}")]})));
-        ctx.Services.AddSingleton(new OnboardingApiClient(new HttpClient{BaseAddress=new("http://localhost/")},useOfflineMode:true));
-        var nav=ctx.Services.GetRequiredService<NavigationManager>();nav.NavigateTo(DashboardRoutes.BuildPriorityPath(Company,"company","deal:1"));
-        var cut=ctx.RenderComponent<PriorityDetails>();cut.WaitForAssertion(()=>cut.Find("[data-testid='record-risk-follow-up']"));cut.Find("[data-testid='record-risk-follow-up']").Click();
-        cut.WaitForAssertion(()=>Assert.Contains(task.ToString("D"),nav.Uri));Assert.Equal(0,handler.Writes);
-    }
 
     private sealed class CommandHandler:HttpMessageHandler
     {
-        public string? Body,Header; public int Writes; public bool Fail;
+        public string? Body,Header; public int Writes;
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)
-        { Writes++; if(Fail) return new(HttpStatusCode.InternalServerError){Content=JsonContent.Create(new {title="Unavailable"})}; Body=await request.Content!.ReadAsStringAsync(ct);Header=request.Headers.GetValues("X-Company-Id").Single();return new(HttpStatusCode.OK){Content=JsonContent.Create(new RiskFollowUpResult(Guid.NewGuid(),Company,"new",DateTime.UtcNow))}; }
+        { Writes++; Body=await request.Content!.ReadAsStringAsync(ct);Header=request.Headers.GetValues("X-Company-Id").Single();return new(HttpStatusCode.OK){Content=JsonContent.Create(new RiskFollowUpResult(Guid.NewGuid(),Company,"new",DateTime.UtcNow))}; }
     }
     private sealed class ReadClient(Func<Guid,Task<TodayWorkspaceViewModel?>> read):ITodayWorkspaceApiClient
     {

@@ -1,0 +1,57 @@
+@page "/settings/agents/execution"
+@rendermode InteractiveServer
+@inject ExecutionControlApiClient Controls
+@inject NavigationManager Navigation
+<PageTitle>Execution controls</PageTitle>
+<section class="vc-page execution-controls">
+<header class="vc-page-header"><div><span class="vc-kicker">AGENT SETTINGS</span><h1>Execution controls</h1><p>Pause new controlled steps and review what is already in flight.</p></div><a href="@($"/settings/agents?companyId={CompanyId:D}")">Back to agent settings</a></header>
+@if(CompanyId==Guid.Empty){<p role="alert">Choose a company in agent settings.</p>}
+else {
+    @if(Error is not null){<div class="vc-panel" role="alert">@Error <button class="btn btn-outline-primary" @onclick="Reload" disabled="@Busy">Refresh current state</button></div>}
+    @if(View is null){<p role="status">@(Busy?"Loading execution controls…":"Execution state is unavailable. Refresh before making a change.")</p>}
+    else {
+        <p class="execution-observed">Observed @View.ObservedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC · Refresh to see worker acknowledgements. Lists show up to 100 recent items; counts describe this list.</p>
+        <div class="execution-summary">
+            <div class="vc-panel"><span>Queued or paused</span><strong>@View.Work.Count(x=>x.State is "Queued" or "Paused before start")</strong></div>
+            <div class="vc-panel"><span>In flight or stopping</span><strong>@View.Work.Count(x=>x.State is "In flight" or "Stopping between steps")</strong></div>
+            <div class="vc-panel"><span>Needs reconciliation</span><strong>@View.Work.Count(x=>x.State=="Uncertain")</strong></div>
+        </div>
+        <div class="execution-layout">
+            <section class="vc-panel"><h2>Choose a scope</h2>
+                <label for="execution-scope">Apply to</label><select id="execution-scope" class="form-select" value="@(AgentId?.ToString("D")??"")" @onchange="SelectScope" disabled="@Busy"><option value="">Company</option>@foreach(var agent in View.Agents){<option value="@agent.Id">@agent.Name</option>}</select>
+                <p><strong>@(View.EmergencyStopped?"Emergency stop active":View.CompanyPaused?"Company paused":View.Paused?"Selected agent paused":"New steps allowed by execution controls")</strong></p>
+                <p>Controls cover operating dispatch, Finance autonomous claims, shared agent tools and autonomous Support delivery. Delegated work checks its recorded parent tasks. Company pause also holds queued payment submissions; provider polls and reconciliation continue. Instructions without recorded agent attribution require company scope.</p>
+                @if(View.CanManage){
+                    <label for="execution-action">Action</label><select id="execution-action" class="form-select" @bind="Pause" @bind:after="ClearPreview" disabled="@Busy"><option value="true">Pause new steps</option><option value="false">Resume eligible work</option></select>
+                    <label for="execution-reason">Reason</label><textarea id="execution-reason" class="form-control" maxlength="500" @bind="Reason" @bind:after="ClearPreview" disabled="@Busy"></textarea>
+                    <button class="btn btn-outline-primary" @onclick="PreviewImpact" disabled="@(Busy||string.IsNullOrWhiteSpace(Reason))">Preview impact</button>
+                } else {<p role="status">Manager access to this scope is required to change controls. Choose an agent within your responsibility or ask the company owner.</p>}
+            </section>
+            <section class="vc-panel execution-review"><h2>Impact review</h2>
+                <p>Pause prevents admission of new controlled steps. Running steps stop cooperatively at the next tool or claim boundary.</p><p>Already admitted steps can finish. Completed delivery or payment cannot be undone here.</p><p>Unacknowledged steps become uncertain after five minutes. Resume cannot resend them or renew expired approvals and revoked policies.</p>
+                @if(Preview is not null){<div role="status"><strong>@(Preview.Change.Pause?"Reviewed pause":"Reviewed resume") · revision @Preview.Before.Version → @(Preview.Before.Version+1)</strong><p>@Preview.Explanation</p><p>@Preview.Before.Work.Count(x=>x.State is "Queued" or "Paused before start") listed items waiting; @Preview.Before.Work.Count(x=>x.State is "In flight" or "Stopping between steps") listed items in flight. These counts are an observation, not a completion promise.</p></div><button class="btn btn-primary" @onclick="Apply" disabled="@Busy">Apply reviewed @(Preview.Change.Pause?"pause":"resume")</button>}
+                else {<p>Choose a scope and preview its impact before applying a change.</p>}
+            </section>
+        </div>
+        <section class="vc-panel execution-work"><div class="execution-work-header"><h2>Agent work by status</h2><button class="btn btn-outline-primary" @onclick="Reload" disabled="@Busy">Refresh work</button></div>
+        @if(View.Work.Count==0){<p>No recorded work in this scope. A pause still prevents new controlled steps.</p>}
+        @foreach(var item in View.Work){<article class="execution-work-row"><div><strong>@item.Title</strong><p>@item.AgentName · @item.UpdatedUtc.ToString("yyyy-MM-dd HH:mm") UTC</p></div><div><span class="execution-state @(item.State=="Uncertain"?"execution-uncertain":"")">@item.State</span><p>@item.Guidance</p></div>@if(item.Kind=="task"){<a href="@TaskLink(item.Id)">Review work</a>}else if(item.Kind=="payment_batch"){<a href="@($"/finance/payments/batches/{item.Id:D}?companyId={CompanyId:D}")">Review payment outcome</a>}else if(item.Kind=="case"){<a href="@($"/support/cases/{item.Id:D}?companyId={CompanyId:D}")">Review Support delivery</a>}else if(item.Kind=="finance_run"){<a href="@($"/finance/workbench?companyId={CompanyId:D}")">Open Finance workbench</a>}else{<a href="@($"/work?companyId={CompanyId:D}&tab=tasks")">Review recorded attempts</a>}</article>}
+        </section>
+        <section class="vc-panel"><h2>Control history</h2>@if(View.History.Count==0){<p>No control changes recorded for this scope.</p>}@foreach(var entry in View.History){<article class="execution-history"><strong>@(entry.Paused?"Paused new steps":"Resumed eligibility checks") · revision @entry.Version</strong><p>@entry.Actor · @entry.ChangedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</p><p>@entry.Reason</p></article>}</section>
+    }
+}
+</section>
+@code {
+    [SupplyParameterFromQuery]public Guid CompanyId{get;set;}
+    [SupplyParameterFromQuery]public Guid? AgentId{get;set;}
+    private ExecutionControlView? View;private ExecutionControlPreview? Preview;private string Reason="";private bool Pause=true;private bool Busy;private string? Error;private int Generation;
+    protected override Task OnParametersSetAsync()=>Reload();
+    private void ClearPreview()=>Preview=null;
+    private async Task Reload(){var generation=++Generation;Busy=true;Error=null;Preview=null;View=null;try{if(CompanyId!=Guid.Empty){var result=await Controls.Get(CompanyId,AgentId);if(generation==Generation)View=result;}}catch(Exception ex)when(ex is OnboardingApiException or ArgumentException){if(generation==Generation)Error=ex.Message;}finally{if(generation==Generation)Busy=false;}}
+    private void SelectScope(ChangeEventArgs e){ClearPreview();Navigation.NavigateTo(DashboardRoutes.WithQuery("/settings/agents/execution",("companyId",CompanyId.ToString("D")),("agentId",Guid.TryParse(e.Value?.ToString(),out var id)?id.ToString("D"):null)));}
+    private async Task PreviewImpact(){if(View is null)return;var change=new ExecutionControlChange(Guid.NewGuid(),AgentId,Pause,View.Version,View.CompanyVersion,Reason);await Run(async()=>Preview=await Controls.Preview(CompanyId,change));}
+    private async Task Apply(){if(Preview is null)return;var command=new ExecutionControlApply(Preview.Change,Preview.PreviewHash);await Run(async()=>{View=await Controls.Apply(CompanyId,command);Preview=null;});}
+    private async Task Run(Func<Task> action){Busy=true;Error=null;try{await action();}catch(Exception ex)when(ex is OnboardingApiException or ArgumentException){Error=ex.Message;}finally{Busy=false;}}
+    private string TaskLink(Guid id)=>DashboardRoutes.WithQuery($"/agents/work/task/{id:D}",("companyId",CompanyId.ToString("D")),("executionReturnUrl",new Uri(Navigation.Uri).PathAndQuery));
+}
+

@@ -1,0 +1,25 @@
+@page "/work/create-from-decision"
+@page "/work/source"
+@rendermode InteractiveServer
+@inject OnboardingApiClient Onboarding
+@inject NavigationManager Navigation
+<PageTitle>Owned work from decisions</PageTitle>
+@if (company is Guid id) { <DecisionWorkPanel @key="@($"{id}:{Kind}:{VersionId}:{ItemKey}:{TaskId}")" CompanyId="id" KindCode="@Kind" VersionId="VersionId" ItemKey="@ItemKey" TaskId="TaskId" /> }
+else { <p role="status">@message</p> }
+@code {
+    [SupplyParameterFromQuery] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery] public string? Kind { get; set; }
+    [SupplyParameterFromQuery] public Guid? VersionId { get; set; }
+    [SupplyParameterFromQuery] public string? ItemKey { get; set; }
+    [SupplyParameterFromQuery] public Guid? TaskId { get; set; }
+    private Guid? company; private string message = "Loading company…";
+    protected override async Task OnParametersSetAsync()
+    {
+        company = null; var requested = CompanyId; var location = Navigation.Uri;
+        try { var user = await Onboarding.GetCurrentUserContextAsync(requested); if (location != Navigation.Uri) return;
+            var selected = requested ?? user?.ActiveCompany?.CompanyId;
+            if (selected.HasValue && user?.Memberships.Any(x => x.CompanyId == selected && x.Status == "active") == true) company = selected;
+            else message = "Choose an authorized company before creating work."; }
+        catch (Exception ex) when (ex is OnboardingApiException or HttpRequestException) { if (location == Navigation.Uri) message = ex.Message; }
+    }
+}

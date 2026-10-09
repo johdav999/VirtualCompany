@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Finance;
 
@@ -5,7 +7,7 @@ namespace VirtualCompany.Infrastructure.Finance;
 
 public sealed class FinanceMonthlyWorkspaceContributor(
     IFinanceReadService finance,
-    IFinanceSummaryQueryService summary) : IMonthlyWorkspaceContributor
+    IFinanceSummaryQueryService summary, VirtualCompanyDbContext db, IFinanceRollingPlanningService planning) : IMonthlyWorkspaceContributor
 {
     public string Lens => TodayWorkspaceLenses.Finance;
 
@@ -14,6 +16,11 @@ public sealed class FinanceMonthlyWorkspaceContributor(
         CancellationToken cancellationToken)
     {
         var period = context.Period;
+        var planningReport = await planning.ReportAsync(context.CompanyId, new(period.Year, period.Month), cancellationToken);
+        if (planningReport.BudgetVersions.Count == 1 || planningReport.ForecastVersions.Count == 1)
+            planningReport = await planning.ReportAsync(context.CompanyId, planningReport.Query with {
+                BudgetVersion = planningReport.BudgetVersions.Count == 1 ? planningReport.BudgetVersions[0] : null,
+                ForecastVersion = planningReport.ForecastVersions.Count == 1 ? planningReport.ForecastVersions[0] : null }, cancellationToken);
         var current = await finance.GetMonthlyProfitAndLossAsync(
             new(context.CompanyId, period.Year, period.Month), cancellationToken);
         var comparisonLocal = new DateTime(period.Year, period.Month, 1).AddMonths(-1);
@@ -66,6 +73,13 @@ public sealed class FinanceMonthlyWorkspaceContributor(
             new("Receivables", Money(balances.AccountsReceivable, balances.Currency), balances.OverdueReceivables > 0 ? "attention" : "current"),
             new("Payables", Money(balances.AccountsPayable, balances.Currency), balances.OverduePayables > 0 ? "attention" : "current")
         };
+        var fiscal = await db.FiscalPeriods.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == context.CompanyId &&
+            x.StartUtc <= period.StartUtc && x.EndUtc >= period.EndUtc).OrderBy(x => x.EndUtc).FirstOrDefaultAsync(cancellationToken);
+        facts.Add(new("Accounting close", fiscal is null ? "No matching fiscal period" : fiscal.IsClosed
+            ? "Closed" : fiscal.IsReportingLocked ? "Reports locked; period open" : "Period open — review close checklist",
+            fiscal?.IsClosed == true ? "current" : "attention"));
+        facts.Add(new("Close validation", fiscal?.LastCloseValidatedUtc is DateTime validated
+            ? $"Last recorded validation {validated:yyyy-MM-dd HH:mm} UTC; review current readiness" : "No recorded close validation", "current"));
         var section = new MonthlyWorkspaceSectionDto(
             Lens,
             "Finance",
@@ -86,7 +100,7 @@ public sealed class FinanceMonthlyWorkspaceContributor(
             results,
             [],
             [new("finance", "Finance", "current", current.EndUtc,
-                "Monthly ledger results and period-end balance obligations are available.")]);
+                "Monthly ledger results and period-end balance obligations are available.")], FinancePlanning: planningReport);
     }
 
     private static MonthlyWorkspacePriorityCandidate Priority(

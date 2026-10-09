@@ -1,0 +1,18 @@
+<section class="vc-panel planning-evidence">
+    <div class="planning-heading"><h2>Posted actuals and selected plans</h2><span>@Report.Rows.Count rows</span></div>
+    @if(ShowCoverage){<p>As of @Report.AsOfUtc.ToString("dd MMM yyyy HH:mm") UTC · @Report.Query.Year-@Report.Query.Month.ToString("00") · @Report.Query.Months native UTC month(s)</p><p>Budget: @(Report.Query.BudgetVersion??"No version selected") · Forecast: @(Report.Query.ForecastVersion is {} key?Report.ForecastLabels?.GetValueOrDefault(key)??key:"No version selected") · Scenario: unavailable</p>}
+    @if(Report.Rows.Count>0){
+    <p class="table-help">Amounts by account and currency. Scroll across to inspect every measure.</p>
+    <div class="planning-scroll" tabindex="0" role="region" aria-label="Account variance table"><table><caption>Posted actuals, budget and forecast values; missing values are unavailable.</caption><thead><tr><th scope="col">Month</th><th scope="col">Account</th><th scope="col">Cost center</th><th scope="col">Currency</th><th scope="col" class="number">Actual</th><th scope="col" class="number">Budget</th><th scope="col" class="number">Variance</th><th scope="col" class="number">Variance %</th><th scope="col" class="number">Forecast</th><th scope="col" class="number">Prior year</th><th scope="col">Evidence</th></tr></thead><tbody>
+        @foreach(var row in Report.Rows){<tr><td>@row.MonthUtc.ToString("MMM yyyy")</td><th scope="row"><span class="account-code">@row.AccountCode</span>@row.AccountName</th><td>@(Report.CostCenters.FirstOrDefault(x=>x.Id==row.CostCenterId)?.Name??"Unassigned")</td><td>@row.Currency</td><td class="number">@Money(row.Actual)</td><td class="number">@Money(row.Budget)</td><td class="number">@Money(row.Variance)</td><td class="number">@(row.VariancePercent.HasValue?$"{Money(row.VariancePercent)}%":"Unavailable")</td><td class="number">@Money(row.Forecast)</td><td class="number">@Money(row.PriorYear)</td><td><button class="btn btn-sm btn-outline-primary" @onclick="()=>Selected.InvokeAsync(row)">Inspect sources</button></td></tr>}
+    </tbody></table></div>
+    }else{<div class="planning-empty"><span class="planning-empty-symbol" aria-hidden="true">≡</span><h3>No matching sources</h3><p>Choose a recorded budget or forecast version, or check posted ledger coverage for this period.</p>@if(EmptyActions!=null){<div class="planning-empty-actions">@EmptyActions</div>}</div>}
+    @if(ShowCoverage){<details><summary>Source coverage and calculation meaning</summary><ul>@foreach(var c in Report.Coverage){<li>@c</li>}</ul></details>}
+</section>
+@code{
+    [Parameter,EditorRequired]public FinancePlanningReport Report{get;set;}=null!;
+    [Parameter]public EventCallback<FinancePlanningRow> Selected{get;set;}
+    [Parameter]public bool ShowCoverage{get;set;}=true;
+    [Parameter]public RenderFragment? EmptyActions{get;set;}
+    private static string Money(decimal? x)=>x?.ToString("N2")??"Unavailable";
+}

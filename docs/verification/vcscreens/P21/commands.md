@@ -1,0 +1,15 @@
+# Verification commands
+
+PowerShell in the existing repository checkout. `NUGET_PACKAGES=C:/Users/Johan/.nuget/packages`, `DOTNET_PROCESSOR_COUNT=1`. Builds/tests use `--no-restore -m:1 -p:UseSharedCompilation=false`. Final typed wire uses `-p:BuildProjectReferences=false` after production/API/Web artifacts were built. Normal shell startup failed while applying sandbox ACLs, so the working elevated shell was used under the verified infrastructure limitation.
+
+SQL checks use the existing running local SQLEXPRESS service with integrated security: `VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION=Server=localhost\SQLEXPRESS;Integrated Security=True;TrustServerCertificate=True;Encrypt=False`. No production database is selected. The existing TestWebApplicationFactory creates/deletes a unique disposable database.
+
+Migration: `dotnet ef migrations add AddSalesManagementHistoryAndCapacityProposals --project src/VirtualCompany.Persistence.Migrations --startup-project src/VirtualCompany.Api --no-build`. Generated source was inspected for nullable history/forecast fields, proposal table and unique indexes only. SQL migration tests verify upgrade/down/up.
+
+Final API: `dotnet test tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj` with the common flags and filter `FullyQualifiedName~SalesManagement|FullyQualifiedName~SalesOperationsApiIntegrationTests|FullyQualifiedName~SalesOperationalReportTests|FullyQualifiedName~RevenueForecastServiceTests|FullyQualifiedName~ConversionAnalyticsServiceTests|FullyQualifiedName~SalesAnalyticsDashboardEndpointTests|FullyQualifiedName~MonthlyReview|FullyQualifiedName~MonthlyWorkspaceIntegrationTests|FullyQualifiedName~MonthlyWorkspacePeriodTests|FullyQualifiedName~WeeklyWorkspaceIntegrationTests|FullyQualifiedName~DependencyInjectionArchitectureTests`. TRX `p21-api-final.trx`, log `test-api-final.log`.
+
+Final Web: `dotnet test tests/VirtualCompany.Web.Tests/VirtualCompany.Web.Tests.csproj` with common flags and filter `FullyQualifiedName~SalesManagementJourneyTests|FullyQualifiedName~SalesOperationalJourneyTests|FullyQualifiedName~SalesJourneyRoutesTests|FullyQualifiedName~MonthlyReviewJourneyTests|FullyQualifiedName~MonthlyWorkspaceComponentTests|FullyQualifiedName~WeeklyWorkspaceJourneyTests|FullyQualifiedName~WorkspaceNavigationTests`. TRX `p21-web-accepted.trx`, log `test-web-accepted.log`.
+
+Full wire: `dotnet test tests/VirtualCompany.Web.Contract.Tests/VirtualCompany.Web.Contract.Tests.csproj` with common flags and `-p:BuildProjectReferences=false`, no filter. TRX `p21-wire-final.trx`, log `test-wire-final.log`.
+
+Final builds target `src/VirtualCompany.Api/VirtualCompany.Api.csproj` and `src/VirtualCompany.Web/VirtualCompany.Web.csproj`. Model: `dotnet ef migrations has-pending-model-changes --project src/VirtualCompany.Persistence.Migrations --startup-project src/VirtualCompany.Api --no-build`. Hygiene: `git diff --check`, SHA256 comparison against entry preservation-baseline.json, and NUL-byte inspection of changed/new source and tests. Results are in verification.json and named logs.

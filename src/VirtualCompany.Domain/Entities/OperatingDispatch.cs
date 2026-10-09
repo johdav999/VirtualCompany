@@ -49,6 +49,7 @@ public sealed class OperatingDispatch : ICompanyOwnedEntity
     public bool TryClaim(string leaseOwner, DateTime nowUtc, TimeSpan leaseDuration)
     {
         if (leaseDuration <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(leaseDuration));
+        if (Status == OperatingDispatchStatus.Running && LeaseExpiresUtc <= nowUtc) { MarkUncertain("The running lease expired without a trustworthy acknowledgement. Review attempts before recovery.", nowUtc); return false; }
         var eligible = Status is OperatingDispatchStatus.Pending or OperatingDispatchStatus.RetryScheduled ||
             Status is OperatingDispatchStatus.Claimed or OperatingDispatchStatus.Running && LeaseExpiresUtc <= nowUtc;
         if (!eligible || NextAttemptUtc > nowUtc) return false;
@@ -89,6 +90,16 @@ public sealed class OperatingDispatch : ICompanyOwnedEntity
         Touch(nowUtc);
     }
 
+    public void ResolveInternalTaskReview(bool? executed, DateTime nowUtc)
+    {
+        if(Status!=OperatingDispatchStatus.AwaitingApproval)throw new InvalidOperationException("Dispatch is not awaiting review.");
+        Status=executed==true?OperatingDispatchStatus.Completed:executed==false?OperatingDispatchStatus.Blocked:OperatingDispatchStatus.Uncertain;
+        CompletedUtc=executed==true?nowUtc:null;
+        FailureCode=executed==true?null:executed==false?"reviewed_internal_action_not_executed":"reviewed_internal_action_uncertain";
+        FailureSummary=executed==true?null:executed==false?"The reviewed internal action did not execute. Review the retained decision and current policy before queuing new work.":"The admitted internal action has an uncertain outcome. Reconcile its owning output before any new execution.";
+        NextAttemptUtc=null;ClearLease();Touch(nowUtc);
+    }
+
     public void Retry(string code, string summary, DateTime nextAttemptUtc, DateTime nowUtc)
     {
         RequireRunning();
@@ -121,6 +132,24 @@ public sealed class OperatingDispatch : ICompanyOwnedEntity
     private void RequireRunning()
     {
         if (Status != OperatingDispatchStatus.Running) throw new InvalidOperationException("Dispatch is not running.");
+    }
+    public void PauseBeforeStart(DateTime nowUtc)
+    {
+        if (Status is not (OperatingDispatchStatus.Pending or OperatingDispatchStatus.RetryScheduled or OperatingDispatchStatus.Claimed)) return;
+        Status = OperatingDispatchStatus.Paused; NextAttemptUtc = nowUtc.AddMinutes(1); FailureCode = "execution_paused"; FailureSummary = "Paused before a new controlled step."; ClearLease(); Touch(nowUtc);
+    }
+    public void ResumePaused(DateTime nowUtc)
+    {
+        if (Status != OperatingDispatchStatus.Paused) return;
+        Status = OperatingDispatchStatus.Pending; NextAttemptUtc = nowUtc; FailureCode = null; FailureSummary = null; Touch(nowUtc);
+    }
+    public void PauseRunningBeforeEffect(DateTime nowUtc)
+    {
+        RequireRunning(); Status = OperatingDispatchStatus.Paused; FailureCode = "execution_paused"; FailureSummary = "A new step was refused before execution."; ClearLease(); Touch(nowUtc);
+    }
+    public void MarkUncertain(string summary, DateTime nowUtc)
+    {
+        RequireRunning(); Status = OperatingDispatchStatus.Uncertain; FailureCode = "acknowledgement_uncertain"; FailureSummary = Text(summary); NextAttemptUtc = null; ClearLease(); Touch(nowUtc);
     }
     private void ClearLease() { LeaseOwner = null; LeaseExpiresUtc = null; }
     private void Touch(DateTime nowUtc) { UpdatedUtc = nowUtc; Version++; }

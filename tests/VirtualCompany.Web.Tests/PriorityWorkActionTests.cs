@@ -78,7 +78,7 @@ public sealed class PriorityWorkActionTests
         Assert.Contains("Preserve the original rationale", handler.Body);
         Assert.Contains("sourceRecord", handler.Body);
         var taskLink = cut.Find(".vc-list-item").GetAttribute("href")!;
-        Assert.Contains("priorityReturnUrl=", taskLink);
+        Assert.DoesNotContain("priorityReturnUrl=", taskLink);
         Assert.Contains("returnUrl=", taskLink);
     }
 
@@ -114,7 +114,7 @@ public sealed class PriorityWorkActionTests
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
         var origin = DashboardRoutes.BuildTodayPath(Company, "sales");
         context.Services.GetRequiredService<NavigationManager>().NavigateTo(DashboardRoutes.WithQuery($"/work?companyId={Company:D}&taskId={TaskId:D}",
-            ("returnUrl", origin), ("priorityReturnUrl", DashboardRoutes.BuildPriorityPath(Company, "sales", "focus:task", origin))));
+            ("returnUrl", origin), ("priorityReturnUrl", $"/dashboard/priorities?companyId={Company}&lens=sales&key=focus:task")));
         return context;
     }
     [Theory]

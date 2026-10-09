@@ -23,10 +23,6 @@
         <div class="top-row px-4"></div>
 
         <article class="content px-4">
-            @if (PriorityReturnPath is { } priorityPath)
-            {
-                <a class="btn btn-outline-primary my-3" href="@priorityPath" data-testid="return-to-priority">← @CommonText["PriorityReturnEvidence"]</a>
-            }
             @Body
         </article>
     </main>
@@ -36,16 +32,6 @@
     private bool IsMonthlyDashboard => IsMonthlyDashboardUri(Navigation.Uri);
     private bool IsTodayDashboard => IsDashboardUri(Navigation.Uri) && !IsMonthlyDashboard;
     private bool IsSalesDeal => IsSalesDealUri(Navigation.Uri);
-    private string? PriorityReturnPath
-    {
-        get
-        {
-            var uri = new Uri(Navigation.Uri);
-            var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
-            return Guid.TryParse(query["companyId"], out var company)
-                ? DashboardRoutes.NormalizePriorityPath(query["priorityReturnUrl"], company) : null;
-        }
-    }
 
     protected override void OnInitialized() => Navigation.LocationChanged += HandleLocationChanged;
 

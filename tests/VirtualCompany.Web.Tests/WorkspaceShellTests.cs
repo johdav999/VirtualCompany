@@ -153,6 +153,66 @@ public sealed class WorkspaceShellTests
 
     private static string LocalUri(TestContext context) => new Uri(context.Services.GetRequiredService<NavigationManager>().Uri).PathAndQuery;
 
+    [Fact]
+    public async Task Weekly_company_switch_ignores_a_late_response_from_the_previous_company()
+    {
+        var old = new TaskCompletionSource<WeeklyWorkspaceViewModel?>();
+        using var context = CreateContext(new TodayClient((id, _) => Task.FromResult<TodayWorkspaceViewModel?>(Today(id))));
+        context.Services.AddSingleton<IWeeklyWorkspaceApiClient>(new WeeklyClient((id, _, _) => id == A ? old.Task : Task.FromResult<WeeklyWorkspaceViewModel?>(Weekly(id))));
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(DashboardRoutes.BuildWeeklyPath(A, "sales", new(2026, 9, 28)));
+        var cut = context.RenderComponent<Dashboard>();
+        cut.WaitForAssertion(() => cut.Find("[data-testid=weekly-loading]"));
+        navigation.NavigateTo(DashboardRoutes.BuildWeeklyPath(B, "sales", new(2026, 9, 28)));
+        cut.WaitForAssertion(() => Assert.Contains("Company B", cut.Find("[data-testid=weekly-workspace]").TextContent));
+        old.SetResult(Weekly(A)); await cut.InvokeAsync(() => Task.CompletedTask);
+        cut.WaitForAssertion(() => Assert.DoesNotContain("Company A", cut.Markup));
+        Assert.Contains(B.ToString("D"), LocalUri(context));
+    }
+
+    [Fact]
+    public void Weekly_canonicalization_and_sidebar_return_retain_source_detail_context()
+    {
+        using var context = CreateContext(new TodayClient((id, _) => Task.FromResult<TodayWorkspaceViewModel?>(Today(id))));
+        context.Services.AddSingleton<IWeeklyWorkspaceApiClient>(new WeeklyClient((id, _, _) => Task.FromResult<WeeklyWorkspaceViewModel?>(Weekly(id))));
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo(DashboardRoutes.WithQuery(DashboardRoutes.BuildWeeklyPath(A, "sales", new(2026, 9, 30)),
+            ("metric", "sales.change"), ("prior", "true"), ("sourcePage", "2")));
+        var cut = context.RenderComponent<Dashboard>();
+        cut.WaitForAssertion(() => cut.Find("[data-testid=weekly-detail]"));
+        var origin = LocalUri(context);
+        Assert.Contains("week=2026-09-28", origin); Assert.Contains("metric=sales.change", origin);
+        Assert.Contains("prior=true", origin); Assert.Contains("sourcePage=2", origin);
+        navigation.NavigateTo(DashboardRoutes.EnsureWorkspaceContext("/app/sales/activities", A, origin));
+        var nav = context.RenderComponent<NavMenu>();
+        nav.WaitForAssertion(() => Assert.Equal(origin, nav.Find("a.navbar-brand").GetAttribute("href")));
+    }
+
+    [Fact]
+    public void Weekly_retry_retains_the_selected_historical_period()
+    {
+        var requests = new List<DateOnly?>();
+        using var context = CreateContext(new TodayClient((id, _) => Task.FromResult<TodayWorkspaceViewModel?>(Today(id))));
+        context.Services.AddSingleton<IWeeklyWorkspaceApiClient>(new WeeklyClient((id, _, week) =>
+        {
+            requests.Add(week);
+            return requests.Count == 1 ? Task.FromException<WeeklyWorkspaceViewModel?>(new HttpRequestException("Transient")) : Task.FromResult<WeeklyWorkspaceViewModel?>(Weekly(id));
+        }));
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(DashboardRoutes.BuildWeeklyPath(A, "sales", new(2026, 9, 28)));
+        var cut = context.RenderComponent<Dashboard>();
+        cut.WaitForAssertion(() => cut.Find("[data-testid=weekly-error]"));
+        cut.Find("[data-testid=weekly-error] button").Click();
+        cut.WaitForAssertion(() => cut.Find("[data-testid=weekly-workspace]"));
+        Assert.Equal(new DateOnly(2026, 9, 28), requests[0]); Assert.Equal(requests[0], requests[1]);
+    }
+
+    private static WeeklyWorkspaceViewModel Weekly(Guid id) => WeeklyWorkspaceJourneyTests.Workspace("sales") with
+    { CompanyId = id, CompanyName = id == A ? "Company A" : "Company B" };
+    private sealed class WeeklyClient(Func<Guid, string?, DateOnly?, Task<WeeklyWorkspaceViewModel?>> get) : IWeeklyWorkspaceApiClient
+    {
+        public Task<WeeklyWorkspaceViewModel?> GetAsync(Guid id, string? lens = null, DateOnly? week = null, CancellationToken token = default) => get(id, lens, week);
+    }
+
     private static TestContext CreateContext(ITodayWorkspaceApiClient today)
     {
         var context = new TestContext().AddVirtualCompanyWebPresentationServices();

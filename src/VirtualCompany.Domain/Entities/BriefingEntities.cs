@@ -561,6 +561,8 @@ public sealed class CompanyBriefingDeliveryPreference : ICompanyOwnedEntity
     public bool WeeklyEnabled { get; private set; }
     public TimeOnly PreferredDeliveryTime { get; private set; }
     public string? PreferredTimezone { get; private set; }
+    public string? CadenceSettingsJson { get; private set; }
+    public void SetCadenceSettings(string settingsJson) { CadenceSettingsJson = settingsJson; UpdatedUtc = DateTime.UtcNow; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;

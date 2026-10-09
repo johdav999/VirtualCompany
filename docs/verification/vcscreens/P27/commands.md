@@ -1,0 +1,11 @@
+# Replay
+
+Use this same checkout and preserve its uncommitted P11–P27 work. Normal shell/CUA startup fails in the Windows deny-read ACL helper; the established shell fallback and disposable Edge substitute are recorded. Set `DOTNET_PROCESSOR_COUNT=1` and `DOTNET_TieredCompilation=0`. For isolated SQL tests set `VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION=Server=localhost\SQLEXPRESS;Integrated Security=True;TrustServerCertificate=True;Encrypt=False`.
+
+Build Finance, API, Web and UAT with `--no-restore -m:1 -p:UseSharedCompilation=false`. Use `BuildProjectReferences=false` only after native dependencies have been compiled. Do not rebuild a test assembly while its test host is running. Generate no new migration: the checked-in P27 migration is authoritative. Run `dotnet ef migrations has-pending-model-changes --project src/VirtualCompany.Persistence.Migrations --startup-project src/VirtualCompany.Api --no-build` after building API/migrations.
+
+Api.Tests: `FullyQualifiedName~StrategicScenario`, plus the recorded P23/P26/DI regression filters. Final accepted results supersede diagnostic failures by full test name. Finance.Tests: `StrategicScenarioCalculationTests`. Web.Tests: `StrategicScenarioJourneyTests`, with the recorded annual and company-period regressions. Web.Contract.Tests: `StrategicScenarioWireTests` plus annual/Finance wire regressions.
+
+Verify ports 5347/5107 free. Start native UAT/Web DLLs directly using hidden `Start-Process -PassThru`; record PIDs immediately. Use a separate readiness check bounded to 30 seconds. Web's native content root is `src/VirtualCompany.Web`; configure Development, `ApiBaseUrl=http://localhost:5347/`, `DevelopmentAuth__Subject=p19-owner`, `DevelopmentAuth__Email=p19-owner@example.test`, and `DevelopmentAuth__Provider=dev-header`. The profile is `/_uat/p27/profile`. Run `node docs/verification/vcscreens/P27/verify-browser.mjs`. Stop only recorded, currently verified owned PID/DLL/listener matches.
+
+`finalize-evidence.ps1` deduplicates accepted results, verifies the browser packet and preserves entry-inventoried earlier phase evidence/reference hashes. Prior results are historical and do not certify provider/deployed/physical/statutory or human approval gates.

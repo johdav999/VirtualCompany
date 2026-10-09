@@ -502,6 +502,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
     {
         var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
+        context.Services.AddSingleton(new AgentWorkApiClient(new CompanyApiTransport(new HttpClient(new AsyncStubHttpMessageHandler((request, _) => Task.FromResult(CreateNotFoundResponse()))) { BaseAddress = new Uri("http://localhost/") })));
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {

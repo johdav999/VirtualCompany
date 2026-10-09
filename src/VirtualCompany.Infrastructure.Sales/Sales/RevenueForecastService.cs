@@ -110,6 +110,11 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
             risk.Medium,
             risk.High,
             calculatedUtc);
+        var retainedInputs = System.Text.Json.JsonSerializer.Serialize(new SalesForecastCapture(asOfUtc,RevenueForecastCalculation.Version,
+            deals.Select(x=>{var known=latestRiskScores.TryGetValue(x.DealId,out var score);var risk=known?score!.Score:0.5m;
+                return new SalesForecastInput(x.DealId,x.Amount,x.Currency,x.PipelineStageId,x.ExpectedCloseUtc,risk,known,
+                    RevenueForecastCalculation.ExpectedAmount(x.Amount,x.PipelineStageId,risk));}).ToArray()));
+        if(System.Text.Encoding.UTF8.GetByteCount(retainedInputs)<=512*1024) snapshot.CaptureInputs(retainedInputs);
         _dbContext.RevenueForecastSnapshots.Add(snapshot);
         await _dbContext.SaveChangesAsync(cancellationToken);
 

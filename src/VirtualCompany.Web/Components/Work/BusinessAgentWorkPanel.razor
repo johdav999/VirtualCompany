@@ -1,0 +1,132 @@
+@inject AgentWorkApiClient Api
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<section class="business-agent-work vc-panel" aria-labelledby="@HeadingId" aria-busy="@loading" data-testid="business-agent-work">
+    <header><div><span class="vc-kicker">AGENT CONTRIBUTIONS</span><h2 id="@HeadingId">Work and evidence for this record</h2></div>
+        <button class="btn btn-outline-primary" disabled="@loading" @onclick="LoadAsync" aria-label="Refresh agent work for this record">Refresh agent work</button></header>
+    @if (loading) { <p role="status">Loading retained contributions and current decisions…</p> }
+    else if (error is not null) { <p role="alert">@error</p> }
+    else if (evidence is null) { <p>No agent evidence is available in your current company and access scope.</p> }
+    else
+    {
+        <p class="business-work-meaning">@evidence.WorkflowMeaning</p>
+        <p class="business-work-observation">Observed @evidence.ObservedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC @if (evidence.IsPartial) { <strong> · Partial evidence</strong> }</p>
+        @foreach (var diagnostic in evidence.Diagnostics) { <p class="business-work-gap" role="status">@diagnostic</p> }
+        @if (evidence.Artifacts.Count > 0)
+        {
+            <details><summary>Retained business artifacts (@evidence.Artifacts.Count)</summary>
+                <div class="business-work-artifacts">
+                    @foreach (var artifact in evidence.Artifacts)
+                    {
+                        <article @key="artifact.Id"><h3>@artifact.Name @if (artifact.Version.HasValue) { <span> · version @artifact.Version</span> }</h3>
+                            @if (artifact.Agent is not null) { <p>@artifact.Agent.Name · @artifact.Agent.Role</p> }
+                            else { <p class="business-work-observation">Contributing agent not recorded.</p> }
+                            <p class="business-work-content">@artifact.Summary</p>
+                            <dl><dt>Recorded state</dt><dd>@Label(artifact.RecordedState)</dd><dt>Review state</dt><dd>@Label(artifact.ApprovalState)</dd><dt>Execution or delivery</dt><dd>@Label(artifact.ExecutionState)</dd></dl>
+                            <p>@artifact.ReviewReason</p>
+                            @foreach (var gap in artifact.Diagnostics) { <p class="business-work-gap">@gap</p> }
+                            <p class="business-work-observation">Updated @artifact.UpdatedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</p>
+                            <nav aria-label="Artifact evidence links"><a href="@Link(artifact.RecordRoute)">Open owning record</a>
+                                @if (artifact.DecisionRoute is string decision && Link(decision) is string decisionLink) { <a href="@decisionLink">Open current decision</a> }</nav>
+                        </article>
+                    }
+                </div>
+            </details>
+        }
+        @foreach (var item in evidence.Work)
+        {
+            <article class="business-work-task" @key="item.Id"><div class="business-work-title"><h3>@item.Title</h3><span>@AgentWorkRoutes.State(item.State)</span></div>
+                <p>@item.Objective</p><p>@(item.Agents.Count == 0 ? "Assigned agent not recorded" : string.Join(" · ", item.Agents.Select(a => $"{a.Name} ({a.Role})")))</p>
+                <p><strong>Next dependency:</strong> @item.Dependency</p>
+                @if (evidence.Decisions?.FirstOrDefault(x => x.TaskId == item.Id) is { } currentDecision)
+                {
+                    <div class="business-work-handoff"><p><strong>Current decision: @Label(currentDecision.Status)</strong> · @currentDecision.Reviewer</p>
+                        <p>@currentDecision.Reason</p>
+                        @if (currentDecision.Limits is not null) { <p>@currentDecision.Limits</p> }
+                        @if (currentDecision.ExpiresUtc.HasValue) { <p>Decision expiry: @currentDecision.ExpiresUtc.Value.ToString("yyyy-MM-dd HH:mm:ss") UTC</p> }
+                        @if (currentDecision.ProposalChanged) { <p class="business-work-gap">The proposal has changed. Review the current evidence before deciding.</p> }
+                        <a href="@Link(currentDecision.Route)">Open current decision</a>
+                    </div>
+                }
+                @if (item.Outputs.Count > 0)
+                {
+                    <details><summary>Recorded task artifacts (@item.Outputs.Count)</summary>
+                        @foreach (var output in item.Outputs)
+                        { <article><h4>@output.Name</h4><p>@output.Summary</p><p class="business-work-observation">Observed @output.ObservedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</p>
+                            @if (output.Route is string outputRoute && Link(outputRoute) is string outputLink) { <a href="@outputLink">Review retained task artifact</a> }</article> }
+                    </details>
+                }
+                @foreach (var gap in item.Diagnostics) { <p class="business-work-gap">@gap</p> }
+                @if (evidence.Collaboration.FirstOrDefault(x => x.WorkId == item.Id) is { } contributions)
+                {
+                    <p>@contributions.NextDependency</p>
+                    @if (contributions.Artifacts.Count > 0)
+                    {
+                        <details><summary>Agent contributions (@contributions.Artifacts.Count)</summary>
+                            @foreach (var part in contributions.Artifacts)
+                            {
+                                <article><h4>@part.Agent.Name · @part.Role · version @part.Version</h4><p>@Label(part.State) · @part.Objective</p><p class="business-work-content">@(string.IsNullOrWhiteSpace(part.Output) ? "No output was retained for this contribution." : part.Output)</p>
+                                    @if (part.ReviewOutcome is not null) { <p>Review: @part.ReviewOutcome</p> }
+                                    <a href="@CollaborationLink(item, part.Id)">Open this contribution</a></article>
+                            }
+                        </details>
+                    }
+                    @foreach (var handoff in contributions.Handoffs)
+                    {
+                        var source = contributions.Artifacts.First(x => x.Id == handoff.InputId);
+                        var recipient = contributions.Artifacts.First(x => x.Id == handoff.RecipientId);
+                        <p class="business-work-handoff">Handoff: @source.Agent.Name → @recipient.Agent.Name · @Label(recipient.State). @(handoff.Passed ? "Recorded handoff accepted." : "Recorded handoff needs review.") @handoff.Reason</p>
+                    }
+                    @foreach (var gap in contributions.Diagnostics) { <p class="business-work-gap">@gap</p> }
+                }
+                <nav aria-label="Work evidence links"><a href="@Link(item.DetailRoute)">Open work detail</a><a href="@CollaborationLink(item, null)">Open collaboration</a>
+                    @foreach (var related in item.RelatedRecords) { @if (Link(related.Route) is string path) { <a href="@path">@related.Label</a> } }</nav>
+            </article>
+        }
+        <p class="business-work-next">@evidence.NextAction</p>
+    }
+</section>
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public string RecordKind { get; set; } = "";
+    [Parameter] public Guid RecordId { get; set; }
+    [Parameter] public object? RecordSnapshot { get; set; }
+    private (Guid?, string, Guid) loadedIdentity;
+    private object? snapshot;
+    private BusinessWorkEvidenceDto? evidence;
+    private string? error;
+    private bool loading;
+    private CancellationTokenSource? request;
+    private int generation;
+    private bool disposed;
+    private string HeadingId => $"business-work-{RecordKind}-{RecordId:N}";
+    protected override async Task OnParametersSetAsync()
+    {
+        var identity = (CompanyId, RecordKind, RecordId);
+        if (identity == loadedIdentity && ReferenceEquals(snapshot, RecordSnapshot)) return;
+        loadedIdentity = identity; snapshot = RecordSnapshot; await LoadAsync();
+    }
+    private async Task LoadAsync()
+    {
+        request?.Cancel(); request?.Dispose(); request = new(); var token = request.Token; var current = ++generation;
+        evidence = null; error = null; loading = true;
+        try
+        {
+            if (CompanyId is not Guid company || company == Guid.Empty || RecordId == Guid.Empty) return;
+            var result = await Api.BusinessAsync(company, RecordKind, RecordId, token);
+            if (current == generation && !disposed) evidence = result;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is OnboardingApiException or ArgumentException)
+        { if (current == generation && !disposed) error = ex.Message; }
+        finally { if (current == generation && !disposed) loading = false; }
+    }
+    private string? Link(string route) => CompanyId is Guid company && AgentWorkRoutes.Local(route, company) is string local
+        ? AgentWorkRoutes.Related(local, company, CurrentLocation(company)) : null;
+    private string CurrentLocation(Guid company) => new Uri(new Uri(Navigation.Uri), DashboardRoutes.WithQuery(new Uri(Navigation.Uri).PathAndQuery, ("companyId", company.ToString("D")))).AbsoluteUri;
+    private string? CollaborationLink(AgentWorkItemDto item, Guid? artifact) => CompanyId is Guid company
+        ? Link($"/agents/work/{item.Kind}/{item.Id:D}/collaboration?companyId={company:D}&view=list" + (artifact.HasValue ? $"&artifactId={artifact:D}" : "")) : null;
+    private static string Label(string value) => value.Replace('_', ' ');
+    public void Dispose() { disposed = true; generation++; request?.Cancel(); request?.Dispose(); }
+}

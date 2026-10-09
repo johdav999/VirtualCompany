@@ -29,7 +29,8 @@ public enum ApprovalTargetEntityType
     AccountingCloseTask = 25,
     AccountingCloseWaiver = 26,
     SalesMeetingChangeProposal = 27,
-    MarketingChannelAction = 28
+    MarketingChannelAction = 28,
+    AnnualPlanVersion = 29
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -63,7 +64,8 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.AccountingCloseTask] = "accounting_close_task",
         [ApprovalTargetEntityType.AccountingCloseWaiver] = "accounting_close_waiver",
         [ApprovalTargetEntityType.SalesMeetingChangeProposal] = "sales_meeting_change_proposal",
-        [ApprovalTargetEntityType.MarketingChannelAction] = "marketing_channel_action"
+        [ApprovalTargetEntityType.MarketingChannelAction] = "marketing_channel_action",
+        [ApprovalTargetEntityType.AnnualPlanVersion] = "annual_plan_version"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =
@@ -140,7 +142,8 @@ public enum ApprovalStepStatus
     Pending = 1,
     Approved = 2,
     Rejected = 3,
-    Skipped = 4
+    Skipped = 4,
+    ChangesRequested = 5
 }
 
 public static class ApprovalStepStatusValues
@@ -150,7 +153,8 @@ public static class ApprovalStepStatusValues
         [ApprovalStepStatus.Pending] = "pending",
         [ApprovalStepStatus.Approved] = "approved",
         [ApprovalStepStatus.Rejected] = "rejected",
-        [ApprovalStepStatus.Skipped] = "skipped"
+        [ApprovalStepStatus.Skipped] = "skipped",
+        [ApprovalStepStatus.ChangesRequested] = "changes_requested"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalStepStatus> ReverseValues =

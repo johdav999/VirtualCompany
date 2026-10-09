@@ -149,6 +149,9 @@ public interface ISalesLeadEmailEvidenceService
 {
     Task<IReadOnlyList<SalesLeadSourceEmailResponse>> ListAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken);
 }
+public sealed record SalesDealMeetingResponse(Guid Id, Guid LeadId, Guid? DealId, string Title,
+    DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Status, Guid? BrowserRoomId = null);
+
 public sealed record SalesDealSummaryResponse(
     Guid Id,
     string Title,
@@ -160,7 +163,8 @@ public sealed record SalesDealSummaryResponse(
     string? CustomerCompanyName,
     string? ContactName,
     DateTime? ExpectedCloseUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    IReadOnlyList<SalesDealMeetingResponse>? Meetings = null);
 
 public sealed record SalesDealDetailResponse(
     Guid Id,
@@ -181,7 +185,8 @@ public sealed record SalesDealDetailResponse(
     IReadOnlyList<string> AvailableActions,
     SalesFinanceHandoffResponse? FinanceHandoff,
     CustomerMemoryContext? CustomerMemory = null,
-    Guid? SourceLeadId = null);
+    Guid? SourceLeadId = null,
+    IReadOnlyList<SalesDealMeetingResponse>? Meetings = null);
 
 public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
 public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);

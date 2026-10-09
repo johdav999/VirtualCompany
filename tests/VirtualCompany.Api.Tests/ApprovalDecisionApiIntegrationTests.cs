@@ -13,9 +13,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
+public sealed partial class ApprovalDecisionApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory = new();
+    private readonly TestWebApplicationFactory _factory;
+    public ApprovalDecisionApiIntegrationTests() : this(new TestWebApplicationFactory()) { }
+    private ApprovalDecisionApiIntegrationTests(TestWebApplicationFactory factory) => _factory = factory;
 
     public void Dispose() => _factory.Dispose();
 

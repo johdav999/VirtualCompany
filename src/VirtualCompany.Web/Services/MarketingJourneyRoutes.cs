@@ -21,9 +21,8 @@ public static class MarketingJourneyRoutes
         var target = new Uri("https://local.test" + result);
         var query = System.Web.HttpUtility.ParseQueryString(target.Query);
         query["recordReturnUrl"] = BoundedReturn(returnToCurrent ? current.PathAndQuery : source["recordReturnUrl"], companyId, 2);
-        query["priorityReturnUrl"] = DashboardRoutes.NormalizePriorityPath(source["priorityReturnUrl"], companyId);
         query["healthReturnUrl"] = DashboardRoutes.NormalizeHealthPath(source["healthReturnUrl"], companyId);
-        foreach (var key in new[] { "recordReturnUrl", "priorityReturnUrl", "healthReturnUrl" })
+        foreach (var key in new[] { "recordReturnUrl", "healthReturnUrl" })
             if (string.IsNullOrEmpty(query[key])) query.Remove(key);
         return target.AbsolutePath + "?" + query + target.Fragment;
     }

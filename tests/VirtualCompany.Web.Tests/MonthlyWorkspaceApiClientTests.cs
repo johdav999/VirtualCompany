@@ -42,7 +42,7 @@ public sealed class MonthlyWorkspaceApiClientTests
             Request = request;
             var json = $$"""
             {"companyId":"{{company}}","header":{"companyName":"Example","title":"Sales monthly review","subtitle":"Summary"},
-            "activeLens":"sales","availableLenses":[],"period":{"year":2026,"month":8,"timezone":"UTC","startUtc":"2026-08-01T00:00:00Z","endUtc":"2026-09-01T00:00:00Z","comparisonStartUtc":"2026-07-01T00:00:00Z","comparisonEndUtc":"2026-08-01T00:00:00Z","label":"August 1–31, 2026","comparisonLabel":"July 2026"},
+            "activeLens":"sales","availableLenses":[{"value":"sales","label":"Sales","isDefault":true,"availabilityReason":"Primary responsibility"}],"period":{"year":2026,"month":8,"timezone":"UTC","startUtc":"2026-08-01T00:00:00Z","endUtc":"2026-09-01T00:00:00Z","comparisonStartUtc":"2026-07-01T00:00:00Z","comparisonEndUtc":"2026-08-01T00:00:00Z","label":"August 1–31, 2026","comparisonLabel":"July 2026"},
             "managementSummary":{"headline":"Clear","summary":"Summary","coverageSummary":"1 of 1 sources current","isDeterministicFallback":true},
             "results":[],"priorities":[],"sections":[],"decisions":[],"agentOutcomes":[],"sourceCoverage":[],
             "generatedAtUtc":"2026-09-02T08:00:00Z","cacheTimestampUtc":null,"isPartial":false,"diagnostics":[]}

@@ -394,6 +394,7 @@ public sealed class SalesMeetingInvitationDeliveryDispatcher : ISalesMeetingInvi
             .AsNoTracking()
             .AnyAsync(x => x.CompanyId == message.CompanyId &&
                 x.Id == invitation.ApprovalRequestId &&
+                x.TargetEntityType == "sales_meeting_invitation" && x.TargetEntityId == invitation.Id &&
                 x.Status == ApprovalRequestStatus.Approved,
                 cancellationToken);
         if (!approved)

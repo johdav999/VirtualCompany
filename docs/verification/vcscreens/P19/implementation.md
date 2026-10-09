@@ -1,0 +1,31 @@
+# P19 — weekly reviews
+
+The existing Overview now supports Today, Week and Monthly. Week uses a new read-only typed projection and department-owned contributors. It does not relabel Today values. P01–P18 remain in the same checkout; no execution, approval, policy, outbox or provider ownership moved.
+
+`GET /api/companies/{companyId}/workspace/weekly?lens={lens}&week=yyyy-MM-dd` resolves current membership and responsibility through the existing Today lens resolver. The Company perspective includes only authorized departments. The endpoint retains `CompanyMember` and company-context authorization. Current Finance permission remains part of lens resolution. Responses are freshly read; a contributor failure is logged and returned as partial unavailable evidence, never a measured zero. Cancellation and authorization failures propagate. The business projection does not persist source/decision/execution/history changes; the existing authentication User-profile refresh remains part of request infrastructure.
+
+## Calendar and comparisons
+
+The requested date selects its containing company-local calendar week. `Company.Settings.Extensions.weekStartsOn` uses the existing settings store; Monday is the default, and invalid configured days are rejected. Company timezone uses the existing timezone owner/converter. Invalid zones produce a disclosed UTC fallback diagnostic. Calendar weeks are independent of fiscal years.
+
+Dates are normalized to week start, limited to starts in 2000–2100, and future weeks are rejected. Activity uses half-open UTC intervals derived separately from local boundaries. Current weeks stop at the refresh instant; prior week-to-date stops at the same elapsed local calendar time. Completed weeks and their comparison use whole calendar weeks. DST weeks can contain 167 or 169 hours. Missing local midnight advances to its first valid time; ambiguous conversions use the standard offset consistently.
+
+## Owning sources and meaning
+
+| Perspective | Useful retained weekly evidence | Explicit limitations |
+|---|---|---|
+| CEO | Completion timestamps of currently authorized root work; current blocked/failed/review and near-term due commitments | Existing P10/P11 transitive visibility and bounded root cohort; successful workers, outputs and approvals do not establish company outcome completion. Past blocker balances are unavailable. |
+| Sales | Recorded stage-change/customer activity events; successful follow-up execution timestamps; current open close-date follow-ups | Stage changes count events, including repeated events per deal. Prepared drafts do not establish sending. Pipeline money movement is unavailable without dated complete value/stage evidence. Deleted/imported/retried history is not reconstructed. |
+| Marketing | Retained first campaign starts, completed internal campaign activities, full-week current content deadlines and scheduled launches | Scheduled launches are not actual starts. Internal activity completion is not publication, customer receipt or revenue. Relaunches and previous due-date versions are unavailable. |
+| Finance | Existing Finance operational remaining booked obligations by full selected-week due dates; owning cash balances at selected/prior cutoffs, separated by currency | Current outstanding obligations are not past settlement balances or weekly actual cash flows. Prior cash comparison requires retained snapshots for every included account and the same currency/account cohort. Missing comparison retains the selected balance. No FX total or live-bank claim. |
+| Support | Stored case creation, resolution and reopening events; first-response SLA due-target cohorts; current unresolved risks | Lifecycle events count events, not net backlog balances. SLA includes unanswered overdue targets in its denominator; no eligible sample is unavailable. Current stored business-calendar deadlines are reused; calendar revisions and past backlog balances are unavailable. |
+
+Activity/Sales/Marketing/Support sources use deterministic 2,000-record windows with disclosed incomplete counts and exact included source rows. CEO reuses its owning work-board limits. Finance reuses its existing operational report limits/calculation and cash owner. Source and linked parent queries remain company-scoped. No schema, new event history, migration or parallel calculation/execution engine was added: complete historical pipeline/backlog measures remain explicitly unavailable rather than reconstructed from current state.
+
+## User flow and references
+
+`/dashboard?companyId=...&period=week&lens=...&week=yyyy-MM-dd` is canonicalized to the actual authorized role/week start. `metric`, `prior` and `sourcePage` select paged current/prior source details. Record links retain an exact validated same-company return URL. Role/period controls, previous/next/current week and date selection are functional. Loading, permission, invalid period, failed refresh/retry, empty source, missing comparison and partial history states are explicit. Retrying keeps the chosen historical period; opening this week is a separate recovery action. Late results cannot overwrite a new company/role/period or redirect away from a business record.
+
+The native campaign workspace accepts `campaignId`, validates it against the selected company's campaigns, loads the exact native detail and suppresses stale company/location results. This makes the Marketing launch source link usable in the existing campaign route. Native campaign commands and P13 contextual supervision remain in their existing owners. Cash record links open the existing current cash workspace; historical cutoff/source amounts remain explained in the weekly source detail rather than claimed as a reproducible saved snapshot.
+
+Reference-first work reused `docs/design/references/role-time-agent-2026-10-01/03-marketing-week.png` and saved separate CEO, Sales, Finance, Support and detail references/prompts under `docs/design/references/weekly-p19-*`. The initial detail image was unsuitable; `weekly-p19-detail-reference-v2.png` is the corrected source-detail target. References were inspected before substantial UI changes. Actual rendered screenshot/reference, keyboard and narrow-viewport acceptance is Blocked by the supported CUA runtime failure recorded in `browser-blocker.json`.

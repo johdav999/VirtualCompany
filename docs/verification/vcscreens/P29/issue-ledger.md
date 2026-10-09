@@ -1,0 +1,18 @@
+# P29 issue ledger
+
+| ID | Severity | Flow | Type | Finding | Acceptance / regression | State |
+| --- | --- | --- | --- | --- | --- | --- |
+| BC29-01 | P1 | Scheduling | Defect | Existing scheduler chose one company time and broadcast identical content. | Per-recipient persisted slots enter existing jobs/outbox; opt-in excludes legacy broadcast; native integration and SQL concurrency. | Implemented; verification recorded in case packet |
+| BC29-02 | P1 | Delegation | Authorization | Absence routing must not carry the owner's restricted snapshot body or confer approvals. | Persist hashes/routes only; recipient scope reload at generation/dispatch/open; safe notification text; revoked delegate/fallback tests. | Implemented; verification recorded in case packet |
+| BC29-03 | P2 | Verification | Test assumption | Foreign route with the current company header returns native middleware 400, not 403. | Mismatch rejected as 400; matching foreign header separately denied as 403. | Corrected |
+| BC29-04 | P1 | DST / quiet hours | Defect found during implementation | Advancing through a spring gap could land beyond the permitted working window. | Check timezone validity and permitted hours together; focused spring-gap window test. | Fixed; final native cases pass |
+| BC29-05 | P2 | Browser | Environment | In-app browser helper/kernel cannot initialize on this host. | Fresh headless Edge/native Web/composed API substitute; keep user IAB/deployed/provider acceptance separate. | Scoped substitute |
+| BC29-06 | P1 | Browser setup / routing | Fixture and privacy boundary | Adding executive responsibility rows made the existing retained-source scope unavailable. Company focus also needed to expose independently owned work as an eligible routing scope. | Preserve saved source responsibilities; route independently assigned native work to existing active members; author-only retained-source link; dedicated native source/ownership test and rebuilt browser fixture. | Corrected; final evidence in packet |
+| BC29-07 | P1 | Monday schedule | Defect | Daily cadences from non-working weekend days deferred to Monday and accumulated an extra morning digest. | Daily/shift/end-of-day rows apply only to configured working days; explicit Monday calendar/native owned-work case and concurrent SQL worker check. | Fixed; final source rerun in packet |
+
+| BC29-08 | P2 | Browser / accessibility | Defect | Native select implicit names included option text; extra quarter/annual helper text wrapped cadence rows. | Explicit role/delegate/fallback names, compact grid; included UI checks and fresh browser pass. | Fixed |
+| BC29-09 | P1 | Test verification | Fixture | Web and wire projects use explicit compile entries; initial filters did not include the new P29 files. | Include new files/shared seed, resolve server/Web aliases; eight P29 UI and one native P29 wire case pass. Prior regression counts remain separate. | Fixed |
+| BC29-10 | P2 | Controlled delivery | Fixture | Prior-phase events consumed the composed fixture's first native outbox batch. | Bounded native dispatch batches reach P29 without direct notification bypass; browser recipient/audit and duplicate delivery pass. | Fixed |
+| BC29-11 | P2 | Retained source | Defect | Razor treated the source version expression as literal text after the letter v. | Explicit numeric expression, rendered-link regression, fresh source/original-scenario/Work browser journey. | Fixed |
+
+Final automated/latest outcomes and browser flow pass. Human approve/revise: Pending. Provider receipt and deployed migration are not inferred from these local checks.

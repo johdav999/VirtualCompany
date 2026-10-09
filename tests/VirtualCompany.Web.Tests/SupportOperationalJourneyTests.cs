@@ -68,9 +68,9 @@ public sealed class SupportOperationalJourneyTests
         Assert.Equal(path,HttpUtility.ParseQueryString(new Uri("http://local.test"+sibling).Query)["supportReturnUrl"]);
         Assert.Null(SupportJourneyRoutes.NormalizeReturn(parent,Guid.NewGuid())); Assert.Null(SupportJourneyRoutes.NormalizeReturn("//evil.test/",Company));
         Assert.Null(SupportJourneyRoutes.NormalizeReturn($"/supporters?companyId={Company}",Company));
-        var priority=DashboardRoutes.BuildPriorityPath(Company,"customers","support-case:"+Case.ToString("N"),overview);
+        var priority=$"/dashboard/priorities?companyId={Company}&lens=customers&key=support-case:{Case:N}";
         var source=path+"&priorityReturnUrl="+Uri.EscapeDataString(priority);
-        Assert.Equal(priority,HttpUtility.ParseQueryString(new Uri("http://local.test"+SupportJourneyRoutes.Record("/support/knowledge",Company,"http://local.test"+source)).Query)["priorityReturnUrl"]);
+        Assert.Null(HttpUtility.ParseQueryString(new Uri("http://local.test"+SupportJourneyRoutes.Record("/support/knowledge",Company,"http://local.test"+source)).Query)["priorityReturnUrl"]);
         var queue=$"http://local.test/support?companyId={Company}&status=waiting_internal&priority=high&category=technical_issue&owner=mine&q=access";
         var reportScope=HttpUtility.ParseQueryString(new Uri("http://local.test"+SupportJourneyRoutes.Record("/support/reports?view=aging",Company,queue)).Query);
         Assert.Equal("waiting_internal",reportScope["status"]);Assert.Equal("high",reportScope["priority"]);Assert.Equal("technical_issue",reportScope["category"]);Assert.Equal("mine",reportScope["owner"]);Assert.Equal("access",reportScope["q"]);
@@ -87,6 +87,7 @@ public sealed class SupportOperationalJourneyTests
     {
         var context=new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient {BaseAddress=new("http://localhost/")},useOfflineMode:true));
+        context.Services.AddSingleton(new AgentWorkApiClient(new CompanyApiTransport(new HttpClient(new Handler(_=>new(HttpStatusCode.NotFound){Content=JsonContent.Create(new{detail="No retained agent evidence in this reply-review fixture."})})){BaseAddress=new("http://localhost/")})));
         return context;
     }
     [Fact]

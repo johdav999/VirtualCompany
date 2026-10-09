@@ -1,5 +1,5 @@
 <section class="@ShellClass">
-    @if (Area == "Finance") { <FinanceJourneyNavigation CompanyId="@CompanyId" /> }
+    @if (Area == "Finance") { <FinanceJourneyNavigation CompanyId="@CompanyId" ReportStyle="@ReportStyle" /> }
     @if (ShowHeader)
     {
         <div class="wizard-card finance-module-shell__hero">
@@ -51,6 +51,7 @@
     [Parameter] public string Area { get; set; } = "Finance";
     [Parameter] public bool ShowHeader { get; set; } = true;
     [Parameter] public bool ShowNavigation { get; set; } = true;
+    [Parameter] public bool ReportStyle { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private string AreaHomeHref => FinanceRoutes.WithCompanyContext(
@@ -81,7 +82,7 @@
     private string DashboardHref => $"/dashboard?companyId={CompanyId}";
 
     private string ShellClass =>
-        ShowHeader || ShowNavigation
+        ReportStyle ? "finance-module-shell finance-module-shell--report" : ShowHeader || ShowNavigation
             ? "py-4 dashboard-hero finance-module-shell"
             : "py-4 dashboard-hero finance-module-shell finance-module-shell--bare";
 }

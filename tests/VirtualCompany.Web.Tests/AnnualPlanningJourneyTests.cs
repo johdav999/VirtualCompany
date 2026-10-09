@@ -1,0 +1,26 @@
+using System.Net;
+using System.Net.Http.Json;
+using Bunit;
+using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Api.Tests;
+using VirtualCompany.Web.Services;
+using VirtualCompany.Web.Components.Dashboard;
+namespace VirtualCompany.Web.Tests;
+public sealed class AnnualPlanningJourneyTests
+{
+ private static readonly Guid Company=Guid.NewGuid(),Owner=Guid.NewGuid(),Plan=Guid.NewGuid();
+ private static PlanningPeriod Period=>new(2026,0,new(2026,1,1,0,0,0,DateTimeKind.Utc),new(2027,1,1,0,0,0,DateTimeKind.Utc),"UTC","SEK",1,1,1);
+ private static AnnualPlanningOptions Options=>new(Company,Period,[],[new(Owner,"Recorded owner")],[],[],[]);
+ private static AnnualPlanDocument Doc=>new(new(Plan,Company,2026,1,null,"reviewed",2,Owner,Period.StartUtc,Guid.NewGuid()),new(Company,Period,new(2026,[],[],[],"Reviewed annual proposal"),[],[],1000,1000,[],new string('A',64)),["Initial binding"],false,"Planning only");
+ private sealed class Handler(Func<HttpRequestMessage,CancellationToken,Task<HttpResponseMessage>> a):HttpMessageHandler{protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r,CancellationToken ct)=>a(r,ct);}
+ private static HttpResponseMessage Json<T>(T x)=>new(HttpStatusCode.OK){Content=JsonContent.Create(x)};
+ private static HttpResponseMessage Route(HttpRequestMessage r)=>r.RequestUri!.AbsolutePath.EndsWith("options")?Json(Options):r.RequestUri.AbsolutePath.EndsWith("open")?Json(Doc):Json(new[]{Doc.Summary});
+ private static TestContext Context(Func<HttpRequestMessage,CancellationToken,Task<HttpResponseMessage>> a){var c=new TestContext().AddVirtualCompanyWebPresentationServices();c.Services.AddSingleton(new AnnualPlanningApiClient(new CompanyApiTransport(new HttpClient(new Handler(a)){BaseAddress=new("http://localhost/")})));return c;}
+ [Fact]public void Reviewed_plan_uses_canonical_approval_and_does_not_offer_review_again(){using var c=Context((r,_)=>Task.FromResult(Route(r)));var cut=c.RenderComponent<AnnualPlanningWorkspace>(p=>p.Add(x=>x.CompanyId,Company).Add(x=>x.FiscalYear,2026));cut.WaitForAssertion(()=>Assert.Contains("Reviewed annual proposal",cut.Markup));Assert.Contains("Open canonical approval",cut.Markup);Assert.DoesNotContain("Mark reviewed and request approval",cut.Markup);Assert.Contains("does not authorize a payment",cut.Markup);}
+ [Fact]public void Restricted_reload_discards_prior_plan_values_and_actions(){var deny=false;using var c=Context((r,_)=>Task.FromResult(deny?new(HttpStatusCode.Forbidden):Route(r)));var cut=c.RenderComponent<AnnualPlanningWorkspace>(p=>p.Add(x=>x.CompanyId,Company).Add(x=>x.FiscalYear,2026));cut.WaitForAssertion(()=>Assert.Contains("Reviewed annual proposal",cut.Markup));deny=true;cut.FindAll("button").Single(x=>x.TextContent=="Reload").Click();cut.WaitForAssertion(()=>Assert.Contains("Annual planning is unavailable",cut.Markup));Assert.DoesNotContain("Reviewed annual proposal",cut.Markup);Assert.DoesNotContain("Open canonical approval",cut.Markup);}
+ [Fact]public async Task Wrong_company_and_offline_requests_fail_closed(){using var c=Context((_,_)=>Task.FromResult(Json(Options with{CompanyId=Guid.NewGuid()})));await Assert.ThrowsAsync<InvalidDataException>(()=>c.Services.GetRequiredService<AnnualPlanningApiClient>().Options(Company,2026,default));await Assert.ThrowsAsync<InvalidOperationException>(()=>new AnnualPlanningApiClient(new CompanyApiTransport(new HttpClient()),true).Options(Company,2026,default));}
+ [Fact]public async Task Late_company_options_cannot_restore_old_plan(){var pending=new TaskCompletionSource<HttpResponseMessage>();int calls=0;using var c=Context((_,_)=>++calls==1?pending.Task:Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)));var cut=c.RenderComponent<AnnualPlanningWorkspace>(p=>p.Add(x=>x.CompanyId,Company).Add(x=>x.FiscalYear,2026));await cut.InvokeAsync(()=>cut.SetParametersAndRender(p=>p.Add(x=>x.CompanyId,Guid.NewGuid())));pending.SetResult(Json(Options));cut.WaitForAssertion(()=>Assert.Contains("Annual planning is unavailable",cut.Markup));Assert.DoesNotContain("Recorded owner",cut.Markup);}
+ [Theory][InlineData(400)][InlineData(403)][InlineData(404)][InlineData(409)][InlineData(422)][InlineData(503)]public async Task Typed_errors_are_explicit(int status){using var c=Context((_,_)=>Task.FromResult(new HttpResponseMessage((HttpStatusCode)status)));var api=c.Services.GetRequiredService<AnnualPlanningApiClient>();if(status==403)await Assert.ThrowsAsync<TodayWorkspaceAccessException>(()=>api.Options(Company,2026,default));else await Assert.ThrowsAsync<InvalidOperationException>(()=>api.Options(Company,2026,default));}
+ [Fact]public void Canonical_annual_review_cannot_describe_a_payment_or_exceeded_spend_threshold(){var a=ApprovalPresentationFormatter.Format(new ApprovalRequestViewModel{TargetEntityType="annual_plan_version",Status="pending",RationaleSummary="Annual governance",AffectedDataSummary="Annual plan",ThresholdContext=new(){{"amount",System.Text.Json.Nodes.JsonValue.Create(1000)}}});Assert.Equal("Annual plan requires approval",a.DisplayTitle);Assert.Contains("planning intent",a.DisplayDecisionSummary);Assert.DoesNotContain("Approve payment",a.DisplayDecisionSummary);Assert.DoesNotContain("Exceeds",a.DisplayReason);Assert.Null(a.DisplayPaymentActivity);}
+}
+

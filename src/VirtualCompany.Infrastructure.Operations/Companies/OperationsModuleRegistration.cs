@@ -392,6 +392,9 @@ public static class OperationsModuleRegistration
         services.AddScoped<IAgentCommunicationProfileResolver, AgentCommunicationProfileResolver>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+        services.AddScoped<IQuarterlyPlanningService, QuarterlyPlanningService>();
+        services.AddScoped<IAnnualPlanningService, AnnualPlanningService>();
+        services.AddScoped<IBriefingCadenceService, BriefingCadenceService>();
         services.AddScoped<CompanyGoalService>();
         services.AddScoped<ICompanyGoalCommandService>(provider => provider.GetRequiredService<CompanyGoalService>());
         services.AddScoped<ICompanyGoalQueryService>(provider => provider.GetRequiredService<CompanyGoalService>());
@@ -463,6 +466,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IProactiveTaskDuplicateDetector, EfProactiveTaskDuplicateDetector>();
         services.AddScoped<IProactiveTaskCreationService, ProactiveTaskCreationService>();
         services.AddScoped<ICompanyTaskCommandService, CompanyTaskCommandService>();
+        services.AddScoped<IDecisionWorkService, DecisionWorkService>();
         services.AddSingleton<IScheduleExpressionValidator, CronosScheduleExpressionValidator>();
         services.AddSingleton<IScheduledTriggerNextRunCalculator, CronosScheduledTriggerNextRunCalculator>();
         services.AddSingleton<ISupportedPlatformEventTypeRegistry>(SupportedPlatformEventTypeRegistry.Instance);
@@ -527,9 +531,16 @@ public static class OperationsModuleRegistration
         services.AddScoped<ITodayWorkspaceQueryService, CompanyTodayWorkspaceQueryService>();
         services.AddScoped<IMonthlyWorkspaceContributor, CompanyOperationMonthlyWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceQueryService, CompanyMonthlyWorkspaceQueryService>();
+        services.AddScoped<IMonthlyReviewSnapshotService, MonthlyReviewSnapshotService>();
+        services.AddScoped<IMonthlyReviewAccessService>(sp => (IMonthlyReviewAccessService)sp.GetRequiredService<IMonthlyReviewSnapshotService>());
+        services.AddScoped<IWeeklyWorkspaceQueryService, CompanyWeeklyWorkspaceQueryService>();
+        services.AddScoped<IWeeklyWorkspaceContributor, CompanyWeeklyWorkspaceContributor>();
         services.AddScoped<IAgentStaffOverviewQueryService, CompanyAgentStaffOverviewQueryService>();
         services.AddScoped<CompanyWorkVisibility>();
+        services.AddScoped<IAuthorityExplanationQueryService, AuthorityExplanationQueryService>();
         services.AddScoped<IAgentWorkQueryService, CompanyAgentWorkQueryService>();
+        services.AddScoped<IBusinessWorkEvidenceQueryService, BusinessWorkEvidenceQueryService>();
+        services.AddScoped<ICollaborationEvidenceQueryService, CollaborationEvidenceQueryService>();
 
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
@@ -550,6 +561,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
         services.AddScoped<CompanyAgentToolExecutionService>();
         services.AddScoped<IAgentToolExecutionService>(provider => provider.GetRequiredService<CompanyAgentToolExecutionService>());
+        services.AddScoped<IAgentToolPolicyPreviewService>(provider => provider.GetRequiredService<CompanyAgentToolExecutionService>());
         services.AddScoped<IFinanceDurableToolExecutionService>(provider => provider.GetRequiredService<CompanyAgentToolExecutionService>());
         services.AddScoped<IFinanceAgentAuthorizationService, FinanceAgentAuthorizationService>();
         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
@@ -557,7 +569,13 @@ public static class OperationsModuleRegistration
         services.AddSingleton<IInsightScoringService, DefaultInsightScoringService>();
         services.AddSingleton<IActionDeepLinkResolver, DefaultActionDeepLinkResolver>();
         services.AddScoped<IActionInsightService, CompanyActionInsightService>();
-        services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
+        services.AddScoped<InternalCompanyToolContract>();
+        services.AddScoped<IInternalCompanyToolContract, TaskDraftToolAdapter>();
+        services.AddScoped<ITaskTypePolicyService, TaskTypePolicyService>();
+        services.AddScoped<ITaskTypePolicyEvaluator, TaskTypePolicyEvaluator>();
+        services.AddScoped<IExecutionControlService, ExecutionControlService>();
+        services.AddScoped<IAgentSupervisionReportService, AgentSupervisionReportService>();
+        services.AddScoped<IDurableTaskToolExecutionService>(provider=>provider.GetRequiredService<CompanyAgentToolExecutionService>());
         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();

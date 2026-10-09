@@ -172,7 +172,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
             expectedCloseUtc: request.ExpectedCloseUtc);
         lead.ConvertToDeal(deal.Id);
         _dbContext.Deals.Add(deal);
-        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "conversion", BuildSummary(request.Note, "Lead converted to a sales deal."), DateTime.UtcNow, leadId: lead.Id, dealId: deal.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
+        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "conversion", BuildSummary(request.Note, "Lead converted to a sales deal."), DateTime.UtcNow, leadId: lead.Id, dealId: deal.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId).RecordTransition(userId,null,deal.PipelineStageId,request.Note));
         AddAudit(companyId, userId, AuditEventActions.SalesLeadConverted, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The qualified lead was converted to a deal.");
         if (deal.PrimaryContactId is Guid contactId)
         {
@@ -193,6 +193,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
             .ToListAsync(cancellationToken);
 
         var deals = await DealQuery(companyId).Where(x => x.Status == SalesStatuses.Open).ToListAsync(cancellationToken);
+        var meetings = await ReadDealMeetingsAsync(companyId, deals, cancellationToken);
         var response = stages.Select(stage =>
         {
             var stageDeals = deals.Where(x => x.PipelineStageId == stage.Id).OrderByDescending(x => x.UpdatedUtc).ToList();
@@ -202,7 +203,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
                 stage.DisplayOrder,
                 stageDeals.Sum(x => x.Amount),
                 stageDeals.Count,
-                stageDeals.Select(MapDealSummary).ToList());
+                stageDeals.Select(deal => MapDealSummary(deal) with { Meetings = meetings[deal.Id] }).ToList());
         }).ToList();
         return new SalesPipelineResponse(response);
     }
@@ -219,7 +220,8 @@ public sealed class SalesOperationsService : ISalesOperationsService
         }
 
         var memory = deal.PrimaryContactId.HasValue ? await _customerMemory.GetContextAsync(companyId, deal.PrimaryContactId.Value, cancellationToken) : null;
-        return MapDealDetail(deal, memory);
+        var meetings = await ReadDealMeetingsAsync(companyId, [deal], cancellationToken);
+        return MapDealDetail(deal, memory) with { Meetings = meetings[deal.Id] };
     }
 
     public async Task<SalesDealDetailResponse?> LinkDealCustomerCompanyAsync(
@@ -359,7 +361,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
         var previousStage = deal.PipelineStageId;
         deal.ChangeStage(request.StageId);
-        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "stage change", BuildSummary(request.Note, "Deal moved to a new stage."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
+        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "stage change", BuildSummary(request.Note, "Deal moved to a new stage."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId).RecordTransition(userId,previousStage,deal.PipelineStageId,request.Note));
         AddAudit(companyId, userId, AuditEventActions.SalesDealStageChanged, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Deal stage changed.", new Dictionary<string, string?> { ["previousStageId"] = previousStage.ToString("D"), ["newStageId"] = request.StageId.ToString("D") });
         await _dbContext.SaveChangesAsync(cancellationToken);
         return await GetDealAsync(companyId, dealId, cancellationToken);
@@ -375,8 +377,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
             return null;
         }
 
+        var previousStage = deal.PipelineStageId;
         deal.MarkWon();
-        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "won", BuildSummary(request.Note, "Deal marked won."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
+        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "won", BuildSummary(request.Note, "Deal marked won."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId).RecordTransition(userId,previousStage,deal.PipelineStageId,request.Note));
         await EnsureFinanceHandoffAsync(companyId, userId, deal, cancellationToken);
         AddAudit(companyId, userId, AuditEventActions.SalesDealWon, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The deal was won.");
         EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesDealWon, "deal", deal.Id, new { dealId = deal.Id, deal.Title, deal.Amount, deal.Currency });
@@ -632,8 +635,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
             return null;
         }
 
+        var previousStage = deal.PipelineStageId;
         deal.MarkLost();
-        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "lost", BuildSummary(request.Note, "Deal marked lost."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
+        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "lost", BuildSummary(request.Note, "Deal marked lost."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId).RecordTransition(userId,previousStage,deal.PipelineStageId,request.Note));
         AddAudit(companyId, userId, AuditEventActions.SalesDealLost, "deal", deal.Id, AuditEventOutcomes.Rejected, request.Note ?? "The deal was lost.");
         await _dbContext.SaveChangesAsync(cancellationToken);
         return await GetDealAsync(companyId, dealId, cancellationToken);
@@ -762,6 +766,26 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
     private static SalesLeadDetailResponse MapLeadDetail(Lead lead) =>
         new(lead.Id, lead.Title, StatusLabel(lead.Status), StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, lead.PrimaryContact?.FullName, lead.CustomerCompany?.Name, lead.EstimatedValue, lead.Currency, SuggestedLeadAction(lead), lead.Fit, StatusLabel(lead.Priority ?? "not set"), lead.QualifiedUtc, lead.QualifiedByUserId, lead.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), lead.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList());
+
+    private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<SalesDealMeetingResponse>>> ReadDealMeetingsAsync(
+        Guid companyId, IReadOnlyList<Deal> deals, CancellationToken cancellationToken)
+    {
+        if (deals.Count == 0) return new Dictionary<Guid, IReadOnlyList<SalesDealMeetingResponse>>();
+        var dealIds = deals.Select(x => x.Id).ToArray();
+        var leadIds = deals.Where(x => x.SourceLeadId.HasValue).Select(x => x.SourceLeadId!.Value).Distinct().ToArray();
+        // Bookings created before conversion retain their lead link. An explicit deal link takes precedence.
+        // Read one company-scoped batch for the pipeline, rather than one request per card.
+        var rows = await _dbContext.SalesMeetingInvitations.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId &&
+                (x.DealId.HasValue && dealIds.Contains(x.DealId.Value) || !x.DealId.HasValue && leadIds.Contains(x.LeadId)))
+            .OrderByDescending(x => x.StartsUtc).ThenBy(x => x.Id)
+            .Select(x => new { x.Id, x.LeadId, x.DealId, x.Title, x.StartsUtc, x.EndsUtc, x.TimeZoneId, x.Status, x.BrowserRoomId })
+            .ToListAsync(cancellationToken);
+        var meetings = rows.Select(x => new SalesDealMeetingResponse(x.Id, x.LeadId, x.DealId, x.Title,
+            x.StartsUtc, x.EndsUtc, x.TimeZoneId, x.Status.ToStorageValue(), x.BrowserRoomId)).ToArray();
+        return deals.ToDictionary(deal => deal.Id, deal => (IReadOnlyList<SalesDealMeetingResponse>)meetings
+            .Where(meeting => meeting.DealId == deal.Id || meeting.DealId is null && meeting.LeadId == deal.SourceLeadId).ToArray());
+    }
 
     private static SalesDealSummaryResponse MapDealSummary(Deal deal) =>
         new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, deal.CustomerCompany?.Name, deal.PrimaryContact?.FullName, deal.ExpectedCloseUtc, deal.UpdatedUtc);

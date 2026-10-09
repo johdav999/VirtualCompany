@@ -92,28 +92,24 @@ public static class DashboardRoutes
             (string.IsNullOrEmpty(department) || TodayWorkspaceLensValues.All.Contains(department)) ? local : null;
     }
 
-    public static string BuildPriorityPath(Guid companyId, string lens, string key, string? returnUrl = null) =>
-        WithQuery("/dashboard/priorities", ("companyId", companyId.ToString("D")),
-            (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)), ("key", key),
-            ("returnUrl", NormalizeOverviewPath(returnUrl, companyId) ?? BuildTodayPath(companyId, lens)));
+    public static string BuildWeeklyPath(Guid companyId, string? lens = null, DateOnly? week = null) =>
+        WithQuery("/dashboard", ("companyId", companyId == Guid.Empty ? null : companyId.ToString("D")),
+            (PeriodQueryKey, "week"), (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)),
+            ("week", week?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)));
 
-    public static string? NormalizePriorityPath(string? path, Guid companyId)
-    {
-        var local = ReturnUrlNavigation.NormalizeLocalReturnUrl(path);
-        return local is not null && GetPath(local) == "/dashboard/priorities" &&
-            Guid.TryParse(GetQueryValue(local, "companyId"), out var id) && id == companyId &&
-            TodayWorkspaceLensValues.All.Contains(GetQueryValue(local, "lens") ?? "") &&
-            !string.IsNullOrWhiteSpace(GetQueryValue(local, "key")) ? local : null;
-    }
-
-    public static string BuildMonthlyPath(Guid companyId, string? lens = null, int? year = null, int? month = null) =>
+    public static string BuildMonthlyPath(Guid companyId, string? lens = null, int? year = null, int? month = null, Guid? snapshot = null) =>
         WithQuery(
             "/dashboard",
             ("companyId", companyId == Guid.Empty ? null : companyId.ToString("D")),
             (PeriodQueryKey, "month"),
             (LensQueryKey, TodayWorkspaceLensValues.Normalize(lens)),
             ("year", year?.ToString()),
-            ("month", month?.ToString()));
+            ("month", month?.ToString()),
+            ("snapshot", snapshot?.ToString("D")));
+
+    public static string BuildQuarterlyPath(Guid companyId, int? year = null, int? quarter = null, Guid? review = null) =>
+        WithQuery("/dashboard", ("companyId", companyId.ToString("D")), ("lens", "company"), ("period", "quarter"),
+            ("year", year?.ToString()), ("quarter", quarter?.ToString()), ("review", review?.ToString("D")));
 
     public static string BuildResponsibilitySettingsPath(Guid? companyId) =>
         WithQuery("/settings/responsibilities", ("companyId", companyId?.ToString("D")));
@@ -193,8 +189,7 @@ public static class DashboardRoutes
             return candidate;
         }
 
-        var separator = candidate.Contains('?', StringComparison.Ordinal) ? "&" : "?";
-        return $"{candidate}{separator}companyId={resolvedCompanyId:D}";
+        return WithQuery(candidate, ("companyId", resolvedCompanyId.ToString("D")));
     }
 
     private static string NormalizeKnownRoute(string? route, Guid? companyId)

@@ -9,17 +9,32 @@ namespace VirtualCompany.Infrastructure.Persistence;
 
 public sealed class VirtualCompanyDbContext : DbContext
 {
+    public DbSet<SalesCapacityProposalRevision> SalesCapacityProposalRevisions => Set<SalesCapacityProposalRevision>();
+    public DbSet<MonthlyReviewSnapshot> MonthlyReviewSnapshots => Set<MonthlyReviewSnapshot>();
+    public DbSet<MarketingBudgetProposalRevision> MarketingBudgetProposalRevisions => Set<MarketingBudgetProposalRevision>();
+    public DbSet<FinanceForecastRevision> FinanceForecastRevisions => Set<FinanceForecastRevision>();
+    public DbSet<FinanceVarianceExplanation> FinanceVarianceExplanations => Set<FinanceVarianceExplanation>();
+    public DbSet<SupportCapacityProposalRevision> SupportCapacityProposalRevisions => Set<SupportCapacityProposalRevision>();
+    public DbSet<SupportIssueGroupingRevision> SupportIssueGroupingRevisions => Set<SupportIssueGroupingRevision>();
+    public DbSet<TaskTypePolicy> TaskTypePolicies => Set<TaskTypePolicy>();
+    public DbSet<AgentExecutionControl> AgentExecutionControls => Set<AgentExecutionControl>();
+    public DbSet<AgentExecutionControlCommand> AgentExecutionControlCommands => Set<AgentExecutionControlCommand>();
+    public DbSet<AgentExecutionAdmission> AgentExecutionAdmissions => Set<AgentExecutionAdmission>();
+    public DbSet<TaskTypePolicyRevision> TaskTypePolicyRevisions => Set<TaskTypePolicyRevision>();
     private readonly ICompanyContextAccessor? _companyContextAccessor;
     private readonly IExecutiveCockpitDashboardCacheInvalidator? _dashboardCacheInvalidator;
+    private readonly TimeProvider _supportClock;
 
     public VirtualCompanyDbContext(
         DbContextOptions<VirtualCompanyDbContext> options,
         ICompanyContextAccessor? companyContextAccessor = null,
-        IExecutiveCockpitDashboardCacheInvalidator? dashboardCacheInvalidator = null)
+        IExecutiveCockpitDashboardCacheInvalidator? dashboardCacheInvalidator = null,
+        TimeProvider? clock = null)
         : base(options)
     {
         _companyContextAccessor = companyContextAccessor;
         _dashboardCacheInvalidator = dashboardCacheInvalidator;
+        _supportClock = clock ?? TimeProvider.System;
     }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -60,6 +75,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyGoal> CompanyGoals => Set<CompanyGoal>();
     public DbSet<CompanyOperatingConfiguration> CompanyOperatingConfigurations => Set<CompanyOperatingConfiguration>();
     public DbSet<OperatingCycle> OperatingCycles => Set<OperatingCycle>();
+    public DbSet<CollaborationContribution> CollaborationContributions => Set<CollaborationContribution>();
+    public DbSet<CollaborationExecutionLease> CollaborationExecutionLeases => Set<CollaborationExecutionLease>();
+    public DbSet<CollaborationArtifactHandoff> CollaborationArtifactHandoffs => Set<CollaborationArtifactHandoff>();
     public DbSet<OperatingPlan> OperatingPlans => Set<OperatingPlan>();
     public DbSet<OperatingInitiative> OperatingInitiatives => Set<OperatingInitiative>();
     public DbSet<OperatingPlanDependency> OperatingPlanDependencies => Set<OperatingPlanDependency>();
@@ -99,6 +117,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyBriefingSection> CompanyBriefingSections => Set<CompanyBriefingSection>();
     public DbSet<CompanyBriefingContribution> CompanyBriefingContributions => Set<CompanyBriefingContribution>();
     public DbSet<CompanyBriefingDeliveryPreference> CompanyBriefingDeliveryPreferences => Set<CompanyBriefingDeliveryPreference>();
+    public DbSet<BriefingCadenceDelivery> BriefingCadenceDeliveries => Set<BriefingCadenceDelivery>();
     public DbSet<CompanyBriefingSeverityRule> CompanyBriefingSeverityRules => Set<CompanyBriefingSeverityRule>();
     public DbSet<UserBriefingPreference> UserBriefingPreferences => Set<UserBriefingPreference>();
     public DbSet<TenantBriefingDefault> TenantBriefingDefaults => Set<TenantBriefingDefault>();
@@ -647,6 +666,9 @@ public sealed class VirtualCompanyDbContext : DbContext
 
     public override int SaveChanges()
     {
+        CaptureSupportStateEvidence();
+        EnsureMonthlyReviewsAreImmutable();
+        RefreshTaskBusinessAssociations();
         ValidateCompanyOwnedMutations();
         EnsurePostedLedgerIsImmutable();
         ApplyFinanceSourceTrackingDefaults();
@@ -657,6 +679,9 @@ public sealed class VirtualCompanyDbContext : DbContext
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
+        CaptureSupportStateEvidence();
+        EnsureMonthlyReviewsAreImmutable();
+        RefreshTaskBusinessAssociations();
         ValidateCompanyOwnedMutations();
         EnsurePostedLedgerIsImmutable();
         ApplyFinanceSourceTrackingDefaults();
@@ -673,6 +698,54 @@ public sealed class VirtualCompanyDbContext : DbContext
         }
 
         return result;
+    }
+
+    private void EnsureMonthlyReviewsAreImmutable()
+    {
+        var deletedCompanies = ChangeTracker.Entries<Company>().Where(x => x.State == EntityState.Deleted).Select(x => x.Entity.Id).ToHashSet();
+        if (ChangeTracker.Entries<SupportCapacityProposalRevision>().Any(x => x.State == EntityState.Modified || x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId)) ||
+            ChangeTracker.Entries<SupportIssueGroupingRevision>().Any(x => x.State == EntityState.Modified || x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId)) ||
+            ChangeTracker.Entries<SupportCaseEvent>().Any(x => (x.Entity.EventType == SupportCaseEventTypes.StateRecorded || x.Entity.EventType == SupportCaseEventTypes.Merged || x.Property(e=>e.EventType).OriginalValue == SupportCaseEventTypes.StateRecorded || x.Property(e=>e.EventType).OriginalValue == SupportCaseEventTypes.Merged) &&
+                (x.State == EntityState.Modified || x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId))))
+            throw new InvalidOperationException("Support planning revisions and recorded state/merge evidence are immutable until company deletion.");
+        if (ChangeTracker.Entries<FinanceForecastRevision>().Any(x => x.State == EntityState.Modified || x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId)) ||
+            ChangeTracker.Entries<FinanceVarianceExplanation>().Any(x => x.State == EntityState.Modified || x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId)) ||
+            ChangeTracker.Entries<Forecast>().Any(x => (x.Entity.RevisionId.HasValue || x.Property(f => f.RevisionId).OriginalValue.HasValue) &&
+                (x.State == EntityState.Modified || x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId))))
+            throw new InvalidOperationException("Forecast revisions, their native values and variance explanations are immutable until company deletion.");
+        if (ChangeTracker.Entries<MarketingBudgetProposalRevision>().Any(x => x.State == EntityState.Modified ||
+            x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId)))
+            throw new InvalidOperationException("Budget proposal revisions are immutable until company deletion.");
+        if (ChangeTracker.Entries<SalesCapacityProposalRevision>().Any(x=>x.State==EntityState.Modified || x.State==EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId))) throw new InvalidOperationException("Capacity proposal revisions are immutable until company deletion.");
+        if (ChangeTracker.Entries<MonthlyReviewSnapshot>().Any(x => x.State == EntityState.Modified ||
+            x.State == EntityState.Deleted && !deletedCompanies.Contains(x.Entity.CompanyId)))
+            throw new InvalidOperationException("Saved monthly reviews are immutable and retained until company deletion.");
+    }
+
+    private void RefreshTaskBusinessAssociations()
+    {
+        ChangeTracker.DetectChanges();
+        foreach (var entry in ChangeTracker.Entries<WorkTask>().Where(x => x.State == EntityState.Added ||
+            x.State == EntityState.Modified && x.Property(t => t.InputPayload).IsModified))
+            entry.Entity.RefreshBusinessAssociations();
+    }
+
+    private void CaptureSupportStateEvidence()
+    {
+        ChangeTracker.DetectChanges();
+        var now = _supportClock.GetUtcNow().UtcDateTime;
+        foreach (var entry in ChangeTracker.Entries<SupportCase>().Where(x=>x.State==EntityState.Added || x.State==EntityState.Modified && x.Property(c=>c.Status).IsModified).ToArray())
+        {
+            var c=entry.Entity;
+            string? from=entry.State==EntityState.Added ? null : entry.Property(x=>x.Status).OriginalValue;
+            if (ChangeTracker.Entries<SupportCaseEvent>().Any(x=>x.State==EntityState.Added && x.Entity.SupportCaseId==c.Id && x.Entity.EventType==SupportCaseEventTypes.StateRecorded && x.Entity.FromStatus==from && x.Entity.ToStatus==c.Status)) continue;
+            var originalCreation=entry.State==EntityState.Added && c.Status==SupportCaseStatuses.New && c.CreatedUtc<=now && now-c.CreatedUtc<TimeSpan.FromMinutes(1);
+            var sequence=checked(entry.Property(x=>x.StateRevision).OriginalValue+1);
+            entry.Property(x=>x.StateRevision).CurrentValue=sequence;
+            SupportCaseEvents.Add(new SupportCaseEvent(Guid.NewGuid(),c.CompanyId,c.Id,SupportCaseEventTypes.StateRecorded,
+                "Case state recorded for service history.","system",null,originalCreation?c.CreatedUtc:now,
+                fromStatus:from,toStatus:c.Status,isStateBaseline:entry.State==EntityState.Added && !originalCreation,stateSequence:sequence));
+        }
     }
 
     private void EnsureBankTransactionPostingStates()
@@ -1140,6 +1213,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
+        modelBuilder.Entity<DecisionWorkOrigin>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BriefingCadenceDelivery>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<DecisionWorkCollaborator>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesBrowserRoom>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesRoomFloor>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesRoomPlaybackStopAcknowledgement>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -2224,6 +2300,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<AccountingAllocationEvidenceLink>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<LedgerEntryLineDimension>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ManualJournalDraftLineDimension>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CollaborationContribution>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CollaborationExecutionLease>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CollaborationArtifactHandoff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceConversationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceConversationRunStep>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceConversationRunRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -2231,6 +2310,18 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceAutonomyGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceAutonomyGrantVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceAutonomyControl>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCapacityProposalRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MonthlyReviewSnapshot>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupportCapacityProposalRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupportIssueGroupingRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingBudgetProposalRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceForecastRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinanceVarianceExplanation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TaskTypePolicy>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentExecutionControl>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentExecutionControlCommand>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentExecutionAdmission>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TaskTypePolicyRevision>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
 
     }
 

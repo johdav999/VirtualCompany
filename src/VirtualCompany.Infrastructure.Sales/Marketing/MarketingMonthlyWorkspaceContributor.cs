@@ -3,7 +3,7 @@ using VirtualCompany.Application.Marketing;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class MarketingMonthlyWorkspaceContributor(IMarketingOperationsService marketing) : IMonthlyWorkspaceContributor
+public sealed class MarketingMonthlyWorkspaceContributor(IMarketingOperationsService marketing, IMarketingManagementService management) : IMonthlyWorkspaceContributor
 {
     public string Lens => TodayWorkspaceLenses.Marketing;
 
@@ -76,10 +76,11 @@ public sealed class MarketingMonthlyWorkspaceContributor(IMarketingOperationsSer
             dueItems, route,
             unavailable ? "Activity is available; outcome coverage is missing." : "Authoritative channel observations are available.",
             true, unavailable ? route : null);
+        var managementReport = await management.ReportAsync(context.CompanyId, new(period.Year, period.Month), cancellationToken);
         return new(Lens, section, priorities, results, [],
             [new("marketing", "Marketing", unavailable ? "unavailable" : "current", current.GeneratedUtc,
                 unavailable ? "No authoritative monthly outcome observations were found." : "Monthly channel observations are available.",
-                unavailable ? route : null)]);
+                unavailable ? route : null)], MarketingManagement: managementReport);
     }
 
     private static int Urgency(string? value) => value?.Trim().ToLowerInvariant() switch

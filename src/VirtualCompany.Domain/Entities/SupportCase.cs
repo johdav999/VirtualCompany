@@ -79,6 +79,7 @@ public sealed class SupportCase : ICompanyOwnedEntity
     public JsonObject Metadata { get; private set; } = [];
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public int StateRevision { get; private set; }
 
     public ICollection<SupportMessage> Messages { get; } = new List<SupportMessage>();
     public ICollection<SupportCaseEvent> Events { get; } = new List<SupportCaseEvent>();

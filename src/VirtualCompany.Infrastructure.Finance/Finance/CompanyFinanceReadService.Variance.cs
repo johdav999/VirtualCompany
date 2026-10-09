@@ -116,7 +116,7 @@ public sealed partial class CompanyFinanceReadService
                 actualLookup.TryGetValue(group.Key, out var actual);
                 var actualAmount = actual?.Amount ?? 0m;
                 var comparisonAmount = group.Amount;
-                var varianceAmount = Math.Round(actualAmount - comparisonAmount, 2, MidpointRounding.AwayFromZero);
+                var varianceAmount = FinanceRollingPlanningCalculation.Difference(actualAmount, comparisonAmount)!.Value;
 
                 return new FinanceVarianceRowDto(
                     group.Key.PeriodStartUtc,
@@ -251,9 +251,7 @@ public sealed partial class CompanyFinanceReadService
 
     // Variance percentage is always calculated as (actual - comparison) / comparison * 100.
     private static decimal? CalculateVariancePercentage(decimal varianceAmount, decimal comparisonAmount) =>
-        comparisonAmount == 0m
-            ? null
-            : Math.Round(varianceAmount / comparisonAmount * 100m, 2, MidpointRounding.AwayFromZero);
+        FinanceRollingPlanningCalculation.Percentage(varianceAmount, comparisonAmount);
 
     private static string NormalizeVarianceCategory(string? value)
     {

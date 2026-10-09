@@ -681,6 +681,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
         services.AddScoped<ITodayWorkspaceContributor, FinanceTodayWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceContributor, FinanceMonthlyWorkspaceContributor>();
+        services.AddScoped<IWeeklyWorkspaceContributor, FinanceWeeklyWorkspaceContributor>();
         services.AddScoped<FortnoxFinanceIntegrationProvider>();
         services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
@@ -733,6 +734,8 @@ public static class FinanceModuleRegistration
         services.AddScoped<ISupplierInvoiceSourceDocumentAttachmentProvider, FortnoxSupplierInvoiceSourceDocumentAttachmentProvider>();
         services.AddScoped<IFinanceSupplierInvoiceSourceDocumentAttachmentService, SupplierInvoiceSourceDocumentAttachmentService>();
         services.AddScoped<IFinancePlanningEntityResolver, FinancePlanningEntityResolver>();
+        services.AddScoped<IFinanceRollingPlanningService, FinanceRollingPlanningService>();
+        services.AddScoped<IStrategicScenarioService, StrategicScenarioService>();
         services.AddScoped<ISupplierInvoiceDraftActionProvider, FortnoxSupplierInvoiceDraftActionProvider>();
         services.AddScoped<IFinanceSupplierInvoiceDraftActionService, SupplierInvoiceDraftActionService>();
         services.AddScoped<IPaidSupplierBillExpensePostingService, PaidSupplierBillExpensePostingService>();
@@ -803,6 +806,3 @@ public static class FinanceModuleRegistration
         return services;
     }
 }
-
-
-

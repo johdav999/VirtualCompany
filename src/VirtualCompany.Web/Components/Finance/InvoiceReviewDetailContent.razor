@@ -44,6 +44,9 @@ else
             <div class="alert alert-success mb-0" role="status">@StatusMessage</div>
         }
 
+        @if (ShowAgentWork && CompanyId.HasValue)
+        { <BusinessAgentWorkPanel CompanyId="CompanyId" RecordKind="invoice" RecordId="Detail.Id" RecordSnapshot="Detail" /> }
+
         <section class="mt-4" aria-label="@FinanceText["RecommendationDetails"]">
             <h3 class="h5">@FinanceText["RecommendationDetails"]</h3>
             @if (InvoiceWorkflowPresentation.ResolveRecommendationDetails(Detail) is { } recommendationDetails)
@@ -134,6 +137,8 @@ else
 }
 
 @code {
+    [Parameter] public bool ShowAgentWork { get; set; }
+
     [Parameter] public bool IsLoading { get; set; }
     [Parameter] public bool IsSubmitting { get; set; }
     [Parameter] public string? ErrorMessage { get; set; }

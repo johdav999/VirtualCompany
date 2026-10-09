@@ -9,6 +9,7 @@ internal sealed class RevenueForecastSnapshotConfiguration : IEntityTypeConfigur
     public void Configure(EntityTypeBuilder<RevenueForecastSnapshot> builder)
     {
         builder.ToTable("revenue_forecast_snapshots");
+        builder.Property(x=>x.InputsJson).HasColumnType("nvarchar(max)");
         builder.HasKey(x => x.Id);
         builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.Id).HasColumnName("id");

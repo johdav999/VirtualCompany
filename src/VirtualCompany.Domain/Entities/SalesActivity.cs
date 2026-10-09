@@ -34,6 +34,17 @@ public sealed class SalesActivity : ICompanyOwnedEntity
         UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
     }
 
+    public Guid? PreviousStageId { get; private set; }
+    public Guid? NewStageId { get; private set; }
+    public Guid? ActorUserId { get; private set; }
+    public string? RecordedReason { get; private set; }
+    public SalesActivity RecordTransition(Guid user, Guid? previousStage, Guid newStage, string? reason)
+    {
+        if(user==Guid.Empty || newStage==Guid.Empty) throw new ArgumentException("Transition author and stage required.");
+        if(NewStageId.HasValue) throw new InvalidOperationException("Transition already recorded.");
+        ActorUserId=user;PreviousStageId=previousStage;NewStageId=newStage;
+        RecordedReason=SalesEntityText.NormalizeOptional(reason,nameof(reason),500);return this;
+    }
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
     public Guid? LeadId { get; private set; }
@@ -54,4 +65,3 @@ public sealed class SalesActivity : ICompanyOwnedEntity
     public Contact? Contact { get; private set; }
     public CustomerCompany? CustomerCompany { get; private set; }
 }
-

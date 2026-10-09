@@ -1,0 +1,26 @@
+@page "/dashboard/planning/quarter"
+@rendermode InteractiveServer
+@using VirtualCompany.Web.Services
+@using VirtualCompany.Web.Components.Dashboard
+@inject OnboardingApiClient Onboarding
+@inject NavigationManager Navigation
+<PageTitle>Quarter objective and resources</PageTitle>
+@if (company is Guid id) { <QuarterlyPlanningWorkspace @key="@($"{id}:{Year}:{Quarter}:{Review}")" CompanyId="id" FiscalYear="Year" Quarter="Quarter" ReviewId="Review" Editor="true" /> }
+else { <p role="status">@message</p> }
+@code {
+    [SupplyParameterFromQuery] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery] public int? Year { get; set; }
+    [SupplyParameterFromQuery] public int? Quarter { get; set; }
+    [SupplyParameterFromQuery] public Guid? Review { get; set; }
+    private Guid? company;
+    private string message = "Loading company…";
+    protected override async Task OnParametersSetAsync()
+    {
+        company = null; var requested = CompanyId; var location = Navigation.Uri;
+        try { var user = await Onboarding.GetCurrentUserContextAsync(requested); if (location != Navigation.Uri) return;
+            var selected = requested ?? user?.ActiveCompany?.CompanyId;
+            if (selected.HasValue && user?.Memberships.Any(x => x.CompanyId == selected && x.Status == "active") == true) { company = selected; if (!requested.HasValue) Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("companyId", selected), replace: true); }
+            else message = "Choose an authorized company before planning."; }
+        catch (Exception ex) when (ex is OnboardingApiException or HttpRequestException) { if (location == Navigation.Uri) message = ex.Message; }
+    }
+}

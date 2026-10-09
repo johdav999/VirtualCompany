@@ -109,18 +109,27 @@ public sealed class TodayAgentActivityQueryService(VirtualCompanyDbContext db) :
             task.Id, task.WorkflowInstanceId, null, task.UpdatedUtc));
     }
 
-    private static ActivityCandidate FromRun(AgentOrchestrationRun run, Agent? agent, TodayWorkspaceLensResolution resolution)
+    internal static ActivityCandidate FromRun(AgentOrchestrationRun run, Agent? agent, TodayWorkspaceLensResolution resolution)
     {
         var link = run.TaskId.HasValue
             ? $"/work?companyId={resolution.CompanyId:D}&tab=tasks&taskId={run.TaskId:D}&source=dashboard"
             : $"/agents/{run.AgentId:D}?companyId={resolution.CompanyId:D}&source=dashboard";
         return new ActivityCandidate(UnderlyingKey(run.TaskId, null, null, run.CorrelationId, run.Id), new(
-            $"agent-run:{run.Id:N}", Humanize(run.CapabilityId), Safe(run.Summary, "The agent run state changed. Open the related record for recovery details."),
+            $"agent-run:{run.Id:N}", Humanize(run.CapabilityId), RunSummary(run),
             agent?.DisplayName, run.CompletedUtc ?? run.UpdatedUtc, "agent_run", link, agent?.RoleName,
             TodayAgentStateMapper.FromAgentRun(run.Status), agent?.AvatarUrl,
-            Safe(run.Summary, "The update is derived from the persisted agent execution result."),
+            string.IsNullOrWhiteSpace(run.Summary) ? null : run.FailureMessage,
             VisibilityReason(run.AgentId, resolution, run.ActorUserId == resolution.UserId),
             run.TaskId, null, null, run.UpdatedUtc));
+    }
+
+    private static string RunSummary(AgentOrchestrationRun run)
+    {
+        if (!string.IsNullOrWhiteSpace(run.Summary)) return run.Summary.Trim();
+        if (!string.IsNullOrWhiteSpace(run.FailureMessage)) return run.FailureMessage.Trim();
+        var status = Humanize(run.Status).ToLowerInvariant();
+        var reason = string.IsNullOrWhiteSpace(run.FailureCode) ? "No result summary was recorded." : $"Recorded reason: {Humanize(run.FailureCode)}.";
+        return $"{Humanize(run.CapabilityId)}: {status}. {reason}";
     }
 
     private static ActivityCandidate FromApproval(ApprovalRequest approval, Agent? agent, TodayWorkspaceLensResolution resolution)

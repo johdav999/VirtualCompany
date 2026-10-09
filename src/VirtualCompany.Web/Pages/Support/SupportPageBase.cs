@@ -15,9 +15,7 @@ public abstract class SupportPageBase : ComponentBase
 
     [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
     [SupplyParameterFromQuery(Name = "supportReturnUrl")] public string? SupportReturnUrl { get; set; }
-    [SupplyParameterFromQuery(Name = "priorityReturnUrl")] public string? PriorityReturnUrl { get; set; }
     [SupplyParameterFromQuery(Name = "healthReturnUrl")] public string? HealthReturnUrl { get; set; }
-    protected string? PriorityPath => ResolvedCompanyId is Guid id ? DashboardRoutes.NormalizePriorityPath(PriorityReturnUrl, id) : null;
     protected string? HealthPath => ResolvedCompanyId is Guid id ? DashboardRoutes.NormalizeHealthPath(HealthReturnUrl, id) : null;
     protected string BackPath => ResolvedCompanyId is Guid id
         ? SupportJourneyRoutes.NormalizeReturn(SupportReturnUrl, id) ?? BuildPath("/support") : "/support";

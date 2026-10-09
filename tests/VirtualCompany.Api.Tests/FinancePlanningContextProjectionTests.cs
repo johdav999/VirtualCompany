@@ -132,6 +132,19 @@ public sealed class FinancePlanningContextProjectionTests
     }
 
     [Fact]
+    public async Task Named_forecast_reference_uses_authorized_projection_and_checksum_freshness()
+    {
+        var harness = Harness.Create(FinanceAgentAnalysisToolIds.Analyze);
+        harness.Entities.Candidates = [Candidate("forecast-revision", "checksum-one") with { EntityType = FinancePlanningReferenceTypes.ForecastVersion, SourceId = "finance_forecast_revision:forecast-revision" }];
+        var request = harness.Request("Review forecast version \"Recorded outlook\"");
+        var original = await harness.Projector.ProjectAsync(request, harness.Authority.Value, default);
+        Assert.Contains(harness.Entities.Requests, x => x.ReferenceType == FinancePlanningReferenceTypes.ForecastVersion && x.ReferenceValue == "Recorded outlook");
+        Assert.Equal("Accessible retained forecast-version match", Assert.Single(original.Evidence).SafeLabel);
+        harness.Entities.Candidates = [Candidate("forecast-revision", "checksum-two") with { EntityType = FinancePlanningReferenceTypes.ForecastVersion, SourceId = "finance_forecast_revision:forecast-revision" }];
+        Assert.False((await harness.Projector.CheckFreshnessAsync(request, original.Hash, default)).IsCurrent);
+    }
+
+    [Fact]
     public async Task Hostile_record_label_is_not_projected_as_model_evidence()
     {
         var harness = Harness.Create("recommend_invoice_approval_decision");

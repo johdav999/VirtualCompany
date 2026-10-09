@@ -1,0 +1,101 @@
+@page "/agents/staff/reports"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject AgentSupervisionApiClient Reports
+@inject NavigationManager Navigation
+@inject Microsoft.JSInterop.IJSRuntime JS
+@using Microsoft.JSInterop
+<PageTitle>Agent supervision</PageTitle>
+<section class="vc-page supervision-reports">
+    <header class="vc-page-header"><div><span class="vc-kicker">AGENT TEAM</span><h1>Agent supervision</h1><p>Trace recorded work, decisions and outcomes.</p></div><a href="@($"/agents/staff?companyId={CompanyId:D}")">Back to agent team</a></header>
+    @if(CompanyId==Guid.Empty){<p role="alert">Choose a company before opening supervision reports.</p>}
+    else
+    {
+        @if(Error is not null){<div class="vc-panel" role="alert">@Error <button class="btn btn-outline-primary" @onclick="Reload" disabled="@Busy">Refresh report</button></div>}
+        @if(Report is null){<p role="status">@(Busy?"Loading permitted supervision evidence…":"Report unavailable. Refresh before reviewing measures.")</p>}
+        else
+        {
+            <form class="vc-panel supervision-filters" @onsubmit="ApplyFilters" @onsubmit:preventDefault>
+                <label>From date<input type="date" class="form-control" value="@InputFrom" @onchange="e=>InputFrom=e.Value?.ToString()??string.Empty" disabled="@Busy" /></label>
+                <label>Through date<input type="date" class="form-control" value="@InputTo" @onchange="e=>InputTo=e.Value?.ToString()??string.Empty" disabled="@Busy" /></label>
+                <label>Responsibility<select class="form-select" @bind="InputResponsibility" disabled="@Busy"><option value="">All permitted responsibilities</option>@foreach(var area in Report.Responsibilities){<option value="@area">@area</option>}</select></label>
+                <label>Task type<select class="form-select" @bind="InputTaskType" disabled="@Busy"><option value="">All permitted types</option>@foreach(var type in Report.TaskTypes){<option value="@type">@type</option>}</select></label>
+                <label>Agent<select class="form-select" @bind="InputAgent" disabled="@Busy"><option value="">All, including unattributed records</option>@foreach(var agent in Report.Agents){<option value="@agent.Id">@agent.Name</option>}</select></label>
+                <button class="btn btn-primary" type="submit" disabled="@Busy">Apply filters</button>
+            </form>
+            <nav class="supervision-views" aria-label="Supervision report views">
+                @foreach(var option in Views){<a class="@(View==option.Code?"selected":"")" aria-current="@(View==option.Code?"page":null)" href="@ReportLink(option.Code,null)">@option.Name</a>}
+            </nav>
+            <p class="supervision-observed">Observed @Report.ObservedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC · company timezone @Report.Timezone. Inclusive local dates; current work state is observed now. Counts and seconds, without currency amounts.</p>
+            <div class="supervision-measures">
+                @foreach(var measure in Report.Measures.Where(x=>x.View==View))
+                {
+                    <a class="vc-panel supervision-measure @(Metric==measure.Code?"selected":"")" href="@ReportLink(View,measure.Code)"><span>@measure.Name</span><strong>@(measure.Count?.ToString()??"Unavailable")</strong><small>@measure.Denominator @measure.DenominatorMeaning.ToLowerInvariant()</small></a>
+                }
+            </div>
+            <details class="vc-panel supervision-coverage" open="@Report.Partial"><summary>@(Report.Partial?"Partial retained source coverage":"Source coverage and outcome meaning")</summary>@foreach(var note in Report.Coverage){<p>@note</p>}</details>
+            @if(Metric is not null){<a href="@ReportLink(View,null)">Back to all measures in this view</a>}
+            <div class="supervision-evidence-layout">
+                <section class="vc-panel supervision-evidence">
+                    <div class="supervision-section-header"><h2>Evidence behind these measures</h2><button class="btn btn-outline-primary" @onclick="Export" disabled="@Busy">Download these permitted rows</button></div>
+                    <p>@Report.Rows.Count permitted detail rows · current page @(Page+1). Measures have different units; do not add them into a business-outcome total.</p>
+                    @if(ExportStatus is not null){<p role="status">@ExportStatus</p>}
+                    @if(Report.Rows.Count==0){<p>No retained evidence rows match these filters. Unavailable measures remain unavailable.</p>}
+                    @foreach(var row in Report.Rows.Skip(Page*PageSize).Take(PageSize))
+                    {
+                        <article class="supervision-row">
+                            <div><strong>@row.Title</strong><p>@row.AgentName · @row.Responsibility · @row.TaskType</p><span class="supervision-stage">@row.EvidenceStage.Replace('_',' ')</span></div>
+                            <div><strong>@row.State</strong><p>@row.RecordedUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC</p>@if(row.SecondsInPeriod.HasValue){<p>@row.SecondsInPeriod.Value.ToString("0.##") seconds in period · @(row.Ongoing?"ongoing interval":"resolved interval")</p>}@if(row.TotalSeconds.HasValue){<p>@row.TotalSeconds.Value.ToString("0.##") total calendar seconds</p>}</div>
+                            <div class="supervision-actions"><a href="@WorkLink(row)">Open exact work</a>@if(row.ApprovalId.HasValue){<a href="@ApprovalLink(row)">Review decision and history</a>}
+                                <details><summary>Recorded evidence (@row.Evidence.Count)</summary>@foreach(var item in row.Evidence){<p><strong>@item.Source.Replace('_',' ')</strong> · @item.OccurredUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC<br />@item.Description @if(item.Source=="collaboration_contribution"&&row.WorkKind is "task" or "initiative"){<a href="@ContributionLink(row,item)">Open retained contribution</a>}</p>}</details>
+                            </div>
+                        </article>
+                    }
+                    @if(Report.Rows.Count>PageSize){<nav aria-label="Evidence pages"><button class="btn btn-outline-primary" disabled="@(Page==0||Busy)" @onclick="()=>Page--">Previous rows</button><button class="btn btn-outline-primary" disabled="@((Page+1)*PageSize>=Report.Rows.Count||Busy)" @onclick="()=>Page++">Next rows</button></nav>}
+                </section>
+                <aside class="vc-panel supervision-definitions"><h2>How this is measured</h2>
+                    @foreach(var measure in Report.Measures.Where(x=>x.View==View&&(Metric is null||Metric==x.Code)))
+                    {<section><h3>@measure.Name</h3><p>@measure.Definition</p><p>@measure.Coverage</p>@if(measure.SecondsInPeriod.HasValue){<p>@measure.SecondsInPeriod.Value.ToString("0.##") total seconds inside this period.</p>}@if(measure.AverageTotalSeconds.HasValue){<p>@measure.AverageTotalSeconds.Value.ToString("0.##") average total calendar seconds for measurable intervals.</p>}</section>}
+                </aside>
+            </div>
+        }
+    }
+</section>
+@code {
+    [SupplyParameterFromQuery]public Guid CompanyId{get;set;}
+    [SupplyParameterFromQuery]public string? From{get;set;}
+    [SupplyParameterFromQuery]public string? To{get;set;}
+    [SupplyParameterFromQuery]public string? Responsibility{get;set;}
+    [SupplyParameterFromQuery]public string? TaskType{get;set;}
+    [SupplyParameterFromQuery]public Guid? AgentId{get;set;}
+    [SupplyParameterFromQuery]public string View{get;set;}="work";
+    [SupplyParameterFromQuery]public string? Metric{get;set;}
+    private static readonly (string Code,string Name)[] Views=[("work","Work in progress"),("outcomes","Outcomes & reliability"),("bottlenecks","Bottlenecks"),("authority","Authority")];
+    private AgentSupervisionReport? Report;private string? Error,ExportStatus;private bool Busy;private int Generation,Page;private const int PageSize=25;
+    private string InputFrom="",InputTo="",InputResponsibility="",InputTaskType="",InputAgent="";
+    protected override Task OnParametersSetAsync()=>Reload();
+    private AgentSupervisionQuery Query()=>new(CompanyId,Parse(From),Parse(To),Empty(Responsibility),Empty(TaskType),AgentId,string.IsNullOrWhiteSpace(View)?"work":View,Empty(Metric));
+    private static DateOnly? Parse(string? value)=>string.IsNullOrWhiteSpace(value)?null:DateOnly.TryParseExact(value,"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out var date)?date:throw new ArgumentException("Choose valid report dates.");
+    private static string? Empty(string? value)=>string.IsNullOrWhiteSpace(value)?null:value;
+    private async Task Reload()
+    {
+        var generation=++Generation;Report=null;Error=null;ExportStatus=null;Page=0;Busy=true;
+        try{if(CompanyId!=Guid.Empty){var result=await Reports.Get(Query());if(generation==Generation){Report=result;View=result.Query.View;InputFrom=result.Query.From?.ToString("yyyy-MM-dd")??"";InputTo=result.Query.To?.ToString("yyyy-MM-dd")??"";InputResponsibility=result.Query.Responsibility??"";InputTaskType=result.Query.TaskType??"";InputAgent=result.Query.AgentId?.ToString("D")??"";}}}
+        catch(Exception ex)when(ex is OnboardingApiException or ArgumentException){if(generation==Generation)Error=ex.Message;}
+        finally{if(generation==Generation)Busy=false;}
+    }
+    private string ReportLink(string view,string? metric)=>DashboardRoutes.WithQuery("/agents/staff/reports",("companyId",CompanyId.ToString("D")),("from",Report?.Query.From?.ToString("yyyy-MM-dd")??From),("to",Report?.Query.To?.ToString("yyyy-MM-dd")??To),("responsibility",Responsibility),("taskType",TaskType),("agentId",AgentId?.ToString("D")),("view",view),("metric",metric));
+    private void ApplyFilters(){Error=null;try{Parse(InputFrom);Parse(InputTo);Navigation.NavigateTo(DashboardRoutes.WithQuery("/agents/staff/reports",("companyId",CompanyId.ToString("D")),("from",InputFrom),("to",InputTo),("responsibility",Empty(InputResponsibility)),("taskType",Empty(InputTaskType)),("agentId",Empty(InputAgent)),("view",View)));}catch(ArgumentException ex){Error=ex.Message;}}
+    private string WorkLink(SupervisionRow row)=>DashboardRoutes.WithQuery(row.WorkRoute,("supervisionReturnUrl",new Uri(Navigation.Uri).PathAndQuery));
+    private string ContributionLink(SupervisionRow row,SupervisionEvidence evidence)=>DashboardRoutes.WithQuery($"/agents/work/{row.WorkKind}/{row.WorkId:D}/collaboration",("companyId",CompanyId.ToString("D")),("artifactId",evidence.Id.ToString("D")),("supervisionReturnUrl",new Uri(Navigation.Uri).PathAndQuery));
+    private string ApprovalLink(SupervisionRow row)=>DashboardRoutes.WithQuery("/work",("companyId",CompanyId.ToString("D")),("tab","approvals"),("itemId",row.ApprovalId?.ToString("D")),("supervisionReturnUrl",new Uri(Navigation.Uri).PathAndQuery));
+    private async Task Export()
+    {
+        if(Report is null||Busy)return;var generation=Generation;Busy=true;Error=null;ExportStatus=null;
+        try{var csv=await Reports.Export(Report.Query);if(generation!=Generation)return;Report=csv.Report;Page=0;await using var module=await JS.InvokeAsync<IJSObjectReference>("import","./js/reportDownload.js");if(generation!=Generation)return;await module.InvokeVoidAsync("downloadReport",csv.FileName,csv.Content);if(generation==Generation)ExportStatus=$"Download prepared for {csv.Report.Rows.Count} permitted rows.";}
+        catch(OnboardingApiException ex){if(generation==Generation){Report=null;Error=ex.Message;}}
+        catch(JSException ex){if(generation==Generation)Error=ex.Message;}
+        finally{if(generation==Generation)Busy=false;}
+    }
+    public void Dispose()=>Generation++;
+}

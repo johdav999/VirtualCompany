@@ -106,6 +106,7 @@
                     </div>
                 </section>
 
+                <SalesDealMeetings CompanyId="ResolvedCompanyId!.Value" Meetings="@(deal.Meetings ?? [])" />
                 <SalesCommitmentPanel CompanyId="ResolvedCompanyId!.Value" DealId="DealId" Changed="LoadAsync" />
 
                 <nav class="deal-content-tabs" aria-label="@SalesText["DealSections"]">
@@ -330,6 +331,8 @@
                         }
                     </section>
                 }
+
+                <BusinessAgentWorkPanel CompanyId="ResolvedCompanyId" RecordKind="deal" RecordId="DealId" RecordSnapshot="deal" />
 
                 @if (!string.IsNullOrWhiteSpace(actionMessage))
                 {

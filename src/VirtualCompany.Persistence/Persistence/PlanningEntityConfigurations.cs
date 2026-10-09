@@ -47,6 +47,9 @@ internal sealed class ForecastConfiguration : IEntityTypeConfiguration<Forecast>
     public void Configure(EntityTypeBuilder<Forecast> builder)
     {
         builder.ToTable("forecasts");
+        builder.Property(x => x.RevisionId).HasColumnName("revision_id");
+        builder.HasOne<FinanceForecastRevision>().WithMany().HasForeignKey(x => new { x.CompanyId, x.RevisionId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
 
         builder.HasKey(x => x.Id);
         builder.HasAlternateKey(x => new { x.CompanyId, x.Id });

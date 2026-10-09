@@ -3,6 +3,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -20,6 +21,17 @@ public sealed class CompanyWorkVisibility(ITodayWorkspaceLensResolver lenses,
         if (!(await authorization.AuthorizeAsync(user.Principal, companyId, CompanyPolicies.FinanceView)).Succeeded)
             allowed.Remove("finance");
         return new(resolved, allowed, executive);
+    }
+
+    internal async Task<CompanyWorkScope> ResolveRecipientAsync(Guid companyId, Guid userId, CancellationToken ct)
+    {
+        var r = await ((CompanyTodayWorkspaceLensResolver)lenses).ResolveRecipientAsync(companyId, userId, ct);
+        var executive = r.AvailableLenses.Any(x => x.Lens == TodayWorkspaceLenses.Company && x.IsExecutiveOversight);
+        var allowed = r.AvailableLenses.Where(x => x.Lens != TodayWorkspaceLenses.Company)
+            .Select(x => x.Lens == TodayWorkspaceLenses.Customers ? "support" : x.Lens).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (executive) allowed.UnionWith(["company", "finance", "sales", "marketing", "support"]);
+        if (!VirtualCompany.Shared.FinanceAccess.CanView(r.MembershipRole.ToStorageValue())) allowed.Remove("finance");
+        return new(r, allowed, executive);
     }
 }
 
@@ -56,7 +68,7 @@ public sealed record CompanyWorkScope(TodayWorkspaceLensResolution Resolution, H
              x.Type.ToLower().StartsWith("support") ? support :
              x.Type.ToLower().StartsWith("marketing") ? marketing :
              (x.Type.ToLower().StartsWith("sales") || x.Type.ToLower().StartsWith("lead") || x.Type.ToLower().StartsWith("deal") || x.Type.ToLower().StartsWith("campaign")) ? sales :
-             (company || x.AssignedAgentId != null || x.CreatedByActorType == "user" && x.CreatedByActorId == userId)));
+             (company || x.AssignedAgentId != null || x.CreatedByActorType == "user" && x.CreatedByActorId == userId || x.DecisionOrigin != null && x.DecisionOrigin.OwnerUserId == userId)));
     }
 
     public static string Area(string? department, string? type = null)

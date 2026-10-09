@@ -193,7 +193,11 @@ public sealed class AgentEffectiveAuthorityResolver : IAgentEffectiveAuthorityRe
             configuredGrants.OrderBy(x => x.ToolName, StringComparer.OrdinalIgnoreCase).ToArray(),
             compatibilityGrants.OrderBy(x => x.ToolName, StringComparer.OrdinalIgnoreCase).ToArray(),
             orderedAuthorities,
-            DateTime.UtcNow);
+            DateTime.UtcNow)
+        {
+            ExcludedConfiguredTools = configuredTools.Except(orderedAuthorities.Select(x => x.ToolName), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray()
+        };
     }
 
     private static AuthorityState ResolveState(

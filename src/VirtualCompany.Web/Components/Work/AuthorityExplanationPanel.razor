@@ -1,0 +1,74 @@
+@implements IDisposable
+@inject AgentWorkApiClient WorkApi
+@inject NavigationManager Navigation
+<section class="authority-panel" aria-label="Configured and effective authority">
+    <header><div><span class="dashboard-kicker">AUTHORITY · READ ONLY</span><h2>What may the agent do?</h2><p>Configured intent and current checks have separate meanings.</p></div><button class="btn btn-outline-primary" @onclick="Load" disabled="@loading">Refresh authority</button></header>
+    @if(loading) { <p role="status">Checking current authority…</p> }
+    else if(value is null) { <p role="alert">@(error ?? "Authority is unavailable in the current company and access scope.")</p> }
+    else
+    {
+        @if(WorkId is null && value.AvailableAgents.Count > 0) {
+            <label class="authority-selector">Agent <select value="@(value.Agents.FirstOrDefault()?.Id.ToString())" @onchange="ChooseAgent">@foreach(var agent in value.AvailableAgents) { <option value="@agent.Id">@agent.Name</option> }</select></label>
+        }
+        <fieldset tabindex="0" aria-describedby="@($"{uid}-intent-note")"><legend>Company configured intent · read only</legend><div class="authority-positions">
+            @foreach(var position in AgentAuthorityTransparencyPresenter.CompanyPositions) {
+                <label class="authority-position @(position.Value == value.CompanyIntent ? "authority-position--selected" : "")"><span><input type="radio" name="@uid" value="@position.Value" checked="@(position.Value == value.CompanyIntent)" disabled /><strong>@position.Label</strong></span><small>@position.Consequence</small></label>
+            }
+        </div></fieldset>
+        <p id="@($"{uid}-intent-note")">Company configuration version @value.ConfigurationVersion · checked @LocalDateTime.DateTime(value.EvaluatedUtc). This view cannot change authority. Agent profiles and Finance grants use their own rules.</p>
+        @foreach(var diagnostic in value.Diagnostics) { <p class="authority-warning" role="alert">@diagnostic</p> }
+        <details class="authority-expanded" open="@(WorkId is null)"><summary>Current restrictions, checks and limits</summary><div class="authority-layout"><div>
+            <article><h3>Task-type policy</h3><p><strong>@AgentAuthorityTransparencyPresenter.HumanLabel(value.TaskType)</strong></p><p class="authority-state">@AgentAuthorityTransparencyPresenter.CheckLabel(value.TaskPolicy.State)</p><p>@value.TaskPolicy.Explanation</p><small>Source: @value.TaskPolicy.Source</small></article>
+            @foreach(var agent in value.Agents) {
+                <article><h3>@agent.Name · agent capability</h3><p>Profile: @AgentAuthorityTransparencyPresenter.ProfileLabel(agent.ProfileLevel)</p><p>Each row is a current capability and policy check with no proposed business payload. Passing a check does not establish permission for the complete task. Execution rechecks its workflow, actor, payload, integration, limits and approvals.</p>
+                @if(agent.Actions.Count == 0) { <p>No supported capability is recorded.</p> }
+                <p class="authority-check-counts">@agent.Actions.Count(x=>x.Check.State == "available") passed · @agent.Actions.Count(x=>x.Check.ReviewRequired) require review · @agent.Actions.Count(x=>x.Check.State != "available" && x.Check.State != "configuration_required" && !x.Check.ReviewRequired) restricted or unavailable</p>
+                <details open="@(WorkId is null)"><summary>Current action checks (@agent.Actions.Count(x=>x.Check.State != "configuration_required"))</summary><div class="authority-actions">@foreach(var action in agent.Actions.Where(x=>x.Check.State != "configuration_required")) {
+                    <section class="authority-action"><h4>@AgentAuthorityTransparencyPresenter.HumanLabel(action.ToolName)</h4><p>@AgentAuthorityTransparencyPresenter.HumanLabel(action.ActionType) · @AgentAuthorityTransparencyPresenter.CheckLabel(action.Check.State)</p><p>@action.Check.Explanation</p><small>Source: @action.Check.Source · Integration: @AgentAuthorityTransparencyPresenter.HumanLabel(action.IntegrationState)</small>@if(!string.IsNullOrEmpty(action.ActorPermission)) { <p class="authority-permission">Actor permission: @AgentAuthorityTransparencyPresenter.HumanLabel(action.ActorPermission)</p> }@if(action.Check.ReviewRequired) { <p><strong>Mandatory human review applies.</strong></p> }</section>
+                }</div></details>
+                @if(agent.Actions.Any(x=>x.Check.State == "configuration_required")) {
+                    <details><summary>Other supported capabilities needing configuration (@agent.Actions.Count(x=>x.Check.State == "configuration_required"))</summary>
+                    @foreach(var action in agent.Actions.Where(x=>x.Check.State == "configuration_required")) {
+                        <section class="authority-action"><h4>@AgentAuthorityTransparencyPresenter.HumanLabel(action.ToolName)</h4><p>@AgentAuthorityTransparencyPresenter.CheckLabel(action.Check.State)</p><p>@action.Check.Explanation</p></section>
+                    }</details>
+                }</article>
+                <article><h3>Finance grants · limits and expiry</h3>
+                @if(agent.Grants.Count == 0) { <p>No separate Finance grant is recorded for this agent. This does not grant proactive Finance execution.</p> }
+                @foreach(var grant in agent.Grants) {
+                    <section class="authority-action"><h4>@AgentAuthorityTransparencyPresenter.HumanLabel(grant.CapabilityId)</h4><p>@AgentAuthorityTransparencyPresenter.GrantLabel(grant.Level) · version @grant.Version</p><p><strong>@AgentAuthorityTransparencyPresenter.CheckLabel(grant.Check.State)</strong> · @grant.Check.Explanation</p><p>@grant.Check.Source</p><dl><dt>Effective from</dt><dd>@LocalDateTime.DateTime(grant.EffectiveFromUtc)</dd><dt>Expires</dt><dd>@LocalDateTime.Optional(grant.ExpiresUtc,empty:"No expiry recorded")</dd>@foreach(var limit in grant.Limits) { <dt>@limit.Label</dt><dd>@limit.Value.Replace('_',' ')</dd> }</dl></section>
+                }</article>
+            }
+            @if(value.Agents.Count == 0) { <p>No participating agent is recorded. Agent capability has not been evaluated.</p> }
+        </div><aside><article><h3>Company limits and mandatory review</h3><dl>@foreach(var limit in value.CompanyLimits) { <dt>@limit.Label</dt><dd>@limit.Value</dd> }</dl><small>Amount limits are shown as recorded. These limit records do not contain a currency field.</small></article><article><h3>Current observation</h3><p>Checked @LocalDateTime.DateTime(value.EvaluatedUtc)</p><p>Refresh after a configuration, permission, integration or grant change. Expiry is evaluated again on every read.</p></article></aside></div></details>
+        @if(WorkId.HasValue && ShowSettingsLink) { <p><a href="@SettingsUrl">View authority settings →</a></p> }
+    }
+</section>
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid? AgentId { get; set; }
+    [Parameter] public string? WorkKind { get; set; }
+    [Parameter] public Guid? WorkId { get; set; }
+    [Parameter] public int RefreshVersion { get; set; }
+    [Parameter] public bool ShowSettingsLink { get; set; } = true;
+    private readonly string uid = $"authority-{Guid.NewGuid():N}";
+    private AuthorityExplanationDto? value; private bool loading; private string? error; private Guid? selected; private int generation; private CancellationTokenSource? read;
+    protected override Task OnParametersSetAsync() { selected=AgentId; return Load(); }
+    private string SettingsUrl => DashboardRoutes.WithQuery("/settings/agents/authority", ("companyId", CompanyId.ToString("D")), ("agentId", value?.Agents.FirstOrDefault()?.Id.ToString("D")), ("workKind", WorkKind), ("workId", WorkId?.ToString("D")),
+        ("workReturnUrl", AgentWorkRoutes.Record(new Uri(Navigation.Uri).PathAndQuery, CompanyId)));
+    private Task ChooseAgent(ChangeEventArgs args) {
+        selected=Guid.TryParse(args.Value?.ToString(),out var id)?id:null;
+        if(WorkId is null && new Uri(Navigation.Uri).AbsolutePath == "/settings/agents/authority") {
+            Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("agentId",selected?.ToString("D")));
+            return Task.CompletedTask;
+        }
+        return Load();
+    }
+    private async Task Load() {
+        var current=++generation; read?.Cancel(); read?.Dispose(); read=new(); var token=read.Token; value=null; error=null; loading=true;
+        try { var result=await WorkApi.AuthorityAsync(CompanyId,selected,WorkKind,WorkId,token); if(current==generation && !token.IsCancellationRequested) value=result; }
+        catch(OperationCanceledException) when(token.IsCancellationRequested) { }
+        catch(Exception ex) when(ex is OnboardingApiException or ArgumentException) { if(current==generation) error=ex.Message; }
+        finally { if(current==generation) loading=false; }
+    }
+    public void Dispose() { generation++; read?.Cancel(); read?.Dispose(); }
+}

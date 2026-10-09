@@ -42,7 +42,12 @@
                             <dl class="company-summary__indicators">
                                 @foreach (var indicator in CompanyHealthPresentation.Indicators(Workspace, lens))
                                 {
-                                    <div><dt>@CommonText[indicator.Label]</dt><dd>@IndicatorValue(indicator)</dd></div>
+                                    <div><dt>
+                                        @if (indicator.Path is { } path)
+                                        { <a href="@Link(path)">@CommonText[indicator.Label]</a> }
+                                        else
+                                        { @CommonText[indicator.Label] }
+                                    </dt><dd>@IndicatorValue(indicator)</dd></div>
                                 }
                             </dl>
                             @if (lens == "finance" && Workspace.Finance?.CoverageGaps?.Count > 0)
@@ -53,7 +58,7 @@
                                     <span>@CommonText["HealthNextAction"]</span>
                                     <h4>@priority.WhatHappened</h4>
                                     <p>@priority.RequiredHumanAction</p>
-                                    <a data-testid="health-department-review" href="@DashboardRoutes.BuildPriorityPath(Workspace.CompanyId, "company", priority.Key, Origin)">@CommonText["TodayReviewAction"] →</a>
+                                    <a data-testid="health-department-review" href="@ReviewLink(priority)">@CommonText["TodayReviewAction"] →</a>
                                 }
                                 else
                                 { <small>@CommonText["HealthNoDepartmentPriority"]</small> }
@@ -82,6 +87,9 @@
     [Parameter] public string? ReturnUrl { get; set; }
     private string Origin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, Workspace.CompanyId) ?? DashboardRoutes.BuildTodayPath(Workspace.CompanyId, "company");
     private string Link(string route) => DashboardRoutes.EnsureWorkspaceContext(route, Workspace.CompanyId, Origin);
+    private string ReviewLink(TodayWorkspacePriorityViewModel priority) => string.IsNullOrWhiteSpace(priority.DeepLink)
+        ? Link(CompanyHealthPresentation.Route(Workspace.CompanyId, priority.Lens))
+        : Link(priority.DeepLink);
     private string Time(DateTime date) => date == DateTime.MinValue ? CommonText["PriorityUnknownTime"] : LocalDateTime.DateTime(date);
     private string IndicatorValue(CompanyHealthPresentation.DepartmentIndicator indicator) =>
         indicator.Count is int count ? LocalNumber.Integer(count) :

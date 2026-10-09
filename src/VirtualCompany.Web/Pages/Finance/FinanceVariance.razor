@@ -1,0 +1,105 @@
+@page "/finance/reports/variance"
+@rendermode InteractiveServer
+@inherits FinancePlanningPageBase
+@inject IMonthlyReviewApiClient Reviews
+@inject IJSRuntime JS
+@using VirtualCompany.Web.Components.Finance
+<PageTitle>Actual versus plan</PageTitle>
+<main class="finance-planning variance-report" data-testid="finance-variance-report">
+    <a class="variance-back" href="@Back">← Back to previous view</a>
+    <header class="variance-header"><div><span class="variance-kicker">FINANCE / REPORTS</span><h1>Actual versus plan</h1><p>Compare posted results with recorded budget and forecast versions.</p></div>
+        <div class="variance-actions"><button class="btn btn-outline-primary" disabled="@Busy" @onclick="Reload">Refresh</button>@if(!Retained&&Report!=null){<button class="btn btn-primary" disabled="@Busy" @onclick="Download">Download CSV</button>}</div>
+    </header>
+    <nav class="variance-tabs" aria-label="Finance planning reports"><a href="@Link("/finance")">Finance workspace</a><a href="@Navigation.Uri" aria-current="page">Actual versus plan</a><a href="@ForecastPath">Rolling forecast</a><a href="@Link("/finance/reports/forecast-comparison")">Compare versions</a><a href="@MonthlyPath">Monthly review</a></nav>
+    @if(Report!=null){
+        <dl class="variance-summary" aria-label="Applied report context">
+            <div class="variance-card"><dt><span class="variance-summary-icon"><svg class="variance-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="15" rx="2" /><path d="M8 3v4M16 3v4M3.5 9.5h17M8 13h2M14 13h2M8 16h2" /></svg></span>Reporting period</dt><dd>@PeriodLabel</dd><small>@(Report.Query.FiscalPeriodId.HasValue?"Selected fiscal period":$"{Report.Query.Months} {(Report.Query.Months==1?"month":"months")} · UTC")</small></div>
+            <div class="variance-card"><dt><span class="variance-summary-icon"><svg class="variance-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 3h9l4 4v14H6V3Z" /><path d="M14 3v5h5M9 12h7M9 16h7" /></svg></span>Budget baseline</dt><dd>@(Report.Query.BudgetVersion??"No version selected")</dd><small>@(Report.Query.BudgetVersion==null?"Select a recorded budget to calculate variance.":"Variance uses this recorded version.")</small></div>
+            <div class="variance-card"><dt><span class="variance-summary-icon"><svg class="variance-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="12" width="3" height="8" rx=".5" /><rect x="10.5" y="8" width="3" height="12" rx=".5" /><rect x="17" y="4" width="3" height="16" rx=".5" /></svg></span>Forecast</dt><dd>@(Report.Query.ForecastVersion is {} version?Report.ForecastLabels?.GetValueOrDefault(version)??version:"No version selected")</dd><small>Optional comparison · currencies kept separate</small></div>
+        </dl>
+        <p class="variance-updated">@(Retained?"Retained evidence as of":"Updated") @Report.AsOfUtc.ToString("dd MMM yyyy HH:mm") UTC</p>
+    }
+    @if(Retained){<section class="variance-notice" role="status"><strong>Original monthly review evidence</strong><p>Source links open current records. Refresh the monthly review explicitly to retain a new result.</p></section>}
+    <div class="variance-layout"><div class="variance-main">
+        <form class="variance-card variance-filters" @onsubmit="Apply" @onsubmit:preventDefault>
+            <div class="variance-section-heading"><h2>Report filters</h2><span>Apply changes to update the report</span></div>
+            <div class="variance-filter-groups">
+                <fieldset><legend>Reporting period</legend><div class="variance-period-fields">
+                    <label>Year<input type="number" @bind="year" disabled="@(Busy||Retained)" min="2000" max="2100" required /></label>
+                    <label>Start month<select aria-label="Start month" @bind="month" disabled="@(Busy||Retained)">@for(var m=1;m<=12;m++){<option value="@m">@(new DateTime(2000,m,1).ToString("MMMM"))</option>}</select></label>
+                    <label>Months<input type="number" @bind="months" disabled="@(Busy||Retained)" min="1" max="12" required /></label>
+                    <label class="variance-fiscal">Fiscal period<select aria-label="Fiscal period" @bind="fiscal" disabled="@(Busy||Retained)"><option value="">Native UTC monthly range</option>@foreach(var p in Choices?.FiscalPeriods??[]){<option value="@p.Id">@p.Name @(p.Closed?"· Closed":"· Open")</option>}</select></label>
+                </div></fieldset>
+                <fieldset><legend>Planning versions</legend><div class="variance-version-fields">
+                    <label>Budget version<select aria-label="Budget version" id="budget-version" @bind="budget" disabled="@(Busy||Retained)"><option value="">Choose one budget version</option>@foreach(var v in Choices?.BudgetVersions??[]){<option value="@v">@v</option>}</select></label>
+                    <label>Forecast version<select aria-label="Forecast version" @bind="forecast" disabled="@(Busy||Retained)"><option value="">No forecast selected</option>@foreach(var v in Choices?.ForecastVersions??[]){<option value="@v">@(Choices?.ForecastLabels?.GetValueOrDefault(v)??v)</option>}</select></label>
+                </div></fieldset>
+            </div>
+            <div class="variance-scope-fields">
+                <label>Currency<input maxlength="3" pattern="[A-Za-z]{3}" @bind="currency" disabled="@(Busy||Retained)" placeholder="All currencies" /></label>
+                <label>Account<select aria-label="Account" @bind="account" disabled="@(Busy||Retained)"><option value="">All accounts</option>@foreach(var a in Choices?.Accounts??[]){<option value="@a.Id">@a.Name</option>}</select></label>
+                <label>Cost center<select aria-label="Cost center" @bind="dimension" disabled="@(Busy||Retained)"><option value="">All cost centers</option>@foreach(var a in Choices?.CostCenters??[]){<option value="@a.Id">@a.Name</option>}</select></label>
+            </div>
+            <div class="variance-filter-footer"><span>Amounts remain separate by currency.</span><button type="submit" class="btn btn-primary" disabled="@(Busy||Retained)">Apply filters</button></div>
+        </form>
+        @if(Busy){<section class="variance-card variance-state" role="status"><h2>Updating your comparison</h2><p>Loading authorized Finance sources…</p></section>}
+        @if(Error!=null){<section class="variance-card variance-state" role="alert"><h2>Finance comparison unavailable</h2><p>@Error</p><button class="btn btn-outline-primary" disabled="@Busy" @onclick="Reload">Retry</button></section>}
+        @if(Report!=null){
+            <FinancePlanningEvidence Report="Report" Selected="Select" ShowCoverage="false">
+                <EmptyActions><a class="btn btn-outline-primary" href="@Link(FinanceRoutes.AccountingJournal)">Review journals</a>@if(!Retained){<a class="btn btn-outline-primary" href="#budget-version">Choose budget version</a>}</EmptyActions>
+            </FinancePlanningEvidence>
+            @if(selected!=null){<section class="variance-card source-panel" aria-label="Selected account source evidence"><div class="variance-section-heading"><div><h2>Source evidence</h2><p>@selected.AccountCode · @selected.AccountName · @selected.MonthUtc.ToString("MMM yyyy") · @selected.Currency</p></div><button class="btn btn-outline-primary" @onclick="()=>selected=null">Close</button></div>
+                @if(!SelectedSources.Any()){<p>No source records are available for this account and period.</p>}
+                <ul class="variance-source-list">@foreach(var s in SelectedSources){<li><div><strong>@s.Description</strong><span>@s.Kind · @s.UpdatedUtc.ToString("dd MMM yyyy HH:mm") UTC</span></div><strong>@s.Amount.ToString("N2") @s.Currency</strong><a href="@SourceLink(s)">Open source →</a></li>}</ul>
+                @foreach(var note in Report.Explanations.Where(n=>n.MonthUtc==selected.MonthUtc&&n.AccountId==selected.AccountId&&n.CostCenterId==selected.CostCenterId&&n.Currency==selected.Currency)){<div class="variance-saved-note"><p>@note.Text</p><small>Saved @note.SavedUtc.ToString("dd MMM yyyy HH:mm") UTC @(note.SourceFingerprint!=Report.Fingerprint?"· Evidence differs from the current report":"· Matches report evidence")</small></div>}
+                @if(!Retained&&selected.Variance.HasValue){<label>Explain this variance<textarea maxlength="2000" value="@explanation" @oninput="NoteChanged"></textarea></label><button class="btn btn-primary" disabled="@Busy" @onclick="SaveNote">Save explanation</button>}
+            </section>}
+        }
+    </div>
+    @if(Report!=null){<aside class="variance-rail" aria-label="Report context and next steps">
+        <section class="variance-card variance-coverage"><h2 class="variance-panel-heading"><svg class="variance-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3M4 8.5c0 1.7 3.6 3 8 3s8-1.3 8-3" /></svg>Source coverage</h2><dl><div><dt>Included rows</dt><dd>@Report.Rows.Count</dd></div><div><dt>Source records</dt><dd>@Report.Sources.Count</dd></div><div><dt>Budget version</dt><dd>@(Report.Query.BudgetVersion==null?"Not selected":"Selected")</dd></div><div><dt>Forecast version</dt><dd>@(Report.Query.ForecastVersion==null?"Not selected":"Selected")</dd></div></dl><details><summary>Coverage notes (@Report.Coverage.Count)</summary>@if(Report.Coverage.Count==0){<p>No coverage notes were supplied.</p>}else{<ul>@foreach(var c in Report.Coverage){<li>@c</li>}</ul>}</details></section>
+        <section class="variance-card variance-next"><h2 class="variance-panel-heading"><svg class="variance-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 5H5v16h14V5h-4" /><rect x="9" y="3" width="6" height="4" rx="1" /><path d="m8 13 3 3 5-6" /></svg>Next steps</h2><a href="@Link(FinanceRoutes.AccountingJournal)">Review posted journals →<span>Check the ledger evidence for this period.</span></a><a href="@ForecastPath">Review future assumptions →<span>Open the rolling forecast for this range.</span></a><a href="@MonthlyPath">@(Retained?"Return to saved monthly review":"Monthly review") →<span>@(Retained?"Reopen the retained review.":"Review results and save a monthly snapshot.")</span></a></section>
+        <section class="variance-card variance-method">
+            <h2 class="variance-panel-heading"><svg class="variance-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></svg>Comparison basis</h2>
+            <span class="variance-basis-label">Account-level comparison</span>
+            <dl class="variance-basis-list">
+                <div><dt>Actuals</dt><dd>Posted ledger entries, by posting date.</dd></div>
+                <div><dt>Variance</dt><dd>Actual minus the selected budget. Both values are required.</dd></div>
+                <div><dt>Scope</dt><dd>Currencies and cost centers stay separate.</dd></div>
+            </dl>
+            <details class="variance-basis-details"><summary>Limits and interpretation</summary><ul>
+                <li>Opening balances, cash timing and scenario values are excluded.</li>
+                <li>Missing evidence remains unavailable; it does not prove a zero.</li>
+                <li>Variance % is unavailable when the budget is zero or missing.</li>
+                <li>Signed differences do not indicate whether a result is favorable.</li>
+            </ul></details>
+        </section>
+    </aside>}
+    </div>
+</main>
+@code{
+    [SupplyParameterFromQuery]public Guid? Snapshot{get;set;} [SupplyParameterFromQuery]public string? Lens{get;set;}
+    private bool Retained=>Snapshot.HasValue;private int year,month,months;private string budget="",forecast="",currency="",account="",dimension="",fiscal="",explanation="";private Guid request=Guid.NewGuid();private FinancePlanningRow? selected;
+    private FinancePlanningReport? choiceContext;
+    private FinancePlanningReport? Choices=>Report??(choiceContext?.CompanyId==Company?choiceContext:null);
+    protected override void Restricted(){base.Restricted();choiceContext=null;}
+    private string PeriodLabel{get{if(Report is null)return "Unavailable";var q=Report.Query;var p=Report.FiscalPeriods.FirstOrDefault(x=>x.Id==q.FiscalPeriodId);if(p!=null)return p.Name;var start=new DateTime(q.Year,q.Month,1);return q.Months==1?start.ToString("MMM yyyy"):$"{start:MMM yyyy} – {start.AddMonths(q.Months-1):MMM yyyy}";}}
+    private IEnumerable<FinancePlanningSource> SelectedSources=>Report!.Sources.Where(s=>s.AccountId==selected!.AccountId&&s.CostCenterId==selected.CostCenterId&&s.Currency==selected.Currency&&(s.Kind=="history"?s.MonthUtc.AddYears(1):s.MonthUtc)==selected.MonthUtc);
+    private string SourceLink(FinancePlanningSource s)=>FinanceJourneyRoutes.Build(s.DeepLink,Company,Navigation.Uri);
+    private string ForecastPath{get{var now=new DateTime(DateTime.UtcNow.Year,DateTime.UtcNow.Month,1);var q=Report?.Query??Query();var start=new DateTime(q.Year,q.Month,1);
+        var offset=(now.Year-start.Year)*12+now.Month-start.Month;if(offset is <0 or >8){start=now;offset=0;}return Link("/finance/reports/rolling-forecast?"+FinanceRollingPlanningApiClient.Parameters(q with{Year=start.Year,Month=start.Month,Months=offset+4,FiscalPeriodId=null}));}}
+    private string MonthlyPath=>DashboardRoutes.BuildMonthlyPath(Company,Lens??"finance",year,month)+(Snapshot.HasValue?$"&snapshot={Snapshot:D}":"");
+    protected override async Task Load(CancellationToken ct){selected=null;if(choiceContext?.CompanyId!=Company)choiceContext=null;var q=Query();year=q.Year;month=q.Month;months=q.Months;budget=q.BudgetVersion??"";forecast=q.ForecastVersion??"";currency=q.Currency??"";account=q.FinanceAccountId?.ToString()??"";dimension=q.CostCenterId?.ToString()??"";fiscal=q.FiscalPeriodId?.ToString()??""; FinancePlanningReport r;
+        if(Snapshot.HasValue){var saved=await Reviews.OpenAsync(Company,Snapshot.Value,ct);r=saved.Workspace.FinancePlanning??throw new InvalidOperationException("This review has no retained Finance planning evidence.");
+            FinanceRollingPlanningApiClient.Validate(r,Company);if(r.Query.Year!=q.Year||r.Query.Month!=q.Month||saved.Summary.Lens!=(Lens??"finance")||
+                Months.HasValue&&r.Query.Months!=Months||Currency!=null&&r.Query.Currency!=q.Currency||BudgetVersion!=null&&r.Query.BudgetVersion!=q.BudgetVersion||
+                ForecastVersion!=null&&r.Query.ForecastVersion!=q.ForecastVersion||FinanceAccountId.HasValue&&r.Query.FinanceAccountId!=FinanceAccountId||
+                CostCenterId.HasValue&&r.Query.CostCenterId!=CostCenterId||FiscalPeriodId.HasValue&&r.Query.FiscalPeriodId!=FiscalPeriodId)throw new InvalidDataException("Saved review filters differ from this link.");}
+        else r=await Planning.Report(Company,q,ct);if(ct.IsCancellationRequested)return;Report=r;choiceContext=r;year=r.Query.Year;month=r.Query.Month;months=r.Query.Months;
+        budget=r.Query.BudgetVersion??"";forecast=r.Query.ForecastVersion??"";currency=r.Query.Currency??"";account=r.Query.FinanceAccountId?.ToString()??"";dimension=r.Query.CostCenterId?.ToString()??"";fiscal=r.Query.FiscalPeriodId?.ToString()??"";}
+    private Task Apply()=>Run(()=>{Guid? Id(string s)=>Guid.TryParse(s,out var id)?id:null;var q=new FinancePlanningQuery(year,month,months,Text(budget),Text(forecast),Text(currency)?.ToUpperInvariant(),Id(account),Id(dimension),Id(fiscal));Navigation.NavigateTo(Link("/finance/reports/variance?"+FinanceRollingPlanningApiClient.Parameters(q)));return Task.CompletedTask;});
+    private void Select(FinancePlanningRow r){selected=r;explanation="";request=Guid.NewGuid();}
+    private void NoteChanged(ChangeEventArgs e){explanation=e.Value?.ToString()??"";request=Guid.NewGuid();}
+    private Task SaveNote()=>Run(async()=>{if(Report==null||selected==null)return;var token=Reads.Token;await Planning.Explain(Company,new(request,Report.Query,selected.MonthUtc,selected.AccountId,selected.CostCenterId,selected.Currency,Report.Fingerprint,explanation),token);var r=await Planning.Report(Company,Report.Query,token);if(token.IsCancellationRequested)return;Report=r;explanation="";request=Guid.NewGuid();});
+    private Task Download()=>Run(async()=>{if(Report==null)return;var token=Reads.Token;var r=await Planning.Export(Company,Report.Query,token);if(token.IsCancellationRequested)return;await using var module=await JS.InvokeAsync<IJSObjectReference>("import",token,"./js/reportDownload.js");token.ThrowIfCancellationRequested();await module.InvokeVoidAsync("downloadReport",token,r.FileName,r.Content);});
+}

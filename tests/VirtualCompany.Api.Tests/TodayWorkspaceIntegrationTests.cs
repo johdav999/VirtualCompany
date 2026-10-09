@@ -65,6 +65,33 @@ public sealed class TodayWorkspaceIntegrationTests : IDisposable
         Assert.DoesNotContain(workspace.Priorities, x => x.WhatHappened.Contains("Protected financial"));
         Assert.DoesNotContain(workspace.Decisions, x => x.Title.Contains("Protected financial"));
     }
+    [Fact]
+    public async Task Agent_briefings_include_persisted_failures_and_business_results_only_for_authorized_agents_and_company()
+    {
+        var seed = await SeedAsync();
+        await _factory.SeedAsync(async db =>
+        {
+            var agentId = await db.Agents.IgnoreQueryFilters().Where(x => x.CompanyId == seed.CompanyId).Select(x => x.Id).FirstAsync();
+            var failed = new AgentOrchestrationRun(seed.CompanyId, agentId, null, "sales.operating_cadence", "1", "1", "1", "visible-failure");
+            failed.Fail("failed", "invalid_reasoning_result", "The cited evidence was not supplied.", 10);
+            var review = new AgentOrchestrationRun(seed.CompanyId, agentId, null, "sales.operating_cadence", "1", "1", "1", "visible-review");
+            review.Complete("needs_review", "test", "test", .9m, "One renewal needs review; pipeline is SEK 12,000.", "{}", "[]", null, null, 10);
+            var hidden = new AgentOrchestrationRun(seed.OtherCompanyId, agentId, null, "sales.operating_cadence", "1", "1", "1", "foreign-review");
+            hidden.Fail("failed", "foreign_failure", "Other company's confidential business evidence.", 10);
+            db.AgentOrchestrationRuns.AddRange(failed, review, hidden);
+        });
+        using var manager = Client("today-manager", "today-manager@example.com", "Sales Manager");
+        var workspace = (await (await manager.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?lens=sales&refresh=true"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.Contains(workspace.AgentUpdates, x => x.Summary == "The cited evidence was not supplied." && x.AgentState == TodayAgentStates.Blocked);
+        Assert.Contains(workspace.AgentUpdates, x => x.Summary == "One renewal needs review; pipeline is SEK 12,000.");
+        Assert.DoesNotContain(workspace.AgentUpdates, x => x.Summary.Contains("confidential"));
+        using var member = Client("today-member", "today-member@example.com", "Member");
+        var restricted = (await (await member.GetAsync($"/api/companies/{seed.CompanyId:D}/workspace/today?refresh=true"))
+            .Content.ReadFromJsonAsync<TodayWorkspaceDto>())!;
+        Assert.DoesNotContain(restricted.AgentUpdates, x => x.EvidenceSourceType == "agent_run");
+    }
+
     private readonly TestWebApplicationFactory _factory = new();
     public void Dispose() => _factory.Dispose();
 

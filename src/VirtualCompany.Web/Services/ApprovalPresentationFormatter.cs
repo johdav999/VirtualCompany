@@ -10,6 +10,34 @@ public static partial class ApprovalPresentationFormatter
     {
         ArgumentNullException.ThrowIfNull(approval);
 
+        if (approval.ApprovalType == "planning_work_review")
+        {
+            approval.DisplayType = "Owned follow-up";
+            approval.DisplayTitle = approval.Status == "pending" ? "Owned follow-up requires review" : "Owned follow-up review";
+            approval.DisplayStatus = HumanizeStatus(approval.Status);
+            approval.DisplayReference = approval.AffectedEntities.FirstOrDefault(x => x.EntityType == "task")?.Label ?? "Recorded follow-up task";
+            approval.DisplayReason = "Review the accountable human work and acceptance outcome";
+            approval.DisplayDecisionSummary = "Approve internal human follow-up work. Sending, publication and payment require separate action approval.";
+            approval.DisplayTrigger = "Created from a retained management decision";
+            approval.DisplayAmount = null;
+            approval.DisplayPaymentActivity = null;
+            return approval;
+        }
+
+        if (approval.TargetEntityType == "annual_plan_version")
+        {
+            approval.DisplayType = "Annual plan";
+            approval.DisplayTitle = approval.Status == "pending" ? "Annual plan requires approval" : "Annual plan review";
+            approval.DisplayStatus = HumanizeStatus(approval.Status);
+            approval.DisplayReference = approval.Review?.Comparison.FirstOrDefault(x => x.Field == "Annual version")?.Proposed ?? "Recorded annual version";
+            approval.DisplayReason = "Review annual targets and budget governance";
+            approval.DisplayDecisionSummary = "Approve the recorded annual plan as planning intent. No execution or payment is authorized.";
+            approval.DisplayTrigger = "Created from annual plan review";
+            approval.DisplayAmount = null;
+            approval.DisplayPaymentActivity = null;
+            return approval;
+        }
+
         var displayType = ResolveDisplayType(approval);
         var reference = ResolveReference(approval, displayType);
         var amount = ResolveAmount(approval);

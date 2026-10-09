@@ -8471,6 +8471,121 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("agent_ai_quality_events", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentExecutionAdmission", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("AcknowledgedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("AdmittedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid?>("AgentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Boundary")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("BusinessKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool?>("Confirmed")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "Boundary", "BusinessKey")
+                        .IsUnique();
+
+                    b.ToTable("agent_execution_admissions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentExecutionControl", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Paused")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid>("ScopeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScopeId")
+                        .IsUnique();
+
+                    b.ToTable("agent_execution_controls", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentExecutionControlCommand", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("ChangedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Paused")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("ScopeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScopeId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("agent_execution_control_commands", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentHandoff", b =>
                 {
                     b.Property<Guid>("Id")
@@ -9362,6 +9477,353 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "Type", "CreatedUtc");
 
                     b.ToTable("alerts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)");
+
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("GoalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Quarter")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BudgetId");
+
+                    b.HasIndex("CompanyId", "GoalId");
+
+                    b.HasIndex("CompanyId", "PlanId");
+
+                    b.ToTable("annual_allocations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualBudgetBinding", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Account")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)");
+
+                    b.Property<Guid>("BudgetId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<DateTime>("MonthUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("NativeVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BudgetId");
+
+                    b.HasIndex("CompanyId", "PlanId");
+
+                    b.HasIndex("PlanId", "BudgetId")
+                        .IsUnique();
+
+                    b.ToTable("annual_budget_bindings", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualDependency", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("InitiativeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObjectiveId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "InitiativeId");
+
+                    b.HasIndex("CompanyId", "ObjectiveId");
+
+                    b.HasIndex("ObjectiveId", "InitiativeId")
+                        .IsUnique();
+
+                    b.ToTable("annual_dependencies", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualMilestone", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("DueUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ObjectiveId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Quarter")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ObjectiveId");
+
+                    b.HasIndex("ObjectiveId", "Quarter")
+                        .IsUnique();
+
+                    b.ToTable("annual_milestones", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualObjective", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Baseline")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<Guid>("BaselineReviewId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("GoalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("GoalVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("MetricKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("OwnerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<decimal>("Target")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BaselineReviewId");
+
+                    b.HasIndex("CompanyId", "GoalId");
+
+                    b.HasIndex("CompanyId", "PlanId");
+
+                    b.HasIndex("PlanId", "GoalId")
+                        .IsUnique();
+
+                    b.ToTable("annual_objectives", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualPlanVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ApprovalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AuthorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("CalendarVersion")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("CommandHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<DateTime?>("DecidedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("EndUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("FiscalYear")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ReviewedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("StartDay")
+                        .HasColumnType("int");
+
+                    b.Property<int>("StartMonth")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("StartUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("StateRevision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Timezone")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ApprovalId");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "FiscalYear", "Version")
+                        .IsUnique();
+
+                    b.ToTable("annual_plan_versions", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ApprovalRequest", b =>
@@ -12832,6 +13294,80 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BriefingCadenceDelivery", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Cadence")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContentHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
+
+                    b.Property<Guid?>("RecipientUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Routing")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)");
+
+                    b.Property<DateTime>("ScheduledUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SettingsHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("SlotKey")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerUserId");
+
+                    b.HasIndex("RecipientUserId");
+
+                    b.HasIndex("CompanyId", "OwnerUserId", "ScheduledUtc");
+
+                    b.HasIndex("CompanyId", "OwnerUserId", "SlotKey")
+                        .IsUnique();
+
+                    b.ToTable("briefing_cadence_deliveries", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.Budget", b =>
                 {
                     b.Property<Guid>("Id")
@@ -12880,8 +13416,6 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnName("version");
 
                     b.HasKey("Id");
-
-                    b.HasAlternateKey("CompanyId", "Id");
 
                     b.HasIndex("CompanyId", "PeriodStartUtc");
 
@@ -13131,6 +13665,152 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_finance_card_settlements_status", "status IN ('needs_review', 'awaiting_bank_evidence', 'in_transit', 'awaiting_approval', 'ready_to_post', 'posted', 'reversed')");
                         });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CollaborationArtifactHandoff", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("InputContributionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<bool>("Passed")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("ReceivingContributionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("InputContributionId");
+
+                    b.HasIndex("ReceivingContributionId");
+
+                    b.HasIndex("CompanyId", "InputContributionId", "ReceivingContributionId")
+                        .IsUnique();
+
+                    b.ToTable("collaboration_artifact_handoffs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CollaborationContribution", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Objective")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("Output")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("ParentTaskId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Pattern")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Rationale")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<string>("ReviewOutcome")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("Role")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SourceTaskId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AgentId");
+
+                    b.HasIndex("ParentTaskId");
+
+                    b.HasIndex("SourceTaskId");
+
+                    b.HasIndex("CompanyId", "ParentTaskId", "Sequence", "Version")
+                        .IsUnique();
+
+                    b.ToTable("collaboration_contributions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CollaborationExecutionLease", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid?>("Token")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "Key")
+                        .IsUnique();
+
+                    b.ToTable("collaboration_execution_leases", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.Company", b =>
@@ -13646,6 +14326,10 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("id");
+
+                    b.Property<string>("CadenceSettingsJson")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("cadence_settings_json");
 
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier")
@@ -22942,6 +23626,157 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.DecisionWorkCollaborator", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("OriginId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.HasIndex("CompanyId", "OriginId");
+
+                    b.HasIndex("OriginId", "UserId")
+                        .IsUnique();
+
+                    b.ToTable("decision_work_collaborators", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.DecisionWorkOrigin", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AcceptanceOutcome")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid?>("AnnualPlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ApprovalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CommandHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("DueUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ItemKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid?>("MonthlySnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Objective")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PreviewChecksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("PreviewJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ProposedConstraints")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid?>("QuarterReviewId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("ScenarioId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<int>("SourceVersion")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("SourceVersionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("TaskId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OwnerUserId");
+
+                    b.HasIndex("CompanyId", "AnnualPlanId");
+
+                    b.HasIndex("CompanyId", "MonthlySnapshotId");
+
+                    b.HasIndex("CompanyId", "QuarterReviewId");
+
+                    b.HasIndex("CompanyId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ScenarioId");
+
+                    b.HasIndex("CompanyId", "TaskId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SourceKind", "SourceVersionId", "ItemKey")
+                        .IsUnique();
+
+                    b.ToTable("decision_work_origins", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_decision_work_source", "([SourceKind] = 'month' AND [MonthlySnapshotId] = [SourceVersionId] AND [MonthlySnapshotId] IS NOT NULL AND [QuarterReviewId] IS NULL AND [AnnualPlanId] IS NULL AND [ScenarioId] IS NULL) OR ([SourceKind] = 'quarter' AND [QuarterReviewId] = [SourceVersionId] AND [QuarterReviewId] IS NOT NULL AND [MonthlySnapshotId] IS NULL AND [AnnualPlanId] IS NULL AND [ScenarioId] IS NULL) OR ([SourceKind] = 'annual' AND [AnnualPlanId] = [SourceVersionId] AND [AnnualPlanId] IS NOT NULL AND [MonthlySnapshotId] IS NULL AND [QuarterReviewId] IS NULL AND [ScenarioId] IS NULL) OR ([SourceKind] = 'scenario' AND [ScenarioId] = [SourceVersionId] AND [ScenarioId] IS NOT NULL AND [MonthlySnapshotId] IS NULL AND [QuarterReviewId] IS NULL AND [AnnualPlanId] IS NULL)");
+                        });
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.DemoScenarioCommandExecution", b =>
                 {
                     b.Property<Guid>("Id")
@@ -27875,6 +28710,71 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("finance_external_references", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceForecastRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AuthorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("CommandHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("NativeVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("SourceAsOfUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "NativeVersion")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "SavedUtc");
+
+                    b.HasIndex("CompanyId", "AuthorId", "RequestId")
+                        .IsUnique();
+
+                    b.ToTable("finance_forecast_revisions", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceIntegrationAuditEvent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -29161,6 +30061,64 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_FinanceTransactions_source_type", "source_type IN ('manual', 'simulation', 'fortnox')");
                         });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceVarianceExplanation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AuthorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BudgetVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid?>("CostCenterId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<DateTime>("MonthUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Text")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "AccountId");
+
+                    b.HasIndex("CompanyId", "MonthUtc");
+
+                    b.HasIndex("CompanyId", "AuthorId", "RequestId")
+                        .IsUnique();
+
+                    b.ToTable("finance_variance_explanations", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceWorkflowTriggerCheckExecution", b =>
@@ -30591,6 +31549,10 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("period_start_at");
 
+                    b.Property<Guid?>("RevisionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("revision_id");
+
                     b.Property<DateTime>("UpdatedUtc")
                         .HasColumnType("datetime2")
                         .HasColumnName("updated_at");
@@ -30606,6 +31568,8 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasAlternateKey("CompanyId", "Id");
 
                     b.HasIndex("CompanyId", "PeriodStartUtc");
+
+                    b.HasIndex("CompanyId", "RevisionId");
 
                     b.HasIndex("CompanyId", "PeriodStartUtc", "Version");
 
@@ -33245,6 +34209,73 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "SubjectType", "SubjectId", "OccurredUtc");
 
                     b.ToTable("marketing_attribution_touches", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingBudgetProposalRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AccountableUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SavedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SeriesId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("SourceAsOfUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "AccountableUserId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "AccountableUserId", "SavedAtUtc");
+
+                    b.HasIndex("CompanyId", "SeriesId", "Revision")
+                        .IsUnique();
+
+                    b.ToTable("marketing_budget_proposal_revisions", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingChannelAction", b =>
@@ -37404,6 +38435,83 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "ConversationId", "CreatedUtc");
 
                     b.ToTable("messages", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MonthlyReviewSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("AccessStamp")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("AsOfUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CalculationVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Lens")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("int");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SavedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SeriesId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "CreatedByUserId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SeriesId", "Revision")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "CreatedByUserId", "Lens", "Year", "Month", "SavedAtUtc");
+
+                    b.ToTable("monthly_review_snapshots", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.NormalizedBillExtraction", b =>
@@ -41614,6 +42722,303 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("sales_prospecting_runs", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyInitiativeLink", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("InitiativeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ObjectiveId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "InitiativeId");
+
+                    b.HasIndex("CompanyId", "ObjectiveId");
+
+                    b.HasIndex("ObjectiveId", "InitiativeId")
+                        .IsUnique();
+
+                    b.ToTable("quarterly_initiative_links", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyMeasureLink", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("MeasureKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<Guid>("ObjectiveId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SnapshotChecksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ObjectiveId");
+
+                    b.HasIndex("CompanyId", "SnapshotId");
+
+                    b.HasIndex("ObjectiveId", "SnapshotId")
+                        .IsUnique();
+
+                    b.ToTable("quarterly_measure_links", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyMilestone", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("DueUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ObjectiveId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ObjectiveId");
+
+                    b.ToTable("quarterly_milestones", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyObjective", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Baseline")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid>("GoalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("GoalVersion")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("OwnerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ReviewId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Target")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "GoalId");
+
+                    b.HasIndex("CompanyId", "ReviewId");
+
+                    b.HasIndex("ReviewId", "GoalId")
+                        .IsUnique();
+
+                    b.ToTable("quarterly_objectives", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyResourceAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AvailableHours")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("GoalId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Pool")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<decimal>("ProposedHours")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)");
+
+                    b.Property<string>("Rationale")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("ReviewId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("SnapshotChecksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("SnapshotId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "GoalId");
+
+                    b.HasIndex("CompanyId", "ReviewId");
+
+                    b.HasIndex("CompanyId", "SnapshotId");
+
+                    b.ToTable("quarterly_resource_allocations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyReview", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AuthorUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<long>("CalendarVersion")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("CommandHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<DateTime>("EndUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("FiscalYear")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Quarter")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("StartDay")
+                        .HasColumnType("int");
+
+                    b.Property<int>("StartMonth")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("StartUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Timezone")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "FiscalYear", "Quarter", "Revision")
+                        .IsUnique();
+
+                    b.ToTable("quarterly_reviews", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ReconciliationResultRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -42459,6 +43864,9 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("int")
                         .HasColumnName("high_risk_deals");
 
+                    b.Property<string>("InputsJson")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<int>("LowRiskDeals")
                         .HasColumnType("int")
                         .HasColumnName("low_risk_deals");
@@ -42641,6 +44049,9 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("nvarchar(64)")
                         .HasColumnName("activity_type");
 
+                    b.Property<Guid?>("ActorUserId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("company_id");
@@ -42675,9 +44086,19 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("lead_id");
 
+                    b.Property<Guid?>("NewStageId")
+                        .HasColumnType("uniqueidentifier");
+
                     b.Property<DateTime>("OccurredUtc")
                         .HasColumnType("datetime2")
                         .HasColumnName("occurred_at");
+
+                    b.Property<Guid?>("PreviousStageId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RecordedReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -44303,6 +45724,69 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "ConfigurationId", "Status");
 
                     b.ToTable("sales_campaign_presentation_runs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCapacityProposalRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AccountableUserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SavedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SeriesId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "AccountableUserId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "AccountableUserId", "SavedAtUtc");
+
+                    b.HasIndex("CompanyId", "SeriesId", "Revision")
+                        .IsUnique();
+
+                    b.ToTable("sales_capacity_proposal_revisions", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesContactPermission", b =>
@@ -50532,6 +52016,213 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("statutory_document_series", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioCash", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("Funding")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)");
+
+                    b.Property<decimal>("Investment")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)");
+
+                    b.Property<string>("Rationale")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<Guid>("ScenarioId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScenarioId");
+
+                    b.HasIndex("ScenarioId", "Year")
+                        .IsUnique();
+
+                    b.ToTable("strategic_scenario_cash", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioCheckpoint", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("InitiativeId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("OwnerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid>("ScenarioId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "InitiativeId");
+
+                    b.HasIndex("CompanyId", "ScenarioId");
+
+                    b.ToTable("strategic_scenario_checkpoints", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioOutput", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ScenarioId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ScenarioId");
+
+                    b.ToTable("strategic_scenario_outputs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AnnualPlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AuthorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CalculationVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("CommandHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)");
+
+                    b.Property<Guid?>("DerivedFromId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("FiscalYear")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("ForecastRevisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("OwnerName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SeriesId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("SourceExpense")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)");
+
+                    b.Property<string>("SourceJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<decimal>("SourceRevenue")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "AnnualPlanId");
+
+                    b.HasIndex("CompanyId", "DerivedFromId");
+
+                    b.HasIndex("CompanyId", "ForecastRevisionId");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SeriesId", "Revision")
+                        .IsUnique();
+
+                    b.ToTable("strategic_scenario_versions", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierApprovalAutomationRule", b =>
                 {
                     b.Property<Guid>("Id")
@@ -51947,6 +53638,102 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("support_agent_executions", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportCapacityProposalRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AvailablePeople")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<int>("BacklogToClear")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ExpectedArrivals")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("HandlingMinutes")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<decimal>("HoursPerBusinessDay")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)");
+
+                    b.Property<Guid>("OwnerId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ResponseTargetMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("TargetMonth")
+                        .HasColumnType("int");
+
+                    b.Property<int>("TargetYear")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("UtilizationPercent")
+                        .HasPrecision(12, 2)
+                        .HasColumnType("decimal(12,2)");
+
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "OwnerId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "OwnerId", "SavedUtc");
+
+                    b.ToTable("support_capacity_proposal_revisions", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportCase", b =>
                 {
                     b.Property<Guid>("Id")
@@ -52103,6 +53890,11 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("nvarchar(80)")
                         .HasColumnName("source");
 
+                    b.Property<int>("StateRevision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("state_revision");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(80)
@@ -52234,6 +54026,19 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("nvarchar(80)")
                         .HasColumnName("event_type");
 
+                    b.Property<string>("FromStatus")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("from_status");
+
+                    b.Property<bool>("IsStateBaseline")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_state_baseline");
+
+                    b.Property<Guid?>("MergeTargetCaseId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("merge_target_case_id");
+
                     b.Property<string>("Metadata")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -52245,6 +54050,10 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("occurred_at");
 
+                    b.Property<int>("StateSequence")
+                        .HasColumnType("int")
+                        .HasColumnName("state_sequence");
+
                     b.Property<string>("Summary")
                         .IsRequired()
                         .HasMaxLength(1000)
@@ -52255,7 +54064,14 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("support_case_id");
 
+                    b.Property<string>("ToStatus")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("to_status");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "MergeTargetCaseId");
 
                     b.HasIndex("CompanyId", "EventType", "OccurredUtc");
 
@@ -52339,6 +54155,64 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("support_case_resolutions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportIssueGroupingRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Group")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)");
+
+                    b.Property<Guid?>("PreviousId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("SavedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("SourceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<Guid>("SupportCaseId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PreviousId")
+                        .IsUnique()
+                        .HasFilter("[PreviousId] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "ActorId", "RequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SupportCaseId", "SavedUtc");
+
+                    b.ToTable("support_issue_grouping_revisions", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportKnowledgeGap", b =>
@@ -52989,6 +54863,103 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("CompanyId", "Category", "Priority", "CustomerTier", "IsActive");
 
                     b.ToTable("support_sla_policies", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TaskTypePolicy", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("ActionsUsed")
+                        .HasColumnType("int");
+
+                    b.Property<Guid?>("ActiveRevisionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TaskType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<DateTime>("UsageDayUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("UsageVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "AgentId", "TaskType")
+                        .IsUnique();
+
+                    b.ToTable("task_type_policies", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TaskTypePolicyRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("ActivatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("MaximumActionsPerDay")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Mode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<Guid>("PolicyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("PreviewHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("PreviewInputs")
+                        .IsRequired()
+                        .HasMaxLength(12000)
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Rationale")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PolicyId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("task_type_policy_revisions", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.TeamsAdminConsentSession", b =>
@@ -54957,6 +56928,30 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("assigned_agent_id");
 
+                    b.Property<Guid?>("BusinessBillId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("business_bill_id");
+
+                    b.Property<Guid?>("BusinessBriefId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("business_brief_id");
+
+                    b.Property<Guid?>("BusinessCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("business_campaign_id");
+
+                    b.Property<Guid?>("BusinessCaseId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("business_case_id");
+
+                    b.Property<Guid?>("BusinessDealId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("business_deal_id");
+
+                    b.Property<Guid?>("BusinessInvoiceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("business_invoice_id");
+
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("company_id");
@@ -55098,6 +57093,18 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasIndex("WorkflowInstanceId");
 
                     b.HasIndex("CompanyId", "AssignedAgentId");
+
+                    b.HasIndex("CompanyId", "BusinessBillId");
+
+                    b.HasIndex("CompanyId", "BusinessBriefId");
+
+                    b.HasIndex("CompanyId", "BusinessCampaignId");
+
+                    b.HasIndex("CompanyId", "BusinessCaseId");
+
+                    b.HasIndex("CompanyId", "BusinessDealId");
+
+                    b.HasIndex("CompanyId", "BusinessInvoiceId");
 
                     b.HasIndex("CompanyId", "CorrelationId");
 
@@ -58003,6 +60010,33 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentExecutionAdmission", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentExecutionControl", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentExecutionControlCommand", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentHandoff", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", null)
@@ -58137,6 +60171,118 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
 
                     b.Navigation("SourceAgent");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualAllocation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Budget", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BudgetId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyGoal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GoalId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualPlanVersion", null)
+                        .WithMany("Allocations")
+                        .HasForeignKey("CompanyId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualBudgetBinding", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Budget", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BudgetId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualPlanVersion", null)
+                        .WithMany("Budgets")
+                        .HasForeignKey("CompanyId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualDependency", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.OperatingInitiative", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "InitiativeId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualObjective", null)
+                        .WithMany("Dependencies")
+                        .HasForeignKey("CompanyId", "ObjectiveId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualMilestone", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualObjective", null)
+                        .WithMany("Milestones")
+                        .HasForeignKey("CompanyId", "ObjectiveId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualObjective", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyReview", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BaselineReviewId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyGoal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GoalId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualPlanVersion", null)
+                        .WithMany("Objectives")
+                        .HasForeignKey("CompanyId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualPlanVersion", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ApprovalId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualPlanVersion", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PreviousId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ApprovalRequest", b =>
@@ -58884,6 +61030,26 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BriefingCadenceDelivery", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("RecipientUserId")
+                        .OnDelete(DeleteBehavior.NoAction);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.Budget", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -58967,6 +61133,63 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CollaborationArtifactHandoff", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CollaborationContribution", null)
+                        .WithMany()
+                        .HasForeignKey("InputContributionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CollaborationContribution", null)
+                        .WithMany()
+                        .HasForeignKey("ReceivingContributionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CollaborationContribution", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkTask", null)
+                        .WithMany()
+                        .HasForeignKey("ParentTaskId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkTask", null)
+                        .WithMany()
+                        .HasForeignKey("SourceTaskId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CollaborationExecutionLease", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyAccountingClosePolicy", b =>
@@ -60704,6 +62927,68 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Deal");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.DecisionWorkCollaborator", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.DecisionWorkOrigin", null)
+                        .WithMany("Collaborators")
+                        .HasForeignKey("CompanyId", "OriginId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.DecisionWorkOrigin", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualPlanVersion", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AnnualPlanId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.MonthlyReviewSnapshot", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MonthlySnapshotId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyReview", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "QuarterReviewId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.StrategicScenarioVersion", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ScenarioId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkTask", null)
+                        .WithOne("DecisionOrigin")
+                        .HasForeignKey("VirtualCompany.Domain.Entities.DecisionWorkOrigin", "CompanyId", "TaskId")
+                        .HasPrincipalKey("VirtualCompany.Domain.Entities.WorkTask", "CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.DemoScenarioCommandExecution", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.DemoScenarioRun", "Run")
@@ -61965,6 +64250,21 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Connection");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceForecastRevision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceForecastRevision", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PreviousId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceIntegrationAuditEvent", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -62217,6 +64517,22 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Invoice");
 
                     b.Navigation("SourceSimulationEventRecord");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceVarianceExplanation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceWorkflowTriggerCheckExecution", b =>
@@ -62540,6 +64856,12 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasPrincipalKey("CompanyId", "Id")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceForecastRevision", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RevisionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Company");
 
@@ -63181,6 +65503,17 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Draft");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingBudgetProposalRevision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingChannelDestination", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.MarketingChannelConnection", null)
@@ -63531,6 +65864,17 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
 
                     b.Navigation("Conversation");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MonthlyReviewSnapshot", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.NormalizedBillExtraction", b =>
@@ -64360,6 +66704,106 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("WorkflowTrigger");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyInitiativeLink", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.OperatingInitiative", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "InitiativeId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyObjective", null)
+                        .WithMany("Initiatives")
+                        .HasForeignKey("CompanyId", "ObjectiveId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyMeasureLink", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyObjective", null)
+                        .WithMany("Measures")
+                        .HasForeignKey("CompanyId", "ObjectiveId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.MonthlyReviewSnapshot", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SnapshotId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyMilestone", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyObjective", null)
+                        .WithMany("Milestones")
+                        .HasForeignKey("CompanyId", "ObjectiveId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyObjective", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyGoal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GoalId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyReview", null)
+                        .WithMany("Objectives")
+                        .HasForeignKey("CompanyId", "ReviewId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyResourceAllocation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyGoal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "GoalId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyReview", null)
+                        .WithMany("Resources")
+                        .HasForeignKey("CompanyId", "ReviewId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.MonthlyReviewSnapshot", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SnapshotId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyReview", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.QuarterlyReview", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PreviousId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ReconciliationResultRecord", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.ReconciliationSuggestionRecord", "AcceptedSuggestion")
@@ -64901,6 +67345,17 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Configuration");
 
                     b.Navigation("PresentationRun");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCapacityProposalRevision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesEmailLink", b =>
@@ -66125,6 +68580,239 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioCash", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.StrategicScenarioVersion", null)
+                        .WithMany("Cash")
+                        .HasForeignKey("CompanyId", "ScenarioId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioCheckpoint", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.OperatingInitiative", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "InitiativeId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.StrategicScenarioVersion", null)
+                        .WithMany("Checkpoints")
+                        .HasForeignKey("CompanyId", "ScenarioId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioOutput", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.StrategicScenarioVersion", null)
+                        .WithMany("Outputs")
+                        .HasForeignKey("CompanyId", "ScenarioId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.ScenarioYearResult", "Result", b1 =>
+                        {
+                            b1.Property<Guid>("StrategicScenarioOutputId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal>("Capacity")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)");
+
+                            b1.Property<decimal>("CapacityShortfall")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)");
+
+                            b1.Property<decimal>("ClosingCash")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Collections")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Demand")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)");
+
+                            b1.Property<decimal>("Fulfilled")
+                                .HasPrecision(19, 4)
+                                .HasColumnType("decimal(19,4)");
+
+                            b1.Property<decimal>("Funding")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("FundingGap")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Investment")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("OpeningCash")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("OperatingCost")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Payables")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Payments")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Receivables")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<decimal>("Revenue")
+                                .HasPrecision(19, 2)
+                                .HasColumnType("decimal(19,2)");
+
+                            b1.Property<int>("Year")
+                                .HasColumnType("int");
+
+                            b1.HasKey("StrategicScenarioOutputId");
+
+                            b1.HasIndex("Year");
+
+                            b1.ToTable("strategic_scenario_outputs");
+
+                            b1.WithOwner()
+                                .HasForeignKey("StrategicScenarioOutputId");
+                        });
+
+                    b.Navigation("Result")
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioVersion", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AnnualPlanVersion", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AnnualPlanId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.StrategicScenarioVersion", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "DerivedFromId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceForecastRevision", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ForecastRevisionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.StrategicScenarioVersion", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PreviousId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.OwnsOne("VirtualCompany.Domain.Entities.ScenarioDrivers", "Drivers", b1 =>
+                        {
+                            b1.Property<Guid>("StrategicScenarioVersionId")
+                                .HasColumnType("uniqueidentifier");
+
+                            b1.Property<decimal>("CapacityGrowthPercent")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<string>("CapacityUnit")
+                                .IsRequired()
+                                .HasMaxLength(32)
+                                .HasColumnType("nvarchar(32)");
+
+                            b1.Property<decimal>("CapacityUnits")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("CashFloor")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("CollectionShare")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("CostGrowthPercent")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("DemandGrowthPercent")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("DemandUnits")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("OpeningCash")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("OpeningPayables")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("OpeningReceivables")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("PaymentShare")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("PriceGrowthPercent")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("SourceToAnnualScale")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<decimal>("VariableCostShare")
+                                .HasPrecision(25, 10)
+                                .HasColumnType("decimal(25,10)");
+
+                            b1.Property<int>("Years")
+                                .HasColumnType("int");
+
+                            b1.HasKey("StrategicScenarioVersionId");
+
+                            b1.ToTable("strategic_scenario_versions");
+
+                            b1.WithOwner()
+                                .HasForeignKey("StrategicScenarioVersionId");
+                        });
+
+                    b.Navigation("Drivers")
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierApprovalAutomationRule", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -66479,6 +69167,21 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportCapacityProposalRevision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.SupportCapacityProposalRevision", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PreviousId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportCase", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Agent", null)
@@ -66524,6 +69227,12 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportCaseEvent", b =>
                 {
+                    b.HasOne("VirtualCompany.Domain.Entities.SupportCase", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MergeTargetCaseId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
                     b.HasOne("VirtualCompany.Domain.Entities.SupportCase", "SupportCase")
                         .WithMany("Events")
                         .HasForeignKey("CompanyId", "SupportCaseId")
@@ -66544,6 +69253,28 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("SupportCase");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportIssueGroupingRevision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.SupportIssueGroupingRevision", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PreviousId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.SupportCase", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SupportCaseId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupportKnowledgeGap", b =>
@@ -66619,6 +69350,26 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("SupportCase");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TaskTypePolicy", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TaskTypePolicyRevision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.TaskTypePolicy", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PolicyId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.TeamsAdminConsentSession", b =>
@@ -67468,6 +70219,22 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("EnqueueWindows");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualObjective", b =>
+                {
+                    b.Navigation("Dependencies");
+
+                    b.Navigation("Milestones");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AnnualPlanVersion", b =>
+                {
+                    b.Navigation("Allocations");
+
+                    b.Navigation("Budgets");
+
+                    b.Navigation("Objectives");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ApprovalRequest", b =>
                 {
                     b.Navigation("Steps");
@@ -67686,6 +70453,11 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("IntelligenceSignals");
 
                     b.Navigation("Recommendations");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.DecisionWorkOrigin", b =>
+                {
+                    b.Navigation("Collaborators");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.DetectedBill", b =>
@@ -67932,6 +70704,22 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Issues");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyObjective", b =>
+                {
+                    b.Navigation("Initiatives");
+
+                    b.Navigation("Measures");
+
+                    b.Navigation("Milestones");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.QuarterlyReview", b =>
+                {
+                    b.Navigation("Objectives");
+
+                    b.Navigation("Resources");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ReconciliationSuggestionRecord", b =>
                 {
                     b.Navigation("AcceptedResults");
@@ -68060,6 +70848,15 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Steps");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.StrategicScenarioVersion", b =>
+                {
+                    b.Navigation("Cash");
+
+                    b.Navigation("Checkpoints");
+
+                    b.Navigation("Outputs");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierBillAccountingProfile", b =>
                 {
                     b.Navigation("Lines");
@@ -68113,6 +70910,8 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
             modelBuilder.Entity("VirtualCompany.Domain.Entities.WorkTask", b =>
                 {
                     b.Navigation("ConversationLinks");
+
+                    b.Navigation("DecisionOrigin");
 
                     b.Navigation("Subtasks");
                 });

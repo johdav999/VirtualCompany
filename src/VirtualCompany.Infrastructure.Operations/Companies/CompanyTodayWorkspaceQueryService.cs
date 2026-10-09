@@ -431,7 +431,9 @@ public sealed class CompanyTodayWorkspaceQueryService : ITodayWorkspaceQueryServ
         DateTime nowUtc)
     {
         var briefing = activeLens == TodayWorkspaceLenses.Company ? cockpit?.DailyBriefing : null;
-        if (briefing is not null && nowUtc - briefing.GeneratedUtc <= TimeSpan.FromHours(24))
+        // A workspace refresh rereads sources; it does not regenerate the saved daily briefing.
+        // Use dated briefing copy only while it is current, otherwise summarize the current priorities.
+        if (briefing is not null && Freshness(briefing.GeneratedUtc, nowUtc) is "fresh" or "current")
         {
             return new TodayWorkspaceSituationSummaryDto(
                 briefing.Title,

@@ -59,6 +59,7 @@ public static class PlatformModuleRegistration
             .Bind(configuration.GetSection(PlatformAdministrationOptions.SectionName));
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
         services.AddScoped<ICompanyExecutionScopeFactory, CompanyExecutionScopeFactory>();
+        services.AddScoped<VirtualCompany.Application.Agents.IAgentExecutionControlGate, AgentExecutionControlGate>();
         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
         services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
         services.AddScoped<IUserPreferenceService, UserPreferenceService>();

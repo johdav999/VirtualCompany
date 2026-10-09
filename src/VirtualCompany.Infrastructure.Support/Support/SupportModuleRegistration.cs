@@ -19,6 +19,7 @@ public static class SupportModuleRegistration
         services.AddHostedService<SupportOperationsBackgroundService>();
         services.AddScoped<ISupportCaseService, SupportCaseService>();
         services.AddScoped<ISupportOperationalReportService, SupportOperationalReportService>();
+        services.AddScoped<ISupportQualityService, SupportQualityService>();
         services.AddScoped<ISupportMailboxIngestionService, SupportMailboxIngestionService>();
         services.AddScoped<ISupportContextResolutionService, SupportContextResolutionService>();
         services.AddScoped<ISupportTriageService, SupportTriageService>();
@@ -46,6 +47,7 @@ public static class SupportModuleRegistration
         services.AddScoped<ICompanyOperatingSnapshotContributor, SupportOperatingSnapshotContributor>();
         services.AddScoped<ITodayWorkspaceContributor, SupportTodayWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceContributor, SupportMonthlyWorkspaceContributor>();
+        services.AddScoped<IWeeklyWorkspaceContributor, SupportWeeklyWorkspaceContributor>();
         return services;
     }
 }

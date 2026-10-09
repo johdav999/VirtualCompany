@@ -31,6 +31,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
     private readonly IBriefingInsightAggregationService _insightAggregationService;
     private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
+    private readonly IBriefingCadenceService? _cadence;
 
     public CompanyBriefingService(
         VirtualCompanyDbContext dbContext,
@@ -41,9 +42,10 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         IBriefingUpdateJobProducer briefingUpdateJobProducer,
         IBriefingInsightAggregationService insightAggregationService,
         IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
-        ILogger<CompanyBriefingService> logger)
+        ILogger<CompanyBriefingService> logger, IBriefingCadenceService? cadence = null)
     {
         _dbContext = dbContext;
+        _cadence = cadence;
         _membershipContextResolver = membershipContextResolver;
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
         _aggregateCache = aggregateCache;
@@ -226,6 +228,11 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         {
             var companyId = company.Id;
             using var scope = _companyExecutionScopeFactory.BeginScope(companyId);
+            if (_cadence != null)
+            {
+                try { generated += await _cadence.ScheduleDueAsync(companyId, nowUtc, cancellationToken); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { failures++; _logger.LogError(ex, "Failed to schedule recipient briefings for {CompanyId}.", companyId); }
+            }
             foreach (var briefingType in new[] { CompanyBriefingType.Daily, CompanyBriefingType.Weekly })
             {
                 try
@@ -413,6 +420,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
             .AsNoTracking()
             .Where(x => x.CompanyId == company.Id && activeUserIds.Contains(x.UserId))
             .ToListAsync(cancellationToken);
+        activeUserIds.RemoveAll(id => preferences.Any(p => p.UserId == id && p.CadenceSettingsJson != null));
         var userPreferences = await _dbContext.UserBriefingPreferences
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -526,6 +534,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         foreach (var userId in users)
         {
             preferences.TryGetValue(userId, out var preference);
+            if (preference?.CadenceSettingsJson != null) continue;
             var briefingFrequency = userPreferences.TryGetValue(userId, out var briefingPreference)
                 ? briefingPreference.DeliveryFrequency
                 : tenantDefault?.DeliveryFrequency ?? BriefingDeliveryFrequency.DailyAndWeekly;

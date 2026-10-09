@@ -17,7 +17,12 @@ public sealed record MonthlyWorkspaceViewModel(
     DateTime? CacheTimestampUtc,
     bool IsPartial,
     IReadOnlyList<TodayWorkspaceDiagnosticViewModel> Diagnostics,
-    TodayWorkspaceResponsibilitySetupViewModel? ResponsibilitySetup = null);
+    TodayWorkspaceResponsibilitySetupViewModel? ResponsibilitySetup = null,
+    MonthlyReviewViewModel? Review = null,
+    SalesManagementReport? SalesManagement = null,
+    MarketingManagementReport? MarketingManagement = null,
+    FinancePlanningReport? FinancePlanning = null,
+    SupportQualityReport? SupportQuality = null);
 
 public sealed record MonthlyWorkspacePeriodViewModel(
     int Year, int Month, string Timezone, DateTime StartUtc, DateTime EndUtc,

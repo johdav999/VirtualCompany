@@ -1,0 +1,2799 @@
+{
+  "companyId": "11111111-1111-1111-1111-111111111111",
+  "agentId": "b5c08109-516b-43cc-ad87-f810ad571215",
+  "agentName": "P14 Authority specialist",
+  "agentStatus": "active",
+  "autonomyLevel": "level_2",
+  "capabilities": [
+    {
+      "id": "grounded_question_answering",
+      "version": "1.0.0",
+      "name": "Grounded questions",
+      "description": "Answer company questions using permitted records and indexed documents with source references.",
+      "category": "Knowledge",
+      "actionType": "read",
+      "state": "configuration_required",
+      "reasonCode": "required_tool_unregistered",
+      "explanation": "One or more trusted tools required by this capability are not registered.",
+      "requiredTools": [
+        "knowledge.search"
+      ],
+      "requiredDataScopes": [
+        "knowledge"
+      ],
+      "missingRequirements": [
+        "tool:knowledge.search"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "repository_evidence_reading",
+      "version": "1.0.0",
+      "name": "Repository evidence reading",
+      "description": "List and read explicitly granted Microsoft 365 repository evidence with bounded content windows and citations.",
+      "category": "Knowledge",
+      "actionType": "read",
+      "state": "configuration_required",
+      "reasonCode": "required_tool_unregistered",
+      "explanation": "One or more trusted tools required by this capability are not registered.",
+      "requiredTools": [
+        "knowledge.search",
+        "documents.list",
+        "documents.read"
+      ],
+      "requiredDataScopes": [
+        "knowledge"
+      ],
+      "missingRequirements": [
+        "tool:knowledge.search",
+        "tool:documents.list",
+        "tool:documents.read"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "role_briefing",
+      "version": "1.0.0",
+      "name": "Role briefings",
+      "description": "Prepare role-specific daily, weekly, and event-driven briefings from current company work.",
+      "category": "Briefings",
+      "actionType": "read",
+      "state": "configuration_required",
+      "reasonCode": "required_tool_unregistered",
+      "explanation": "One or more trusted tools required by this capability are not registered.",
+      "requiredTools": [
+        "tasks.list"
+      ],
+      "requiredDataScopes": [
+        "tasks"
+      ],
+      "missingRequirements": [
+        "tool:tasks.list"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "work_prioritization",
+      "version": "1.0.0",
+      "name": "Work prioritization",
+      "description": "Rank permitted work using deterministic deadlines, risk signals, impact, and dependencies.",
+      "category": "Work management",
+      "actionType": "recommend",
+      "state": "configuration_required",
+      "reasonCode": "required_tool_unregistered",
+      "explanation": "One or more trusted tools required by this capability are not registered.",
+      "requiredTools": [
+        "tasks.list"
+      ],
+      "requiredDataScopes": [
+        "tasks"
+      ],
+      "missingRequirements": [
+        "tool:tasks.list"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "planning",
+      "version": "1.0.0",
+      "name": "Planning",
+      "description": "Turn an objective into a bounded, reviewable plan of durable tasks and approvals.",
+      "category": "Work management",
+      "actionType": "recommend",
+      "state": "configuration_required",
+      "reasonCode": "required_tool_unregistered",
+      "explanation": "One or more trusted tools required by this capability are not registered.",
+      "requiredTools": [
+        "tasks.list"
+      ],
+      "requiredDataScopes": [
+        "tasks"
+      ],
+      "missingRequirements": [
+        "tool:tasks.list"
+      ],
+      "approvalBehavior": "commit_requires_review"
+    },
+    {
+      "id": "exception_interpretation",
+      "version": "1.0.0",
+      "name": "Exception interpretation",
+      "description": "Explain anomalies and failed workflows with evidence-backed hypotheses and safe next steps.",
+      "category": "Operations",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "cross_agent_handoff",
+      "version": "1.0.0",
+      "name": "Cross-agent handoffs",
+      "description": "Request a bounded outcome from another agent with scoped evidence and durable ownership.",
+      "category": "Collaboration",
+      "actionType": "recommend",
+      "state": "configuration_required",
+      "reasonCode": "required_tool_unregistered",
+      "explanation": "One or more trusted tools required by this capability are not registered.",
+      "requiredTools": [
+        "tasks.list"
+      ],
+      "requiredDataScopes": [
+        "tasks"
+      ],
+      "missingRequirements": [
+        "tool:tasks.list"
+      ],
+      "approvalBehavior": "sensitive_handoffs_require_review"
+    },
+    {
+      "id": "memory_proposal",
+      "version": "1.0.0",
+      "name": "Memory proposals",
+      "description": "Propose bounded reusable observations for deterministic review before activation.",
+      "category": "Learning",
+      "actionType": "recommend",
+      "state": "approval_required",
+      "reasonCode": "approval_required",
+      "explanation": "The capability is configured, but every use requires approval.",
+      "requiredTools": [],
+      "requiredDataScopes": [
+        "knowledge"
+      ],
+      "missingRequirements": [],
+      "approvalBehavior": "policy_dependent"
+    },
+    {
+      "id": "finance_cash_liquidity",
+      "version": "1.0.0",
+      "name": "Cash and liquidity advice",
+      "description": "Explain authoritative cash, obligations, runway pressure, and scenarios.",
+      "category": "Finance",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "finance_payables",
+      "version": "1.0.0",
+      "name": "Payables advice",
+      "description": "Prioritize supplier obligations within deterministic payment and approval policy.",
+      "category": "Finance",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "finance_receivables",
+      "version": "1.0.0",
+      "name": "Collections advice",
+      "description": "Prioritize receivables and explain collection risk from authoritative history.",
+      "category": "Finance",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "finance_accounting_treatment",
+      "version": "1.0.0",
+      "name": "Accounting treatment advice",
+      "description": "Recommend reviewable account and treatment candidates within accounting policy.",
+      "category": "Finance",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "finance_close_analysis",
+      "version": "1.0.0",
+      "name": "Close analysis",
+      "description": "Explain statement variance, anomalies, and close readiness.",
+      "category": "Finance",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "finance_operating_cadence",
+      "version": "1.0.0",
+      "name": "Finance operating cadence",
+      "description": "Prepare continuous, daily, and weekly Finance management priorities.",
+      "category": "Finance",
+      "actionType": "recommend",
+      "state": "available",
+      "reasonCode": "capability_available",
+      "explanation": "The capability is configured and available within the agent's current permissions.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_lead_intelligence",
+      "version": "1.0.0",
+      "name": "Lead intelligence",
+      "description": "Explain lead fit, intent, and evidence gaps.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_next_best_action",
+      "version": "1.0.0",
+      "name": "Sales next best action",
+      "description": "Recommend bounded relationship actions from current Sales evidence.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_deal_risk",
+      "version": "1.0.0",
+      "name": "Deal risk advice",
+      "description": "Explain deterministic deal risk and recovery priorities.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_forecast_analysis",
+      "version": "1.0.0",
+      "name": "Forecast analysis",
+      "description": "Explain authoritative forecast scenarios, concentration, and uncertainty.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_campaign_optimization",
+      "version": "1.0.0",
+      "name": "Campaign optimization",
+      "description": "Analyze reviewed campaign outcomes and recommend policy-safe improvements.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_proposal_advice",
+      "version": "1.0.0",
+      "name": "Proposal advice",
+      "description": "Recommend source-backed product, proposal, and terms guidance for review.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_operating_cadence",
+      "version": "1.0.0",
+      "name": "Sales operating cadence",
+      "description": "Prepare continuous, daily, and weekly Sales management priorities.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_meeting_question_answering",
+      "version": "1.0.0",
+      "name": "Grounded meeting questions",
+      "description": "Answer meeting questions from the visible slide and approved company evidence without changing sales records.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "sales.meeting.read_context",
+        "sales.meeting.search_approved_knowledge",
+        "sales.meeting.answer_question"
+      ],
+      "requiredDataScopes": [
+        "sales",
+        "knowledge"
+      ],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "sales_meeting_closing_summary",
+      "version": "1.0.0",
+      "name": "Meeting closing summaries",
+      "description": "Produce separately governed customer minutes and internal sales intelligence from persisted meeting evidence.",
+      "category": "Sales",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "sales.meeting.read_closing_evidence",
+        "sales.meeting.generate_closing_summary"
+      ],
+      "requiredDataScopes": [
+        "sales",
+        "knowledge"
+      ],
+      "missingRequirements": [
+        "role:sales"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "support_triage_analysis",
+      "version": "1.0.0",
+      "name": "Support triage analysis",
+      "description": "Explain deterministic case priority, context ambiguity, and assignment needs.",
+      "category": "Support",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:support"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "support_grounded_reply",
+      "version": "1.0.0",
+      "name": "Grounded reply advice",
+      "description": "Assess answerability and provide cited reply advice without sending.",
+      "category": "Support",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:support"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "support_risk_escalation",
+      "version": "1.0.0",
+      "name": "Support risk and escalation",
+      "description": "Explain SLA and severe-risk evidence while deterministic policy controls escalation.",
+      "category": "Support",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:support"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "support_root_cause_analysis",
+      "version": "1.0.0",
+      "name": "Support root-cause analysis",
+      "description": "Explain recurring issue clusters and reviewable root-cause hypotheses.",
+      "category": "Support",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:support"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "support_knowledge_coverage",
+      "version": "1.0.0",
+      "name": "Support knowledge coverage",
+      "description": "Identify repeated gaps, stale evidence, and documentation priorities.",
+      "category": "Support",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:support"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "support_operating_cadence",
+      "version": "1.0.0",
+      "name": "Support operating cadence",
+      "description": "Prepare continuous, daily, and weekly Support management priorities.",
+      "category": "Support",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [],
+      "requiredDataScopes": [],
+      "missingRequirements": [
+        "role:support"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_planning",
+      "version": "1.0.0",
+      "name": "Marketing planning",
+      "description": "Turn company goals into reviewable marketing objectives, plans, budgets, and calendars.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.prepare_plan"
+      ],
+      "requiredDataScopes": [
+        "marketing"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_audience_intelligence",
+      "version": "1.0.0",
+      "name": "Audience intelligence",
+      "description": "Explain audience fit, qualification evidence, exclusions, consent, and freshness.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.analyze_audience"
+      ],
+      "requiredDataScopes": [
+        "marketing",
+        "sales"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_content_advice",
+      "version": "1.0.0",
+      "name": "Content advice",
+      "description": "Prepare grounded content briefs and variants for human review without publishing.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.prepare_content_brief"
+      ],
+      "requiredDataScopes": [
+        "marketing",
+        "knowledge"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_campaign_coordination",
+      "version": "1.0.0",
+      "name": "Campaign coordination",
+      "description": "Coordinate approved campaign activities and bounded handoffs to Sales.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.recommend_campaign_change"
+      ],
+      "requiredDataScopes": [
+        "marketing",
+        "sales"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_performance_analysis",
+      "version": "1.0.0",
+      "name": "Marketing performance analysis",
+      "description": "Explain observed campaign outcomes, costs, attribution limits, and evidence gaps.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.prepare_performance_review"
+      ],
+      "requiredDataScopes": [
+        "marketing"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_experiment_advice",
+      "version": "1.0.0",
+      "name": "Marketing experiment advice",
+      "description": "Recommend bounded experiments with explicit hypotheses, metrics, and guardrails.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.prepare_experiment"
+      ],
+      "requiredDataScopes": [
+        "marketing"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_operating_cadence",
+      "version": "1.0.0",
+      "name": "Marketing operating cadence",
+      "description": "Prepare continuous, daily, weekly, and monthly Marketing management priorities.",
+      "category": "Marketing",
+      "actionType": "recommend",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.prepare_operating_review"
+      ],
+      "requiredDataScopes": [
+        "marketing",
+        "sales",
+        "knowledge"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "none"
+    },
+    {
+      "id": "marketing_plan_draft_execution",
+      "version": "1.0.0",
+      "name": "Create Marketing plan drafts",
+      "description": "Create grounded internal plan drafts after deterministic policy checks.",
+      "category": "Marketing",
+      "actionType": "execute",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.create_plan_draft"
+      ],
+      "requiredDataScopes": [
+        "marketing"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "policy_dependent"
+    },
+    {
+      "id": "marketing_campaign_draft_execution",
+      "version": "1.0.0",
+      "name": "Create campaign portfolio drafts",
+      "description": "Create incomplete internal Sales campaign drafts without launch or contact.",
+      "category": "Marketing",
+      "actionType": "execute",
+      "state": "permission_denied",
+      "reasonCode": "role_scope_mismatch",
+      "explanation": "This capability belongs to another agent role.",
+      "requiredTools": [
+        "marketing.create_campaign_drafts",
+        "marketing.populate_campaign_draft"
+      ],
+      "requiredDataScopes": [
+        "marketing",
+        "sales"
+      ],
+      "missingRequirements": [
+        "role:marketing"
+      ],
+      "approvalBehavior": "policy_dependent"
+    }
+  ],
+  "generatedUtc": "2026-10-03T19:11:40.8190195Z",
+  "authorityVersion": "agent-effective-authority-v1",
+  "authorityHash": "09f064c23314c891c08c8f46fcf67db74cff53a7e3561d3fcf6bd276e35a4b95",
+  "effectiveTools": [
+    {
+      "toolName": "analyze_finance_capability",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "approve_invoice",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceApproval"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.approve"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.approve",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "categorize_transaction",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "approval_required",
+      "reasonCode": "authority_approval_required",
+      "explanation": "The authority is effective, but policy requires approval before execution.",
+      "grantSource": "configured",
+      "grantSourceVersion": "agent-profile-202610031707316856955",
+      "requiredCompanyPolicies": [
+        "FinanceEdit"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit"
+      ],
+      "isUsable": true,
+      "actorPermission": "finance.edit",
+      "approvalBehavior": "required",
+      "integrationState": "ready"
+    },
+    {
+      "toolName": "evaluate_transaction_anomaly",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.accountant.read_access_activity",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.accounting_drafts.create_accounting_treatment",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.accounting_drafts.create_correction_or_reversal",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.accounting_drafts.create_manual_journal",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.accounting_drafts.create_reconciliation_decision",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.accounting_drafts.submit_for_approval",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_dimensions",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_exchange_rates",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_fixed_assets",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_inventory_boundary",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_payment_batches",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_reconciliation",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_revaluation",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_schedules",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_statement_imports",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.read_subledger_settlement",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.recommend_rate_evidence_remediation",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.recommend_reconciliation_review",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.recommend_schedule_asset_review",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.advanced.recommend_subledger_exceptions",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.audit.read_packages",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.audit.recommend_package_completeness",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.close.read_instance",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.close.read_period_lock_history",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.close.read_readiness",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.close.read_templates",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.close.recommend_blocker_priority",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.compliance.read_obligations",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.compliance.recommend_preparation",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.guarded_commands.categorize_transactions",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.edit",
+      "approvalBehavior": "review_unless_bounded_categorization_exception",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.lookup_accounts",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_fiscal_periods",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_general_ledger",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_report_definitions",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_report_snapshot",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_source_drilldown",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_statement",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.read_trial_balance",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.ledger.search_journals",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.apply_approved_mapping",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.create_follow_up_task",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.explain_readiness",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_approvals",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_audit_evidence",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_briefing",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_capabilities",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_gaps",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_inventory",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_mappings",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_monitoring",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_reconciliation",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_rehearsal",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_status",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.read_transfer_progress",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_cutover_plan",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_effective_period",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_freeze_window",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_gap_resolution",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_mapping",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_monitoring_period",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_required_evidence",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.recommend_strategy",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.request_activation_approval",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.request_plan_approval",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.resume_recovery",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.start_approved_freeze",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.start_assessment",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.start_preparation",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.migration.start_rehearsal",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "FinanceIntegrationAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.integrations.manage"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.integrations.manage",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.accounting_schedule",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.assign_close_task",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.audit_package_preview",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.close_task_assignment",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.compliance_evidence_checklist",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.currency_revaluation",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.evidence_request",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.fixed_asset_addition",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.fixed_asset_depreciation",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.fixed_asset_disposal",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.request_audit_package_generation",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.request_evidence",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.operational_proposals.submit_for_approval",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.year_end.read_readiness_history",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "finance.year_end.recommend_prerequisites",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "get_cash_balance",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "available",
+      "reasonCode": "authority_available",
+      "explanation": "The authority is effective for this tool, action, and scope.",
+      "grantSource": "configured",
+      "grantSourceVersion": "agent-profile-202610031707316856955",
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": true,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "ready"
+    },
+    {
+      "toolName": "get_profit_and_loss_summary",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "list_invoices_awaiting_approval",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "list_transactions",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "integration_unavailable",
+      "reasonCode": "authority_integration_unavailable",
+      "explanation": "A required integration is unavailable for this tool.",
+      "grantSource": "configured",
+      "grantSourceVersion": "agent-profile-202610031707316856955",
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "unavailable"
+    },
+    {
+      "toolName": "list_uncategorized_transactions",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "post_paid_supplier_bill_expense",
+      "toolVersion": "1.0.0",
+      "actionType": "execute",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceEdit",
+        "AccountingAdmin"
+      ],
+      "requiredFinancePermissions": [
+        "finance.edit",
+        "finance.accounting.admin"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.accounting.admin",
+      "approvalBehavior": "always_review",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "recommend_invoice_approval_decision",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "available",
+      "reasonCode": "authority_available",
+      "explanation": "The authority is effective for this tool, action, and scope.",
+      "grantSource": "configured",
+      "grantSourceVersion": "agent-profile-202610031707316856955",
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": true,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "ready"
+    },
+    {
+      "toolName": "recommend_transaction_category",
+      "toolVersion": "1.0.0",
+      "actionType": "recommend",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    },
+    {
+      "toolName": "resolve_finance_agent_query",
+      "toolVersion": "1.0.0",
+      "actionType": "read",
+      "scope": "finance",
+      "state": "configuration_required",
+      "reasonCode": "authority_configuration_required",
+      "explanation": "This registered tool is not granted by the agent profile or a versioned role policy.",
+      "grantSource": null,
+      "grantSourceVersion": null,
+      "requiredCompanyPolicies": [
+        "FinanceView"
+      ],
+      "requiredFinancePermissions": [
+        "finance.view"
+      ],
+      "isUsable": false,
+      "actorPermission": "finance.view",
+      "approvalBehavior": "not_required",
+      "integrationState": "setup_required"
+    }
+  ]
+}

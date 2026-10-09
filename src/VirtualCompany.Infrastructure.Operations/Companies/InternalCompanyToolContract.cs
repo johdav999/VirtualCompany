@@ -256,7 +256,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
     private async Task<InternalToolExecutionResponse> ExecuteResearchProspectAsync(InternalToolExecutionRequest request,CancellationToken ct)
     {
         if(!EnsureAction(request,ToolActionType.Recommend,out var failure)) return failure; var id=ReadGuid(request.Payload,"prospectId"); if(id is null)return Failed("prospect_id_required","A prospect is required.");
-        var prospect=await _leadGenerationService.RefreshResearchAndScoreAsync(request.CompanyId,request.AgentId,id.Value,ct);
+        var prospect=await _leadGenerationService.RefreshResearchAndScoreAsync(request.CompanyId,request.Context.ActorUserId??request.AgentId,id.Value,ct);
         return InternalToolExecutionResponse.Succeeded("Prospect research refreshed.",new Dictionary<string,JsonNode?>{{"prospect",Serialize(prospect)}},Metadata(request,"lead_generation_service"));
     }
 

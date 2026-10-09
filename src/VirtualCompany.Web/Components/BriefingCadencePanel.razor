@@ -1,0 +1,82 @@
+@inject BriefingCadenceApiClient Api
+<section class="briefing-cadence" data-testid="briefing-cadence" data-interactive-ready="@ready.ToString().ToLowerInvariant()" aria-busy="@busy">
+    <header><div><span class="dashboard-kicker">Briefings</span><h1>@(DeliveryId.HasValue ? "Your briefing" : "Briefing preferences")</h1><p>Useful work updates, at the right time and to the right person.</p></div><a href="@($"/dashboard?companyId={CompanyId:D}")">Back to company</a></header>
+    @if (message != null) { <p role="status" class="alert alert-success">@message</p> }
+    @if (error != null) { <p role="alert" class="alert alert-danger">@error</p> }
+    @if (context == null || settings == null) { <p role="status">@(busy ? "Loading authorized briefing settings…" : "Briefings are unavailable for this company.")</p> }
+    else
+    {
+        @if (!DeliveryId.HasValue)
+        {
+            <nav aria-label="Briefing views"><button class="btn @(tab == "schedule" ? "btn-primary" : "btn-outline-secondary")" @onclick='() => tab = "schedule"'>Schedule</button><button class="btn @(tab == "preview" ? "btn-primary" : "btn-outline-secondary")" @onclick="Preview">Preview</button><button class="btn @(tab == "absence" ? "btn-primary" : "btn-outline-secondary")" @onclick='() => tab = "absence"'>Absence routing</button></nav>
+            @if (!context.Configured) { <p class="notice">Legacy daily and weekly delivery remains active until you save these schedules.</p> }
+        }
+        @if (tab == "schedule" && !DeliveryId.HasValue)
+        {
+            <div class="briefing-grid"><article class="briefing-card"><h2>Company and context</h2>
+                <label class="check"><input type="checkbox" @bind="settings.DeliveryEnabled" />Enable workspace briefing delivery</label>
+                <label>Role defaults<select aria-label="Role defaults" @bind="settings.Role" @bind:after="RoleDefaults">@foreach (var role in Roles) { <option value="@role" disabled="@(role != "ceo" && !context.AllowedAreas.Contains(role))">@Label(role)</option> }</select></label><p>@RoleDescription(settings.Role)</p>
+                <label>Timezone<input @bind="settings.Timezone" placeholder="Europe/Stockholm" /></label><p class="muted">Times follow this timezone, including daylight-saving changes.</p>
+                <div class="pair"><label>Work start<input type="time" value="@Time(settings.WorkStart)" @onchange="e => SetTime(v => settings.WorkStart = v, e)" /></label><label>Work end<input type="time" value="@Time(settings.WorkEnd)" @onchange="e => SetTime(v => settings.WorkEnd = v, e)" /></label></div>
+                <fieldset><legend>Working days</legend><div class="checks">@foreach (var day in Enumerable.Range(0, 7)) { var d = day; <label><input type="checkbox" checked="@settings.Workdays.Contains(d)" @onchange="e => Workday(d, (bool)e.Value!)" />@((DayOfWeek)d)</label> }</div></fieldset>
+                <div class="pair"><label>Quiet start<input type="time" value="@Time(settings.QuietStart)" @onchange="e => SetTime(v => settings.QuietStart = v, e)" /></label><label>Quiet end<input type="time" value="@Time(settings.QuietEnd)" @onchange="e => SetTime(v => settings.QuietEnd = v, e)" /></label></div><p class="muted">Equal quiet times disable the quiet period. Closed times defer to the next permitted minute.</p>
+            </article><article class="briefing-card"><h2>Update content</h2><fieldset><legend>Authorized focus areas</legend><div class="checks">@foreach (var area in context.AllowedAreas) { var a = area; <label><input type="checkbox" checked="@settings.FocusAreas.Contains(a)" @onchange="e => Focus(a, (bool)e.Value!)" />@Label(a)</label> }</div></fieldset>
+                <label class="check"><input type="checkbox" @bind="settings.GroupUpdates" />Group routine updates at the same delivery time</label><label class="check"><input type="checkbox" @bind="settings.SuppressUnchanged" />Suppress unchanged routine content</label><p class="muted">Up to 100 recently updated authorized tasks, commitments and retained decision sources. Opening a source checks its current access.</p>
+                <h2>Urgent escalations</h2><p>Blocked, failed or overdue work is separate from routine digests.</p><label class="check"><input type="checkbox" @bind="settings.UrgentEnabled" />Enable urgent work escalations</label><label class="check"><input type="checkbox" @bind="settings.UrgentOutsideHours" />Allow urgent alerts outside work and quiet hours</label><p class="muted">Available channel: workspace inbox. Provider delivery is not configured here.</p>
+            </article></div>
+            <article class="briefing-card"><h2>Schedule</h2><div class="schedule-list">@foreach (var row in settings.Schedules) { <div class="schedule-row"><label class="check"><input type="checkbox" @bind="row.Enabled" />@Label(row.Kind)</label><label>Local time<input aria-label="@(Label(row.Kind) + " time")" type="time" value="@Time(row.LocalTime)" @onchange="e => SetTime(v => row.LocalTime = v, e)" /></label>
+                @if (row.Kind == "weekly") { <label>Weekday<select aria-label="Weekly weekday" @bind="row.Weekday">@foreach (var day in Enumerable.Range(0, 7)) { <option value="@day">@((DayOfWeek)day)</option> }</select></label> }
+                @if (row.Kind is "monthly" or "quarterly" or "annual") { <label>Day of month<input aria-label="@(Label(row.Kind) + " day")" type="number" min="1" max="31" @bind="row.Day" /></label> }
+                @if (row.Kind is "quarterly" or "annual") { <label>@(row.Kind == "quarterly" ? "Quarter anchor month" : "Month")<select aria-label="@(Label(row.Kind) + " month")" @bind="row.Month">@foreach (var month in Enumerable.Range(1, 12)) { <option value="@month">@(new DateTime(2026, month, 1).ToString("MMMM"))</option> }</select></label> }
+                @if (row.Kind is not ("quarterly" or "annual")) { <span class="muted">@(row.Kind is "morning" or "end_of_day" or "shift_handover" ? "Working days" : "Review checkpoint")</span> }</div> }</div></article>
+        }
+        @if (tab == "absence" && !DeliveryId.HasValue)
+        {
+            <div class="briefing-grid"><article class="briefing-card"><h2>Absence period</h2><p>Dates use UTC so the saved absence interval is unambiguous.</p><label>Absence start (UTC)<input type="datetime-local" @bind="absenceStart" /></label><label>Absence end (UTC)<input type="datetime-local" @bind="absenceEnd" /></label><button class="btn btn-outline-secondary" @onclick="ClearAbsence">Clear absence</button></article>
+                <article class="briefing-card"><h2>Routing</h2><label>Eligible delegate<select aria-label="Eligible delegate" @bind="delegateId"><option value="">No delegate</option>@foreach (var person in Eligible()) { <option value="@person.Id">@person.Name</option> }</select></label><label>Accountable fallback<select aria-label="Accountable fallback" @bind="fallbackId"><option value="">Choose fallback</option>@foreach (var person in Eligible()) { <option value="@person.Id">@person.Name</option> }</select></label>
+                <p class="notice">Routing grants no record access or approval authority.</p><p>Permissions and absence are checked again when the job generates and the outbox delivers. An unavailable delegate routes to the eligible fallback. If neither is eligible, the delivery audit explains the failure.</p></article></div>
+            @if (!Eligible().Any()) { <p role="status">No other eligible member is available for the selected focus areas.</p> }
+        }
+        @if (!DeliveryId.HasValue && tab != "preview") { <div class="actions"><button class="btn btn-primary" disabled="@busy" @onclick="Save">Save briefing preferences</button><button class="btn btn-outline-secondary" disabled="@busy" @onclick="Preview">Preview saved schedule</button></div> }
+        @if (tab == "preview" || DeliveryId.HasValue)
+        {
+            @if (preview == null) { <p role="status">Preview is unavailable.</p> }
+            else
+            {
+                <div class="briefing-grid"><article class="briefing-card next"><h2>@(DeliveryId.HasValue ? "Delivery checkpoint" : "Next delivery")</h2><strong data-testid="next-delivery">@(preview.NextDeliveryLocal ?? "No routine delivery scheduled")</strong><p>@preview.Timezone · @string.Join(", ", preview.Cadences.Select(Label))</p><p>Recipient: @Person(preview.RecipientUserId) · @Label(preview.Routing)</p><p class="muted">UTC: @preview.NextDeliveryUtc?.ToString("u")</p></article><article class="briefing-card"><h2>Source freshness</h2><p>@(preview.Items.Length == 0 ? "No authorized work in this briefing." : "Latest included source update: " + preview.FreshnessUtc.ToString("u"))</p><button class="btn btn-outline-secondary" disabled="@busy" @onclick="Preview">Refresh preview</button><p class="muted">Preview reads live authorized work. Retained review evidence stays with its original source.</p></article></div>
+                <article class="briefing-card"><h2>Included work items</h2>@if (preview.Items.Length == 0) { <p>No authorized work items match this schedule. No sample records are invented.</p> } else { <div class="work-items">@foreach (var item in preview.Items) { <div class="work-row"><div><strong>@item.Title</strong><p>@Label(item.Area) · @Label(item.Status) · @Label(item.Priority)</p><span class="muted">Updated @item.UpdatedUtc.ToString("u") · Due @(item.DueUtc?.ToString("u") ?? "Not set")</span></div><div><a href="@item.WorkPath">Open work</a>@if (item.RetainedSourcePath != null) { <a href="@item.RetainedSourcePath">Retained @item.SourceKind source · v@(item.SourceVersion)</a> }</div></div> }</div> }</article>
+                <article class="briefing-card"><h2>Delivery audit</h2>@if (preview.Audit.Length == 0) { <p>No scheduled delivery has run yet.</p> } else { <div class="audit-list">@foreach (var item in preview.Audit) { <div class="audit-row"><a href="@item.Path">@Label(item.Cadence)</a><span>@item.ScheduledUtc.ToString("u")</span><span class="status">@Label(item.Status)</span><span>@Label(item.Routing) · attempts @item.Attempts</span>@if (item.Reason != null) { <p>@item.Reason</p> }</div> }</div> }</article>
+            }
+        }
+    }
+</section>
+@code {
+    [Parameter] public Guid CompanyId { get; set; } [Parameter] public Guid? DeliveryId { get; set; }
+    private BriefingCadenceContext? context; private BriefingCadenceSettings? settings; private BriefingCadencePreview? preview;
+    private bool busy, ready; private int generation; private string tab = "schedule"; private string? error, message; private DateTime? absenceStart, absenceEnd; private string delegateId = "", fallbackId = "";
+    private static readonly string[] Roles = ["ceo", "sales", "marketing", "finance", "support"];
+    protected override Task OnParametersSetAsync() => Load();
+    protected override void OnAfterRender(bool firstRender) { if (firstRender) { ready = true; StateHasChanged(); } }
+    private async Task Run(Func<Task> action) { if (busy) return; var version = generation; busy = true; error = null; message = null; try { await action(); } catch (Exception e) when (e is HttpRequestException or InvalidOperationException or InvalidDataException or TodayWorkspaceAccessException or ArgumentException) { if (version == generation) error = e.Message; } finally { if (version == generation) busy = false; } }
+    private async Task Load()
+    {
+        var version = ++generation; var company = CompanyId; var delivery = DeliveryId; busy = true; context = null; settings = null; preview = null; error = null; message = null;
+        try { var loaded = await Api.Get(company, CancellationToken.None); var opened = delivery.HasValue ? await Api.Open(company, delivery.Value, CancellationToken.None) : null;
+            if (version != generation) return; context = loaded; settings = loaded.Settings; preview = opened; tab = delivery.HasValue ? "preview" : "schedule";
+            absenceStart = settings.AbsenceStartUtc; absenceEnd = settings.AbsenceEndUtc; delegateId = settings.DelegateUserId?.ToString() ?? ""; fallbackId = settings.FallbackUserId?.ToString() ?? ""; }
+        catch (Exception e) when (e is HttpRequestException or InvalidOperationException or InvalidDataException or TodayWorkspaceAccessException or ArgumentException) { if (version == generation) error = e.Message; }
+        finally { if (version == generation) busy = false; }
+    }
+    private Task Save() => Run(async () => { var version = generation; var company = CompanyId; settings!.AbsenceStartUtc = absenceStart.HasValue ? DateTime.SpecifyKind(absenceStart.Value, DateTimeKind.Utc) : null; settings.AbsenceEndUtc = absenceEnd.HasValue ? DateTime.SpecifyKind(absenceEnd.Value, DateTimeKind.Utc) : null; settings.DelegateUserId = Guid.TryParse(delegateId, out var d) ? d : null; settings.FallbackUserId = Guid.TryParse(fallbackId, out var f) ? f : null; var saved = await Api.Save(company, settings, CancellationToken.None); if (version != generation) return; context = saved; settings = saved.Settings; message = "Briefing preferences saved. Schedules and routing are active."; });
+    private Task Preview() => Run(async () => { var version = generation; var company = CompanyId; var delivery = DeliveryId; preview = null; var loaded = delivery.HasValue ? await Api.Open(company, delivery.Value, CancellationToken.None) : await Api.Preview(company, CancellationToken.None); if (version != generation) return; preview = loaded; tab = "preview"; });
+    private IEnumerable<BriefingCadencePerson> Eligible() => context!.EligiblePeople.Where(x => x.Id != context.UserId && settings!.FocusAreas.All(x.Areas.Contains));
+    private void RoleDefaults() { settings!.FocusAreas = settings.Role == "ceo" ? context!.AllowedAreas.ToArray() : context!.AllowedAreas.Where(x => x == settings.Role).ToArray(); }
+    private void ClearAbsence() { absenceStart = null; absenceEnd = null; delegateId = ""; fallbackId = ""; }
+    private void Workday(int d, bool on) => settings!.Workdays = (on ? settings.Workdays.Append(d) : settings.Workdays.Where(x => x != d)).Distinct().Order().ToArray();
+    private void Focus(string a, bool on) => settings!.FocusAreas = (on ? settings.FocusAreas.Append(a) : settings.FocusAreas.Where(x => x != a)).Distinct().Order().ToArray();
+    private static string Time(TimeOnly t) => t.ToString("HH:mm");
+    private static void SetTime(Action<TimeOnly> set, ChangeEventArgs e) { if (TimeOnly.TryParse(e.Value?.ToString(), out var t)) set(t); }
+    private string Person(Guid? id) => id == null ? "No eligible recipient" : context!.EligiblePeople.FirstOrDefault(x => x.Id == id)?.Name ?? "Current recipient";
+    private static string Label(string s) => s == "ceo" ? "CEO" : System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s.Replace('_', ' ').Replace(',', ' '));
+    private static string RoleDescription(string role) => role switch { "sales" => "Meetings and commitments", "marketing" => "Launches and reviews", "finance" => "Obligations and close dates", "support" => "SLA work and shift handover", _ => "Decisions and risks" };
+}

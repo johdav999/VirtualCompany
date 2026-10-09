@@ -1,11 +1,12 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Application.Support;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Support;
 
-public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext db) : IMonthlyWorkspaceContributor
+public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext db, ISupportQualityService quality) : IMonthlyWorkspaceContributor
 {
     public string Lens => TodayWorkspaceLenses.Customers;
 
@@ -14,6 +15,7 @@ public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext d
         CancellationToken cancellationToken)
     {
         var period = context.Period;
+        var qualityReport=await quality.ReportAsync(context.CompanyId,new(period.Year,period.Month),cancellationToken);
         var created = await CasesCreated(period.StartUtc, period.EndUtc);
         var previousCreated = await CasesCreated(period.ComparisonStartUtc, period.ComparisonEndUtc);
         var resolved = await db.SupportCases.IgnoreQueryFilters().AsNoTracking()
@@ -27,8 +29,11 @@ public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext d
             .Where(x => x.CompanyId == context.CompanyId && x.Status != SupportKnowledgeGapStatuses.Resolved)
             .OrderByDescending(x => x.FrequencyCount).ThenByDescending(x => x.UpdatedUtc).Take(5).ToListAsync(cancellationToken);
         var route = $"/support?companyId={context.CompanyId:D}";
-        var eligibleFirstResponses = created.Where(x => x.FirstResponseDueUtc.HasValue && x.FirstResponseSentUtc.HasValue).ToList();
-        var met = eligibleFirstResponses.Count(x => x.FirstResponseSentUtc <= x.FirstResponseDueUtc);
+        var cutoff = context.NowUtc < period.EndUtc ? context.NowUtc : period.EndUtc.AddTicks(-1);
+        var eligibleFirstResponses = created.Where(x => x.FirstResponseDueUtc.HasValue &&
+            (x.FirstResponseDueUtc <= cutoff || x.FirstResponseSentUtc <= cutoff)).ToList();
+        var met = eligibleFirstResponses.Count(x => x.FirstResponseSentUtc.HasValue &&
+            x.FirstResponseSentUtc <= cutoff && x.FirstResponseSentUtc <= x.FirstResponseDueUtc);
         decimal? slaRate = eligibleFirstResponses.Count == 0 ? null : decimal.Round(100m * met / eligibleFirstResponses.Count, 1);
 
         var results = new List<MonthlyWorkspaceMetricDto>
@@ -39,7 +44,7 @@ public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext d
             new("support.sla", "SLA performance", slaRate, slaRate.HasValue ? $"{slaRate:0.#}%" : "Unavailable", null,
                 "No comparable governed sample", "%", slaRate.HasValue ? (slaRate >= 90 ? "positive" : "attention") : "unavailable",
                 created.FirstOrDefault()?.UpdatedUtc ?? period.EndUtc, "support_case", route, slaRate.HasValue,
-                slaRate.HasValue ? null : "No cases with both stored SLA targets and response timestamps occurred this month.")
+                slaRate.HasValue ? null : "No stored first-response deadline was due or answered by the month observation cutoff.")
         };
 
         var priorities = openRisk.Select(x => new MonthlyWorkspacePriorityCandidate(
@@ -68,7 +73,8 @@ public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext d
             openRisk.Count > 0 ? "attention" : "healthy", created.FirstOrDefault()?.UpdatedUtc ?? period.EndUtc,
             [new("Cases opened", created.Count.ToString()), new("Cases resolved", resolved.Count.ToString()),
              new("SLA performance", slaRate.HasValue ? $"{slaRate:0.#}%" : "Unavailable", slaRate.HasValue ? "current" : "unavailable"),
-             new("Open customer risks", openRisk.Count.ToString(), openRisk.Count > 0 ? "attention" : "current"),
+             new("SLA eligible sample", $"{met} met / {eligibleFirstResponses.Count} eligible"),
+             new("Current customer risks", openRisk.Count.ToString(), openRisk.Count > 0 ? "attention" : "current"),
              new("Knowledge gaps", gaps.Count.ToString(), gaps.Count > 0 ? "attention" : "current")],
             items, route, "Case volume, stored SLA timestamps, unresolved risk, and knowledge gaps are available.");
         var outcomes = resolved.Take(5).Select(x => new TodayWorkspaceAgentUpdateDto(
@@ -78,7 +84,7 @@ public sealed class SupportMonthlyWorkspaceContributor(VirtualCompanyDbContext d
             UpdatedUtc: x.UpdatedUtc)).ToList();
         return new(Lens, section, priorities, results, outcomes,
             [new("support", "Customer Support", "current", created.FirstOrDefault()?.UpdatedUtc,
-                "Period case activity and governed SLA fields are available.")]);
+                "Period case activity and governed SLA fields are available.")],SupportQuality:qualityReport);
 
         Task<List<SupportCase>> CasesCreated(DateTime start, DateTime end) => db.SupportCases.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == context.CompanyId && x.CreatedUtc >= start && x.CreatedUtc < end)

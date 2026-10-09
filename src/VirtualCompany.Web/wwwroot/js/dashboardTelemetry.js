@@ -19,25 +19,31 @@ export function registerDashboardScrollTracker(dotNetHelper) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let frame = null;
     let milestoneIndex = 0;
+    let disposed = false;
 
     const publish = () => {
         frame = null;
+        if (disposed) return;
         const depth = computeDepth();
 
         while (milestoneIndex < milestones.length && depth >= milestones[milestoneIndex]) {
-            dotNetHelper.invokeMethodAsync("OnDashboardScrollDepthChanged", milestones[milestoneIndex]);
+            // The Overview component can be disposed while an invocation is in flight.
+            // Telemetry is best effort; a closed circuit must not create an unhandled rejection.
+            dotNetHelper.invokeMethodAsync("OnDashboardScrollDepthChanged", milestones[milestoneIndex])
+                .catch(error => { if (!disposed) console.debug("Dashboard scroll telemetry unavailable.", error); });
             milestoneIndex += 1;
         }
     };
 
     const schedule = () => {
-        if (frame !== null) {
+        if (disposed || frame !== null) {
             return;
         }
         frame = window.requestAnimationFrame(publish);
     };
 
     const dispose = () => {
+        disposed = true;
         if (frame !== null) {
             window.cancelAnimationFrame(frame);
             frame = null;

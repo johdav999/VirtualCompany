@@ -10,6 +10,8 @@
         <div class="d-flex flex-wrap align-items-start gap-2"><a class="btn btn-outline-secondary" href="@BackPath">Back to support</a><a class="btn btn-outline-secondary" href="@OverviewPath">Back to Overview</a><button class="btn btn-primary" @onclick="ExportAsync" disabled="@(loading || exporting || report is null)">Export CSV</button></div>
     </header>
     <nav class="vc-section-tabs my-3" aria-label="Support reports">
+        <a href="@RecordPath("/support/reports/quality")">Support quality</a>
+        <a href="@RecordPath("/support/reports/capacity")">Capacity proposals</a>
         @foreach (var view in new[] { "sla", "backlog", "unresolved", "aging" })
         { <a class="@(View == view ? "active" : null)" href="@ViewPath(view)">@Label(view)</a> }
     </nav>

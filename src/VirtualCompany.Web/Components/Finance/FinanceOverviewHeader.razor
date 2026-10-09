@@ -1,4 +1,5 @@
 @using VirtualCompany.Web.Services
+@inject NavigationManager Navigation
 
 <div class="finance-overview-header">
     <div>
@@ -9,6 +10,10 @@
     <div class="finance-overview-header__actions">
         <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, CompanyId)">@FinanceText["FinanceHome"]</a>
         <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
+        @if (CompanyId is Guid company)
+        {
+            <a class="btn finance-overview-button finance-overview-button--secondary" href="@FinanceJourneyRoutes.Build("/finance/reports/variance",company,Navigation.Uri)">Actual versus plan</a>
+        }
     </div>
 </div>
 

@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Cockpit;
@@ -15,7 +16,7 @@ using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryService
+public sealed partial class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryService
 {
     private const int TypeMaxLength = 100;
     private const int TitleMaxLength = 200;
@@ -31,6 +32,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
     private readonly ICompanyOperatingEventService _operatingEvents;
     private readonly CompanyWorkVisibility _visibility;
+    private readonly IAuditEventWriter _auditEventWriter;
 
     public CompanyTaskService(
         VirtualCompanyDbContext dbContext,
@@ -39,9 +41,11 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         IExecutiveCockpitDashboardCache dashboardCache,
         ICompanyOutboxEnqueuer outboxEnqueuer,
         ICompanyOperatingEventService operatingEvents,
-        CompanyWorkVisibility visibility)
+        CompanyWorkVisibility visibility,
+        IAuditEventWriter auditEventWriter)
     {
         _dbContext = dbContext;
+        _auditEventWriter = auditEventWriter;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _outboxEnqueuer = outboxEnqueuer;
         _agentAssignmentGuard = agentAssignmentGuard;
@@ -106,6 +110,7 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
             command.RationaleSummary,
             command.ConfidenceScore,
             command.CorrelationId);
+        await ValidateBusinessAssociationsAsync(task, scope, cancellationToken);
         task.SetDueDate(command.DueAt);
 
         _dbContext.WorkTasks.Add(task);
@@ -159,11 +164,20 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         }
 
         var status = WorkTaskStatusValues.Parse(command.Status);
+        var origin = await _dbContext.Set<DecisionWorkOrigin>().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.TaskId == taskId, cancellationToken);
+        if (origin != null && status is WorkTaskStatus.InProgress or WorkTaskStatus.Completed &&
+            (!origin.ApprovalId.HasValue || !await _dbContext.ApprovalRequests.AnyAsync(x => x.CompanyId == companyId &&
+                x.Id == origin.ApprovalId && x.TargetEntityType == "task" && x.TargetEntityId == taskId && x.Status == ApprovalRequestStatus.Approved, cancellationToken)))
+            throw new UnauthorizedAccessException("Submit this owned follow-up for human work review before starting or completing it.");
+        var oldOutput = System.Text.Json.JsonSerializer.SerializeToNode(task.OutputPayload);
         task.UpdateStatus(
             status,
             command.OutputPayload,
             command.RationaleSummary,
             command.ConfidenceScore);
+
+        if (!JsonNode.DeepEquals(oldOutput, System.Text.Json.JsonSerializer.SerializeToNode(task.OutputPayload)))
+            await InvalidateTaskReviewsAsync(task, cancellationToken);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
@@ -208,7 +222,9 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         }
 
         await EnsureAssignmentScopeAsync(scope, task.Type, command.AssignedAgentId, cancellationToken);
+        var changedAssignment = task.AssignedAgentId != command.AssignedAgentId;
         task.AssignTo(command.AssignedAgentId);
+        if (changedAssignment) await InvalidateTaskReviewsAsync(task, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
@@ -253,6 +269,8 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         var visibleIds = (await scope.Tasks(_dbContext.WorkTasks).Where(x => x.CompanyId == companyId && relatedIds.Contains(x.Id))
             .Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet();
         var result = ToDetailDto(task);
+        if (!await CollaborationContentVisibility.AllowsAsync(_dbContext, scope, taskId, cancellationToken))
+            result = result with { InputPayload = new(), OutputPayload = new(), RationaleSummary = null, ConfidenceScore = null };
         return result with
         {
             ParentTask = result.ParentTask is { } parentTask && visibleIds.Contains(parentTask.Id) ? parentTask : null,

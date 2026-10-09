@@ -1,0 +1,57 @@
+@page "/finance/reports/rolling-forecast"
+@rendermode InteractiveServer
+@inherits FinancePlanningPageBase
+@using VirtualCompany.Web.Components.Finance
+<PageTitle>Rolling forecast</PageTitle>
+<main class="vc-page finance-planning"><header class="vc-page-header"><div><span class="vc-kicker">FINANCE / PLANNING</span><h1>Rolling forecast</h1><p>Keep posted actuals and make future assumptions explicit</p></div><a href="@Back">Back to previous view</a></header>
+    <nav class="vc-section-tabs"><a href="@ReportPath">Actual versus plan</a><a href="@Link("/finance/reports/forecast-comparison")">Compare versions</a><a href="@Link("/finance")">Finance workspace</a></nav>
+    @if(Busy){<section class="vc-panel" role="status">Loading or validating Finance assumptions…</section>}
+    @if(Error!=null){<section class="vc-panel" role="alert">@Error <button disabled="@Busy" @onclick="Reload">Reload evidence</button><button disabled="@Busy" @onclick="Preview">Retry preview</button></section>}
+    @if(Report!=null){<div class="planning-layout"><div>
+        <section class="vc-panel forecast-context"><h2>Forecast context</h2><p>@Report.Query.Year-@Report.Query.Month.ToString("00") · @Report.Query.Months UTC months · Budget @(Report.Query.BudgetVersion??"unavailable") · Currency @(Report.Query.Currency??"choose one currency in Actual versus plan")</p>
+            <label>Named version<input maxlength="64" @bind="name" disabled="@ReadOnly" /></label><label>Explanation<textarea maxlength="2000" @bind="notes" @bind:after="Changed" disabled="@ReadOnly"></textarea></label>
+            <label>Actuals through month<input type="month" value="@actualThrough" @onchange="ActualMonthChanged" disabled="@ReadOnly" /></label>
+            @if(saved!=null){<p>Saved @saved.Summary.SavedUtc.ToString("yyyy-MM-dd HH:mm") UTC · Original sources @saved.Summary.SourceAsOfUtc.ToString("yyyy-MM-dd HH:mm") UTC. Saved values are immutable.</p>}
+            @if(ReadOnly){<button disabled="@Busy" @onclick="Edit">Create a new revision</button>}
+        </section>
+        <section class="vc-panel assumption-panel"><h2>Future assumptions</h2><p>Use explicit signed account amounts. Only future UTC months can be written. Negative values are supported.</p>
+            @foreach(var a in assumptions){
+                @if(ReadOnly){<div class="retained-assumption"><strong>@a.Month · @Report.Accounts.FirstOrDefault(x=>x.Id.ToString()==a.Account)?.Name · @(Report.CostCenters.FirstOrDefault(x=>x.Id.ToString()==a.Dimension)?.Name??"Unassigned")</strong><p>@Money(a.Amount) @Report.Query.Currency · @a.Rationale</p></div>}
+                else{<div class="assumption-row" @key="a"><label>Month<input type="month" value="@a.Month" @onchange="e=>MonthChanged(a,e)" /></label><label>Account<select @bind="a.Account" @bind:after="Changed"><option value="">Choose account</option>@foreach(var x in Report.Accounts){<option value="@x.Id">@x.Name</option>}</select></label><label>Cost center<select @bind="a.Dimension" @bind:after="Changed"><option value="">Unassigned</option>@foreach(var x in Report.CostCenters){<option value="@x.Id">@x.Name</option>}</select></label><label>Amount<input type="number" step="0.01" @bind="a.Amount" @bind:after="Changed" /></label><label>Rationale<input maxlength="1000" @bind="a.Rationale" @bind:after="Changed" /></label><button disabled="@Busy" @onclick="()=>Remove(a)">Remove</button></div>}
+            }
+            @if(!ReadOnly){<button disabled="@(Busy||assumptions.Count>=500)" @onclick="Add">Add assumption</button>}
+        </section>
+        @if(preview!=null){<section class="vc-panel preview-panel"><h2>Deterministic preview</h2><p>@(ReadOnly?"Original retained preview":"Preview of the current assumptions") · Actual, budget and forecast remain separate. Scenario values unavailable.</p><div class="planning-scroll" tabindex="0"><table class="table"><thead><tr><th>Month</th><th>Account</th><th>Cost center</th><th>Currency</th><th>Actual retained</th><th>Budget</th><th>Forecast</th><th>Explanation</th></tr></thead><tbody>@foreach(var v in preview.Values){<tr><td>@v.MonthUtc.ToString("MMM yyyy")</td><td>@Report.Accounts.FirstOrDefault(x=>x.Id==v.AccountId)?.Name</td><td>@(Report.CostCenters.FirstOrDefault(x=>x.Id==v.CostCenterId)?.Name??"Unassigned")</td><td>@v.Currency</td><td>@Money(v.Actual)</td><td>@Money(v.Budget)</td><td>@Money(v.Forecast)</td><td>@v.Explanation</td></tr>}</tbody></table></div></section>}
+        <details class="vc-panel retained-actuals"><summary>Posted actuals and baseline evidence · Read only</summary><FinancePlanningEvidence Report="Report" Selected="Inspect" />@if(inspected!=null){<ul>@foreach(var s in Report.Sources.Where(x=>x.AccountId==inspected.AccountId&&x.CostCenterId==inspected.CostCenterId&&x.Currency==inspected.Currency&&(x.Kind=="history"?x.MonthUtc.AddYears(1):x.MonthUtc)==inspected.MonthUtc)){<li>@s.Kind · @Money(s.Amount) @s.Currency · @s.Description <a href="@Link(s.DeepLink)">Open source</a></li>}</ul>}</details>
+    </div><aside class="vc-panel planning-aside"><h2>Laura · Finance</h2><p>No journal, payment, period-close or statutory approval action is performed by saving a forecast.</p><p>No cash timing or opening balance is inferred. Missing baselines remain unavailable. Unspecified future account/month combinations are gaps.</p>
+        @if(!ReadOnly){<button class="btn btn-primary" disabled="@Busy" @onclick="Preview">Preview assumptions</button><button disabled="@(Busy||preview==null)" @onclick="Save">Save named version</button>}
+        <h3>Saved versions</h3>@if(history.Count==0){<p>No saved forecast versions.</p>}@foreach(var h in history){<a href="@VersionPath(h.Id)">@h.Name · @h.SavedUtc.ToString("yyyy-MM-dd HH:mm") UTC</a>}
+        <div><button disabled="@(Busy||skip==0)" @onclick="PreviousPage">Previous</button><button disabled="@(Busy||history.Count<20)" @onclick="NextPage">Next</button></div>
+    </aside></div>}
+</main>
+@code{
+    [SupplyParameterFromQuery]public Guid? Version{get;set;}
+    private sealed class Assumption{public string Month{get;set;}="";public string Account{get;set;}="";public string Dimension{get;set;}="";public decimal Amount{get;set;}public string Rationale{get;set;}="";}
+    private List<Assumption> assumptions=[];private IReadOnlyList<FinanceForecastRevisionSummary> history=[];private FinanceForecastRevision? saved;private FinanceForecastPreview? preview;private FinancePlanningRow? inspected;private bool editing;private string name="",notes="",actualThrough="";private Guid request=Guid.NewGuid();private int skip;
+    private bool ReadOnly=>saved!=null&&!editing;
+    private string ReportPath=>Link("/finance/reports/variance?"+FinanceRollingPlanningApiClient.Parameters(Report?.Query??Query(4)));
+    private string VersionPath(Guid id)=>Link($"/finance/reports/rolling-forecast?version={id:D}");
+    protected override async Task Load(CancellationToken ct){saved=null;preview=null;history=[];editing=false;inspected=null;var value=Version.HasValue?await Planning.Open(Company,Version.Value,ct):null;
+        var r=value?.Preview.Report??await Planning.Report(Company,Query(4),ct);var list=await Planning.History(Company,skip,ct);if(ct.IsCancellationRequested)return;
+        Report=r;saved=value;preview=value?.Preview;history=list;name=value?.Summary.Name??"";notes=value?.Preview.Input.Notes??"";
+        actualThrough=(value?.Preview.Input.ActualThroughUtc??new DateTime(DateTime.UtcNow.Year,DateTime.UtcNow.Month,1)).ToString("yyyy-MM");
+        assumptions=value?.Preview.Input.Assumptions.Select(x=>new Assumption{Month=x.MonthUtc.ToString("yyyy-MM"),Account=x.AccountId.ToString(),Dimension=x.CostCenterId?.ToString()??"",Amount=x.Amount,Rationale=x.Rationale}).ToList()??[];request=Guid.NewGuid();if(value==null)Add();}
+    private void ActualMonthChanged(ChangeEventArgs e){actualThrough=e.Value?.ToString()??"";Changed();} private void MonthChanged(Assumption a,ChangeEventArgs e){a.Month=e.Value?.ToString()??"";Changed();} private void Changed(){preview=null;request=Guid.NewGuid();}
+    private void Add(){assumptions.Add(new(){Month=DateTime.UtcNow.AddMonths(1).ToString("yyyy-MM"),Account=Report?.Query.FinanceAccountId?.ToString()??"",Dimension=Report?.Query.CostCenterId?.ToString()??""});Changed();}
+    private void Remove(Assumption a){assumptions.Remove(a);Changed();}
+    private void Edit(){editing=true;Changed();}
+    private void Inspect(FinancePlanningRow row)=>inspected=row;
+    private PreviewFinanceForecast Input(){DateTime Date(string s)=>DateTime.TryParseExact(s,"yyyy-MM",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out var d)?DateTime.SpecifyKind(d,DateTimeKind.Utc):throw new ArgumentException("Choose a valid month.");
+        if(assumptions.Any(a=>!Guid.TryParse(a.Account,out _)))throw new ArgumentException("Choose an account for every future assumption.");
+        return new(Report!.Query,Date(actualThrough),assumptions.Select(a=>new FinanceForecastAssumption(Date(a.Month),Guid.Parse(a.Account),Guid.TryParse(a.Dimension,out var dim)?dim:null,Report.Query.Currency??"",a.Amount,a.Rationale)).ToArray(),notes);}
+    private Task Preview()=>Run(async()=>{if(ReadOnly||Report==null)return;preview=null;var ct=Reads.Token;var p=await Planning.Preview(Company,Input(),ct);if(ct.IsCancellationRequested)return;preview=p;Report=p.Report;});
+    private Task Save()=>Run(async()=>{if(ReadOnly||preview==null||Report==null)return;var ct=Reads.Token;var result=await Planning.Save(Company,new(request,name,Input(),preview.Fingerprint,saved?.Summary.Id),ct);if(ct.IsCancellationRequested)return;Navigation.NavigateTo(VersionPath(result.Summary.Id));});
+    private Task Page()=>Run(async()=>{var ct=Reads.Token;var list=await Planning.History(Company,skip,ct);if(!ct.IsCancellationRequested)history=list;});
+    private Task PreviousPage(){skip=Math.Max(0,skip-20);return Page();}private Task NextPage(){skip+=20;return Page();}
+}
+

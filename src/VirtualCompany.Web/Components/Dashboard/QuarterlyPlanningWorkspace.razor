@@ -1,0 +1,157 @@
+@using VirtualCompany.Web.Services
+@inject QuarterlyPlanningApiClient Planning
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<div class="planning-workspace" data-testid="quarter-planning" data-interactive-ready="@interactive.ToString().ToLowerInvariant()">
+    <header><span class="planning-kicker">Company planning · Quarter</span><h1>@(Editor ? "Objective and resource proposal" : "Quarterly objectives and resources")</h1>
+        <p>Review accountable objectives, retained department measures and explicit capacity commitments.</p></header>
+    <nav class="workspace-periods" aria-label="Overview period">
+        <a href="@DashboardRoutes.BuildTodayPath(CompanyId, "company")">Today</a><a href="@DashboardRoutes.BuildWeeklyPath(CompanyId, "company")">Week</a>
+        <a href="@DashboardRoutes.BuildMonthlyPath(CompanyId, "company")">Month</a><a class="workspace-periods__active" aria-current="page" href="@OverviewPath">Quarter</a><a href="@($"/dashboard?companyId={CompanyId}&period=year&year={year}&lens=company")">Year</a>
+    <a href="@($"/dashboard?companyId={CompanyId}&period=multiyear&year={year}&lens=company")">Multi-year</a></nav>
+    <div class="planning-filters"><label>Fiscal year <input type="number" min="2000" max="2099" @bind="year" disabled="@busy" /></label>
+        <label>Quarter <select @bind="quarter" disabled="@busy">@for (var q = 1; q <= 4; q++) { <option value="@q">Q@(q)</option> }</select></label>
+        <button class="btn btn-outline-primary" disabled="@busy" @onclick="SelectPeriod">Open quarter</button><button class="btn btn-outline-secondary" disabled="@busy" @onclick="Reload">Reload</button></div>
+    @if (busy) { <p role="status">Loading quarterly planning…</p> }
+    @if (error is not null) { <div role="alert" class="alert alert-danger">@error</div> }
+    @if (options is not null)
+    {
+        <p class="planning-context">FY @options.Period.FiscalYear · Q@(options.Period.Quarter) · @LocalDate(options.Period.StartUtc) to @LocalDate(options.Period.EndUtc) (end exclusive) · @options.Period.Timezone · @options.Period.Currency</p>
+        <div class="planning-layout"><main>
+            <div class="planning-kpis">
+                <article><small>Objectives with actual evidence</small><strong>@(view?.Objectives.Count(x => x.Actual.HasValue) ?? 0) / @(view?.Objectives.Count ?? 0)</strong></article>
+                <article><small>Quarter milestones</small><strong>@(view?.Proposal.Objectives.Sum(x => x.Milestones.Count) ?? 0)</strong></article>
+                <article><small>Resource conflicts</small><strong>@(view?.Conflicts.Count(x => x.Shortfall > 0 || x.Explanation.Contains("disagree")) ?? 0)</strong></article>
+                <article><small>Reviewed revision</small><strong>@(saved?.Summary.Revision.ToString() ?? "Unsaved proposal")</strong></article>
+            </div>
+            @if (view is not null)
+            {
+                <section class="planning-card"><h2>Objective progress</h2><div class="planning-table"><table><thead><tr><th>Objective / owner</th><th>Actual / target</th><th>Outcome</th><th>Milestones and dependencies</th><th>Evidence</th></tr></thead><tbody>
+                    @foreach (var o in view.Objectives)
+                    {
+                        <tr><td><strong>@o.Name</strong><br />@o.Owner</td><td>@Number(o.Actual) / @Number(o.Objective.Target) @o.Objective.Unit<br /><small>Baseline @Number(o.Objective.Baseline) · @Number(o.ProgressPercent)% progress</small></td>
+                            <td>@o.Outcome</td><td>@foreach (var m in o.Objective.Milestones) { <p>@m.Title · @LocalDate(m.DueUtc) · @m.Status</p> }@foreach (var r in o.DependencyRisks) { <p class="planning-warning">@r</p> }</td>
+                            <td><small>@o.EvidenceState</small>@foreach (var link in o.EvidenceLinks) { <p><a href="@ContextLink(link)">Open retained monthly evidence</a></p> }@if(saved != null && preview == null){<p><a href="@DecisionWorkRoutes.Create(CompanyId,"quarter",saved.Summary.Id,o.Objective.GoalId.ToString("D"))">Create work</a></p>}</td></tr>
+                    }
+                </tbody></table></div></section>
+                <section class="planning-card"><h2>Explicit resource commitments</h2>
+                    @if (view.Conflicts.Count == 0) { <p>No resource allocation assumptions recorded.</p> }
+                    @foreach (var c in view.Conflicts) { <p class="@(c.Shortfall > 0 || c.Explanation.Contains("disagree") ? "planning-warning" : "")"><strong>@c.Pool</strong> · @Number(c.CommittedHours) proposed / @Number(c.AvailableHours) available hours · shortfall @Number(c.Shortfall). @c.Explanation</p> }
+                    @foreach (var r in view.Proposal.Resources) { <p>@r.Pool · @Number(r.ProposedHours) hours · @r.Rationale</p> }
+                </section>
+            }
+            else { <section class="planning-card"><h2>No reviewed objectives yet</h2><p>Choose native company objectives and link their retained monthly evidence. Unavailable evidence will remain explicit.</p><a href="@EditorPath">Prepare objectives and resources</a></section> }
+            @if (Editor && editing)
+            {
+                <section class="planning-card"><h2>Quarter objectives</h2><p>These targets, owners and milestones apply to this quarter. Native company objectives and operating work keep their own lifecycle.</p>
+                    <label>Add company objective <select aria-label="Add company objective" @bind="selectedGoal"><option value="">Choose an objective</option>@foreach (var g in options.Goals.Where(x => !rows.Any(r => r.GoalId == x.Id))) { <option value="@g.Id">@g.Name · @g.MetricKey</option> }</select></label><button class="btn btn-outline-primary" disabled="@busy" @onclick="AddObjective">Add objective</button>
+                    @if (options.Goals.Count == 0) { <p>No native objectives exist. <a href="@($"/company-operation?companyId={CompanyId:D}")">Create a company objective</a>.</p> }
+                    @foreach (var r in rows)
+                    {
+                        <article class="planning-objective" @key="r"><h3>@r.Name</h3><div class="planning-fields">
+                            <label>Quarter accountable owner <select aria-label="Quarter accountable owner" @bind="r.Owner" @bind:after="Dirty"><option value="@Guid.Empty">Choose an active owner</option>@foreach (var o in options.Owners) { <option value="@o.Id">@o.Name</option> }</select></label>
+                            <label>Baseline <input aria-label="Baseline" type="number" step="0.0001" @bind="r.Baseline" @bind:after="Dirty" /></label><label>Quarter target (@r.Unit) <input aria-label="@($"Quarter target ({r.Unit})")" type="number" step="0.0001" @bind="r.Target" @bind:after="Dirty" /></label>
+                            <label>Target direction <select aria-label="Target direction" @bind="r.Direction" @bind:after="Dirty"><option value="at_least">At least</option><option value="at_most">At most</option></select></label>
+                        </div>
+                        <h4>Retained monthly measures</h4><p>Measure: @r.Key. Link each of the three months for additive quarterly actuals.</p>
+                        @foreach (var l in r.Measures.ToArray()) { <p>@EvidenceName(l.SnapshotId) <button class="btn btn-sm btn-outline-secondary" @onclick="() => RemoveMeasure(r, l)">Remove evidence</button></p> }
+                        <label>Monthly snapshot <select aria-label="Monthly snapshot" @bind="r.Evidence"><option value="@Guid.Empty">Choose retained evidence</option>@foreach (var e in options.Evidence) { <option value="@e.Id">@EvidenceName(e.Id)</option> }</select></label>
+                        <button class="btn btn-outline-secondary" disabled="@(busy || r.Measures.Count >= 3)" @onclick="() => AddMeasure(r)">Link measure</button>
+                        <h4>Quarter milestones</h4>
+                        @foreach (var m in r.Milestones) { <div class="planning-fields" @key="m"><label>Milestone title <input aria-label="Milestone title" @bind="m.Title" maxlength="200" @bind:after="Dirty" /></label><label>Due date (@options.Period.Timezone) <input aria-label="@($"Due date ({options.Period.Timezone})")" type="date" @bind="m.Due" @bind:after="Dirty" /></label><label>Milestone status <select aria-label="Milestone status" @bind="m.Status" @bind:after="Dirty"><option value="planned">Planned</option><option value="in_progress">In progress</option><option value="completed">Completed</option><option value="blocked">Blocked</option></select></label><button class="btn btn-outline-secondary" @onclick="() => RemoveMilestone(r, m)">Remove milestone</button></div> }
+                        <button class="btn btn-outline-secondary" @onclick="() => AddMilestone(r)">Add milestone</button>
+                        <h4>Native initiatives and cross-plan dependencies</h4>
+                        @foreach (var i in options.Initiatives.Where(x => x.GoalId == r.GoalId)) { <label class="planning-check"><input aria-label="@($"{i.Title} · {i.Status} · {i.DependsOn.Count} dependencies")" type="checkbox" checked="@r.Initiatives.Contains(i.Id)" @onchange="e => ToggleInitiative(r, i.Id, e)" />@i.Title · @i.Status · @i.DependsOn.Count dependencies</label> }
+                        <button class="btn btn-outline-danger" @onclick="() => RemoveObjective(r)">Remove objective from proposal</button></article>
+                    }
+                </section>
+                <section class="planning-card"><h2>Resource allocation proposal</h2><p>Pool capacity is an explicit assumption. Repeated pool names share capacity; disagreement and overcommitment appear in Preview.</p>
+                    @foreach (var r in resources) { <article class="planning-objective" @key="r"><div class="planning-fields"><label>Objective <select aria-label="Resource objective" @bind="r.Goal" @bind:after="Dirty"><option value="@Guid.Empty">Choose objective</option>@foreach (var o in rows) { <option value="@o.GoalId">@o.Name</option> }</select></label><label>Pool <input aria-label="Pool" @bind="r.Pool" maxlength="128" @bind:after="Dirty" /></label><label>Available hours <input aria-label="Available hours" type="number" min="0" step="0.0001" @bind="r.Available" @bind:after="Dirty" /></label><label>Proposed hours <input aria-label="Proposed hours" type="number" min="0" step="0.0001" @bind="r.Proposed" @bind:after="Dirty" /></label><label>Supporting monthly snapshot <select aria-label="Supporting monthly snapshot" @bind="r.Evidence" @bind:after="Dirty"><option value="@Guid.Empty">Choose evidence</option>@foreach (var e in options.Evidence) { <option value="@e.Id">@EvidenceName(e.Id)</option> }</select></label><label>Resource rationale <input aria-label="Resource rationale" @bind="r.Rationale" maxlength="2000" @bind:after="Dirty" /></label></div><button class="btn btn-outline-secondary" @onclick="() => RemoveResource(r)">Remove allocation</button></article> }
+                    <button class="btn btn-outline-primary" @onclick="AddResource">Add resource allocation</button>
+                </section>
+            }
+        </main><aside>
+            <section class="planning-card"><h2>Review decisions</h2><p>Planning records intent. It does not authorize spending, payments, publication, customer commitments or data access.</p>
+                @if (saved is not null) { <p>Reviewed revision @saved.Summary.Revision · @saved.Summary.SavedUtc.ToString("yyyy-MM-dd HH:mm") UTC</p><ul>@foreach (var c in saved.Changes) { <li>@c</li> }</ul> }
+                @if (Editor && editing) { <label>Outlook and decision notes <textarea aria-label="Outlook and decision notes" @bind="notes" maxlength="4000" @bind:after="Dirty"></textarea></label><button class="btn btn-primary" disabled="@busy" @onclick="Preview">Preview objectives and conflicts</button><button class="btn btn-primary" disabled="@(busy || preview is null)" @onclick="Save">Save reviewed revision</button> }
+                else { <p>@saved?.Summary.Notes</p><a class="btn btn-primary" href="@EditorPath">@(saved is null ? "Prepare objective and resources" : "Propose a new revision")</a> }
+            </section>
+            <section class="planning-card"><h2>Reviewed history</h2>@if (history.Count == 0) { <p>No reviewed revisions for this quarter.</p> }@foreach (var h in history) { <p><a href="@ReviewPath(h.Id)">Revision @h.Revision · @h.SavedUtc.ToString("yyyy-MM-dd") UTC</a></p> }<p>Latest 50 revisions. Reviewed versions remain readable.</p></section>
+        </aside></div>
+    }
+</div>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public int? FiscalYear { get; set; }
+    [Parameter] public int? Quarter { get; set; }
+    [Parameter] public Guid? ReviewId { get; set; }
+    [Parameter] public bool Editor { get; set; }
+    private QuarterlyPlanningOptions? options;
+    private QuarterReviewDocument? saved;
+    private QuarterReviewPreview? preview;
+    private QuarterReviewPreview? view => preview ?? saved?.Review;
+    private IReadOnlyList<QuarterReviewSummary> history = [];
+    private int year, quarter;
+    private bool busy, editing, interactive;
+    private string? error;
+    private string notes = "", selectedGoal = "";
+    private List<ObjectiveEdit> rows = [];
+    private List<ResourceEdit> resources = [];
+    private CancellationTokenSource reads = new();
+    private Guid request = Guid.NewGuid();
+    private string OverviewPath => DashboardRoutes.BuildQuarterlyPath(CompanyId, year, quarter, saved?.Summary.Id);
+    private string EditorPath => $"/dashboard/planning/quarter?companyId={CompanyId:D}&year={year}&quarter={quarter}{(saved is null ? "" : $"&review={saved.Summary.Id:D}")}";
+    private string ReviewPath(Guid id) => DashboardRoutes.BuildQuarterlyPath(CompanyId, year, quarter, id);
+    private string ContextLink(string path) => DashboardRoutes.EnsureWorkspaceContext(path, CompanyId, OverviewPath);
+    protected override async Task OnParametersSetAsync() { year = FiscalYear ?? DateTime.UtcNow.Year; quarter = Quarter ?? 1; await Reload(); }
+    protected override Task OnAfterRenderAsync(bool firstRender) { if (firstRender) { interactive = true; StateHasChanged(); } return Task.CompletedTask; }
+    private async Task Reload()
+    {
+        reads.Cancel(); reads.Dispose(); reads = new(); var ct = reads.Token; busy = true; error = null; options = null; saved = null; preview = null; rows = []; resources = []; history = [];
+        try
+        {
+            var o = await Planning.Options(CompanyId, year, quarter, ct); var h = await Planning.History(CompanyId, year, quarter, ct);
+            var doc = ReviewId.HasValue ? await Planning.Open(CompanyId, ReviewId.Value, ct) : h.Count > 0 ? await Planning.Open(CompanyId, h[0].Id, ct) : null;
+            if (doc is not null && (doc.Summary.FiscalYear != year || doc.Summary.Quarter != quarter)) throw new InvalidDataException("Review period differs from the selected quarter.");
+            if (ct.IsCancellationRequested) return; options = o; history = h; saved = doc; editing = Editor; notes = doc?.Summary.Notes ?? "";
+            if (doc is not null) LoadEdits(doc.Review.Proposal); request = Guid.NewGuid();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is TodayWorkspaceAccessException or InvalidOperationException or InvalidDataException or ArgumentException or HttpRequestException) { if (!ct.IsCancellationRequested) error = ex is TodayWorkspaceAccessException ? "Company planning responsibility and manager access are required. Department evidence retains its own access rules." : ex.Message; }
+        finally { if (!ct.IsCancellationRequested) busy = false; }
+    }
+    private Task SelectPeriod() { Navigation.NavigateTo(Editor ? $"/dashboard/planning/quarter?companyId={CompanyId:D}&year={year}&quarter={quarter}" : DashboardRoutes.BuildQuarterlyPath(CompanyId, year, quarter)); return Task.CompletedTask; }
+    private async Task Run(Func<CancellationToken, Task> action)
+    { if (busy) return; busy = true; error = null; var ct = reads.Token; try { await action(ct); } catch (OperationCanceledException) when (ct.IsCancellationRequested) { } catch (Exception ex) when (ex is TodayWorkspaceAccessException or InvalidOperationException or InvalidDataException or ArgumentException or HttpRequestException) { if (!ct.IsCancellationRequested) { preview = null; error = ex.Message; if (ex is TodayWorkspaceAccessException) { options = null; saved = null; } } } finally { if (!ct.IsCancellationRequested) busy = false; } }
+    private PreviewQuarterReview Input() => new(year, quarter, rows.Select(r => new QuarterObjectiveInput(r.GoalId, r.Version, r.Owner, r.Baseline, r.Target, r.Unit, r.Direction,
+        r.Measures.ToArray(), r.Milestones.Select(m => new QuarterMilestone(m.Title, DueInstant(m), m.Status)).ToArray(), r.Initiatives.ToArray())).ToArray(),
+        resources.Select(r => new QuarterResourceInput(r.Goal, rows.Single(x => x.GoalId == r.Goal).Owner, r.Pool, r.Available, r.Proposed, r.Evidence, r.Rationale)).ToArray(), notes);
+    private Task Preview() => Run(async ct => { var p = await Planning.Preview(CompanyId, Input(), ct); if (!ct.IsCancellationRequested) preview = p; });
+    private Task Save() => Run(async ct => { if (preview is null) return; var d = await Planning.Save(CompanyId, new(preview.Proposal, saved?.Summary.Id, saved?.Summary.Revision ?? 0, request, preview.Fingerprint), ct); if (ct.IsCancellationRequested) return; saved = d; preview = null; editing = false; history = await Planning.History(CompanyId, year, quarter, ct); Navigation.NavigateTo(ReviewPath(d.Summary.Id)); });
+    private void Dirty() { preview = null; request = Guid.NewGuid(); }
+    private void AddObjective() { if (Guid.TryParse(selectedGoal, out var id) && options?.Goals.SingleOrDefault(x => x.Id == id) is { } g) { rows.Add(new() { GoalId = id, Version = g.Version, Name = g.Name, Key = g.MetricKey ?? "", Unit = g.MetricUnit ?? "", Owner = g.OwnerUserId ?? Guid.Empty, Baseline = g.BaselineValue ?? 0, Target = g.TargetValue ?? 0 }); selectedGoal = ""; Dirty(); } }
+    private void RemoveObjective(ObjectiveEdit r) { rows.Remove(r); resources.RemoveAll(x => x.Goal == r.GoalId); Dirty(); }
+    private void AddMeasure(ObjectiveEdit r) { if (r.Evidence != Guid.Empty && r.Measures.All(x => x.SnapshotId != r.Evidence)) { r.Measures.Add(new(r.Evidence, r.Key)); Dirty(); } }
+    private void RemoveMeasure(ObjectiveEdit r, QuarterMeasureLink l) { r.Measures.Remove(l); Dirty(); }
+    private void AddMilestone(ObjectiveEdit r) { r.Milestones.Add(new() { Due = TimeZoneInfo.ConvertTimeFromUtc(options!.Period.EndUtc.AddDays(-1), TimeZoneInfo.FindSystemTimeZoneById(options.Period.Timezone)).Date }); Dirty(); }
+    private void RemoveMilestone(ObjectiveEdit r, MilestoneEdit m) { r.Milestones.Remove(m); Dirty(); }
+    private void ToggleInitiative(ObjectiveEdit r, Guid id, ChangeEventArgs e) { if (e.Value is true) r.Initiatives.Add(id); else r.Initiatives.Remove(id); Dirty(); }
+    private void AddResource() { resources.Add(new() { Goal = rows.FirstOrDefault()?.GoalId ?? Guid.Empty }); Dirty(); }
+    private void RemoveResource(ResourceEdit r) { resources.Remove(r); Dirty(); }
+    private void LoadEdits(PreviewQuarterReview p)
+    { rows = p.Objectives.Select(o => new ObjectiveEdit { GoalId = o.GoalId, Version = options?.Goals.SingleOrDefault(x => x.Id == o.GoalId)?.Version ?? o.GoalVersion, Name = saved!.Review.Objectives.Single(x => x.Objective.GoalId == o.GoalId).Name,
+        Owner = o.OwnerUserId, Baseline = o.Baseline, Target = o.Target, Unit = o.Unit, Direction = o.Direction, Key = options?.Goals.SingleOrDefault(x => x.Id == o.GoalId)?.MetricKey ?? o.Measures.FirstOrDefault()?.MeasureKey ?? "", Measures = o.Measures.ToList(), Initiatives = o.InitiativeIds.ToHashSet(),
+        Milestones = o.Milestones.Select(m => new MilestoneEdit { Title = m.Title, Due = TimeZoneInfo.ConvertTimeFromUtc(m.DueUtc, TimeZoneInfo.FindSystemTimeZoneById(options!.Period.Timezone)).Date, OriginalUtc = m.DueUtc, Status = m.Status }).ToList() }).ToList();
+        resources = p.Resources.Select(r => new ResourceEdit { Goal = r.GoalId, Pool = r.Pool, Available = r.AvailableHours, Proposed = r.ProposedHours, Evidence = r.SnapshotId, Rationale = r.Rationale }).ToList(); }
+    private string EvidenceName(Guid id) { var e = options?.Evidence.SingleOrDefault(x => x.Id == id); return e is null ? "Previously linked evidence (current access may be unavailable)" : $"{e.Lens} · {e.Year}-{e.Month:D2} · revision {e.Revision}"; }
+    private string LocalDate(DateTime d) => TimeZoneInfo.ConvertTimeFromUtc(d, TimeZoneInfo.FindSystemTimeZoneById(options!.Period.Timezone)).ToString("yyyy-MM-dd");
+    private DateTime DueInstant(MilestoneEdit m)
+    { var zone = TimeZoneInfo.FindSystemTimeZoneById(options!.Period.Timezone); return m.OriginalUtc.HasValue && TimeZoneInfo.ConvertTimeFromUtc(m.OriginalUtc.Value, zone).Date == m.Due.Date ? m.OriginalUtc.Value : TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(m.Due.Date, DateTimeKind.Unspecified), zone); }
+    private static string Number(decimal? n) => n?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? "Unavailable";
+    public void Dispose() { reads.Cancel(); reads.Dispose(); GC.SuppressFinalize(this); }
+    private sealed class ObjectiveEdit { public Guid GoalId, Owner, Evidence; public int Version; public string Name = "", Key = "", Unit = "", Direction = "at_least"; public decimal Baseline, Target; public List<QuarterMeasureLink> Measures = []; public List<MilestoneEdit> Milestones = []; public HashSet<Guid> Initiatives = []; }
+    private sealed class MilestoneEdit { public string Title = "", Status = "planned"; public DateTime Due; public DateTime? OriginalUtc; }
+    private sealed class ResourceEdit { public Guid Goal, Evidence; public string Pool = "", Rationale = ""; public decimal Available, Proposed; }
+}

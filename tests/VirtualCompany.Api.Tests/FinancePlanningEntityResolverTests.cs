@@ -102,6 +102,18 @@ public sealed class FinancePlanningEntityResolverTests
         Assert.Empty(foreign.Candidates);
     }
 
+    [Fact]
+    public async Task Forecast_versions_resolve_exact_names_or_native_keys_with_tenant_scope_and_checksum_provenance()
+    {
+        await using var db = CreateContext(); var company = Guid.NewGuid(); var id = Guid.NewGuid();
+        db.FinanceForecastRevisions.Add(new VirtualCompany.Domain.Entities.FinanceForecastRevision(id, company, Guid.NewGuid(), Guid.NewGuid(),
+            "Recorded outlook", "native-outlook", null, DateTime.UtcNow, DateTime.UtcNow, "{}", new string('A',64), new string('B',64)));
+        await db.SaveChangesAsync(); var resolver = new FinancePlanningEntityResolver(db);
+        var found = await resolver.ResolveAsync(new(company,FinancePlanningReferenceTypes.ForecastVersion,"Recorded outlook",5),default);
+        Assert.Equal(id.ToString(),Assert.Single(found.Candidates).EntityId);Assert.Equal(new string('A',64),found.Candidates[0].SourceVersion);
+        Assert.Equal(FinanceEntityResolutionStates.NotFound,(await resolver.ResolveAsync(new(Guid.NewGuid(),FinancePlanningReferenceTypes.ForecastVersion,"native-outlook",5),default)).State);
+    }
+
     private static FinanceInvoice Invoice(Guid companyId, Guid counterpartyId, string number) =>
         new(Guid.NewGuid(), companyId, counterpartyId, number,
             DateTime.UtcNow.AddDays(-2), DateTime.UtcNow.AddDays(28), 100m, "SEK", "open");

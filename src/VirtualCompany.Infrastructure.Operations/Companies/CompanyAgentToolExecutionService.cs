@@ -16,8 +16,49 @@ using VirtualCompany.Shared;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService, IFinanceDurableToolExecutionService
+public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionService, IFinanceDurableToolExecutionService, IAgentToolPolicyPreviewService, IDurableTaskToolExecutionService
 {
+    // The explanation uses the executor's existing profile, permission adapters, actor checks and
+    // guardrail. No execution attempt, approval, audit write or provider call is created by this read.
+    public async Task<AgentToolPolicyPreviewDto> PreviewAsync(Guid companyId, Guid agentId, CancellationToken token)
+    {
+        await RequireMembershipAsync(companyId, token);
+        var profile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, token);
+        var authority = await _effectiveAuthorityResolver.ResolveAsync(companyId, agentId, token);
+        var (permissions, scopes) = ResolvePolicyBoundaries(profile, authority);
+        var checks = new Dictionary<string, AuthorityCheckDto>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tool in authority.Tools)
+        {
+            if (!tool.IsUsable)
+            {
+                checks[tool.ToolName] = new("Agent capability", tool.State, tool.ReasonCode, tool.Explanation, false);
+                continue;
+            }
+            var action = ToolActionTypeValues.Parse(tool.ActionType);
+            if (IsFinanceTool(tool.ToolName))
+            {
+                var actor = await _financeAgentAuthorizationService.AuthorizeAsync(new(companyId, agentId,
+                    Guid.Empty, tool.ToolName, action, tool.Scope, null, "authority-explanation"), token);
+                if (!actor.IsAllowed)
+                {
+                    checks[tool.ToolName] = new("Current actor", AgentCapabilityStates.PermissionDenied, actor.ReasonCode, actor.Explanation, false);
+                    continue;
+                }
+            }
+            var command = new ExecuteAgentToolCommand(tool.ToolName, tool.ActionType, tool.Scope, new(), null, null, null);
+            var risk = await ResolveFinanceRiskContextAsync(companyId, command, token);
+            var decision = _policyGuardrailEngine.Evaluate(new(companyId, agentId, profile.CompanyId,
+                profile.Status, profile.AutonomyLevel, profile.CanReceiveAssignments, permissions, scopes,
+                profile.ApprovalThresholds, profile.EscalationRules, tool.ToolName, action, tool.Scope, new Dictionary<string, JsonNode?>(),
+                null, null, null, IsSensitiveAction(tool.ToolName, false), Guid.Empty, "authority-explanation",
+                IsTrustedToolApprovalRequired(tool.ToolName), profile.TriggerLogic, risk));
+            var review = decision.ApprovalRequired || tool.State == AgentCapabilityStates.ApprovalRequired;
+            checks[tool.ToolName] = new("Tool guardrail", decision.Outcome == PolicyDecisionOutcomeValues.Deny
+                ? AgentCapabilityStates.PermissionDenied : review ? AgentCapabilityStates.ApprovalRequired : AgentCapabilityStates.Available,
+                decision.ReasonCodes.FirstOrDefault() ?? "policy_checks_passed", decision.Explanation, review);
+        }
+        return new(authority, checks);
+    }
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IAgentRuntimeProfileResolver _agentRuntimeProfileResolver;
@@ -28,6 +69,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     private readonly ICorrelationContextAccessor _correlationContextAccessor;
     private readonly IFinanceAgentAuthorizationService _financeAgentAuthorizationService;
     private readonly IAgentEffectiveAuthorityResolver _effectiveAuthorityResolver;
+    private readonly ITaskTypePolicyEvaluator _taskPolicies;
 
     public CompanyAgentToolExecutionService(
         VirtualCompanyDbContext dbContext,
@@ -39,7 +81,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         IAuditEventWriter auditEventWriter,
         ICorrelationContextAccessor correlationContextAccessor,
         IFinanceAgentAuthorizationService financeAgentAuthorizationService,
-        IAgentEffectiveAuthorityResolver effectiveAuthorityResolver)
+        IAgentEffectiveAuthorityResolver effectiveAuthorityResolver,
+        ITaskTypePolicyEvaluator taskPolicies)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -51,6 +94,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         _correlationContextAccessor = correlationContextAccessor;
         _financeAgentAuthorizationService = financeAgentAuthorizationService;
         _effectiveAuthorityResolver = effectiveAuthorityResolver;
+        _taskPolicies = taskPolicies;
     }
 
     public async Task<ExecuteAgentToolResultDto> ExecuteAsync(
@@ -70,6 +114,13 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             persistedActorUserId == Guid.Empty ? throw new ArgumentException("Persisted actor is required.", nameof(persistedActorUserId)) : persistedActorUserId,
             cancellationToken);
 
+    public async Task<ExecuteAgentToolResultDto> ExecutePersistedTaskAsync(Guid companyId,Guid agentId,ExecuteAgentToolCommand command,CancellationToken ct)
+    {
+        var task=await _dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==companyId&&x.Id==command.TaskId,ct);
+        if(task is null||task.AssignedAgentId!=agentId||task.CreatedByActorType!="user"||!task.CreatedByActorId.HasValue||!TaskTypePolicyCatalogue.All.Any(x=>!x.Finance&&x.Code==task.Type&&x.ToolName==command.ToolName))
+            throw new UnauthorizedAccessException("A retained task and authorized originating actor are required.");
+        return await ExecuteCoreAsync(companyId,agentId,command,task.CreatedByActorId,ct);
+    }
     private async Task<ExecuteAgentToolResultDto> ExecuteCoreAsync(
         Guid companyId,
         Guid agentId,
@@ -78,6 +129,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         CancellationToken cancellationToken)
     {
         ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
+        if (command.TaskId.HasValue && await _dbContext.Set<DecisionWorkOrigin>().IgnoreQueryFilters()
+                .AnyAsync(x => x.CompanyId == companyId && x.TaskId == command.TaskId.Value, cancellationToken))
+            throw new UnauthorizedAccessException("Planning follow-ups are human work. Use a separately authorized action workflow for agent execution.");
         var correlationId = CreateCorrelationId(command.CorrelationId);
         var startedAtUtc = DateTime.UtcNow;
         var executionId = Guid.NewGuid();
@@ -156,7 +210,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         }
         else
         {
-            membership = await RequireMembershipAsync(companyId, cancellationToken);
+            membership = durableActorUserId.HasValue ? await RequirePersistedTaskActorAsync(companyId,agentId,command.TaskId,durableActorUserId.Value,cancellationToken) : await RequireMembershipAsync(companyId, cancellationToken);
             actorUserId = membership.UserId;
         }
 
@@ -226,6 +280,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             financeRiskContext);
 
         var decision = _policyGuardrailEngine.Evaluate(policyRequest);
+        var taskPolicy = await _taskPolicies.CheckAsync(companyId,agentId,command.ToolName,command.TaskId,false,cancellationToken);
+        if(taskPolicy is not null && decision.Outcome != PolicyDecisionOutcomeValues.Deny && taskPolicy.State != "available")
+            decision = decision with { Outcome = taskPolicy.ReviewRequired ? PolicyDecisionOutcomeValues.RequireApproval : PolicyDecisionOutcomeValues.Deny,
+                ReasonCodes = [taskPolicy.ReasonCode], Explanation = taskPolicy.Explanation, ApprovalRequired = taskPolicy.ReviewRequired };
         decision.Metadata["effectiveAuthorityVersion"] = JsonValue.Create(effectiveAuthority.AuthorityVersion);
         decision.Metadata["effectiveAuthorityHash"] = JsonValue.Create(effectiveAuthority.AuthorityHash);
         await WriteBoundaryEnforcementAuditAsync(
@@ -658,6 +716,19 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ["executionId"] = JsonValue.Create(decision.ExecutionId)
         };
 
+    internal async Task<VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext> RequirePersistedTaskActorAsync(Guid company,Guid agent,Guid? taskId,Guid actor,CancellationToken ct)
+    {
+        var task=await _dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==company&&x.Id==taskId&&x.AssignedAgentId==agent&&x.CreatedByActorType=="user"&&x.CreatedByActorId==actor,ct)
+            ??throw new UnauthorizedAccessException("The retained task actor or assignment changed.");
+        var entry=TaskTypePolicyCatalogue.All.SingleOrDefault(x=>!x.Finance&&x.Code==task.Type)??throw new UnauthorizedAccessException();
+        var member=await _dbContext.CompanyMemberships.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==company&&x.UserId==actor&&x.Status==CompanyMembershipStatus.Active,ct)??throw new UnauthorizedAccessException("The originating company membership is no longer active.");
+        if(member.Role is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin)) {
+            var area=entry.Department switch{"Sales"=>ResponsibilityArea.Sales,"Marketing"=>ResponsibilityArea.Marketing,_=>ResponsibilityArea.CustomerSupport};
+            if(member.Role!=CompanyMembershipRole.Manager||!await _dbContext.CompanyResponsibilityAssignments.IgnoreQueryFilters().AnyAsync(x=>x.CompanyId==company&&x.AssignedMembershipId==member.Id&&x.ResponsibilityArea==area,ct))throw new UnauthorizedAccessException("The originating actor no longer manages this task responsibility.");
+        }
+        var companyName=await _dbContext.Companies.IgnoreQueryFilters().Where(x=>x.Id==company).Select(x=>x.Name).SingleAsync(ct);
+        return new(member.Id,company,actor,companyName,member.Role,member.Status);
+    }
     private async Task<VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext> RequireMembershipAsync(
         Guid companyId,
         CancellationToken cancellationToken)

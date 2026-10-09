@@ -21,7 +21,7 @@ using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class CompanyApprovalRequestService : IApprovalRequestService, IApprovalAutomationService
+public sealed partial class CompanyApprovalRequestService : IApprovalRequestService, IApprovalAutomationService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
@@ -58,11 +58,31 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         CreateApprovalRequestCommand command,
         CancellationToken cancellationToken)
     {
-        await RequireMembershipAsync(companyId, cancellationToken);
+        var membership = await RequireMembershipAsync(companyId, cancellationToken);
         Validate(command);
 
         var targetType = ApprovalTargetEntityTypeValues.Parse(command.TargetEntityType);
         await EnsureTargetExistsAsync(companyId, targetType, command.TargetEntityId, cancellationToken);
+
+        var planningOrigin = targetType == ApprovalTargetEntityType.Task
+            ? await _dbContext.Set<DecisionWorkOrigin>().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.TaskId == command.TargetEntityId, cancellationToken)
+            : null;
+        if (planningOrigin != null && (planningOrigin.ApprovalId.HasValue || command.ApprovalType != "planning_work_review" ||
+            command.RequestedByActorType != "user" || command.RequestedByActorId != membership.UserId ||
+            command.RequiredRole != "owner" || command.RequiredUserId.HasValue || command.Steps?.Count > 0 ||
+            command.ThresholdContext?.GetValueOrDefault("sourceFingerprint")?.ToString() != planningOrigin.SourceFingerprint))
+            throw new UnauthorizedAccessException("Owned planning work requires its canonical owner review with the retained source binding.");
+
+        if (targetType == ApprovalTargetEntityType.AnnualPlanVersion)
+        {
+            var annual = await _dbContext.Set<AnnualPlanVersion>().SingleAsync(x => x.CompanyId == companyId && x.Id == command.TargetEntityId, cancellationToken);
+            if (annual.Status != AnnualPlanStates.Reviewed || annual.ApprovalId.HasValue ||
+                command.RequestedByActorType != "user" ||
+                command.RequestedByActorId != membership.UserId || command.ApprovalType != "annual_plan_governance" ||
+                command.RequiredRole != "owner" || command.RequiredUserId.HasValue || command.Steps?.Count > 0 ||
+                command.ThresholdContext?.GetValueOrDefault("annualFingerprint")?.ToString() != annual.Fingerprint)
+                throw new UnauthorizedAccessException("Annual approval must bind the owner's reviewed annual version and canonical owner review policy.");
+        }
 
         var steps = command.Steps?.Select(step => new ApprovalStepDefinition(
             step.SequenceNo,
@@ -82,7 +102,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             command.RequiredUserId,
             steps);
 
+        if (!await CanReadReviewAsync(approval, membership, cancellationToken))
+            throw new UnauthorizedAccessException("This proposal is outside the current user's review scope.");
         _dbContext.ApprovalRequests.Add(approval);
+        if (planningOrigin != null) planningOrigin.ApprovalId = approval.Id;
+        if (targetType == ApprovalTargetEntityType.AnnualPlanVersion)
+            (await _dbContext.Set<AnnualPlanVersion>().SingleAsync(x => x.CompanyId == companyId && x.Id == command.TargetEntityId, cancellationToken)).BindApproval(approval.Id);
         if (targetType == ApprovalTargetEntityType.Task)
         {
             var task = await _dbContext.WorkTasks.SingleAsync(x => x.CompanyId == companyId && x.Id == command.TargetEntityId, cancellationToken);
@@ -99,6 +124,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             attempt.MarkAwaitingApproval(approval.Id, approval.PolicyDecision);
         }
 
+        await BindReviewAsync(approval, cancellationToken);
         await _auditEventWriter.WriteAsync(
             new AuditEventWriteRequest(
                 companyId,
@@ -138,7 +164,24 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         {
             await decisionGate.Semaphore.WaitAsync(cancellationToken);
             lockAcquired = true;
-            return await DecideCoreAsync(companyId, command, cancellationToken);
+            return await _dbContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+            {
+                _dbContext.ChangeTracker.Clear();
+                await using var transaction = await _dbContext.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, cancellationToken);
+                try
+                {
+                    var result = await DecideCoreAsync(companyId, command, cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                    return result;
+                }
+                catch (ApprovalProposalChangedException) { await transaction.CommitAsync(cancellationToken); throw; }
+                catch (ApprovalValidationException) { await transaction.CommitAsync(cancellationToken); throw; }
+                catch (DbUpdateConcurrencyException)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    throw new InvalidOperationException("Another reviewer decided this proposal. Refresh its current status.");
+                }
+            });
         }
         finally
         {
@@ -203,29 +246,29 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         }
 
         var normalizedDecision = command.Decision.Trim().ToLowerInvariant();
+        if (!await CanReadReviewAsync(approval, membership, cancellationToken))
+            throw new ApprovalDecisionForbiddenException("This proposal is outside the current user's review scope.");
+        if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty &&
+            TryGetGuid(approval.DecisionChain, "lastDecisionClientRequestId") == command.ClientRequestId.Value)
+        {
+            if (TryGetGuid(approval.DecisionChain, "lastDecisionActorId") != membership.UserId ||
+                approval.DecisionChain.GetValueOrDefault("lastDecision")?.ToString() != normalizedDecision ||
+                approval.DecisionChain.GetValueOrDefault("lastDecisionComment")?.ToString() != (command.Comment?.Trim() ?? "") ||
+                command.StepId.HasValue && TryGetGuid(approval.DecisionChain, "lastDecisionStepId") != command.StepId)
+                throw new InvalidOperationException("This request identifier was already used for a different decision.");
+            var step = approval.Steps.Single(x => x.Id == TryGetGuid(approval.DecisionChain, "lastDecisionStepId"));
+            return new(await ToDtoAsync(approval, cancellationToken), ToStepDto(step),
+                approval.CurrentActionableStep is { } next ? ToStepDto(next) : null, approval.IsTerminal);
+        }
         if (approval.Status != ApprovalRequestStatus.Pending)
         {
-            if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty &&
-                TryGetGuid(approval.DecisionChain, "lastDecisionClientRequestId") == command.ClientRequestId.Value)
-            {
-                var replayedStep = approval.Steps
-                    .Where(step => step.Status != ApprovalStepStatus.Pending)
-                    .OrderByDescending(step => step.SequenceNo)
-                    .FirstOrDefault() ?? approval.Steps.OrderBy(step => step.SequenceNo).First();
-                return new ApprovalDecisionResultDto(
-                    await ToDtoAsync(approval, cancellationToken),
-                    ToStepDto(replayedStep),
-                    approval.CurrentActionableStep is { } replayNext ? ToStepDto(replayNext) : null,
-                    approval.Status != ApprovalRequestStatus.Pending);
-            }
-
             throw new ApprovalValidationException(new Dictionary<string, string[]>
             {
                 [nameof(command.Decision)] = [$"Only pending approvals can be decided. Current status: {approval.Status.ToStorageValue()}."]
             });
         }
 
-        if (IsExpiredFinanceActionApproval(approval, DateTime.UtcNow))
+        if (ReviewExpiry(approval) <= DateTime.UtcNow)
         {
             approval.MarkExpired("Finance approval expired before it was decided. Create and review a new request.");
             var expiredTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
@@ -266,6 +309,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             throw new ApprovalDecisionForbiddenException("The current user is not authorized for this approval transition.");
         }
 
+        if (normalizedDecision is "request_changes" or "changes_requested" && string.IsNullOrWhiteSpace(command.Comment))
+            throw new ApprovalValidationException(new Dictionary<string, string[]> { [nameof(command.Comment)] = ["Explain the requested changes."] });
+        await EnsureReviewedVersionAsync(approval, command, membership.UserId, cancellationToken);
         var requestedApproval = normalizedDecision is "approve" or "approved";
         var selfApprovalRejected = requestedApproval && RequiresIndependentFinanceReview(approval) &&
                                    IsInitiatingUser(approval, membership.UserId);
@@ -285,7 +331,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             {
                 case "request_changes":
                 case "changes_requested":
-                    approval.MarkChangesRequested(decisionComment);
+                    decidedStep = approval.RequestChangesCurrentStep(currentStep.Id, membership.UserId, decisionComment!);
                     break;
                 case "cancel":
                 case "cancelled":
@@ -307,13 +353,24 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                     throw new InvalidOperationException("Unsupported approval transition.");
             }
         }
+        var reviewChain = CloneNodes(approval.DecisionChain);
+        reviewChain["lastReviewedMaterialHash"] = await MaterialHashAsync(approval, cancellationToken);
+        approval.SetDecisionChain(reviewChain);
         if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty)
         {
             var decisionChain = CloneNodes(approval.DecisionChain);
             decisionChain["lastDecisionClientRequestId"] = command.ClientRequestId.Value;
+            decisionChain["lastDecisionActorId"] = membership.UserId;
+            decisionChain["lastDecision"] = normalizedDecision;
+            decisionChain["lastDecisionStepId"] = currentStep.Id;
+            decisionChain["lastDecisionComment"] = command.Comment?.Trim() ?? "";
             approval.SetDecisionChain(decisionChain);
         }
 
+        // Claim the concurrency token before owner execution. The transaction keeps the claim,
+        // linked transitions and outbox atomic; a racing process loses before it can execute.
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await WriteReviewAuditAsync(approval, membership.UserId, normalizedDecision, cancellationToken);
         EnqueueApprovalUpdatedEvent(approval, approval.Status.ToStorageValue());
         var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
         if (requestedApproval || rejected)
@@ -385,6 +442,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             throw new ApprovalDecisionForbiddenException(
                 "Standing automation cannot approve a Finance action that requires independent human review.");
         var comment = $"Automatically approved by {grant.AgentDisplayName} under supplier trust rule {grant.GrantId:N} for {grant.SupplierName} ({grant.Stage}).";
+        await EnsureReviewedVersionAsync(approval, new(approval.Id, "approve", currentStep.Id), grant.GrantorUserId, cancellationToken);
         var decidedStep = approval.ApproveCurrentStep(currentStep.Id, grant.GrantorUserId, comment);
         EnqueueApprovalUpdatedEvent(approval, "automatically_approved");
         var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
@@ -441,7 +499,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         string? status,
         CancellationToken cancellationToken)
     {
-        await RequireMembershipAsync(companyId, cancellationToken);
+        var membership = await RequireMembershipAsync(companyId, cancellationToken);
 
         var query = _dbContext.ApprovalRequests
             .AsNoTracking()
@@ -458,6 +516,10 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             .OrderByDescending(x => x.CreatedUtc)
             .ToListAsync(cancellationToken);
 
+        var visible = new List<ApprovalRequest>();
+        foreach (var item in approvals)
+            if (await CanReadReviewAsync(item, membership, cancellationToken)) visible.Add(item);
+        approvals = visible;
         var contexts = await BuildSummaryContextsAsync(companyId, approvals, cancellationToken);
         return approvals
             .Select(approval => ToDto(approval, contexts.GetValueOrDefault(approval.Id)))
@@ -469,7 +531,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         Guid approvalId,
         CancellationToken cancellationToken)
     {
-        await RequireMembershipAsync(companyId, cancellationToken);
+        var membership = await RequireMembershipAsync(companyId, cancellationToken);
 
         var approval = await _dbContext.ApprovalRequests
             .AsNoTracking()
@@ -481,10 +543,41 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             throw new KeyNotFoundException("Approval request not found.");
         }
 
+        if (!await CanReadReviewAsync(approval, membership, cancellationToken)) throw new KeyNotFoundException("Approval request not found.");
         return await ToDtoAsync(approval, cancellationToken);
     }
 
     private async Task<LinkedEntityStateTransition?> UpdateLinkedEntityAfterDecisionAsync(
+        ApprovalRequest approval, CancellationToken cancellationToken)
+    {
+        var transition=await UpdateLinkedEntityAfterDecisionCoreAsync(approval,cancellationToken);
+        await ReconcileReviewedTaskPolicyAsync(approval,cancellationToken);
+        return transition;
+    }
+
+    private async Task ReconcileReviewedTaskPolicyAsync(ApprovalRequest approval,CancellationToken ct)
+    {
+        if(approval.TargetEntityType!="action"||approval.Status==ApprovalRequestStatus.Pending)return;
+        var attempt=await _dbContext.ToolExecutionAttempts.SingleAsync(x=>x.CompanyId==approval.CompanyId&&x.Id==approval.TargetEntityId,ct);
+        if(attempt.TaskId is not Guid taskId)return;
+        var task=await _dbContext.WorkTasks.SingleOrDefaultAsync(x=>x.CompanyId==approval.CompanyId&&x.Id==taskId,ct);
+        if(task is null||task.Status!=WorkTaskStatus.AwaitingApproval&&!(task.Status==WorkTaskStatus.New&&
+            task.OutputPayload.GetValueOrDefault("reviewedActionQueue") is JsonObject queued&&queued["approvalId"]?.ToString()==approval.Id.ToString("D")))return;
+        var type=TaskTypePolicyCatalogue.All.SingleOrDefault(x=>!x.Finance&&x.Code==task.Type&&x.ToolName==attempt.ToolName);
+        // Only the bounded catalogue's single retained action can settle this task.
+        // A reassigned queued task still owns this exact receipt. Revalidation denies
+        // transfer before execution; settle that denial instead of leaving a false queue.
+        if(type is null||!task.InputPayload.ContainsKey("taskPolicyVersion"))return;
+        if(attempt.Status is not (ToolExecutionStatus.Executed or ToolExecutionStatus.Denied or ToolExecutionStatus.Failed or ToolExecutionStatus.Rejected or ToolExecutionStatus.ReconciliationRequired))return;
+        var executed=attempt.Status==ToolExecutionStatus.Executed&&approval.Status==ApprovalRequestStatus.Approved;
+        var retainedOutput=CloneNodes(task.OutputPayload);retainedOutput["reviewedAction"]=JsonSerializer.SerializeToNode(attempt.ResultPayload);
+        task.UpdateStatus(executed?WorkTaskStatus.Completed:WorkTaskStatus.Blocked,retainedOutput,
+            executed?"The reviewed internal action executed and its output is retained. Customer delivery remains separate.":attempt.Status==ToolExecutionStatus.ReconciliationRequired?"The admitted internal action has an uncertain outcome. Reconcile the owning output before recovery.":"The reviewed internal action did not execute. Review the current policy and retained decision.");
+        var dispatch=await _dbContext.OperatingDispatches.SingleOrDefaultAsync(x=>x.CompanyId==approval.CompanyId&&x.TaskId==taskId&&x.Status==OperatingDispatchStatus.AwaitingApproval,ct);
+        dispatch?.ResolveInternalTaskReview(attempt.Status==ToolExecutionStatus.ReconciliationRequired?null:executed,DateTime.UtcNow);
+    }
+
+    private async Task<LinkedEntityStateTransition?> UpdateLinkedEntityAfterDecisionCoreAsync(
         ApprovalRequest approval,
         CancellationToken cancellationToken)
     {
@@ -494,6 +587,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         }
 
         var targetType = ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType);
+        if (targetType == ApprovalTargetEntityType.AnnualPlanVersion)
+        {
+            await _serviceProvider.GetRequiredService<VirtualCompany.Application.Orchestration.IAnnualPlanningService>()
+                .ApplyDecisionAsync(approval.CompanyId, approval.TargetEntityId, approval.Id, approval.Status.ToStorageValue(), cancellationToken);
+            return null;
+        }
         if (targetType == ApprovalTargetEntityType.Task)
         {
             var task = await _dbContext.WorkTasks.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
@@ -509,7 +608,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
 
-            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired)
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked)
             {
                 task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
                 await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: false, cancellationToken);
@@ -535,7 +634,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 return LinkedEntityStateTransition.ForWorkflow(workflow.Id, previousStatus, workflow.State.ToStorageValue());
             }
 
-            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired)
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked)
             {
                 workflow.UpdateState(WorkflowInstanceStatus.Failed, workflow.CurrentStep);
                 return LinkedEntityStateTransition.ForWorkflow(workflow.Id, previousStatus, workflow.State.ToStorageValue());
@@ -568,6 +667,17 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             if (approval.Status == ApprovalRequestStatus.Approved)
             {
                 var policyDecision = BuildApprovedApprovalPolicyDecision(approval);
+                var retainedTask=attempt.TaskId.HasValue?await _dbContext.WorkTasks.SingleOrDefaultAsync(x=>x.CompanyId==approval.CompanyId&&x.Id==attempt.TaskId,cancellationToken):null;
+                if(retainedTask is not null&&TaskTypePolicyCatalogue.All.Any(x=>!x.Finance&&x.Code==retainedTask.Type&&x.ToolName==attempt.ToolName)&&retainedTask.InputPayload.ContainsKey("taskPolicyVersion"))
+                {
+                    _outboxEnqueuer.Enqueue(approval.CompanyId,ReviewedTaskPolicyMessage.Topic,new ReviewedTaskPolicyMessage(approval.CompanyId,approval.Id,attempt.Id),
+                        correlationId:attempt.CorrelationId,idempotencyKey:$"reviewed-task:{approval.Id:N}:{attempt.Id:N}");
+                    attempt.ResultPayload["approvedInternalWorkQueued"]=JsonValue.Create(true);
+                    var queuedOutput=CloneNodes(retainedTask.OutputPayload);
+                    queuedOutput["reviewedActionQueue"]=new JsonObject{["approvalId"]=approval.Id.ToString("D"),["attemptId"]=attempt.Id.ToString("D")};
+                    retainedTask.UpdateStatus(WorkTaskStatus.New,queuedOutput,"The reviewed internal action is queued. Current policy and execution controls must pass before execution.");
+                    return LinkedEntityStateTransition.ForAction(attempt.Id,previousStatus,attempt.Status.ToStorageValue());
+                }
                 FinanceAgentAuthorizationDecisionDto? actorAuthorization = null;
                 if (IsFinanceToolAttempt(attempt))
                 {
@@ -724,7 +834,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 return LinkedEntityStateTransition.ForOperatingPlan(plan.Id, previousStatus, plan.Status.ToStorageValue());
             }
 
-            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked)
             {
                 if (plan.Status == OperatingPlanStatus.AwaitingReview)
                     plan.Reject();
@@ -758,7 +868,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                     invitation.Status.ToStorageValue());
             }
 
-            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked)
             {
                 invitation.MarkRejected(DateTime.UtcNow);
                 return LinkedEntityStateTransition.ForSalesMeetingInvitation(
@@ -789,7 +899,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                     change.Id, previousStatus, change.Status.ToStorageValue());
             }
 
-            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked)
             {
                 change.MarkRejected(DateTime.UtcNow);
                 return LinkedEntityStateTransition.ForSalesMeetingChangeRequest(
@@ -807,7 +917,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
                 if (approver.HasValue) proposal.Approve(proposal.ConcurrencyVersion, binding, approver.Value, DateTime.UtcNow);
             }
-            else if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            else if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked)
             {
                 var reviewer = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId ?? approval.RequestedByActorId;
                 proposal.Reject(proposal.ConcurrencyVersion, reviewer, approval.DecisionSummary, DateTime.UtcNow);
@@ -842,7 +952,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
             }
 
-            if (approval.Status == ApprovalRequestStatus.Rejected)
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.ChangesRequested or ApprovalRequestStatus.Stale or ApprovalRequestStatus.Superseded or ApprovalRequestStatus.Revoked or ApprovalRequestStatus.Cancelled)
             {
                 command.MarkRejected(now);
                 return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
@@ -930,7 +1040,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                     ? "accounting.provider_switch.plan_approved"
                     : "accounting.provider_switch.plan_rejected",
                 AuditTargetTypes.AccountingProviderSwitchCutoverPlan, plan.Id.ToString("D"),
-                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Approved : AuditEventOutcomes.Rejected,
+                approval.Status.ToStorageValue(),
                 approval.Status == ApprovalRequestStatus.Approved
                     ? "The immutable accounting migration cutover plan was approved."
                     : "The immutable accounting migration cutover plan was not approved.",
@@ -1062,7 +1172,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 $"Review {approval.TargetEntityType} {approval.TargetEntityId:N}.",
                 AuditTargetTypes.ApprovalRequest,
                 approval.Id,
-                $"/inbox?companyId={approval.CompanyId}&approvalId={approval.Id}",
+                $"/work?companyId={approval.CompanyId}&tab=approvals&itemId={approval.Id}",
                 recipientUserId,
                 recipientRole,
                 null,
@@ -1107,6 +1217,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
     {
         var exists = targetType switch
         {
+            ApprovalTargetEntityType.AnnualPlanVersion => await _dbContext.Set<AnnualPlanVersion>().AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.Task => await _dbContext.WorkTasks
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
@@ -1373,7 +1485,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 AuditEventActions.ApprovalCompleted,
                 AuditTargetTypes.ApprovalRequest,
                 approval.Id.ToString("N"),
-                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Approved : AuditEventOutcomes.Rejected,
+                approval.Status.ToStorageValue(),
                 DataSources: ["approvals", "http_request"],
                 RationaleSummary: $"Approval completed with status {approval.Status.ToStorageValue()}",
                 Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
@@ -1423,7 +1535,13 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         CancellationToken cancellationToken)
     {
         var contexts = await BuildSummaryContextsAsync(approval.CompanyId, [approval], cancellationToken);
-        return ToDto(approval, contexts.GetValueOrDefault(approval.Id));
+        var dto = ToDto(approval, contexts.GetValueOrDefault(approval.Id));
+        var reviewerIds = approval.Steps.Where(x => x.DecidedByUserId.HasValue).Select(x => x.DecidedByUserId!.Value).ToArray();
+        var names = await _dbContext.Users.AsNoTracking().Where(x => reviewerIds.Contains(x.Id) &&
+            _dbContext.CompanyMemberships.Any(m => m.CompanyId == approval.CompanyId && m.UserId == x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.DisplayName, cancellationToken);
+        return dto with { Review = await ReviewAsync(approval, cancellationToken),
+            Steps = dto.Steps.Select(x => x with { ReviewerName = x.DecidedByUserId is Guid user ? names.GetValueOrDefault(user) : null }).ToArray() };
     }
 
     private async Task<IReadOnlyDictionary<Guid, ApprovalSummaryContext>> BuildSummaryContextsAsync(
@@ -1705,12 +1823,13 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
 
     private static ApprovalRequestDto ToDto(ApprovalRequest approval, ApprovalSummaryContext? summaryContext)
     {
-        var thresholdSummary = BuildThresholdSummary(approval.ThresholdContext);
+        var thresholdSummary = approval.ApprovalType == "manual_review" && TryReadString(approval.ThresholdContext, "thresholdKey", "approvalTarget") is null
+            ? null : BuildThresholdSummary(approval.ThresholdContext);
         var rationaleSummary = Truncate(
             FirstNonEmpty(
                 summaryContext?.RationaleSummary,
                 TryReadString(approval.PolicyDecision, "explanation", "summary", "message"),
-                TryReadString(approval.ThresholdContext, "rationaleSummary", "rationale", "explanation"),
+                TryReadString(approval.ThresholdContext, "rationaleSummary", "rationale", "explanation", "reason"),
                 thresholdSummary is null ? null : DefaultRationaleSummary,
                 DefaultRationaleSummary),
             SummaryMaxLength);

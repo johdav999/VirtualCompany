@@ -19,6 +19,9 @@ public sealed class DependencyInjectionArchitectureTests
 {
     private static readonly Type[] RequiredServiceTypes =
     [
+        typeof(VirtualCompany.Application.Agents.IAgentSupervisionReportService),
+        typeof(VirtualCompany.Application.Agents.IExecutionControlService),
+        typeof(VirtualCompany.Application.Agents.IAgentExecutionControlGate),
         typeof(IApprovalRequestService),
         typeof(IAgentStaffOverviewQueryService),
         typeof(IFinanceReadService),
@@ -45,6 +48,9 @@ public sealed class DependencyInjectionArchitectureTests
     private static readonly IReadOnlyDictionary<Type, ServiceLifetime> RequiredLifetimes =
         new Dictionary<Type, ServiceLifetime>
         {
+            [typeof(VirtualCompany.Application.Agents.IAgentSupervisionReportService)] = ServiceLifetime.Scoped,
+            [typeof(VirtualCompany.Application.Agents.IExecutionControlService)] = ServiceLifetime.Scoped,
+            [typeof(VirtualCompany.Application.Agents.IAgentExecutionControlGate)] = ServiceLifetime.Scoped,
             [typeof(IApprovalRequestService)] = ServiceLifetime.Scoped,
             [typeof(IAgentStaffOverviewQueryService)] = ServiceLifetime.Scoped,
             [typeof(IFinanceReadService)] = ServiceLifetime.Scoped,
@@ -185,11 +191,16 @@ public sealed class DependencyInjectionArchitectureTests
             duplicateTypes.Length == 0,
             $"Hosted services must be registered once. Duplicates: {string.Join(", ", duplicateTypes)}.");
 
+        using var provider=services.BuildServiceProvider(new ServiceProviderOptions{ValidateOnBuild=true,ValidateScopes=true});
         var actualTypes = hostedDescriptors
-            .Select(descriptor => descriptor.ImplementationType?.Name ?? "<factory>")
+            .Select(descriptor => descriptor.ImplementationType?.Name ?? descriptor.ImplementationInstance?.GetType().Name ?? descriptor.ImplementationFactory!(provider).GetType().Name)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
-        Assert.Equal(ExpectedHostedServiceTypes, actualTypes);
+        Assert.Equal(actualTypes.Length,actualTypes.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(ExpectedHostedServiceTypes.Concat(new[]{"SalesRoomAgentCoordinator","SalesNarrationBackgroundService","SalesPresentationPresetBackgroundService","SalesRoomCaptureRetentionWorker",
+            "Microsoft365DocumentOnboardingDevelopmentSecretBootstrapper","DocumentRepositoryOnboardingExpiryWorker","DocumentRepositoryProvisioningWorker",
+            "CompanyDocumentRepositoryImportBackgroundService","CompanyDocumentRepositorySynchronizationBackgroundService","DocumentRepositoryRetentionBackgroundService"})
+            .OrderBy(x=>x,StringComparer.Ordinal), actualTypes);
     }
 
     [Fact]
@@ -260,6 +271,7 @@ public sealed class DependencyInjectionArchitectureTests
         builder.Services.AddControllers();
         builder.Services.AddSignalR();
         builder.Services.AddSingleton<IActivityEventPublisher, SignalRActivityEventPublisher>();
+        builder.Services.AddSingleton<ISalesRoomFloorEventPublisher, VirtualCompany.Api.Hubs.SignalRSalesRoomFloorEventPublisher>();
         builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);
         return builder.Services;
     }

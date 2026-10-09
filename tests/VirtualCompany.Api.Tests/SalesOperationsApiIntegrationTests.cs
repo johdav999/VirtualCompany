@@ -38,6 +38,68 @@ public sealed class SalesOperationsApiIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Pipeline_and_deal_include_preconversion_and_explicit_bookings_without_cross_tenant_or_other_deal_leakage()
+    {
+        var seed=await SeedAsync();
+        var beforeConversion=Guid.NewGuid();var explicitDeal=Guid.NewGuid();var cancelled=Guid.NewGuid();
+        var roomBeforeConversion=Guid.NewGuid();var foreignBooking=Guid.NewGuid();var foreignRoom=Guid.NewGuid();
+        await _factory.SeedAsync(async db =>
+        {
+            var user=await db.Users.SingleAsync(x=>x.Email=="sales-user@example.com");
+            var calendarA=Guid.NewGuid();var calendarB=Guid.NewGuid();
+            foreach(var pair in new[]{(seed.CompanyAId,calendarA),(seed.CompanyBId,calendarB)})
+            {
+                var external=Guid.NewGuid();
+                db.ExternalAccountConnections.Add(new ExternalAccountConnection(external,pair.Item1,user.Id,ExternalAccountProvider.Google,"organizer@example.com","Fixture calendar",null,"meeting-projection"));
+                db.CalendarConnections.Add(new CalendarConnection(pair.Item2,pair.Item1,user.Id,external,ExternalAccountProvider.Google,"organizer@example.com","Fixture calendar"));
+            }
+            var otherDeal=Guid.NewGuid();
+            db.Deals.Add(new Deal(otherDeal,seed.CompanyAId,"Other opportunity",SalesPipelineStage.QualifiedStageId,100,"USD",sourceLeadId:seed.LeadAId));
+            var now=DateTime.UtcNow;
+            SalesMeetingInvitation Create(Guid id,Guid company,Guid lead,Guid? deal,Guid calendar,Guid? room=null)
+            {
+                var booking=new SalesMeetingInvitation(id,company,lead,deal,null,calendar,ExternalAccountProvider.Google,
+                    "organizer@example.com","buyer@example.com",null,"Pipeline demo","Recorded fixture booking",now.AddDays(1),now.AddDays(1).AddHours(1),"UTC",null,false,user.Id);
+                if(room.HasValue){booking.SelectConferencing(SalesMeetingConferencing.Browser);booking.BindBrowserRoom(room.Value,"fixture-protected-link");}
+                booking.MarkScheduled("fixture-event-"+id,null,null,null,now);
+                return booking;
+            }
+            var cancelledBooking=Create(cancelled,seed.CompanyAId,seed.LeadAId,seed.DealAId,calendarA);cancelledBooking.MarkCancelled(now);
+            db.SalesMeetingInvitations.AddRange(
+                Create(beforeConversion,seed.CompanyAId,seed.LeadAId,null,calendarA,roomBeforeConversion),
+                Create(explicitDeal,seed.CompanyAId,seed.RejectLeadId,seed.DealAId,calendarA),
+                cancelledBooking,
+                Create(Guid.NewGuid(),seed.CompanyAId,seed.LeadAId,otherDeal,calendarA),
+                Create(foreignBooking,seed.CompanyBId,seed.LeadBId,seed.DealBId,calendarB,foreignRoom));
+        });
+        using var client=Client(seed.CompanyAId);
+        var pipeline=(await client.GetFromJsonAsync<SalesPipelineResponse>("/api/sales/pipeline"))!;
+        var card=Assert.Single(pipeline.Stages.SelectMany(x=>x.Deals),x=>x.Id==seed.DealAId);
+        var detail=(await client.GetFromJsonAsync<SalesDealDetailResponse>($"/api/sales/deals/{seed.DealAId}"))!;
+        foreach(var meetings in new[]{card.Meetings,detail.Meetings})
+        {
+            Assert.NotNull(meetings);Assert.Equal(3,meetings!.Count);
+            Assert.Equal(new[]{beforeConversion,explicitDeal,cancelled}.OrderBy(x=>x),meetings.Select(x=>x.Id).OrderBy(x=>x));
+            Assert.Equal("cancelled",Assert.Single(meetings,x=>x.Id==cancelled).Status);
+            Assert.Equal("scheduled",Assert.Single(meetings,x=>x.Id==beforeConversion).Status);
+            Assert.Equal(roomBeforeConversion,Assert.Single(meetings,x=>x.Id==beforeConversion).BrowserRoomId);
+            Assert.Null(Assert.Single(meetings,x=>x.Id==explicitDeal).BrowserRoomId);
+            Assert.DoesNotContain(meetings,x=>x.BrowserRoomId==foreignRoom);
+        }
+        var otherCard=Assert.Single(pipeline.Stages.SelectMany(x=>x.Deals),x=>x.Id!=seed.DealAId);
+        Assert.DoesNotContain(otherCard.Meetings!,x=>x.Id==explicitDeal||x.Id==cancelled);
+        using var foreign=Client(seed.CompanyBId);
+        Assert.Equal(HttpStatusCode.NotFound,(await foreign.GetAsync($"/api/sales/deals/{seed.DealAId}")).StatusCode);
+        var foreignPipeline=(await foreign.GetFromJsonAsync<SalesPipelineResponse>("/api/sales/pipeline"))!;
+        var foreignCard=Assert.Single(foreignPipeline.Stages.SelectMany(x=>x.Deals));
+        Assert.Equal(seed.DealBId,foreignCard.Id);
+        Assert.Single(foreignCard.Meetings!);
+        Assert.Equal(foreignRoom,foreignCard.Meetings![0].BrowserRoomId);
+        Assert.DoesNotContain(foreignCard.Meetings!,x=>x.BrowserRoomId==roomBeforeConversion);
+        Assert.DoesNotContain(foreignCard.Meetings!,x=>x.Id==beforeConversion||x.Id==explicitDeal||x.Id==cancelled);
+    }
+
+    [Fact]
     public async Task Cross_tenant_lead_and_deal_access_returns_not_found()
     {
         var seed = await SeedAsync();

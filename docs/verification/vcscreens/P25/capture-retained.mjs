@@ -1,0 +1,15 @@
+import {createRequire} from 'node:module';
+import {readFile} from 'node:fs/promises';
+const {chromium}=createRequire(import.meta.url)('C:/Users/Johan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const packet=new URL('.',import.meta.url), accepted=JSON.parse(await readFile(new URL('browser-accepted.json',packet),'utf8'));
+const browser=await chromium.launch({channel:'msedge',headless:true});
+const page=await browser.newPage({viewport:{width:1440,height:1000}});
+const profile=await(await fetch('http://localhost:5345/_uat/p25/profile')).json();
+const history=await(await fetch(`http://localhost:5345/api/companies/${profile.company.company}/planning/quarters/reviews?fiscalYear=2026&quarter=3`,{headers:{'X-Dev-Auth-Subject':'p19-owner','X-Dev-Auth-Email':'p19-owner@example.test','X-Company-Id':profile.company.company}})).json();
+await page.goto(`http://localhost:5105/dashboard?companyId=${profile.company.company}&period=quarter&year=2026&quarter=3&lens=company&review=${history.at(-1).id}`);
+await page.locator('[data-testid="quarter-planning"][data-interactive-ready="true"]').waitFor();
+await page.getByText('Browser capacity checkpoint',{exact:false}).waitFor();
+await page.getByRole('link',{name:'Propose a new revision',exact:true}).waitFor();
+await page.screenshot({path:new URL('quarter-overview-desktop.png',packet).pathname.replace(/^\/([A-Z]:)/,'$1'),fullPage:true});
+await browser.close();
+console.log('Retained desktop image captured after interactive load.');

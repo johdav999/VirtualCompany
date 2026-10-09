@@ -1,0 +1,76 @@
+@page "/marketing/reports/budget"
+@rendermode InteractiveServer
+@inherits MarketingManagementPageBase
+@implements IDisposable
+@inject MarketingManagementApiClient Management
+<PageTitle>Marketing budget proposal</PageTitle>
+<main class="vc-page marketing-management">
+    <header class="vc-page-header"><div><span class="vc-kicker">MARKETING / MANAGEMENT</span><h1>Budget proposal</h1><p>Planning assumptions; actual campaign limits require a separate controlled workflow.</p></div></header>
+    @if(busy){<section class="vc-panel" role="status">Loading or saving authorized proposal…</section>}
+    @if(error!=null){<section class="vc-panel" role="alert">@error <button disabled="@busy" @onclick="Retry">Retry</button></section>}
+    @if(report!=null){<p>@report.Query.Year-@report.Query.Month.ToString("D2") · @report.Timezone · Evidence as of @report.AsOfUtc.ToString("u") · <a href="@ReportPath">Return to management report</a></p>
+        <div class="management-layout"><section class="vc-panel budget-form"><h2>@(saved==null?"Proposal details":"Assumptions for a new revision")</h2>
+            <p>Saving captures fresh authorized report inputs. Current campaign budgets and portfolio ceilings remain recorded context; proposed allocations do not authorize spend.</p>
+            <label>Currency<input maxlength="3" @bind="currency" @bind:after="Changed" disabled="@(busy||saved!=null)" /></label>
+            <label>Proposed total<input type="number" min="0" max="1000000000" step="0.01" @bind="total" @bind:after="Changed" disabled="@busy" /></label>
+            <label>Assumed maximum (optional)<input type="number" min="0" max="1000000000" step="0.01" @bind="ceiling" @bind:after="Changed" disabled="@busy" /></label>
+            <h3>Campaign allocations</h3>
+            @foreach(var allocation in allocations){<div class="budget-allocation"><label>Campaign<select @bind="allocation.Campaign" @bind:after="Changed" disabled="@busy"><option value="">Choose a recorded campaign</option>@foreach(var item in report.Campaigns){<option value="@item.Id">@item.Name · @item.Currency</option>}</select></label><label>Proposed allocation<input type="number" min="0" max="1000000000" step="0.01" @bind="allocation.Amount" @bind:after="Changed" disabled="@busy" /></label><label>Impact assumption<input maxlength="1000" @bind="allocation.Impact" @bind:after="Changed" disabled="@busy" /></label><button disabled="@(busy||allocations.Count==1)" @onclick="()=>Remove(allocation)">Remove</button></div>}
+            <button disabled="@(busy||allocations.Count>=100)" @onclick="Add">Add allocation</button><p>Unique campaign allocations must equal the proposed total in one currency. Impact descriptions are assumptions, not achieved results.</p>
+            <label>Planning notes<textarea maxlength="2000" @bind="notes" @bind:after="Changed" disabled="@busy"></textarea></label>
+            <button class="btn btn-primary" disabled="@busy" @onclick="Save">@(saved==null?"Save proposal":"Refresh as new revision")</button>
+            <h3>Current recorded campaign budgets</h3>@foreach(var c in report.Campaigns){<p>@c.Name · @(c.RecordedBudget?.ToString("0.##")??"Unavailable") @c.Currency</p>}
+            <h3>Recorded portfolio ceilings</h3>@if(report.Plans.Count==0){<p>No applicable portfolio ceiling recorded.</p>}@foreach(var p in report.Plans){<p>@p.Name · @(p.Ceiling?.ToString("0.##")??"Unavailable") @p.Currency · Other allocations are included in the server-side ceiling check.</p>}
+        </section><aside class="vc-panel budget-results"><h2>Results and comparison</h2>
+            @if(saved==null){<p>Save to retain the exact report, assumptions and reconciled result. No proposal is selected.</p>}
+            else{<h3>Retained revision @saved.Summary.Revision</h3><p>Accountable reviewer @saved.Summary.AccountableUserId · Saved @saved.Summary.SavedAtUtc.ToString("u")</p><p>@saved.Retention</p>
+                <p>Original proposed total @saved.Result.ProposedTotal @saved.Result.Currency · Current recorded total @(saved.Result.CurrentTotal?.ToString("0.##")??"Unavailable") · Difference @(saved.Result.Difference?.ToString("0.##")??"Unavailable")</p>
+                <p>Original assumed maximum @(saved.Assumptions.AssumedCeiling?.ToString("0.##")??"Not supplied") · Notes @saved.Assumptions.Notes</p>
+                @foreach(var a in saved.Result.Allocations){<article><h4>@a.Name</h4><p>Recorded @(a.CurrentBudget?.ToString("0.##")??"Unavailable") → Proposed @a.ProposedBudget @saved.Result.Currency · Difference @(a.Difference?.ToString("0.##")??"Unavailable")</p><p>Impact assumption: @a.ImpactAssumption</p></article>}
+                @foreach(var constraint in saved.Result.Constraints){<p>@constraint</p>}
+                <a href="@EvidencePath">Open retained report snapshot</a><a href="@NewPath">Start a separate proposal from current sources</a>
+            }
+        </aside></div>
+    }
+    <section class="vc-panel"><h2>Your saved revisions</h2>@if(history.Count==0&&!busy){<p>No accessible proposals on this page. Save a proposal to retain its evidence and assumptions.</p>}
+        @foreach(var row in history){<p><a href="@ProposalPath(row)">@row.Year-@row.Month.ToString("D2") · @row.Currency · Revision @row.Revision · @row.SavedAtUtc.ToString("u")</a></p>}
+        <button disabled="@(busy||skip==0)" @onclick="PreviousPage">Previous page</button><button disabled="@(busy||history.Count<20||skip>=10000)" @onclick="NextPage">Next page</button>
+    </section>
+</main>
+@code{
+    [SupplyParameterFromQuery]public int? Year{get;set;} [SupplyParameterFromQuery]public int? Month{get;set;}
+    [SupplyParameterFromQuery]public string? Currency{get;set;} [SupplyParameterFromQuery]public Guid? CampaignId{get;set;}
+    [SupplyParameterFromQuery]public Guid? SegmentVersionId{get;set;} [SupplyParameterFromQuery]public Guid? ModelId{get;set;}
+    [SupplyParameterFromQuery]public Guid? Proposal{get;set;}
+    private sealed class Allocation{public string Campaign{get;set;}="";public decimal Amount{get;set;}public string Impact{get;set;}="";}
+    private MarketingManagementReport? report;private MarketingBudgetProposal? saved;private IReadOnlyList<MarketingBudgetProposalSummary> history=[];
+    private List<Allocation> allocations=[new()];private string currency="",notes="";private decimal total;private decimal? ceiling;
+    private string? error;private bool busy,disposed,retrySave,retryPage;private int generation,skip;private Guid request=Guid.NewGuid();private CancellationTokenSource read=new();
+    private string ReportPath=>Previous(report!.CompanyId)??Path("/marketing/reports/management?"+MarketingManagementApiClient.Parameters(report.Query),report.CompanyId);
+    private string EvidencePath=>Path("/marketing/reports/management?"+MarketingManagementApiClient.Parameters(saved!.Report.Query)+"&proposalEvidence="+saved.Summary.Id,report!.CompanyId);
+    private string NewPath=>Path("/marketing/reports/budget?"+MarketingManagementApiClient.Parameters(report!.Query),report.CompanyId);
+    private string ProposalPath(MarketingBudgetProposalSummary row)=>Path($"/marketing/reports/budget?year={row.Year}&month={row.Month}&currency={row.Currency}&proposal={row.Id}",CompanyId??report?.CompanyId??Guid.Empty);
+    private bool Current(int v,string location)=>!disposed&&generation==v&&Navigation.Uri==location;
+    private void Changed()=>request=Guid.NewGuid();private void Add(){allocations.Add(new());Changed();}private void Remove(Allocation a){allocations.Remove(a);Changed();}
+    protected override async Task OnParametersSetAsync(){skip=0;await Load();}
+    private Task Retry()=>retrySave?Save():retryPage?Page():Load();
+    private async Task Load(){read.Cancel();read.Dispose();read=new();var ct=read.Token;var version=++generation;var location=Navigation.Uri;busy=true;error=null;report=null;saved=null;history=[];retrySave=false;retryPage=false;
+        try{var company=await Company(ct);if(Year==null||Month==null)throw new InvalidOperationException("Open budget planning from a selected management-report month.");
+            var value=Proposal.HasValue?await Management.Open(company,Proposal.Value,ct):null;
+            var current=value?.Report??await Management.Report(company,new(Year.Value,Month.Value,Currency,CampaignId,SegmentVersionId,ModelId),ct);
+            if(current.Query.Year!=Year||current.Query.Month!=Month||value!=null&&current.Query.Currency!=(string.IsNullOrWhiteSpace(Currency)?null:Currency.Trim().ToUpperInvariant()))throw new InvalidDataException("Proposal month or currency differs from this link.");
+            var list=await Management.History(company,skip,ct);if(!Current(version,location))return;report=current;saved=value;history=list;request=Guid.NewGuid();
+            currency=value?.Assumptions.Currency??current.Query.Currency??"";total=value?.Assumptions.ProposedTotal??0;ceiling=value?.Assumptions.AssumedCeiling;notes=value?.Assumptions.Notes??"";
+            allocations=value?.Assumptions.Allocations.Select(x=>new Allocation{Campaign=x.CampaignId.ToString(),Amount=x.Amount,Impact=x.ImpactAssumption}).ToList()??[new()];
+        }catch(OperationCanceledException)when(ct.IsCancellationRequested){}catch(Exception ex)when(Expected(ex)){if(Current(version,location))error=Error(ex);}finally{if(Current(version,location))busy=false;}}
+    private async Task Save(){if(busy||report==null)return;var version=generation;var location=Navigation.Uri;busy=true;error=null;retrySave=true;retryPage=false;
+        try{if(allocations.Any(x=>!Guid.TryParse(x.Campaign,out _)))throw new InvalidOperationException("Choose a recorded campaign for each allocation.");
+            var command=new SaveMarketingBudgetProposal(request,report.Query with{Currency=currency.Trim().ToUpperInvariant()},new(currency.Trim().ToUpperInvariant(),total,ceiling,allocations.Select(x=>new MarketingBudgetAllocation(Guid.Parse(x.Campaign),x.Amount,x.Impact)).ToArray(),notes),saved?.Summary.Id,saved?.Summary.Revision);
+            var result=await Management.Save(report.CompanyId,command,read.Token);if(Current(version,location))Navigation.NavigateTo(ProposalPath(result.Summary));
+        }catch(OperationCanceledException)when(read.IsCancellationRequested){}catch(Exception ex)when(Expected(ex)){if(Current(version,location)){error=Error(ex);if(ex is TodayWorkspaceAccessException){report=null;saved=null;history=[];}}}finally{if(Current(version,location))busy=false;}}
+    private async Task PreviousPage(){skip=Math.Max(0,skip-20);await Page();}private async Task NextPage(){skip+=20;await Page();}
+    private async Task Page(){if(busy||report==null)return;var version=generation;var location=Navigation.Uri;busy=true;error=null;retryPage=true;retrySave=false;
+        try{var list=await Management.History(report.CompanyId,skip,read.Token);if(Current(version,location))history=list;}
+        catch(OperationCanceledException)when(read.IsCancellationRequested){}catch(Exception ex)when(Expected(ex)){if(Current(version,location)){error=Error(ex);history=[];if(ex is TodayWorkspaceAccessException){report=null;saved=null;}}}finally{if(Current(version,location))busy=false;}}
+    public void Dispose(){disposed=true;generation++;read.Cancel();read.Dispose();}
+}

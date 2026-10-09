@@ -1,0 +1,9 @@
+# Bounded P18 polish/UAT profile
+
+Environment: current Windows checkout; GUID-isolated SQLite authenticated TestServer scenarios; GUID-isolated local SQL Server migration/concurrency scenarios; rendered bUnit components and actual typed Web/API transport. Production owners, queue, dispatcher, approvals, admission and outbox execute. Test-only deterministic AI analysis and recording email adapter are explicit substitutes. No real customer/tenant data, money movement, publication or provider credentials are required for this local profile.
+
+Risk order: wrong authority/access; duplicate or uncertain effects; review bypass/material drift; misleading lifecycle/report state; stale UI/company results; navigation/layout/keyboard. Only bounded companies and retained record IDs enter queue paths. SQL factories create/drop their own GUID scenario databases. Builders are serialized. No native host is needed for TestServer checks; any subsequent browser replay must use fresh owned hidden hosts and recorded PIDs.
+
+Reference: existing `docs/design/references/task-policy-p15-reference.png` and its exact saved prompt. Corrective changes preserve that surface; no major redesign was introduced. P11 flow/list, P14 authority, P16 execution and P17 reports keep their existing references. Component equivalence is tested, but final screenshot/reference comparison is open.
+
+Browser attempt: CUA initialization failed before surfaces/tabs with the Windows sandbox deny-read ACL helper error. The strongest safe substitute is rendered interaction plus authenticated owning-source and typed-wire integration. Browser control is not bypassed through a different automation mechanism. Desktop/narrow, graphical/list browser navigation, real keyboard focus and saved CSV acceptance remain Blocked/Unverified.

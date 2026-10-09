@@ -17,7 +17,8 @@ public sealed class MonthlyWorkspaceComponentTests
         using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var cut = Render(context, CreateWorkspace());
 
-        Assert.Equal(2, cut.FindAll("[data-testid='workspace-period-picker'] button").Count);
+        Assert.Equal(6, cut.FindAll("[data-testid='workspace-period-picker'] button").Count);
+        Assert.Contains("Multi-year",cut.Find("[data-testid='workspace-period-picker']").TextContent);
         Assert.Equal(5, cut.FindAll("[data-testid='monthly-lens-picker'] button").Count);
         Assert.Equal(2, cut.FindAll(".monthly-result").Count);
         Assert.Equal(2, cut.FindAll(".monthly-result__icon").Count);

@@ -24,6 +24,7 @@ public sealed class FinanceAutonomyRunService : IFinanceAutonomyRunService
     private readonly IAuditEventWriter _audit;
     private readonly TimeProvider _timeProvider;
     private readonly IFinanceAutonomyBudgetService? _budgets;
+    private readonly IAgentExecutionControlGate? _executionControls;
 
     public FinanceAutonomyRunService(
         VirtualCompanyDbContext dbContext,
@@ -31,7 +32,7 @@ public sealed class FinanceAutonomyRunService : IFinanceAutonomyRunService
         ICompanyMembershipContextResolver membershipResolver,
         IAuditEventWriter audit,
         TimeProvider timeProvider,
-        IFinanceAutonomyBudgetService? budgets = null)
+        IFinanceAutonomyBudgetService? budgets = null, IAgentExecutionControlGate? executionControls = null)
     {
         _dbContext = dbContext;
         _policyEvaluator = policyEvaluator;
@@ -39,6 +40,7 @@ public sealed class FinanceAutonomyRunService : IFinanceAutonomyRunService
         _audit = audit;
         _timeProvider = timeProvider;
         _budgets = budgets;
+        _executionControls = executionControls;
     }
 
     public Task<FinanceAutonomyRunDto> CreateOrCoalesceAsync(
@@ -378,6 +380,7 @@ public sealed class FinanceAutonomyRunService : IFinanceAutonomyRunService
         if (command.LeaseSeconds is < 5 or > 1800) throw Validation(nameof(command.LeaseSeconds), "Lease seconds must be between 5 and 1800.");
         var run = await LoadRunAsync(companyId, command.RunId, true, cancellationToken);
         var step = RequireStep(run, command.StepId);
+        if (_executionControls is not null && await _executionControls.IsPausedAsync(companyId, run.AgentId, cancellationToken)) return null;
         if (FinanceAutonomyRun.IsTerminal(run.Status) || run.Status is FinanceAutonomyRunStatus.Paused or FinanceAutonomyRunStatus.Blocked or FinanceAutonomyRunStatus.AwaitingApproval)
             return null;
         if (!string.Equals(command.CurrentEvidenceHash, run.EvidenceHash, StringComparison.OrdinalIgnoreCase) ||

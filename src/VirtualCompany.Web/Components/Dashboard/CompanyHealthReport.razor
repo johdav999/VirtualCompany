@@ -94,7 +94,7 @@
     private IReadOnlyList<TodayWorkspacePriorityViewModel> Risks => (Workspace?.CompanyRisks ?? []).Where(x => string.IsNullOrEmpty(Department) || x.Lens == Department).ToList();
     private IReadOnlyList<TodayWorkspaceAgentUpdateViewModel> Outcomes => (Workspace?.AgentUpdates ?? []).Where(x => !string.IsNullOrWhiteSpace(x.WorkingAgent) && (x.RelatedTaskId.HasValue || x.RelatedWorkflowInstanceId.HasValue || x.RelatedApprovalId.HasValue)).ToList();
     private string Link(string route) => DashboardRoutes.EnsureWorkspaceContext(route, CompanyId, Origin);
-    private string RiskPath(TodayWorkspacePriorityViewModel risk) => DashboardRoutes.WithQuery(DashboardRoutes.BuildPriorityPath(CompanyId, "company", risk.Key, Origin), ("healthReturnUrl", DashboardRoutes.BuildHealthPath(CompanyId, Department, Origin)));
+    private string RiskPath(TodayWorkspacePriorityViewModel risk) => DashboardRoutes.WithQuery(Link(string.IsNullOrWhiteSpace(risk.DeepLink) ? CompanyHealthPresentation.Route(CompanyId, risk.Lens) : risk.DeepLink), ("healthReturnUrl", DashboardRoutes.BuildHealthPath(CompanyId, Department, Origin)));
     private string Time(DateTime value) => value == DateTime.MinValue ? CommonText["PriorityUnknownTime"] : LocalDateTime.DateTime(value);
     private string Measure(string lens) => lens switch {
         "finance" => Workspace?.Finance?.CashBalance is decimal cash ? (Workspace.Finance.Currency is { } currency ? LocalMoney.Format(cash, currency) : cash.ToString("N2") + " (" + CommonText["HealthUnavailable"] + ")") : CommonText["HealthUnavailable"],

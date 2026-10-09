@@ -26,6 +26,60 @@ public sealed class TodayWorkspaceQueryServiceTests
         Assert.True(workspace.IsPartial);
     }
 
+    [Theory]
+    [InlineData(15, false, "fresh")]
+    [InlineData(360, false, "current")]
+    [InlineData(361, true, "fresh")]
+    [InlineData(480, true, "fresh")]
+    [InlineData(1440, true, "fresh")]
+    [InlineData(1441, true, "fresh")]
+    [InlineData(-1, true, "fresh")]
+    [InlineData(null, true, "fresh")]
+    public async Task Company_refresh_uses_current_priorities_when_saved_briefing_is_stale_or_undated(
+        int? ageMinutes, bool fallback, string freshness)
+    {
+        var clock = new ReadClock();
+        var now = clock.Current.UtcDateTime;
+        var company = Guid.NewGuid(); var membership = Guid.NewGuid();
+        var access = new TodayWorkspaceLensAccess("company", "Company", "Oversight", false, true, membership, "Owner", null);
+        var briefing = new ExecutiveCockpitDailyBriefingDto(Guid.NewGuid(), "Saved briefing", "Saved daily copy",
+            ageMinutes is int minutes ? now.AddMinutes(-minutes) : DateTime.MinValue, null);
+        var service = new CompanyTodayWorkspaceQueryService(
+            new StubResolver(new(company, Guid.NewGuid(), membership, CompanyMembershipRole.Owner,
+                "North", "company", "company", "r1", [access])), [], new BriefingCockpit(briefing),
+            new OldPriorityFocus(now.AddDays(-2)), new NoOpCache(), new EmptyAgentActivity(), new ReadyManualReview(),
+            clock, NullLogger<CompanyTodayWorkspaceQueryService>.Instance);
+        var result = await service.GetAsync(new(company, "company", true), default);
+        Assert.Equal(fallback, result.SituationSummary.IsDeterministicFallback);
+        Assert.Equal(freshness, result.SituationSummary.Freshness);
+        Assert.Equal(fallback ? now : briefing.GeneratedUtc, result.SituationSummary.AsOfUtc);
+        Assert.Equal(fallback ? "Review recorded task" : briefing.Title, result.SituationSummary.Headline);
+        Assert.Equal(fallback ? "One priority currently needs your attention." : briefing.Summary, result.SituationSummary.Summary);
+        var priority = Assert.Single(result.Priorities);
+        Assert.Equal(now.AddDays(-2), priority.ObservedAtUtc);
+        Assert.Equal("stale", priority.Freshness);
+        Assert.False(result.IsPartial);
+    }
+
+    private sealed class OldPriorityFocus(DateTime observed) : IFocusEngine
+    {
+        public Task<IReadOnlyList<FocusItemDto>> GetFocusAsync(GetDashboardFocusQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<FocusItemDto>>([
+                new("task", "Review recorded task", "Check recorded evidence", "open", 10, "/tasks", "task", ObservedAtUtc: observed)]);
+    }
+
+    private sealed class BriefingCockpit(ExecutiveCockpitDailyBriefingDto briefing) : IExecutiveCockpitDashboardService
+    {
+        public Task<ExecutiveCockpitDashboardDto> GetAsync(GetExecutiveCockpitDashboardQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(new ExecutiveCockpitDashboardDto(query.CompanyId, "North", briefing.GeneratedUtc, [], null, [], briefing,
+                null, null, new(0, [], "/approvals"), [], [], [], [], new(false, false, false, 0, 0, 0, true),
+                new(true, true, true, true, true, true)));
+        public Task<ExecutiveCockpitWidgetPayloadDto> GetWidgetAsync(GetExecutiveCockpitWidgetPayloadQuery query, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public Task<ExecutiveCockpitFinanceAlertDetailDto?> GetFinanceAlertDetailAsync(GetExecutiveCockpitFinanceAlertDetailQuery query, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class TimestampMissingFocus : IFocusEngine
     {
         public Task<IReadOnlyList<FocusItemDto>> GetFocusAsync(GetDashboardFocusQuery query, CancellationToken cancellationToken) =>

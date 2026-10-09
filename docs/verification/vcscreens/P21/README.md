@@ -1,0 +1,9 @@
+# P21 evidence packet
+
+Current completion review: [2026-10-05 revalidation](revalidation-2026-10-05/README.md). Capacity overflow and malformed retained-evidence failures are repaired in the existing owners. Final current checks: 110 API (including five isolated SQL Server checks), 77 rendered Web and 49 full typed wire, all passed without skips; API/Web builds and model check pass. Original results below remain historical, with their entry summary retained in `revalidation-2026-10-05/entry-verification.json`. The dated focused source manifest covers the three source/test files updated in this review. Browser acceptance was retried and remains blocked before inventory by the Windows ACL helper failure.
+
+Read implementation.md, profile.md, uat.md, issue-ledger.md, verification.json, preservation-verification.json, source-manifest.json and handoff.md. P21 started after P20 finalization in the same checkout. All P01–P20 evidence remains byte-identical.
+
+Accepted final runs: `p21-api-final.trx` (98 passed, including five isolated SQL Server checks across P20/P21), `p21-web-accepted.trx` (76 passed), and `p21-wire-final.trx` (48 passed). Earlier compile/test logs are diagnostic and excluded from final acceptance. They record corrected controller syntax/import and fixture Task return, missing module company headers, EF UTC-kind loss, query-bound page test navigation, a literal report-return URL binding, and a proposal test response stub. Final native and rendered reproduction checks pass on the corrected production code.
+
+Browser runtime fails before inventory; browser-blocker.json contains the current kernel 5772 diagnostic. No hosts, tabs or screenshots were created. Generated reference images are design inputs, not screenshots of implemented screens. Browser/reference/keyboard/narrow, deployed migrations/providers, physical output, statutory review and human release approval remain independent. No release is approved by these checks.

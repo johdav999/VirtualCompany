@@ -1,0 +1,21 @@
+product: Virtual Company
+type: web
+revision: 9a356c7901abc2044f6ecb6a4e8a5ebf64ceab5b plus uncommitted P11-P29
+launch: start-hosts.ps1 after native API/Web/UAT builds; health polling is separate
+environment: local isolated composed API with native Web
+roles:
+  - name: CEO owner
+    access: p19-owner seeded by native UAT fixture
+  - name: Eligible delegate
+    access: p29-delegate active native member with independently assigned work; no source responsibility granted
+  - name: Accountable fallback
+    access: p29-fallback active native member; own-work scope only
+evidence:
+  screenshots: schedule-desktop.png, absence-desktop.png, absence-narrow.png, preview-desktop.png, delivery-desktop.png, preview-narrow.png
+  logs: browser-accepted.json, test-results, native host logs
+flows:
+  - id: BC29-01
+    name: Save schedules, route absence, preview actual work and receive one briefing
+    role: CEO owner and controlled delegate
+    preconditions: P28 retained scenario with accountable native work; no live provider
+    outcome: Saved schedule survives reload; authorized preview shows local delivery and source; native job/outbox delivers once to eligible recipient

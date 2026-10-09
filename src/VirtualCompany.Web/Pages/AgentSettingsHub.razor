@@ -31,7 +31,7 @@
                     <span class="bi @setting.Icon" aria-hidden="true"></span>
                     <h2>@setting.Title</h2>
                     <p>@setting.Description</p>
-                    <a class="btn btn-outline-primary" href="@setting.Href">@UiText["ConfigureSection", setting.Title]</a>
+                    <a class="btn btn-outline-primary" href="@setting.Href">@(setting.ActionLabel ?? UiText["ConfigureSection", setting.Title])</a>
                 </section>
             }
         </div>
@@ -70,9 +70,12 @@
             new("Document repository access", "Choose which read-only SharePoint and OneDrive sources this agent may search and cite.", "bi-folder2-open", $"/settings/document-repositories?companyId={companyId:D}{agentQuery}"),
             new(UiText["InboxConnections"], UiText["InboxConnectionsDescription"], "bi-envelope-at", $"{manageBase}#team-mailboxes"),
             new(UiText["AutonomyAndApprovals"], UiText["AutonomyAndApprovalsDescription"], "bi-person-check", $"{manageBase}#agent-operating-profile"),
+            new("Authority explanation", "Read configured intent, current policy checks, limits and required review.", "bi-shield-check", $"/settings/agents/authority?companyId={companyId:D}{agentQuery}", "View current authority"),
+            new("Task policies", "Preview and review bounded internal task permissions, expiry and policy history.", "bi-shield-check", $"/settings/agents/task-policies?companyId={companyId:D}{agentQuery}", "Review task policies"),
+            new("Execution controls", "Pause new controlled agent steps, review work in flight and recover safely.", "bi-pause-circle", $"/settings/agents/execution?companyId={companyId:D}{agentQuery}", "Review execution"),
             new(UiText["Automation"], UiText["AgentAutomationDescription"], "bi-diagram-3", $"/agents/automation?companyId={companyId:D}")
         ];
     }
 
-    private sealed record AgentSettingSection(string Title, string Description, string Icon, string Href);
+    private sealed record AgentSettingSection(string Title, string Description, string Icon, string Href, string? ActionLabel = null);
 }

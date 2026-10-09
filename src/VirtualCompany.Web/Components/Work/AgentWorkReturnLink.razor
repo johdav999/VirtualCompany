@@ -1,4 +1,12 @@
 @inject NavigationManager Navigation
+@implements IDisposable
+@if (CompanyId is Guid reportCompany && AgentWorkRoutes.SupervisionBack(Navigation.Uri,reportCompany) is { } report)
+{ <a href="@report" data-testid="supervision-return">Back to filtered supervision report</a> }
 @if (CompanyId is Guid company && AgentWorkRoutes.Back(Navigation.Uri,company) is { } origin)
-{ <a href="@origin" data-testid="agent-work-return">Back to agent work</a> }
-@code { [Parameter] public Guid? CompanyId { get; set; } }
+{ <a href="@origin" data-testid="agent-work-return">@(AgentWorkRoutes.BusinessRecord(origin,company) is not null ? "Back to business record" : "Back to agent work")</a> }
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    protected override void OnInitialized() => Navigation.LocationChanged += LocationChanged;
+    private void LocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args) => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Navigation.LocationChanged -= LocationChanged;
+}

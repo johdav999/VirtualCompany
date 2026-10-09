@@ -9,7 +9,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, CompanyWorkVisibility visibility,
+public sealed partial class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, CompanyWorkVisibility visibility,
     TimeProvider clock, ILogger<CompanyAgentWorkQueryService> logger) : IAgentWorkQueryService
 {
     private const int SourceLimit = 2000;
@@ -120,7 +120,7 @@ public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, Com
             !collaborators.Any(c => c.InitiativeId == x.Id && !scope.Allows(CompanyWorkScope.Area(c.Agent.Department)))).ToList();
         var taskIds = tasks.Take(SourceLimit).Select(x => x.Id).Concat(initiatives.Select(x => x.TaskId ?? Guid.Empty)).ToArray();
         var approvals = await db.ApprovalRequests.AsNoTracking().Where(x => x.CompanyId == company &&
-            x.TargetEntityType == "task" && taskIds.Contains(x.TargetEntityId) && x.Status == ApprovalRequestStatus.Pending)
+            x.TargetEntityType == "task" && taskIds.Contains(x.TargetEntityId))
             .OrderByDescending(x => x.CreatedUtc).Take(SourceLimit + 1).ToListAsync(token);
         var reviews = await db.OperatingReviews.AsNoTracking().Where(x => x.CompanyId == company && initiativeIds.Contains(x.InitiativeId))
             .OrderByDescending(x => x.CreatedUtc).ThenBy(x => x.Id).Take(SourceLimit + 1).ToListAsync(token);
@@ -161,7 +161,7 @@ public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, Com
             var dependencySummary = outcomeDependencies.Count == 0 ? null :
                 "Recorded dependencies: " + string.Join("; ", permittedDependencies.Select(x => $"{x.Title} ({x.Status.ToStorageValue()})")) +
                 (permittedDependencies.Count < outcomeDependencies.Count ? " A dependency is unavailable in this access scope; ask the accountable human to reconcile it." : ". Review their recorded evidence before proceeding.");
-            var dependency = state == AgentWorkStates.Paused ? "The recorded goal or outcome review is paused. The accountable human must review its continuation." :
+            var dependency = state == AgentWorkStates.Paused ? "The recorded goal or outcome review is paused. The accountable human must review its continuation." : IsReviewedInternalQueued(task)?"The reviewed internal action is queued; current policy and pause will be rechecked before execution.":
                 dispatch?.FailureSummary ?? review?.NextAction ?? (approval is not null ? "The current task approval needs a human decision." : dependencySummary ??
                 (state == AgentWorkStates.Blocked ? "The accountable human must record the missing dependency and recovery evidence." : "No outstanding dependency is recorded."));
             var updated = new[] { initiative.UpdatedUtc, initiative.Goal.UpdatedUtc, task?.UpdatedUtc ?? initiative.UpdatedUtc, dispatch?.UpdatedUtc ?? initiative.UpdatedUtc, review?.CreatedUtc ?? initiative.UpdatedUtc }.Max();
@@ -170,7 +170,7 @@ public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, Com
             items.Add(new("initiative", initiative.Id, initiative.Title, initiative.DesiredOutcome,
                 CompanyWorkScope.Area(initiative.OwnerAgent?.Department, task?.Type), state, initiative.Status.ToStorageValue(),
                 initiative.Goal?.OwnerUser?.DisplayName ?? scope.Human(CompanyWorkScope.Area(initiative.OwnerAgent?.Department, task?.Type)), participants,
-                state == AgentWorkStates.Completed ? "Company outcome recorded as completed" : task?.Status == WorkTaskStatus.Completed
+                state == AgentWorkStates.Completed ? "Company outcome recorded as completed" : IsReviewedInternalQueued(task)?"Queued for internal execution":task?.Status == WorkTaskStatus.Completed
                     ? $"The linked task ‘{task.Title}’ is completed. The company outcome still needs a recorded decision against this evidence: {initiative.CompletionEvidence}"
                     : task?.Title ?? "Review and organize the company outcome",
                 dependency, initiative.CreatedUtc, updated, state == AgentWorkStates.Completed ? initiative.UpdatedUtc : null,
@@ -217,33 +217,32 @@ public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, Com
         var state = task.Status switch { WorkTaskStatus.Completed => AgentWorkStates.Completed, WorkTaskStatus.Failed => AgentWorkStates.Failed,
             WorkTaskStatus.Blocked => AgentWorkStates.Blocked, WorkTaskStatus.AwaitingApproval => AgentWorkStates.AwaitingApproval,
             WorkTaskStatus.InProgress => AgentWorkStates.Active, _ => AgentWorkStates.Planned };
-        if (approval is not null && task.Status is not (WorkTaskStatus.Completed or WorkTaskStatus.Failed)) state = AgentWorkStates.AwaitingApproval;
+        if (approval?.Status == ApprovalRequestStatus.Pending && task.Status is not (WorkTaskStatus.Completed or WorkTaskStatus.Failed)) state = AgentWorkStates.AwaitingApproval;
         var route = WorkRoute(company, task.Id); var links = new List<AgentWorkLinkDto> { new("Open in Work", route, task.UpdatedUtc) };
         if (approval is not null) links.Add(new("Review approval", ApprovalRoute(company, approval.Id), approval.CreatedUtc));
+        if(task.OutputPayload.GetValueOrDefault("reviewedActionQueue") is System.Text.Json.Nodes.JsonObject queue&&Guid.TryParse(queue["approvalId"]?.ToString(),out var queuedApproval)&&
+            await db.ApprovalRequests.AnyAsync(x=>x.CompanyId==company&&x.Id==queuedApproval&&x.TargetEntityType=="action"&&db.ToolExecutionAttempts.Any(a=>a.CompanyId==company&&a.Id==x.TargetEntityId&&a.TaskId==task.Id),token))
+            links.Add(new("Review internal action decision",ApprovalRoute(company,queuedApproval),task.UpdatedUtc));
         if (task.ParentTaskId is Guid parent && await scope.Tasks(db.WorkTasks).AnyAsync(x => x.CompanyId == company && x.Id == parent, token))
             links.Add(new("Parent work", DetailRoute(company, "task", parent)));
-        foreach (var key in new[] { "dealId", "caseId", "supportCaseId" })
-            if (task.InputPayload.TryGetValue(key, out var value) && Guid.TryParse(value?.ToString(), out var record))
-            {
-                if (key == "dealId" && scope.Allows("sales") && await db.Deals.AnyAsync(x => x.CompanyId == company && x.Id == record && !x.IsDeleted, token))
-                    links.Add(new("Open business record", $"/app/sales/deals/{record:D}?companyId={company:D}"));
-                if (key != "dealId" && scope.Allows("support") && await db.SupportCases.AnyAsync(x => x.CompanyId == company && x.Id == record, token))
-                    links.Add(new("Open business record", $"/support/cases/{record:D}?companyId={company:D}"));
-            }
+        var business = await BusinessLinksAsync(scope, task, token);
+        links.AddRange(business.Links);
         var evidence = new List<AgentWorkLinkDto>();
         if (task.RationaleSummary is not null) evidence.Add(new("Recorded task rationale", route, task.UpdatedUtc));
         if (task.WorkflowInstance is { } workflow && workflow.CompanyId == company)
             evidence.Add(new("Owning workflow", $"/workflows?companyId={company:D}&workflowInstanceId={workflow.Id:D}", workflow.UpdatedUtc));
         var outputs = task.OutputPayload.Count > 0 ? new List<AgentWorkOutputDto> { new("Recorded task output", "An output is retained. Its existence does not establish completion; review it in Work.", task.UpdatedUtc, route) } : [];
         var diagnostics = Diagnostics(task.UpdatedUtc, task.AssignedAgentId.HasValue && task.AssignedAgent is null);
+        diagnostics.AddRange(business.Diagnostics);
         if (evidence.Count == 0) diagnostics.Add("No retained rationale or linked workflow evidence is available.");
-        var dependency = state switch { AgentWorkStates.Blocked => task.RationaleSummary ?? task.Description ?? "Ask the accountable human to record the blocking dependency and recovery evidence.",
+        var canReadContent = await CollaborationContentVisibility.AllowsAsync(db, scope, task.Id, token);
+        var dependency = !canReadContent ? "Some contribution evidence is unavailable in your access scope. Ask the accountable human to review the dependency." : state switch { AgentWorkStates.Blocked => task.RationaleSummary ?? task.Description ?? "Ask the accountable human to record the blocking dependency and recovery evidence.",
             AgentWorkStates.Failed => task.RationaleSummary ?? "Review the recorded failure and owning recovery policy in Work.",
             AgentWorkStates.AwaitingApproval => approval is not null ? "The current task approval needs a human decision." : "The task records a need for approval, but no current approval is linked. Ask the accountable human to reconcile it.",
-            _ => "No outstanding dependency is recorded." };
+            _ => IsReviewedInternalQueued(task)?"The reviewed internal action is queued; current policy and pause will be rechecked before execution.":"No outstanding dependency is recorded." };
         return new("task", task.Id, task.Title, task.Description ?? task.Title, area, state, task.Status.ToStorageValue(),
             scope.Human(area), task.AssignedAgent is { } agent && agent.CompanyId == company ? [Person(agent)] : [],
-            task.WorkflowInstance?.CurrentStep ?? task.Title, dependency, task.CreatedUtc, task.UpdatedUtc, task.CompletedUtc,
+            IsReviewedInternalQueued(task)?"Queued for internal execution":task.WorkflowInstance?.CurrentStep ?? task.Title, dependency, task.CreatedUtc, task.UpdatedUtc, task.CompletedUtc,
             DetailRoute(company, "task", task.Id), route, links, outputs, evidence, diagnostics);
     }
 
@@ -254,11 +253,17 @@ public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, Com
         if (initiative.Goal?.Status == CompanyGoalStatus.Paused || review?.Outcome == OperatingReviewOutcome.Pause) return AgentWorkStates.Paused;
         if (initiative.Status == OperatingInitiativeStatus.Cancelled || review?.Outcome == OperatingReviewOutcome.Stop || initiative.Status == OperatingInitiativeStatus.Blocked) return AgentWorkStates.Blocked;
         if (dispatch?.Status is OperatingDispatchStatus.Failed or OperatingDispatchStatus.DeadLettered) return AgentWorkStates.Failed;
+        if (dispatch?.Status == OperatingDispatchStatus.Paused) return AgentWorkStates.Paused;
+        if (dispatch?.Status == OperatingDispatchStatus.Uncertain) return AgentWorkStates.Blocked;
         if (dispatch?.Status is OperatingDispatchStatus.Blocked or OperatingDispatchStatus.RetryScheduled) return AgentWorkStates.Blocked;
-        if (approval is not null || dispatch?.Status == OperatingDispatchStatus.AwaitingApproval) return AgentWorkStates.AwaitingApproval;
+        if (approval?.Status == ApprovalRequestStatus.Pending) return AgentWorkStates.AwaitingApproval;
+        if(dispatch?.Status==OperatingDispatchStatus.AwaitingApproval)return IsReviewedInternalQueued(initiative.Task)?AgentWorkStates.Planned:AgentWorkStates.AwaitingApproval;
         return initiative.Status == OperatingInitiativeStatus.Active || dispatch?.Status is OperatingDispatchStatus.Running or OperatingDispatchStatus.Claimed
             ? AgentWorkStates.Active : AgentWorkStates.Planned;
     }
+    private static bool IsReviewedInternalQueued(WorkTask? task)=>task?.Status==WorkTaskStatus.New&&
+        task.InputPayload.ContainsKey("taskPolicyVersion")&&task.OutputPayload.GetValueOrDefault("reviewedActionQueue") is System.Text.Json.Nodes.JsonObject&&
+        VirtualCompany.Application.Agents.TaskTypePolicyCatalogue.All.Any(x=>!x.Finance&&x.Code==task.Type);
     private List<string> Diagnostics(DateTime updated, bool missing)
     {
         var result = new List<string>();
@@ -269,5 +274,5 @@ public sealed class CompanyAgentWorkQueryService(VirtualCompanyDbContext db, Com
     private static AgentWorkPersonDto Person(Agent agent) => new(agent.Id, agent.DisplayName, agent.RoleName, agent.AvatarUrl);
     private static string DetailRoute(Guid company, string kind, Guid id) => $"/agents/work/{kind}/{id:D}?companyId={company:D}";
     private static string WorkRoute(Guid company, Guid task) => $"/work?companyId={company:D}&tab=tasks&taskId={task:D}";
-    private static string ApprovalRoute(Guid company, Guid approval) => $"/work?companyId={company:D}&tab=approvals&approvalId={approval:D}";
+    private static string ApprovalRoute(Guid company, Guid approval) => $"/work?companyId={company:D}&tab=approvals&itemId={approval:D}";
 }

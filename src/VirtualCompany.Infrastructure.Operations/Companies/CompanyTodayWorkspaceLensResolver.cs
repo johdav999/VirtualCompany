@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Cockpit;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
@@ -52,6 +53,31 @@ public sealed class CompanyTodayWorkspaceLensResolver : ITodayWorkspaceLensResol
             throw new UnauthorizedAccessException("The Today workspace is not available for the current user.");
         }
 
+        return await ResolveMembershipAsync(companyId, normalizedRequest, membership,
+            (await _authorization.AuthorizeAsync(_currentUser.Principal, companyId, CompanyPolicies.FinanceView)).Succeeded,
+            (await _authorization.AuthorizeAsync(_currentUser.Principal, companyId, CompanyPolicies.CompanyOwnerOrAdmin)).Succeeded,
+            (await _authorization.AuthorizeAsync(_currentUser.Principal, companyId, CompanyPolicies.CompanyManager)).Succeeded, cancellationToken);
+    }
+
+    // Background delivery reads the persisted recipient's human scope, never the scheduler's principal.
+    internal async Task<TodayWorkspaceLensResolution> ResolveRecipientAsync(Guid companyId, Guid userId, CancellationToken ct)
+    {
+        var m = await _db.CompanyMemberships.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.UserId == userId && x.Status == CompanyMembershipStatus.Active)
+            .Select(x => new ResolvedCompanyMembershipContext(x.Id, companyId, userId, x.Company.Name, x.Role, x.Status, x.Company.Timezone, x.Company.Currency, x.Company.SizeBand))
+            .SingleOrDefaultAsync(ct) ?? throw new UnauthorizedAccessException();
+        if (m.MembershipRole == CompanyMembershipRole.Accountant && !await _db.AccountantCompanyGrants.IgnoreQueryFilters().AnyAsync(x =>
+            x.CompanyId == companyId && x.AccountantUserId == userId && x.MembershipId == m.MembershipId && x.Status == AccountantGrantStatuses.Active &&
+            x.EffectiveFromUtc <= DateTime.UtcNow && (x.EffectiveUntilUtc == null || x.EffectiveUntilUtc > DateTime.UtcNow), ct)) throw new UnauthorizedAccessException();
+        return await ResolveMembershipAsync(companyId, "", m, VirtualCompany.Shared.FinanceAccess.CanView(m.MembershipRole.ToStorageValue()),
+            m.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin,
+            m.MembershipRole is CompanyMembershipRole.Owner or CompanyMembershipRole.Admin or CompanyMembershipRole.Manager, ct);
+    }
+
+    private async Task<TodayWorkspaceLensResolution> ResolveMembershipAsync(Guid companyId, string normalizedRequest,
+        ResolvedCompanyMembershipContext membership, bool canViewFinance, bool canManageResponsibilities, bool canRequestReview, CancellationToken cancellationToken)
+    {
+
         var rows = await _db.CompanyResponsibilityAssignments
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -70,19 +96,6 @@ public sealed class CompanyTodayWorkspaceLensResolver : ITodayWorkspaceLensResol
                 x.Version,
                 x.UpdatedUtc))
             .ToListAsync(cancellationToken);
-
-        var canViewFinance = (await _authorization.AuthorizeAsync(
-            _currentUser.Principal,
-            companyId,
-            CompanyPolicies.FinanceView)).Succeeded;
-        var canManageResponsibilities = (await _authorization.AuthorizeAsync(
-            _currentUser.Principal,
-            companyId,
-            CompanyPolicies.CompanyOwnerOrAdmin)).Succeeded;
-        var canRequestReview = (await _authorization.AuthorizeAsync(
-            _currentUser.Principal,
-            companyId,
-            CompanyPolicies.CompanyManager)).Succeeded;
 
         var accesses = rows.Count == 0
             ? BuildFallback(membership.MembershipRole, membership.MembershipId, membership.UserId, canViewFinance)

@@ -5,7 +5,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
-public sealed class SalesMonthlyWorkspaceContributor(VirtualCompanyDbContext db) : IMonthlyWorkspaceContributor
+public sealed class SalesMonthlyWorkspaceContributor(VirtualCompanyDbContext db, VirtualCompany.Application.Sales.ISalesManagementService management) : IMonthlyWorkspaceContributor
 {
     public string Lens => TodayWorkspaceLenses.Sales;
 
@@ -14,11 +14,12 @@ public sealed class SalesMonthlyWorkspaceContributor(VirtualCompanyDbContext db)
         CancellationToken cancellationToken)
     {
         var period = context.Period;
+        var managementReport = await management.ReportAsync(context.CompanyId,new(period.Year,period.Month),cancellationToken);
         var activities = await db.SalesActivities.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.CompanyId == context.CompanyId && x.OccurredUtc >= period.StartUtc && x.OccurredUtc < period.EndUtc)
+            .Where(x => x.CompanyId == context.CompanyId && !x.IsDeleted && x.OccurredUtc >= period.StartUtc && x.OccurredUtc < period.EndUtc)
             .OrderByDescending(x => x.OccurredUtc).ToListAsync(cancellationToken);
         var previousActivities = await db.SalesActivities.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.CompanyId == context.CompanyId && x.OccurredUtc >= period.ComparisonStartUtc && x.OccurredUtc < period.ComparisonEndUtc)
+            .Where(x => x.CompanyId == context.CompanyId && !x.IsDeleted && x.OccurredUtc >= period.ComparisonStartUtc && x.OccurredUtc < period.ComparisonEndUtc)
             .ToListAsync(cancellationToken);
         var openDeals = await db.Deals.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == context.CompanyId && !x.IsDeleted && x.Status == SalesStatuses.Open)
@@ -33,6 +34,7 @@ public sealed class SalesMonthlyWorkspaceContributor(VirtualCompanyDbContext db)
         var stageMoves = activities.Count(x => x.ActivityType == "stage change");
         var previousStageMoves = previousActivities.Count(x => x.ActivityType == "stage change");
         var conversions = activities.Count(x => x.ActivityType == "conversion");
+        if (comparisonForecast?.Currency != latestForecast?.Currency) comparisonForecast = null;
         var previousConversions = previousActivities.Count(x => x.ActivityType == "conversion");
         var dealsAtRisk = latestForecast?.HighRiskDeals ?? 0;
 
@@ -82,7 +84,7 @@ public sealed class SalesMonthlyWorkspaceContributor(VirtualCompanyDbContext db)
             stageMoves > 0 ? "The pipeline moved during the month; next-period follow-up should focus on unresolved risk."
                 : "No recorded stage movement was available for this reporting month.",
             dealsAtRisk > 0 ? "attention" : "current", activities.FirstOrDefault()?.OccurredUtc ?? period.EndUtc,
-            [new("Current pipeline", $"{openDeals.Sum(x => x.Amount):0.##} {openDeals.FirstOrDefault()?.Currency ?? latestForecast?.Currency ?? string.Empty}".Trim(), "current"),
+            [new("Current pipeline", openDeals.Count==0 ? "No open deals" : string.Join(" · ",openDeals.GroupBy(x=>x.Currency).OrderBy(x=>x.Key).Select(x=>$"{x.Sum(d=>d.Amount):0.##} {x.Key}")), "current"),
              new("Stage changes", stageMoves.ToString(), stageMoves >= previousStageMoves ? "positive" : "attention"),
              new("Lead conversions", conversions.ToString(), conversions >= previousConversions ? "positive" : "attention"),
              new("High-risk forecast deals", dealsAtRisk.ToString(), dealsAtRisk > 0 ? "attention" : "current")],
@@ -94,6 +96,6 @@ public sealed class SalesMonthlyWorkspaceContributor(VirtualCompanyDbContext db)
 
         return new(Lens, section, priorities, results, outcomes,
             [new("sales", "Sales", "current", activities.FirstOrDefault()?.OccurredUtc ?? latestForecast?.AsOfUtc,
-                "Period activity and forecast snapshots are available.")]);
+                "Period activity and forecast snapshots are available.")], SalesManagement: managementReport);
     }
 }

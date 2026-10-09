@@ -18,7 +18,9 @@ public sealed record StartMultiAgentCollaborationCommand(
 public sealed record WorkerSubtaskRequest(
     Guid AgentId = default,
     string Objective = "",
-    string? Instructions = null);
+    string? Instructions = null,
+    string Pattern = "parallel",
+    string Role = "contributor");
 
 public sealed record CollaborationLimitRequest(
     int? MaxWorkers = null,
@@ -130,6 +132,8 @@ public interface IMultiAgentCoordinator
         StartMultiAgentCollaborationCommand command,
         CancellationToken cancellationToken);
 }
+
+public sealed class CollaborationAlreadyRunningException() : Exception("This collaboration is already running. Refresh its owning work before retrying.");
 
 public sealed class MultiAgentCollaborationValidationException : Exception
 {

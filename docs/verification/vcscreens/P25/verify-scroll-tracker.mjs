@@ -1,0 +1,10 @@
+import {readFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const callbacks=new Map(),handlers=new Map();let serial=0,unhandled=0;
+globalThis.document={documentElement:{scrollTop:0,scrollHeight:800,offsetHeight:800,clientHeight:800},body:{scrollTop:0,scrollHeight:800,offsetHeight:800,clientHeight:800}};
+globalThis.window={scrollY:0,innerHeight:1000,requestAnimationFrame:f=>{callbacks.set(++serial,f);return serial},cancelAnimationFrame:id=>callbacks.delete(id),addEventListener:(name,f)=>handlers.set(name,f),removeEventListener:name=>handlers.delete(name)};
+process.on('unhandledRejection',()=>unhandled++);
+const source=await readFile(new URL('../../../../src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js',import.meta.url),'utf8');
+const m=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+let calls=0;const first=m.registerDashboardScrollTracker({invokeMethodAsync:()=>{calls++;return Promise.resolve()}});m.disposeDashboardScrollTracker(first);assert.equal(callbacks.size,0);assert.equal(handlers.size,0);assert.equal(calls,0);
+const pending=[];const second=m.registerDashboardScrollTracker({invokeMethodAsync:(name,value)=>{assert.equal(name,'OnDashboardScrollDepthChanged');pending.push(value);return Promise.reject(new Error('Disposed circuit'))}});const publish=[...callbacks.values()][0];callbacks.clear();publish();m.disposeDashboardScrollTracker(second);await new Promise(r=>setImmediate(r));assert.deepEqual(pending,[25,50,75,100]);assert.equal(unhandled,0);assert.equal(handlers.size,0);publish();assert.equal(pending.length,4);console.log('Passed: pending frame cleanup, in-flight rejection handling, milestone uniqueness, disposed callback guard.');

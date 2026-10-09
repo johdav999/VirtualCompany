@@ -1,0 +1,13 @@
+<section class="quality-page">
+    <header><div><span class="dashboard-kicker">Support / Management</span><h1>@Title</h1><p>@Subtitle</p></div><a href="@Back">Back to previous view</a></header>
+    <nav class="vc-section-tabs" aria-label="Support management"><a href="@Cases">Cases</a><a href="@Knowledge">Knowledge</a><a href="@Quality">Quality</a><a href="@Issues">Recurring issues</a><a href="@Capacity">Capacity</a></nav>
+    @if(Busy){<p role="status">Loading or validating Support evidence…</p>}
+    @if(Error is not null){<div class="alert alert-danger" role="alert">@Error <button disabled="@Busy" @onclick="Retry">Retry current view</button></div>}
+    @ChildContent
+</section>
+@code {
+    [Parameter]public string Title{get;set;}="";[Parameter]public string Subtitle{get;set;}="";
+    [Parameter]public string Back{get;set;}="/support";[Parameter]public string Cases{get;set;}="/support";[Parameter]public string Knowledge{get;set;}="/support/knowledge";
+    [Parameter]public string Quality{get;set;}="/support/reports/quality";[Parameter]public string Issues{get;set;}="/support/reports/issues";[Parameter]public string Capacity{get;set;}="/support/reports/capacity";
+    [Parameter]public bool Busy{get;set;}[Parameter]public string? Error{get;set;}[Parameter]public EventCallback Retry{get;set;}[Parameter]public RenderFragment? ChildContent{get;set;}
+}

@@ -1,0 +1,72 @@
+@page "/app/sales/reports/capacity"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@implements IDisposable
+@inject SalesManagementApiClient Management
+<PageTitle>Capacity proposal</PageTitle>
+<main class="vc-page sales-management">
+    <header class="vc-page-header"><div><span class="vc-kicker">Sales / Management</span><h1>Capacity proposal</h1><p>Planning assumptions; no customer assignment, compensation or commitments are changed.</p></div></header>
+    <SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
+    @if(busy){<p role="status">Loading or saving proposal…</p>}
+    @if(error!=null){<p role="alert">@error</p><button disabled="@busy" @onclick="Retry">Retry</button>}
+    @if(report!=null){<section class="vc-panel"><p>@report.Year-@report.Month.ToString("D2") · @report.Timezone · @(report.Currency??"Currencies separated") · As of @report.AsOfUtc.ToString("u")</p><p>@report.OwnershipCoverage</p><a href="@ReportPath">Return to management report</a>
+        @if(saved!=null){<h2>Retained revision @saved.Summary.Revision</h2><p>Accountable reviewer @saved.Summary.AccountableUserId · Saved @saved.Summary.SavedAtUtc.ToString("u") · @saved.Retention</p>
+            <p>Original available selling hours @saved.Assumptions.AvailableSellingHours; hours per opportunity @saved.Assumptions.HoursPerOpportunity; notes @saved.Assumptions.Notes</p>
+            <p>Available opportunity capacity @saved.Result.OpportunityCapacity · Open opportunities @saved.Result.OpenOpportunities · Expected workload @saved.Result.ExpectedWorkloadHours hours · Signed capacity gap @saved.Result.CapacityGapHours hours</p>
+            @foreach(var a in saved.Result.Allocations){<p>@a.Territory · @a.Percent% · @a.SellingHours hours</p>}
+            <a href="@NewPath">Start a separate proposal from current sources</a>
+        }
+        <h2>@(saved==null?"New planning assumptions":"Assumptions for a new revision")</h2>
+        <label>Available selling hours <input type="number" min="0" max="100000" step="0.01" @bind="hours" @bind:after="Changed" disabled="@busy" /></label>
+        <label>Hours per opportunity <input type="number" min="0.01" max="10000" step="0.01" @bind="perOpportunity" @bind:after="Changed" disabled="@busy" /></label>
+        @foreach(var row in allocations){<div class="allocation"><label>Planning territory <input maxlength="80" @bind="row.Territory" @bind:after="Changed" disabled="@busy" /></label><label>Target % <input type="number" min="0" max="100" step="0.01" @bind="row.Percent" @bind:after="Changed" disabled="@busy" /></label><button disabled="@(busy||allocations.Count==1)" @onclick="()=>Remove(row)">Remove</button></div>}
+        <button disabled="@(busy||allocations.Count>=20)" @onclick="Add">Add allocation</button><p>Unique labels; percentages must total 100%. Expected workload = current included open opportunities × assumed hours per opportunity. Capacity = floor(available hours / hours per opportunity). Gap = available hours − workload. Allocation hours = capacity hours × target percent / 100.</p>
+        <label>Planning notes <textarea maxlength="2000" @bind="notes" @bind:after="Changed" disabled="@busy"></textarea></label>
+        <button class="btn btn-primary" disabled="@busy" @onclick="Save">@(saved==null?"Save proposal":"Refresh as new revision")</button><p>The authenticated reviewer is accountable. Saving captures fresh authorized report inputs; it does not approve execution.</p>
+    </section>}
+    <section class="vc-panel"><h2>Your saved proposals</h2>@if(history.Count==0 && !busy){<p>No accessible proposals on this page.</p>}
+        @foreach(var row in history){<p><a href="@Path(row)">@row.Year-@row.Month.ToString("D2") · @(row.Currency??"Currencies separated") · Revision @row.Revision · @row.SavedAtUtc.ToString("u")</a></p>}
+        <button disabled="@(busy||skip==0)" @onclick="Previous">Previous page</button><button disabled="@(busy||history.Count<20)" @onclick="Next">Next page</button>
+    </section>
+</main>
+@code{
+    [SupplyParameterFromQuery]public int? Year{get;set;} [SupplyParameterFromQuery]public int? Month{get;set;}
+    [SupplyParameterFromQuery]public string? Currency{get;set;} [SupplyParameterFromQuery]public Guid? Proposal{get;set;}
+    private sealed class Allocation{public string Territory{get;set;}="";public decimal Percent{get;set;}}
+    private List<Allocation> allocations=[new(){Territory="Unallocated planning capacity",Percent=100}];
+    private decimal hours,perOpportunity=1;private string notes="";private Guid request=Guid.NewGuid();
+    private SalesManagementReport? report;private SalesCapacityProposal? saved;private IReadOnlyList<SalesCapacityProposalSummary> history=[];
+    private bool busy,disposed,retrySave;private string? error;private int generation,skip;private CancellationTokenSource read=new();
+    private string ReportPath=>SalesJourneyRoutes.Normalize(System.Web.HttpUtility.ParseQueryString(new Uri(Navigation.Uri).Query)["salesReturnUrl"],report!.CompanyId)??SalesJourneyRoutes.Build($"/app/sales/reports/management?year={report.Year}&month={report.Month}&currency={report.Currency}",report.CompanyId,Navigation.Uri);
+    private string NewPath=>SalesJourneyRoutes.Build($"/app/sales/reports/capacity?year={report!.Year}&month={report.Month}&currency={Uri.EscapeDataString(report.Currency??"")}",report.CompanyId,Navigation.Uri);
+    private string Path(SalesCapacityProposalSummary s)=>SalesJourneyRoutes.Build($"/app/sales/reports/capacity?year={s.Year}&month={s.Month}&currency={s.Currency}&proposal={s.Id}",ResolvedCompanyId!.Value,Navigation.Uri);
+    private void Changed()=>request=Guid.NewGuid();private void Add(){allocations.Add(new());Changed();}private void Remove(Allocation row){allocations.Remove(row);Changed();}
+    protected override async Task OnParametersSetAsync(){skip=0;await Load();}
+    private Task Retry()=>retrySave?Save():Load();
+    private async Task Load(){read.Cancel();read.Dispose();read=new();var ct=read.Token;var version=++generation;var location=Navigation.Uri;busy=true;error=null;retrySave=false;report=null;saved=null;history=[];
+        try{if(!await ResolveCompanyAsync(ct))throw new InvalidOperationException(ShellErrorMessage??"Choose a company.");if(Year==null || Month==null)throw new InvalidOperationException("Open capacity planning from a selected management report month.");
+            var value=Proposal.HasValue?await Management.Open(ResolvedCompanyId!.Value,Proposal.Value,ct):null;
+            var current=value?.Report??await Management.Report(ResolvedCompanyId!.Value,new(Year.Value,Month.Value,Currency),ct);
+            if(value!=null && (current.Year!=Year || current.Month!=Month || current.Currency!=Normalize(Currency)))throw new InvalidDataException("Proposal period/currency differs from this link.");
+            var list=await Management.History(ResolvedCompanyId!.Value,skip,ct);
+            if(!Current(version,location))return;report=current;saved=value;history=list;request=Guid.NewGuid();
+            hours=value?.Assumptions.AvailableSellingHours??0;perOpportunity=value?.Assumptions.HoursPerOpportunity??1;notes=value?.Assumptions.Notes??"";
+            allocations=value?.Assumptions.Allocations.Select(x=>new Allocation{Territory=x.Territory,Percent=x.Percent}).ToList()??[new(){Territory="Unallocated planning capacity",Percent=100}];
+        }catch(OperationCanceledException){}catch(Exception ex)when(Expected(ex)){if(Current(version,location))error=Message(ex);}
+        finally{if(Current(version,location))busy=false;}}
+    private async Task Save(){if(busy || report==null)return;var version=generation;var location=Navigation.Uri;busy=true;error=null;retrySave=true;
+        try{var command=new SaveSalesCapacityProposal(request,new(report.Year,report.Month,report.Currency),new(hours,perOpportunity,allocations.Select(x=>new SalesCapacityAllocation(x.Territory,x.Percent)).ToArray(),notes),saved?.Summary.Id,saved?.Summary.Revision);
+            var value=await Management.Save(report.CompanyId,command,read.Token);if(Current(version,location))Navigation.NavigateTo(Path(value.Summary));
+        }catch(OperationCanceledException){}catch(Exception ex)when(Expected(ex)){if(Current(version,location)){error=Message(ex);if(ex is TodayWorkspaceAccessException){report=null;saved=null;history=[];}}}
+        finally{if(Current(version,location))busy=false;}}
+    private async Task Previous(){skip=Math.Max(0,skip-20);await Page();}private async Task Next(){skip+=20;await Page();}
+    private async Task Page(){if(busy||report==null)return;var version=generation;var location=Navigation.Uri;busy=true;try{var list=await Management.History(report.CompanyId,skip,read.Token);if(Current(version,location))history=list;}catch(OperationCanceledException){}catch(Exception ex)when(Expected(ex)){if(Current(version,location)){error=Message(ex);history=[];if(ex is TodayWorkspaceAccessException){report=null;saved=null;}}}finally{if(Current(version,location))busy=false;}}
+    private bool Current(int v,string location)=>!disposed && generation==v && Navigation.Uri==location;
+    private static bool Expected(Exception ex)=>ex is HttpRequestException or InvalidOperationException or InvalidDataException or TodayWorkspaceAccessException;
+    private static string Message(Exception ex)=>ex is TodayWorkspaceAccessException?"Sales access changed; retained results withheld.":ex.Message;
+    private static string? Normalize(string? v)=>string.IsNullOrWhiteSpace(v)?null:v.Trim().ToUpperInvariant();
+    public void Dispose(){disposed=true;generation++;read.Cancel();read.Dispose();}
+}
+
+
+

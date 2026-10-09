@@ -71,6 +71,8 @@ public sealed record AgentEffectiveAuthorityDto(
     IReadOnlyList<EffectiveAgentToolAuthorityDto> Tools,
     DateTime GeneratedUtc)
 {
+    // Informational configuration gaps; these entries are never granted or offered to the executor.
+    public IReadOnlyList<string> ExcludedConfiguredTools { get; init; } = [];
     public EffectiveAgentToolAuthorityDto? Find(string toolName, ToolActionType actionType, string? scope)
     {
         var normalizedScope = string.IsNullOrWhiteSpace(scope) ? string.Empty : scope.Trim();

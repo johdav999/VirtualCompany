@@ -22,22 +22,33 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
     private readonly ICompanyOperatingAutonomyPolicy _autonomyPolicy;
     private readonly ISingleAgentOrchestrationService _singleAgent;
     private readonly IMultiAgentCoordinator _multiAgent;
+    private readonly IAgentExecutionControlGate _controls;
 
     public OperatingWorkDispatcher(VirtualCompanyDbContext db, ICompanyExecutionScopeFactory executionScopes,
         ICompanyMembershipContextResolver memberships, IAgentAssignmentGuard assignmentGuard,
         ICompanyOperatingAutonomyPolicy autonomyPolicy,
-        ISingleAgentOrchestrationService singleAgent, IMultiAgentCoordinator multiAgent)
+        ISingleAgentOrchestrationService singleAgent, IMultiAgentCoordinator multiAgent, IAgentExecutionControlGate controls)
     {
         _db = db; _executionScopes = executionScopes; _memberships = memberships;
         _assignmentGuard = assignmentGuard; _autonomyPolicy = autonomyPolicy; _singleAgent = singleAgent; _multiAgent = multiAgent;
+        _controls = controls;
     }
 
     public async Task<OperatingDispatchRunResult> RunOnceAsync(int batchSize, CancellationToken ct)
+        => await RunCoreAsync(null,batchSize,ct);
+
+    public Task<OperatingDispatchRunResult> RunCompanyOnceAsync(Guid companyId,int batchSize,CancellationToken ct)
+        => companyId==Guid.Empty?throw new ArgumentException("A company is required."):RunCoreAsync(companyId,batchSize,ct);
+
+    private async Task<OperatingDispatchRunResult> RunCoreAsync(Guid? companyId,int batchSize,CancellationToken ct)
     {
         batchSize = Math.Clamp(batchSize, 1, 25);
         var now = DateTime.UtcNow;
         var candidateIds = await _db.OperatingDispatches.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => (x.Status == OperatingDispatchStatus.Pending || x.Status == OperatingDispatchStatus.RetryScheduled ||
+            .Where(x=>!companyId.HasValue||x.CompanyId==companyId)
+            .Where(x=>!_db.CompanyOperatingConfigurations.IgnoreQueryFilters().Any(c=>c.CompanyId==x.CompanyId&&(c.IsPaused||c.EmergencyStopped)))
+            .Where(x=>!_db.AgentExecutionControls.IgnoreQueryFilters().Any(c=>c.CompanyId==x.CompanyId&&c.ScopeId==x.Task.AssignedAgentId&&c.Paused))
+            .Where(x => (x.Status == OperatingDispatchStatus.Pending || x.Status == OperatingDispatchStatus.Paused || x.Status == OperatingDispatchStatus.RetryScheduled ||
                          ((x.Status == OperatingDispatchStatus.Claimed || x.Status == OperatingDispatchStatus.Running) && x.LeaseExpiresUtc <= now)) &&
                         (x.NextAttemptUtc == null || x.NextAttemptUtc <= now))
             .OrderBy(x => x.NextAttemptUtc).ThenBy(x => x.CreatedUtc).Select(x => x.Id).Take(batchSize * 2).ToListAsync(ct);
@@ -46,7 +57,11 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
         foreach (var id in candidateIds)
         {
             var dispatch = await _db.OperatingDispatches.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.Id == id, ct);
-            if (dispatch is null || !dispatch.TryClaim(_leaseOwner, now, LeaseDuration)) continue;
+            if (dispatch is null) continue;
+            var assignedAgent = await _db.WorkTasks.IgnoreQueryFilters().AsNoTracking().Where(x=>x.CompanyId==dispatch.CompanyId&&x.Id==dispatch.TaskId).Select(x=>x.AssignedAgentId).SingleAsync(ct);
+            if (await _controls.IsPausedAsync(dispatch.CompanyId, assignedAgent, ct,dispatch.TaskId)) { dispatch.PauseBeforeStart(now); await _db.SaveChangesAsync(ct); continue; }
+            if(dispatch.Status==OperatingDispatchStatus.Paused)dispatch.ResumePaused(now);
+            if (!dispatch.TryClaim(_leaseOwner, now, LeaseDuration)) { if(dispatch.Status==OperatingDispatchStatus.Uncertain) await _db.SaveChangesAsync(ct); continue; }
             try
             {
                 await _db.SaveChangesAsync(ct);
@@ -80,8 +95,12 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
             .SingleAsync(x => x.Id == dispatchId, ct);
         using var tenantScope = _executionScopes.BeginScope(dispatch.CompanyId);
         var now = DateTime.UtcNow;
+        Guid? admissionId = null;
         try
         {
+            await _db.Entry(dispatch).ReloadAsync(ct);
+            if (dispatch.Status != OperatingDispatchStatus.Claimed) return dispatch.Status;
+            if (await _controls.IsPausedAsync(dispatch.CompanyId, dispatch.Task.AssignedAgentId, ct,dispatch.TaskId)) { dispatch.PauseBeforeStart(now); await _db.SaveChangesAsync(ct); return dispatch.Status; }
             var config = await _db.CompanyOperatingConfigurations.IgnoreQueryFilters().AsNoTracking()
                 .SingleOrDefaultAsync(x => x.CompanyId == dispatch.CompanyId, ct);
             if (config is null || config.IsPaused || config.EmergencyStopped || config.AutonomyLevel < CompanyAutonomyLevel.OperateInternally)
@@ -103,6 +122,8 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
             }
             if (!dispatch.Initiative.OwnerAgentId.HasValue)
                 throw new AgentAssignmentValidationException(new Dictionary<string, string[]> { ["ownerAgentId"] = ["An initiative owner is required."] });
+            if(dispatch.Task.AssignedAgentId!=dispatch.Initiative.OwnerAgentId)
+                throw new AgentAssignmentValidationException(new Dictionary<string,string[]> { ["ownerAgentId"]=["The retained task was reassigned after its plan was reviewed. Review and queue new work for the receiving agent."] });
             await _assignmentGuard.EnsureAgentCanReceiveNewTasksAsync(dispatch.CompanyId,
                 dispatch.Initiative.OwnerAgentId.Value, "ownerAgentId", ct);
             var invalid = await _db.OperatingValidationResults.IgnoreQueryFilters().AsNoTracking()
@@ -118,6 +139,7 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
 
             dispatch.Start(_leaseOwner, now);
             await _db.SaveChangesAsync(ct);
+            admissionId = await _controls.AdmitAsync(dispatch.CompanyId, dispatch.Task.AssignedAgentId, "dispatch", $"{dispatch.Id:D}:{dispatch.AttemptCount}", ct,dispatch.TaskId);
             var collaborators = await _db.OperatingInitiativeCollaborators.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.CompanyId == dispatch.CompanyId && x.InitiativeId == dispatch.InitiativeId)
                 .OrderBy(x => x.Sequence).ToListAsync(ct);
@@ -129,6 +151,12 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
                     OrchestrationIntentValues.ExecuteTask), ct);
                 if (result.Status == OrchestrationStatusValues.AwaitingApproval)
                     dispatch.AwaitApproval(result.FailureReason ?? "Execution is waiting for an approval.", DateTime.UtcNow);
+                else if(result.ToolExecutions.Any(x=>x.ResultPayload?.Values.Any(v=>v?.ToString()=="execution_paused")==true))
+                    dispatch.PauseRunningBeforeEffect(DateTime.UtcNow);
+                else if(result.ToolExecutions.Any(x=>x.Status is "denied" or "rejected"))
+                    dispatch.Block("current_tool_policy_denied","Current task policy, actor authority or owning workflow does not authorize the requested step.",DateTime.UtcNow);
+                else if(result.ToolExecutions.Any(x=>x.ActionType=="execute"&&x.Status=="failed"))
+                    dispatch.MarkUncertain("A controlled execute step failed without a confirmed business outcome. Reconcile the owning record before recovery.",DateTime.UtcNow);
                 else if (result.Status == OrchestrationStatusValues.Completed)
                     dispatch.Complete(result.OrchestrationId, null, DateTime.UtcNow);
                 else
@@ -142,7 +170,8 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
                 foreach (var collaborator in collaborators)
                     await _assignmentGuard.EnsureAgentCanReceiveNewTasksAsync(dispatch.CompanyId, collaborator.AgentId, "collaboratorAgentId", ct);
                 var workers = collaborators.Select(x => new WorkerSubtaskRequest(x.AgentId, x.Objective,
-                    $"Act as {x.Role.ToStorageValue().Replace('_', ' ')}. Produce: {x.ExpectedArtifact}")).ToArray();
+                    $"Act as {x.Role.ToStorageValue().Replace('_', ' ')}. Produce: {x.ExpectedArtifact}",
+                    x.Pattern.ToStorageValue(), x.Role.ToStorageValue())).ToArray();
                 var result = await _multiAgent.ExecuteAsync(new StartMultiAgentCollaborationCommand(
                     dispatch.CompanyId, dispatch.Initiative.DesiredOutcome, dispatch.Initiative.OwnerAgentId.Value,
                     workers, dispatch.Initiative.Plan.Cycle.CoordinatorAgentId, "agent", null,
@@ -157,6 +186,8 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
                     }), ct);
                 if (result.Status == MultiAgentCollaborationStatusValues.Completed)
                     dispatch.Complete(null, result.PlanId, DateTime.UtcNow);
+                else if (result.Contributions.Any(x => x.Status is "needs_review" or "awaiting_approval"))
+                    dispatch.AwaitApproval("A recorded contribution requires human review before the handoff can continue.", DateTime.UtcNow);
                 else if (result.IsRetryable)
                     dispatch.Retry("collaboration_failed", result.TerminationReason,
                         DateTime.UtcNow.AddMinutes(ComputeBackoff(dispatch.AttemptCount)), DateTime.UtcNow);
@@ -164,10 +195,23 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
                     dispatch.Block("collaboration_blocked", result.TerminationReason, DateTime.UtcNow);
             }
         }
+        catch (DbUpdateConcurrencyException)
+        {
+            await _db.Entry(dispatch).ReloadAsync(CancellationToken.None);
+            return dispatch.Status;
+        }
+        catch (ExecutionPausedException)
+        {
+            EnsureRunning(dispatch, now); dispatch.PauseRunningBeforeEffect(DateTime.UtcNow);
+        }
         catch (AgentAssignmentValidationException ex)
         {
             EnsureRunning(dispatch, now);
             dispatch.Block("assignment_denied", string.Join(" ", ex.Errors.SelectMany(x => x.Value)), DateTime.UtcNow);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            EnsureRunning(dispatch, now); dispatch.Block("current_actor_denied","The current originating actor, membership or responsibility no longer authorizes this work.",DateTime.UtcNow);
         }
         catch (MultiAgentCollaborationValidationException ex)
         {
@@ -177,9 +221,11 @@ public sealed class OperatingWorkDispatcher : IOperatingWorkDispatcher, IOperati
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             EnsureRunning(dispatch, now);
-            dispatch.Retry("dispatch_failed", Safe(ex.Message), DateTime.UtcNow.AddMinutes(ComputeBackoff(dispatch.AttemptCount)), DateTime.UtcNow);
+            if(admissionId.HasValue) dispatch.MarkUncertain("Execution ended without a trustworthy acknowledgement. Review the recorded work and attempts.",DateTime.UtcNow);
+            else dispatch.Retry("dispatch_failed", Safe(ex.Message), DateTime.UtcNow.AddMinutes(ComputeBackoff(dispatch.AttemptCount)), DateTime.UtcNow);
         }
         await _db.SaveChangesAsync(CancellationToken.None);
+        if(admissionId.HasValue) await _controls.AcknowledgeAsync(dispatch.CompanyId,admissionId.Value,dispatch.Status is OperatingDispatchStatus.Completed or OperatingDispatchStatus.AwaitingApproval or OperatingDispatchStatus.Blocked or OperatingDispatchStatus.Paused,CancellationToken.None);
         return dispatch.Status;
     }
 

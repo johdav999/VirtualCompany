@@ -58,7 +58,10 @@ else
         <div class="today-controls">
             <div class="workspace-periods" role="group" aria-label="@CommonText["WorkspacePeriodLabel"]" data-testid="workspace-period-picker">
                 <button type="button" class="workspace-periods__active" aria-pressed="true">@CommonText["WorkspacePeriodToday"]</button>
+                <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("week")'>Week</button>
                 <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("month")'>@CommonText["WorkspacePeriodMonthly"]</button>
+                <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("quarter")'>Quarter</button>
+                        <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("year")'>Year</button><button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("multiyear")'>Multi-year</button>
             </div>
 
             @if (Workspace.AvailableLenses.Count > 1)
@@ -199,9 +202,9 @@ else
                                             @if (priority.Freshness is "stale" or "unknown") { <small>@CommonText[priority.Freshness == "unknown" ? "PriorityUnknownTime" : "TodayStaleTitle"]</small> }
                                         </div>
                                     </div>
-                                    <a class="today-priority__button" href="@DashboardRoutes.BuildPriorityPath(CompanyId, Workspace.ActiveLens, priority.Key, OverviewPath)"
+                                    <a class="today-priority__button" href="@PriorityReviewRoute(priority)"
                                        aria-label="@CommonText["TodayOpenPriorityAria", priority.WhatHappened]"
-                                       @onclick='() => RecordAsync("priority", "open-priority", priority.DeepLink, priority.EvidenceSourceId ?? priority.Key, priority.EvidenceSourceType, priority.WhatHappened, priority.Rank)'>
+                                       @onclick='() => RecordAsync("priority", "open-priority", PriorityReviewRoute(priority), priority.EvidenceSourceId ?? priority.Key, priority.EvidenceSourceType, priority.WhatHappened, priority.Rank)'>
                                         <MonthlyWorkspaceIcon Kind="review" Size="16" /> @CommonText["TodayReviewAction"] <span class="today-priority__chevron" aria-hidden="true"><MonthlyWorkspaceIcon Kind="chevron-right" Size="17" /></span>
                                     </a>
                                 </article>
@@ -321,7 +324,7 @@ else
                     }
                     else
                     {
-                        @foreach (var update in AssignedAgentUpdates.Take(2))
+                        @foreach (var update in AssignedAgentUpdates)
                         {
                             <article class="today-agent-update today-agent-update--@AgentStateTone(update.AgentState)" data-state="@update.AgentState">
                                 <img src="@AgentPortrait(update.WorkingAgent, update.AgentRole, update.AvatarUrl)" alt="" />
@@ -339,7 +342,7 @@ else
                                     }
                                     <h3>@update.Title</h3>
                                     <p>@update.Summary</p>
-                                    @if (!string.IsNullOrWhiteSpace(update.RationaleSummary))
+                                    @if (!string.IsNullOrWhiteSpace(update.RationaleSummary) && !string.Equals(update.RationaleSummary.Trim(), update.Summary.Trim(), StringComparison.Ordinal))
                                     {
                                         <p class="today-agent-update__rationale"><strong>@CommonText["TodayAgentRationale"]</strong> @update.RationaleSummary</p>
                                     }
@@ -396,6 +399,11 @@ else
     private IReadOnlyList<TodayWorkspaceAgentUpdateViewModel> AssignedAgentUpdates => Workspace?.AgentUpdates
         .Where(update => !string.IsNullOrWhiteSpace(update.WorkingAgent))
         .ToList() ?? [];
+
+    private string PriorityReviewRoute(TodayWorkspacePriorityViewModel priority) =>
+        !string.IsNullOrWhiteSpace(priority.DeepLink)
+            ? ResolveRoute(priority.DeepLink)
+            : ResolveRoute(CompanyHealthPresentation.Route(CompanyId, priority.Lens));
 
     private string OverviewPath => DashboardRoutes.BuildTodayPath(CompanyId, Workspace?.ActiveLens);
     private string ResolveRoute(string? route) => DashboardRoutes.EnsureWorkspaceContext(

@@ -27,7 +27,8 @@ public static class FinanceJourneyRoutes
         var origin = Normalize(source["financeReturnUrl"], company);
         if (origin is null && current.AbsolutePath is "/finance" or "/finance/invoices" or "/finance/supplier-bills" or "/finance/payments" or "/finance/transactions" or "/finance/reviews" or "/finance/accounting/reconciliation")
             origin = Normalize(current.PathAndQuery, company);
-        if (current.AbsolutePath is "/finance/receivables-aging" or "/finance/payables-aging" or "/finance/cash-forecast")
+        if (current.AbsolutePath is "/finance/receivables-aging" or "/finance/payables-aging" or "/finance/cash-forecast" or
+            "/finance/reports/variance" or "/finance/reports/rolling-forecast" or "/finance/reports/forecast-comparison")
         {
             var clean = HttpUtility.ParseQueryString(current.Query); clean.Remove("financeReturnUrl"); clean.Remove("recordReturnUrl");
             origin = Normalize(current.AbsolutePath + "?" + clean, company);
@@ -39,7 +40,6 @@ public static class FinanceJourneyRoutes
             query["recordReturnUrl"] = Normalize(current.AbsolutePath + "?" + clean, company);
         }
         else if (Normalize(source["recordReturnUrl"], company) is { } record) query["recordReturnUrl"] = record;
-        if (DashboardRoutes.NormalizePriorityPath(source["priorityReturnUrl"], company) is { } priority) query["priorityReturnUrl"] = priority;
         if (DashboardRoutes.NormalizeHealthPath(source["healthReturnUrl"], company) is { } health) query["healthReturnUrl"] = health;
         return (index < 0 ? result : result[..index]) + "?" + query + fragment;
     }
@@ -48,7 +48,7 @@ public static class FinanceJourneyRoutes
         var query = HttpUtility.ParseQueryString(new Uri(location).Query);
         return AccountingJourneyRoutes.Normalize(query["accountingReturnUrl"], company) ??
             Normalize(query["recordReturnUrl"], company) ?? Normalize(query["financeReturnUrl"], company) ??
-            DashboardRoutes.NormalizePriorityPath(query["priorityReturnUrl"], company) ?? DashboardRoutes.NormalizeHealthPath(query["healthReturnUrl"], company) ??
+            DashboardRoutes.NormalizeHealthPath(query["healthReturnUrl"], company) ??
             DashboardRoutes.OverviewPathFromLocation(location, company) ?? DashboardRoutes.BuildTodayPath(company, "finance");
     }
 }

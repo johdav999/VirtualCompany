@@ -13,7 +13,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
+public sealed partial class MultiAgentCoordinator : IMultiAgentCoordinator
 {
     private const int RationaleMaxLength = 2000;
 
@@ -24,6 +24,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
     private readonly ISingleAgentOrchestrationService _singleAgentOrchestrationService;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly MultiAgentCollaborationOptions _options;
+    private readonly CompanyWorkVisibility _visibility;
 
     public MultiAgentCoordinator(
         VirtualCompanyDbContext dbContext,
@@ -32,7 +33,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
         IAgentAssignmentGuard agentAssignmentGuard,
         ISingleAgentOrchestrationService singleAgentOrchestrationService,
         IAuditEventWriter auditEventWriter,
-        IOptions<MultiAgentCollaborationOptions> options)
+        IOptions<MultiAgentCollaborationOptions> options,
+        CompanyWorkVisibility visibility)
     {
         _dbContext = dbContext;
         _taskCommands = taskCommands;
@@ -41,9 +43,10 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
         _singleAgentOrchestrationService = singleAgentOrchestrationService;
         _auditEventWriter = auditEventWriter;
         _options = options.Value;
+        _visibility = visibility;
     }
 
-    public async Task<MultiAgentCollaborationResultDto> ExecuteAsync(
+    private async Task<MultiAgentCollaborationResultDto> ExecuteCoreAsync(
         StartMultiAgentCollaborationCommand command,
         CancellationToken cancellationToken)
     {
@@ -93,7 +96,11 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
             runtimeBudget.Token);
 
         var planId = Guid.NewGuid();
-        var parentTask = await _taskCommands.CreateTaskAsync(
+        var retainedParent = await FindRetainedParentAsync(command, correlationId, workers, cancellationToken);
+        if (retainedParent is not null) planId = Guid.Parse(retainedParent.InputPayload["planId"]!.GetValue<string>());
+        var parentTask = retainedParent is not null
+            ? new TaskCommandResultDto(retainedParent.Id, retainedParent.CompanyId, retainedParent.Status.ToStorageValue(), retainedParent.UpdatedUtc)
+            : await _taskCommands.CreateTaskAsync(
             command.CompanyId,
             new CreateTaskCommand(
                 MultiAgentCollaborationTaskTypes.Parent,
@@ -103,7 +110,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
                 null,
                 command.CoordinatorAgentId,
                 BuildParentInputPayload(command, planId, limits, correlationId, workers),
-                null,
+                SourceTask(command),
                 command.WorkflowInstanceId,
                 null,
                 null,
@@ -133,7 +140,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
 
         var plannedSteps = workers
             .Select((worker, index) => new CollaborationStepDto(
-                Guid.NewGuid(),
+                StableStepId(parentTask.Id, index + 1),
                 index + 1,
                 parentTask.Id,
                 null,
@@ -186,7 +193,10 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
         foreach (var step in plannedSteps)
         {
             EnsureRuntimeBudget(startedUtc, limits);
-            var childTask = await _taskCommands.CreateSubtaskAsync(
+            var retainedChild = await FindRetainedChildAsync(command.CompanyId, parentTask.Id, step.Sequence, runtimeBudget.Token);
+            var childTask = retainedChild is not null
+                ? new TaskCommandResultDto(retainedChild.Id, retainedChild.CompanyId, retainedChild.Status.ToStorageValue(), retainedChild.UpdatedUtc)
+                : await _taskCommands.CreateSubtaskAsync(
                 command.CompanyId,
                 parentTask.Id,
                 new CreateSubtaskCommand(
@@ -267,6 +277,19 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
             try
             {
                 EnsureRuntimeBudget(startedUtc, limits);
+                var recorded = await ExecuteContributionAsync(command, planId, parentTask.Id, step,
+                    workers[step.Sequence - 1], runtimeBudget.Token);
+                if (recorded is not null)
+                {
+                    var profile = workerProfiles[step.AssignedAgentId];
+                    contributions.Add(new(step.AssignedAgentId, profile.DisplayName, profile.RoleName,
+                        step.SubtaskId.Value, step.SubtaskId.Value, step.Sequence, recorded.Status,
+                        recorded.Output, recorded.Rationale, null, BuildWorkerCorrelationId(correlationId, step.Sequence)));
+                    finalSteps.Add(step with { Status = ResolveStepStatus(recorded.Status), RationaleSummary = recorded.Rationale });
+                    if (recorded.Status == MultiAgentCollaborationStatusValues.Blocked)
+                        terminationReason = MultiAgentCollaborationTerminationReasons.WorkerExecutionFailed;
+                    continue;
+                }
                 executedStepCount++;
                 var workerResult = await _singleAgentOrchestrationService.ExecuteAsync(
                     new SingleAgentOrchestrationRequest(
@@ -293,6 +316,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
                     workerResult.ConfidenceScore,
                     workerResult.CorrelationId);
                 contributions.Add(contribution);
+                await RetainContributionAsync(command, planId, parentTask.Id, step, workers[step.Sequence - 1],
+                    workerResult.Status, workerResult.UserFacingOutput, workerResult.RationaleSummary, runtimeBudget.Token);
                 finalSteps.Add(step with
                 {
                     Status = ResolveStepStatus(workerResult.Status),
@@ -322,6 +347,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
             {
                 terminationReason = MultiAgentCollaborationTerminationReasons.RuntimeBudgetExceeded;
                 var failureSummary = Trim($"Collaboration runtime budget of {limits.MaxRuntimeSeconds} second(s) was exhausted.", RationaleMaxLength);
+                await RetainContributionAsync(command, planId, parentTask.Id, step, workers[step.Sequence - 1],
+                    "failed", "", failureSummary, cancellationToken);
                 await _taskCommands.UpdateStatusAsync(
                     command.CompanyId,
                     step.SubtaskId.Value,
@@ -392,7 +419,9 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
                     terminationReason = MultiAgentCollaborationTerminationReasons.WorkerExecutionFailed;
                 }
 
-                var failureSummary = Trim($"Worker subtask failed safely: {ex.Message}", RationaleMaxLength);
+                var failureSummary = "The worker could not complete this contribution. Review the owning work before retrying.";
+                await RetainContributionAsync(command, planId, parentTask.Id, step, workers[step.Sequence - 1],
+                    "failed", "", failureSummary, runtimeBudget.Token);
                 await _taskCommands.UpdateStatusAsync(
                     command.CompanyId,
                     step.SubtaskId.Value,
@@ -454,7 +483,9 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
             });
         }
 
-        var status = string.Equals(terminationReason, MultiAgentCollaborationTerminationReasons.Completed, StringComparison.OrdinalIgnoreCase)
+        if (contributions.Any(x => x.Status is "needs_review" or "awaiting_approval"))
+            terminationReason = "human_review_required";
+        var status = terminationReason == "human_review_required" ? MultiAgentCollaborationStatusValues.Blocked : string.Equals(terminationReason, MultiAgentCollaborationTerminationReasons.Completed, StringComparison.OrdinalIgnoreCase)
             ? ResolveCollaborationStatus(contributions)
             : MultiAgentCollaborationStatusValues.Failed;
         var finalResponse = BuildFinalResponse(command.Objective, contributions);
@@ -490,7 +521,9 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
             new UpdateTaskStatusCommand(
                 string.Equals(status, MultiAgentCollaborationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
                     ? WorkTaskStatus.Failed.ToStorageValue()
-                    : WorkTaskStatus.Completed.ToStorageValue(),
+                    : status == MultiAgentCollaborationStatusValues.Completed ? WorkTaskStatus.Completed.ToStorageValue()
+                    : contributions.Any(x => x.Status is "needs_review" or "awaiting_approval") ? WorkTaskStatus.AwaitingApproval.ToStorageValue()
+                    : WorkTaskStatus.Blocked.ToStorageValue(),
                 structuredOutput,
                 BuildParentRationale(contributions, status),
                 contributions.Count == 0 ? 0m : contributions.Average(x => x.ConfidenceScore ?? 0.5m)),
@@ -698,6 +731,8 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
         for (var i = 0; i < workers.Count; i++)
         {
             var worker = workers[i];
+            if (worker.Pattern is not ("parallel" or "sequential_handoff") || worker.Role is not ("contributor" or "reviewer" or "challenger"))
+                AddError(errors, nameof(command.Workers), "Choose a supported collaboration pattern and contribution role.");
             if (worker.AgentId == Guid.Empty)
             {
                 AddError(errors, $"{nameof(command.Workers)}[{i}].{nameof(worker.AgentId)}", "Worker AgentId is required.");
@@ -793,6 +828,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
             instructions = NormalizeOptional(worker.Instructions),
             delegationDepth = 1
         }).ToList());
+        payload["executionWorkers"] = JsonSerializer.SerializeToNode(workers);
         return payload;
     }
 
@@ -1034,7 +1070,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
 
     private static string BuildFinalResponse(string objective, IReadOnlyList<AgentContributionDto> contributions)
     {
-        var completed = contributions.Where(x => !IsFailed(x)).OrderBy(x => x.Sequence).ToList();
+        var completed = contributions.Where(x => x.Status == OrchestrationStatusValues.Completed).OrderBy(x => x.Sequence).ToList();
         var failed = contributions.Where(IsFailed).OrderBy(x => x.Sequence).ToList();
         var builder = new StringBuilder();
         builder.Append("Manager-worker collaboration result for: ");
@@ -1112,13 +1148,17 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
 
         return contributions.Any(IsFailed)
             ? MultiAgentCollaborationStatusValues.Partial
-            : MultiAgentCollaborationStatusValues.Completed;
+            : contributions.All(x => x.Status == OrchestrationStatusValues.Completed)
+                ? MultiAgentCollaborationStatusValues.Completed : MultiAgentCollaborationStatusValues.Blocked;
     }
 
-    private static string ResolveStepStatus(string workerStatus) =>
-        string.Equals(workerStatus, OrchestrationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
-            ? MultiAgentCollaborationStatusValues.Failed
-            : MultiAgentCollaborationStatusValues.Completed;
+    private static string ResolveStepStatus(string workerStatus) => workerStatus switch
+    {
+        "completed" => MultiAgentCollaborationStatusValues.Completed,
+        "failed" => MultiAgentCollaborationStatusValues.Failed,
+        "blocked" or "needs_review" or "awaiting_approval" => MultiAgentCollaborationStatusValues.Blocked,
+        _ => MultiAgentCollaborationStatusValues.InProgress
+    };
 
     private static bool IsRetryable(string status, string terminationReason) =>
         string.Equals(status, MultiAgentCollaborationStatusValues.Failed, StringComparison.OrdinalIgnoreCase) &&

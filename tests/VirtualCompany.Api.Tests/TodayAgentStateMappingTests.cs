@@ -1,5 +1,6 @@
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Companies;
 using Xunit;
 
@@ -75,6 +76,50 @@ public sealed class TodayAgentStateMappingTests
         resolution = Resolution(agentId, isPrimary: false, executive: true);
         Assert.Contains("executive oversight", TodayAgentActivityQueryService.VisibilityReason(agentId, resolution));
         Assert.Contains("directly involved", TodayAgentActivityQueryService.VisibilityReason(agentId, resolution, directlyInvolved: true));
+    }
+
+    [Fact]
+    public void Failed_run_briefing_uses_the_persisted_failure_explanation_instead_of_a_generic_state_change()
+    {
+        var agentId = Guid.NewGuid();
+        var resolution = Resolution(agentId, isPrimary: true, executive: false);
+        var run = new AgentOrchestrationRun(resolution.CompanyId, agentId, resolution.UserId,
+            "support.operating_cadence", "1", "1", "1", "briefing-failure");
+        run.Fail("failed", "invalid_reasoning_result", "The AI result cited evidence that was not supplied.", 100);
+        var update = TodayAgentActivityQueryService.FromRun(run, null, resolution).Update;
+        Assert.Equal("The AI result cited evidence that was not supplied.", update.Summary);
+        Assert.Equal(TodayAgentStates.Blocked, update.AgentState);
+        Assert.Null(update.RationaleSummary);
+        Assert.Contains($"companyId={resolution.CompanyId:D}", update.DeepLink);
+    }
+
+    [Fact]
+    public void Successful_run_preserves_the_recorded_business_summary_without_repeating_it_as_rationale()
+    {
+        var agentId = Guid.NewGuid();
+        var resolution = Resolution(agentId, isPrimary: true, executive: false);
+        var run = new AgentOrchestrationRun(resolution.CompanyId, agentId, resolution.UserId,
+            "sales.operating_cadence", "1", "1", "1", "briefing-result");
+        run.Complete("needs_review", "test", "test", .9m, "One renewal needs review; pipeline is SEK 12,000.", "{}", "[]", null, null, 100);
+        var update = TodayAgentActivityQueryService.FromRun(run, null, resolution).Update;
+        Assert.Equal("One renewal needs review; pipeline is SEK 12,000.", update.Summary);
+        Assert.Equal(TodayAgentStates.Recommended, update.AgentState);
+        Assert.Null(update.RationaleSummary);
+    }
+
+    [Fact]
+    public void Expired_failure_does_not_resurrect_retained_content_but_explains_the_recorded_reason()
+    {
+        var agentId = Guid.NewGuid();
+        var resolution = Resolution(agentId, isPrimary: true, executive: false);
+        var run = new AgentOrchestrationRun(resolution.CompanyId, agentId, resolution.UserId,
+            "support.operating_cadence", "1", "1", "1", "briefing-expired");
+        run.Fail("failed", "invalid_reasoning_result", "Retained failure text", 100);
+        run.ExpireContent();
+        var update = TodayAgentActivityQueryService.FromRun(run, null, resolution).Update;
+        Assert.DoesNotContain("Retained failure text", update.Summary);
+        Assert.Contains("Support operating cadence: failed", update.Summary);
+        Assert.Contains("Invalid reasoning result", update.Summary);
     }
 
     private static TodayAgentActivityQueryService.ActivityCandidate Candidate(

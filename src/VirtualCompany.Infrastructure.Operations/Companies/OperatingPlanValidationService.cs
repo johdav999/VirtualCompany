@@ -18,15 +18,18 @@ public sealed class OperatingPlanValidationService : IOperatingPlanValidationSer
     private readonly VirtualCompanyDbContext _db;
     private readonly IAgentAssignmentGuard _assignmentGuard;
     private readonly IAgentCapabilityCatalog _capabilities;
+    private readonly IAgentEffectiveAuthorityResolver? _authority;
 
     public OperatingPlanValidationService(
         VirtualCompanyDbContext db,
         IAgentAssignmentGuard assignmentGuard,
-        IAgentCapabilityCatalog capabilities)
+        IAgentCapabilityCatalog capabilities,
+        IAgentEffectiveAuthorityResolver? authority = null)
     {
         _db = db;
         _assignmentGuard = assignmentGuard;
         _capabilities = capabilities;
+        _authority = authority;
     }
 
     public async Task<IReadOnlyList<OperatingValidationResultDto>> ValidateAsync(
@@ -204,6 +207,23 @@ public sealed class OperatingPlanValidationService : IOperatingPlanValidationSer
                 assigned >= workloadLimit, config.Version,
                 new() { ["activeAssignments"] = JsonValue.Create(assigned), ["threshold"] = JsonValue.Create(workloadLimit) });
 
+            // A retained catalogue task has already specified its native operation. Validate that
+            // operation's current authority; it does not need an unrelated AI planning capability.
+            var retainedTask = initiative.TaskId.HasValue ? await _db.WorkTasks.AsNoTracking()
+                .SingleOrDefaultAsync(x=>x.CompanyId==plan.CompanyId&&x.Id==initiative.TaskId,ct) : null;
+            var taskType = retainedTask is not null && retainedTask.AssignedAgentId==initiative.OwnerAgentId && retainedTask.InputPayload.ContainsKey("taskPolicyVersion")
+                ? TaskTypePolicyCatalogue.All.SingleOrDefault(x=>x.Code==retainedTask.Type&&!x.Finance) : null;
+            if(taskType is not null && _authority is not null)
+            {
+                var effective=await _authority.ResolveAsync(plan.CompanyId,initiative.OwnerAgentId.Value,ct);
+                var tool=effective.Find(taskType.ToolName,ToolActionType.Recommend,taskType.Department.ToLowerInvariant());
+                var nativeOutcome=tool?.State==AgentCapabilityStates.Available ? OperatingValidationOutcome.Allowed
+                    : tool?.State==AgentCapabilityStates.ApprovalRequired ? OperatingValidationOutcome.ReviewRequired : OperatingValidationOutcome.Denied;
+                Add(results,plan,decisionId,"owner_capability",nativeOutcome,tool?.ReasonCode??"task_tool_unavailable",
+                    tool?.Explanation??"The retained task's native tool is unavailable.",nativeOutcome==OperatingValidationOutcome.ReviewRequired,config.Version,
+                    new(){["toolName"]=JsonValue.Create(taskType.ToolName),["taskType"]=JsonValue.Create(taskType.Code)});
+                continue;
+            }
             var catalog = await _capabilities.GetEffectiveCatalogAsync(plan.CompanyId, initiative.OwnerAgentId.Value, ct);
             var planning = catalog.Capabilities.FirstOrDefault(x => x.Id == AgentCapabilityIds.Planning) ??
                 catalog.Capabilities.FirstOrDefault(x => x.Id == AgentCapabilityIds.WorkPrioritization);

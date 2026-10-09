@@ -32,7 +32,7 @@
             <a class="@(activeTab == tab ? "active" : null)" href="@WithCompany($"/marketing?section={tab}")" data-enhance-nav="false">@tab</a>
         }
     </nav>
-    <nav class="vc-section-tabs" aria-label="Operational Marketing reports">@foreach (var kind in new[] { "delivery", "spend", "leads" }) { <a href="@MarketingJourneyRoutes.Report(resolvedCompanyId ?? CompanyId ?? Guid.Empty, kind, WorkspaceOrigin)">@(kind == "delivery" ? "Campaign delivery" : kind == "spend" ? "Spend versus budget" : "Available lead results")</a> }</nav>
+    <nav class="vc-section-tabs" aria-label="Operational Marketing reports">@foreach (var kind in new[] { "delivery", "spend", "leads" }) { <a href="@MarketingJourneyRoutes.Report(resolvedCompanyId ?? CompanyId ?? Guid.Empty, kind, WorkspaceOrigin)">@(kind == "delivery" ? "Campaign delivery" : kind == "spend" ? "Spend versus budget" : "Available lead results")</a> }<a href="@WithCompany("/marketing/reports/management")">Performance and budget proposals</a></nav>
 
     @if (isLoading)
     {

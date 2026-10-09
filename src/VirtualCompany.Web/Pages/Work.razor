@@ -23,6 +23,7 @@
     {
         <nav class="vc-section-tabs" aria-label="@UiText["WorkSections"]">
             <AgentWorkReturnLink CompanyId="companyId" />
+            <DecisionReturnLink CompanyId="companyId" ReturnUrl="DecisionReturnUrl" />
             @if ((SalesJourneyRoutes.Normalize(RecordReturnUrl, companyId) ?? SalesJourneyRoutes.Normalize(SalesReturnUrl, companyId)) is string salesOrigin)
             { <a href="@salesOrigin">@SalesText["BackToSalesOrigin"]</a> }
             @if ((FinanceJourneyRoutes.Normalize(RecordReturnUrl, companyId) ?? FinanceJourneyRoutes.Normalize(FinanceReturnUrl, companyId)) is string financeOrigin)
@@ -66,7 +67,6 @@
                         <input type="hidden" name="companyId" value="@companyId" />
                         <input type="hidden" name="tab" value="tasks" />
                         <input type="hidden" name="returnUrl" value="@ReturnUrl" />
-                        <input type="hidden" name="priorityReturnUrl" value="@PriorityReturnUrl" />
                         <input type="hidden" name="financeReturnUrl" value="@FinanceReturnUrl" />
                         <input type="hidden" name="boardReturnUrl" value="@(AgentWorkRoutes.Board(BoardReturnUrl,companyId))" />
                         <input type="hidden" name="agentWorkReturnUrl" value="@(AgentWorkRoutes.Record(AgentWorkReturnUrl,companyId))" />
@@ -123,6 +123,8 @@
                     {
                         <span class="vc-kicker">@Display(selectedTask.Status)</span>
                         <h2>@selectedTask.Title</h2>
+                        @if (selectedTask.InputPayload.ContainsKey("decisionWorkSourceId"))
+                        { <a class="btn btn-outline-primary" href="@DecisionWorkRoutes.Source(companyId, selectedTask.Id)">Source decision and work review →</a> }
                         <a class="btn btn-outline-primary" href="@AgentWorkRoutes.Detail("task", selectedTask.Id, companyId, Navigation.Uri)">Open durable work detail →</a>
                         <dl class="vc-detail-list">
                             <dt>@UiText["Priority"]</dt><dd>@Display(selectedTask.Priority)</dd>
@@ -143,7 +145,6 @@
                                 <p>@evidenceKey?.ToString()</p>
                                 @if (selectedTask.InputPayload.TryGetValue("sourceObservedUtc", out var observed) && DateTime.TryParse(observed?.ToString(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var observedUtc))
                                 { <p>@CommonText["PrioritySourceTime"]: @LocalDateTime.DateTime(observedUtc)</p> }
-                                <a href="@DashboardRoutes.BuildPriorityPath(companyId, "company", evidenceKey?.ToString() ?? "", ReturnUrl)">@CommonText["PriorityDetails"] →</a>
                                 <p>@CommonText["HealthFollowUpHelp"]</p>
                             </section>
                         }
@@ -177,11 +178,11 @@
     [SupplyParameterFromQuery(Name = "taskId")] public Guid? TaskId { get; set; }
     [SupplyParameterFromQuery(Name = "itemId")] public Guid? ItemId { get; set; }
     [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
-    [SupplyParameterFromQuery(Name = "priorityReturnUrl")] public string? PriorityReturnUrl { get; set; }
     [SupplyParameterFromQuery(Name = "salesReturnUrl")] public string? SalesReturnUrl { get; set; }
     [SupplyParameterFromQuery(Name = "recordReturnUrl")] public string? RecordReturnUrl { get; set; }
     [SupplyParameterFromQuery] public string? BoardReturnUrl { get; set; }
     [SupplyParameterFromQuery] public string? AgentWorkReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? DecisionReturnUrl { get; set; }
     [SupplyParameterFromQuery(Name = "financeReturnUrl")] public string? FinanceReturnUrl { get; set; }
 
     private bool isLoading = true;
@@ -192,7 +193,8 @@
     private int loadVersion;
     private CancellationTokenSource? loadCancellation;
     private bool CanCompleteFollowUp => selectedTask is { Type: "follow_up", AssignedAgentId: null, WorkflowInstanceId: null, ParentTaskId: null, CreatedByActorType: "user" }
-        && selectedTask.Status is "new" or "pending" or "in_progress" or "blocked";
+        && selectedTask.Status is "new" or "pending" or "in_progress" or "blocked"
+        && (!selectedTask.InputPayload.ContainsKey("decisionWorkSourceId") || selectedTask.Status == "in_progress");
     private string ActiveTab => Tab?.Trim().ToLowerInvariant() switch
     {
         "approvals" => "approvals",
@@ -249,7 +251,6 @@
 
     private string BuildHref(string tab) => DashboardRoutes.WithQuery($"/work?companyId={CompanyId:D}&tab={tab}",
         ("returnUrl", CompanyId is Guid id ? DashboardRoutes.NormalizeOverviewPath(ReturnUrl, id) : null),
-        ("priorityReturnUrl", CompanyId is Guid company ? DashboardRoutes.NormalizePriorityPath(PriorityReturnUrl, company) : null),
         ("salesReturnUrl", CompanyId is Guid salesCompany ? SalesJourneyRoutes.Normalize(SalesReturnUrl, salesCompany) : null),
         ("financeReturnUrl", CompanyId is Guid financeCompany ? FinanceJourneyRoutes.Normalize(FinanceReturnUrl, financeCompany) : null),
         ("boardReturnUrl", CompanyId is Guid boardCompany ? AgentWorkRoutes.Board(BoardReturnUrl, boardCompany) : null),

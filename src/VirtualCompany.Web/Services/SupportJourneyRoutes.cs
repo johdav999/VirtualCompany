@@ -55,7 +55,6 @@ public static class SupportJourneyRoutes
         if (uri.AbsolutePath is "/support" or "/support/cases" && target.AbsolutePath == "/support/reports")
             foreach (var key in new[] { "q", "status", "priority", "category", "owner" })
                 if (!string.IsNullOrWhiteSpace(origin[key])) query[key] = origin[key];
-        if (DashboardRoutes.NormalizePriorityPath(origin["priorityReturnUrl"], companyId) is { } priority) query["priorityReturnUrl"] = priority;
         if (DashboardRoutes.NormalizeHealthPath(origin["healthReturnUrl"], companyId) is { } health) query["healthReturnUrl"] = health;
         return target.AbsolutePath + "?" + query;
     }

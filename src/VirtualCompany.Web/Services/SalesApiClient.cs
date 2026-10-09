@@ -414,8 +414,9 @@ public sealed record SalesLeadSourceEmailResponse(
     decimal? Confidence,
     string? ClassificationEvidence,
     string? SafeFailureMessage);
-public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string? CustomerCompanyName, string? ContactName, DateTime? ExpectedCloseUtc, DateTime UpdatedUtc);
-public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff, CustomerMemoryContext? CustomerMemory = null, Guid? SourceLeadId = null);
+public sealed record SalesDealMeetingResponse(Guid Id, Guid LeadId, Guid? DealId, string Title, DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Status, Guid? BrowserRoomId = null);
+public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string? CustomerCompanyName, string? ContactName, DateTime? ExpectedCloseUtc, DateTime UpdatedUtc, IReadOnlyList<SalesDealMeetingResponse>? Meetings = null);
+public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff, CustomerMemoryContext? CustomerMemory = null, Guid? SourceLeadId = null, IReadOnlyList<SalesDealMeetingResponse>? Meetings = null);
 public sealed record SalesFinanceHandoffResponse(
     Guid Id,
     Guid DealId,

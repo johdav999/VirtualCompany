@@ -101,18 +101,22 @@ else
             </div>
 
             <div class="wizard-card wizard-card--compact approvals-detail-panel">
-                <ApprovalDetail Approval="selectedApproval"
-                                DecisionComment="@decisionComment"
-                                DecisionCommentChanged="OnDecisionCommentChanged"
-                                IsDeciding="isDeciding"
-                                OnApprove='@(() => DecideAsync("approve"))'
-                                OnReject='@(() => DecideAsync("reject"))' />
+                @if (selectedApproval is not null)
+                {
+                    <DecisionReview CompanyId="CompanyId.Value" Approval="selectedApproval" OnDecision="ReviewDecidedAsync" />
+                }
             </div>
         </div>
     </section>
 }
 
 @code {
+    private async Task ReviewDecidedAsync(ApprovalRequestViewModel result)
+    {
+        selectedApproval = ApprovalPresentationFormatter.Format(result);
+        approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(CompanyId!.Value, StatusOrDefault));
+    }
+
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
 
@@ -129,12 +133,10 @@ else
     public string? Source { get; set; }
 
     private bool isLoading = true;
-    private bool isDeciding;
     private CurrentUserContextViewModel? currentUser;
     private CompanyAccessViewModel? companyAccess;
     private List<ApprovalRequestViewModel> approvals = [];
     private ApprovalRequestViewModel? selectedApproval;
-    private string? decisionComment;
     private string? errorMessage;
     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
         currentUser?.Memberships
@@ -205,10 +207,9 @@ else
         try
         {
             selectedApproval = IsPendingInboxFilter
-                ? await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId)
+                ? await ApprovalApiClient.GetAsync(companyId, approvalId)
                 : await ApprovalApiClient.GetAsync(companyId, approvalId);
             selectedApproval = ApprovalPresentationFormatter.Format(selectedApproval);
-            decisionComment = null;
             Logger.LogInformation(
                 "Approval detail loaded. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. TargetType: {TargetType}. TargetId: {TargetId}. AffectedEntities: {AffectedEntities}. Status: {Status}.",
                 companyId,
@@ -230,71 +231,6 @@ else
         }
     }
 
-    private async Task DecideAsync(string decision)
-    {
-        if (CompanyId is not Guid companyId || selectedApproval?.CurrentStep is null)
-        {
-            Logger.LogWarning(
-                "Approval decision ignored because selection was incomplete. CompanyId: {CompanyId}. SelectedApprovalId: {ApprovalId}. Decision: {Decision}. HasCurrentStep: {HasCurrentStep}.",
-                CompanyId,
-                selectedApproval?.Id,
-                decision,
-                selectedApproval?.CurrentStep is not null);
-            return;
-        }
-
-        isDeciding = true;
-        errorMessage = null;
-        var approvalId = selectedApproval.Id;
-        var stepId = selectedApproval.CurrentStep.Id;
-        Logger.LogInformation(
-            "Submitting approval decision from UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}. PendingInboxFilter: {PendingInboxFilter}.",
-            companyId,
-            approvalId,
-            stepId,
-            decision,
-            IsPendingInboxFilter);
-        try
-        {
-            var request = new ApprovalDecisionRequest
-            {
-                ApprovalId = approvalId,
-                StepId = stepId,
-                Decision = decision,
-                Comment = decisionComment
-            };
-            var result = IsPendingInboxFilter
-                ? await InboxApiClient.DecidePendingApprovalAsync(companyId, approvalId, request)
-                : await ApprovalApiClient.DecideAsync(companyId, approvalId, request);
-            selectedApproval = ApprovalPresentationFormatter.Format(result.Approval);
-            decisionComment = null;
-            Logger.LogInformation(
-                "Approval decision completed in UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Finalized: {Finalized}. NewStatus: {Status}. NextStepId: {NextStepId}.",
-                companyId,
-                result.Approval.Id,
-                result.IsFinalized,
-                result.Approval.Status,
-                result.NextStep?.Id);
-            await LoadApprovalInboxAsync(companyId);
-        }
-        catch (OnboardingApiException ex)
-        {
-            Logger.LogWarning(
-                ex,
-                "Approval decision failed in UI. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. StepId: {StepId}. Decision: {Decision}. PendingInboxFilter: {PendingInboxFilter}.",
-                companyId,
-                approvalId,
-                stepId,
-                decision,
-                IsPendingInboxFilter);
-            errorMessage = ex.Message;
-        }
-        finally
-        {
-            isDeciding = false;
-        }
-    }
-
     private async Task LoadApprovalInboxAsync(Guid companyId)
     {
         Logger.LogInformation(
@@ -311,7 +247,7 @@ else
             {
                 try
                 {
-                    selectedApproval = ApprovalPresentationFormatter.Format(await InboxApiClient.GetPendingApprovalDetailAsync(companyId, approvalId));
+                    selectedApproval = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(companyId, approvalId));
                 }
                 catch (OnboardingApiException ex)
                 {
@@ -320,12 +256,12 @@ else
                         "Pending approval detail could not be reloaded from inbox. CompanyId: {CompanyId}. ApprovalId: {ApprovalId}. Falling back to first available pending approval.",
                         companyId,
                         approvalId);
-                    selectedApproval = approvals.FirstOrDefault();
+                    selectedApproval = null;
                 }
             }
             else
             {
-                selectedApproval = approvals.FirstOrDefault();
+                selectedApproval = approvals.FirstOrDefault() is { } pendingFirst ? ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(companyId, pendingFirst.Id)) : null;
             }
             Logger.LogInformation(
                 "Loaded pending approval inbox. CompanyId: {CompanyId}. ApprovalCount: {ApprovalCount}. SelectedApprovalId: {SelectedApprovalId}.",
@@ -338,7 +274,7 @@ else
         approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(companyId, StatusOrDefault));
         selectedApproval = ApprovalId is Guid selectedApprovalId
             ? ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(companyId, selectedApprovalId))
-            : approvals.FirstOrDefault();
+            : approvals.FirstOrDefault() is { } first ? ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(companyId, first.Id)) : null;
         Logger.LogInformation(
             "Loaded approval list. CompanyId: {CompanyId}. ApprovalCount: {ApprovalCount}. SelectedApprovalId: {SelectedApprovalId}. StatusFilter: {StatusFilter}.",
             companyId,
@@ -406,9 +342,5 @@ else
     private static bool IsPending(ApprovalRequestViewModel approval) =>
         string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
 
-    private Task OnDecisionCommentChanged(string? value)
-    {
-        decisionComment = value;
-        return Task.CompletedTask;
-    }
+
 }

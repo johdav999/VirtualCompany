@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using System.Net;
 using VirtualCompany.Api.Tests;
 using VirtualCompany.Domain.Entities;
@@ -140,16 +141,94 @@ using var api = factory.CreateClient(new() { AllowAutoRedirect = false });
 await AccountingFixture.InitializeAsync(factory);
 await SupportFixture.SeedAsync(factory);
 await AgentWorkFixture.SeedAsync(factory);
+Guid p11Human = default;
+await factory.SeedAsync(async db => p11Human = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.SingleAsync(
+    System.Linq.Queryable.Select(System.Linq.Queryable.Where(db.Users, x => x.Email == "p01-owner@example.com"), x => x.Id)));
+await VirtualCompany.Api.Tests.CollaborationEvidenceFixture.SeedAsync(factory, companyA, p11Human);
+await DecisionReviewFixture.InitializeAsync(factory, companyA, p11Human);
+var p13 = await BusinessEvidenceFixture.SeedAsync(factory, companyA, p11Human, "p01-owner", reuseRecords: true);
+await factory.SeedAsync(async db => (await db.SupportReplyDrafts.IgnoreQueryFilters().Where(x => x.CompanyId == companyA && x.SupportCaseId == p13.Records["case"]).OrderByDescending(x => x.CreatedUtc).FirstAsync()).MarkSendFailed("Controlled test-provider failure; no reply was delivered."));
+var p14 = await AuthorityExplanationFixture.SeedAsync(factory, companyA, p11Human);
+var p16 = await ExecutionControlFixture.SeedAsync(factory, Guid.Parse("16161616-1616-1616-1616-161616161616"), p11Human, "p01-owner");
+var p17 = await AgentSupervisionUatFixture.Seed(factory,p11Human);
+var p22 = await MarketingManagementFixture.Seed(factory);
+var p23 = await FinanceRollingPlanningFixture.Seed(factory,p22.Company);
+var p24 = await SupportQualityFixture.Seed(factory,p22.Company);
+var p25 = await QuarterlyPlanningFixture.Seed(factory,p22.Company);
+var p26 = await AnnualPlanningFixture.Seed(factory,p25);
+var p27 = await StrategicScenarioFixture.Seed(factory,p26,p23);
+var p28 = await DecisionWorkFixture.Seed(factory,p27);
+Guid p29Delegate = Guid.NewGuid(), p29Fallback = Guid.NewGuid();
+await factory.SeedAsync(db => {
+    foreach (var (id, subject) in new[] { (p29Delegate, "p29-delegate"), (p29Fallback, "p29-fallback") }) {
+        var membership = Guid.NewGuid(); db.AddRange(new User(id, subject+"@example.test", subject == "p29-delegate" ? "Jamie delegate" : "Maria fallback", "dev-header", subject),
+            new CompanyMembership(membership, p28.Company, id, CompanyMembershipRole.Admin, CompanyMembershipStatus.Active));
+    } return Task.CompletedTask; });
+using var p29Client = p28.Planning.Annual.Client(factory);
+var p29Source = await AnnualPlanningFixture.Read<VirtualCompany.Application.Finance.StrategicScenarioDocument>(await p29Client.PostAsJsonAsync(p28.Planning.Root + $"/versions/{p28.ScenarioId}/duplicate", new VirtualCompany.Application.Finance.DuplicateStrategicScenario(Guid.NewGuid(), "P29 briefing source copy")));
+var p29Work = await DecisionWorkFixture.Create(p29Client, p28, p28.Input() with { Objective = "P29 capacity commitment", OwnerUserId = p29Delegate, Source = new("scenario", p29Source.Summary.Id, "0") });
+var p29 = new { company = p28.Company, owner = p28.Planning.Annual.Quarter.Company.Owner, delegateUser = p29Delegate, fallbackUser = p29Fallback, taskId = p29Work.TaskId };
+await factory.SeedAsync(async db => (await db.Companies.IgnoreQueryFilters().SingleAsync(x=>x.Id==p22.Company.Company)).CompleteOnboarding(1,null,"{}"));
+using var p14Client = factory.CreateClient(); p14Client.DefaultRequestHeaders.Add("X-Dev-Auth-Subject", "p01-owner");
+var p14Definition = new VirtualCompany.Application.Finance.FinanceAutonomyGrantDefinition(p14.AgentId,
+    VirtualCompany.Application.Finance.FinanceAgentCoverageCapabilityIds.DailyCash, "read_monitor", ["manual_review"], ["read"], ["get_cash_balance"],
+    10, 100, 1, null, "UTC", "00:00", "23:59", 60, "no_confirmation", "company_owner", DateTime.UtcNow.AddMinutes(-1), DateTime.UtcNow.AddHours(1));
+using var p14Created = await p14Client.PostAsJsonAsync($"/api/companies/{companyA}/finance/autonomy/grants", new VirtualCompany.Application.Finance.CreateFinanceAutonomyGrantCommand(p14Definition));
+p14Created.EnsureSuccessStatusCode(); var p14Grant = (await p14Created.Content.ReadFromJsonAsync<VirtualCompany.Application.Finance.FinanceAutonomyGrantDto>())!;
+using var p14Activated = await p14Client.PostAsJsonAsync($"/api/companies/{companyA}/finance/autonomy/grants/{p14Grant.Id}/versions/{p14Grant.Versions.Single().Id}/activate",
+    new VirtualCompany.Application.Finance.ActivateFinanceAutonomyGrantVersionCommand(p14Grant.Version, "Synthetic read-only grant fixture"));
+p14Activated.EnsureSuccessStatusCode();
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 var app = builder.Build();
 app.Run(async context =>
 {
+    if (context.Request.Path == "/_uat/p29/profile") { await Results.Ok(p29).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p29/deliver" && context.Request.Method == "POST") {
+        await factory.ExecuteScopeAsync(async scope => { using var tenant = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyExecutionScopeFactory>().BeginScope(p29.company);
+            await scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Briefings.IBriefingCadenceService>().ScheduleDueAsync(p29.company, DateTime.UtcNow, context.RequestAborted); });
+        await factory.ExecuteScopeAsync(async scope => await scope.ServiceProvider.GetRequiredService<VirtualCompany.Infrastructure.Companies.IBriefingUpdateJobRunner>().RunDueAsync(context.RequestAborted));
+        // The composed browser fixture contains earlier phases' native events. Drain bounded batches
+        // through the real dispatcher so the controlled P29 recipient is reached without bypassing it.
+        for (var p29Batch = 0; p29Batch < 20; p29Batch++)
+        {
+            await factory.ExecuteScopeAsync(async scope => await scope.ServiceProvider.GetRequiredService<VirtualCompany.Infrastructure.Companies.ICompanyOutboxProcessor>().DispatchPendingAsync(context.RequestAborted));
+            var p29Pending = false;
+            await factory.SeedAsync(async db => p29Pending = await db.BriefingCadenceDeliveries.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == p29.company && (x.Status == "queued" || x.Status == "ready")));
+            if (!p29Pending) break;
+        }
+        context.Response.StatusCode = 204; return;
+    }
+    if (context.Request.Path == "/_uat/p17/profile") { await Results.Ok(p17).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p22/profile") { await Results.Ok(p22).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p23/profile") { await Results.Ok(p23).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p24/profile") { await Results.Ok(p24).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p27/profile") { await Results.Ok(p27).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p28/profile") { await Results.Ok(p28).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p26/profile") { await Results.Ok(p26).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p25/profile") { await Results.Ok(p25).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p14/profile") { await Results.Ok(p14).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p14/expire" && context.Request.Method == "POST") {
+        await factory.SeedAsync(async db => db.Entry(await db.FinanceAutonomyGrantVersions.IgnoreQueryFilters().SingleAsync(x=>x.Id==p14Grant.Versions.Single().Id))
+            .Property(x=>x.ExpiresUtc).CurrentValue=DateTime.UtcNow.AddMinutes(-1)); context.Response.StatusCode=204;return; }
+    if (context.Request.Path == "/_uat/p13/profile")
+    { await Results.Ok(p13).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p13/edit" && context.Request.Method == "POST")
+    { await factory.SeedAsync(async db => (await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions.SingleAsync(db.WorkTasks.IgnoreQueryFilters(), x => x.Id == p13.Tasks["deal"])).InputPayload["proposalVersion"] = System.Text.Json.Nodes.JsonValue.Create(2)); context.Response.StatusCode = 204; return; }
+    if (context.Request.Path == "/_uat/p12/profile")
+    { await Results.Ok(DecisionReviewFixture.Approvals).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p12/deliver" && context.Request.Method == "POST")
+    { await Results.Ok(await DecisionReviewFixture.DeliverAsync(factory)).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p12/edit" && context.Request.Method == "POST")
+    { await DecisionReviewFixture.EditAsync(factory); context.Response.StatusCode = 204; return; }
     if (context.Request.Path == "/_uat/health")
     {
         await Results.Ok(new { fixture = "P01", companyA, companyB, companyC }).ExecuteAsync(context);
         return;
     }
+    if (context.Request.Path == "/_uat/p16/profile") { await Results.Ok(p16).ExecuteAsync(context); return; }
+    if (context.Request.Path == "/_uat/p16/dispatch" && context.Request.Method == "POST")
+    { object? result=null;await factory.ExecuteScopeAsync(async scope=>result=await scope.ServiceProvider.GetRequiredService<VirtualCompany.Infrastructure.Companies.OperatingWorkDispatcher>().RunCompanyOnceAsync(p16.CompanyId,10,context.RequestAborted));await Results.Ok(result).ExecuteAsync(context);return; }
     using var request = new HttpRequestMessage(new HttpMethod(context.Request.Method), context.Request.Path + context.Request.QueryString);
     if (context.Request.ContentLength > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))
         request.Content = new StreamContent(context.Request.Body);
@@ -165,11 +244,21 @@ app.Run(async context =>
 });
 await app.RunAsync();
 
-sealed class BrowserApiFactory : TestWebApplicationFactory
+sealed class BrowserApiFactory : ExecutionControlNativeFactory
 {
     protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
     {
         base.ConfigureWebHost(builder);
         builder.UseContentRoot(Path.GetFullPath("src/VirtualCompany.Api"));
+        Microsoft.AspNetCore.TestHost.WebHostBuilderExtensions.ConfigureTestServices(builder,services=>{
+            Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.RemoveAll<VirtualCompany.Application.Agents.IInternalCompanyToolContract>(services);
+            services.AddScoped<VirtualCompany.Application.Agents.IInternalCompanyToolContract>(sp=>new P16UatToolAdapter(
+                ActivatorUtilities.CreateInstance<VirtualCompany.Infrastructure.Companies.TaskDraftToolAdapter>(sp),sp.GetRequiredService<TestWebApplicationFactory.TestCompanyToolExecutor>()));
+        });
     }
+}
+sealed class P16UatToolAdapter(VirtualCompany.Application.Agents.IInternalCompanyToolContract real,VirtualCompany.Application.Agents.IInternalCompanyToolContract prior) : VirtualCompany.Application.Agents.IInternalCompanyToolContract
+{
+    public Task<VirtualCompany.Application.Agents.InternalToolExecutionResponse> ExecuteAsync(VirtualCompany.Application.Agents.InternalToolExecutionRequest request,CancellationToken ct)
+        =>(request.CompanyId==Guid.Parse("16161616-1616-1616-1616-161616161616")?real:prior).ExecuteAsync(request,ct);
 }

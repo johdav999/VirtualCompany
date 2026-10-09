@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.Json;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
@@ -72,13 +73,22 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                     ? FinanceExecuteToolReadinessCatalog.GetRequired(definition.ToolName)
                     : null)))
           .Concat(SalesToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, salesScopes, definition.Version, definition.InputSchema, definition.OutputSchema)))
-          .Concat(MarketingToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, marketingScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
+          .Concat(MarketingToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, marketingScopes, definition.Version, definition.InputSchema, definition.OutputSchema)))
+          .Concat(TaskDraftDefinitions.Select(definition=>Register(definition.ToolName,new HashSet<ToolActionType>{ToolActionType.Recommend},
+              new HashSet<string>{TaskTypePolicyCatalogue.All.Single(x=>x.ToolName==definition.ToolName).Department.ToLowerInvariant()},definition.Version,definition.InputSchema,definition.OutputSchema)));
 
         _tools = registrations.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
-        _definitions = KnowledgeToolDefinitions.Concat(DocumentPublicationToolDefinitions).Concat(FinanceToolDefinitions).Concat(SalesToolDefinitions).Concat(MarketingToolDefinitions)
+        _definitions = KnowledgeToolDefinitions.Concat(DocumentPublicationToolDefinitions).Concat(FinanceToolDefinitions).Concat(SalesToolDefinitions).Concat(MarketingToolDefinitions).Concat(TaskDraftDefinitions)
             .ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
         ValidateFinanceExecuteReadiness();
     }
+
+    private static IReadOnlyList<ToolDefinitionManifest> TaskDraftDefinitions {get;} = TaskTypePolicyCatalogue.All
+        .Where(x=>!x.Finance && x.Code!="sales.account_research")
+        .Select(x=>new ToolDefinitionManifest(x.ToolName,"1.0.0",ToolActionType.Recommend,
+            ParseSchema(JsonSerializer.Serialize(new {type="object",additionalProperties=false,required=new[]{x.RecordKey},
+                properties=new Dictionary<string,object>{{x.RecordKey,new{type="string",format="uuid"}}}})),
+            FinanceOutputSchemas.WithDataProperty("draft"))).ToArray();
 
     private static IReadOnlyList<ToolDefinitionManifest> KnowledgeToolDefinitions { get; } =
     [
@@ -605,7 +615,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
             "list_invoices_awaiting_approval" or "recommend_invoice_approval_decision" or "approve_invoice" =>
                 [FinancePlanningReferenceTypes.Invoice, FinancePlanningReferenceTypes.Customer],
             "post_paid_supplier_bill_expense" => [FinancePlanningReferenceTypes.Bill, FinancePlanningReferenceTypes.Supplier],
-            FinanceAgentAnalysisToolIds.Analyze => [FinancePlanningReferenceTypes.FiscalPeriod],
+            FinanceAgentAnalysisToolIds.Analyze => [FinancePlanningReferenceTypes.FiscalPeriod, FinancePlanningReferenceTypes.ForecastVersion],
             "get_profit_and_loss_summary" => [FinancePlanningReferenceTypes.FiscalPeriod],
             FinanceLedgerAgentReadToolIds.LookupAccounts => [FinancePlanningReferenceTypes.Account],
             FinanceLedgerAgentReadToolIds.ReadFiscalPeriods => [FinancePlanningReferenceTypes.FiscalPeriod],
@@ -733,7 +743,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
             _ => "Answer this supported Finance request."
         };
         var intents = toolName == FinanceAgentAnalysisToolIds.Analyze
-            ? new[] { "cash", "liquidity", "payables", "receivables", "accounting", "treatment", "close", "cadence" }
+            ? new[] { "cash", "liquidity", "payables", "receivables", "accounting", "treatment", "close", "cadence", "forecast" }
             : toolName.Split(['.', '_'], StringSplitOptions.RemoveEmptyEntries)
                 .Where(token => token.Length > 2)
                 .Distinct(StringComparer.OrdinalIgnoreCase)

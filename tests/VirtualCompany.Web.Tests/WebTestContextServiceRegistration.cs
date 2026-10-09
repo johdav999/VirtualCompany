@@ -13,6 +13,8 @@ internal static class WebTestContextServiceRegistration
     {
         context.Services.AddLocalization();
         context.Services.AddScoped<TodayPriorityChanges>();
+        context.Services.AddScoped<IWeeklyWorkspaceApiClient>(_ => new WeeklyWorkspaceApiClient(
+            new CompanyApiTransport(new HttpClient { BaseAddress = new Uri("http://localhost/") }), offline: true));
         context.Services.AddSingleton(new TaskApiClient(new HttpClient { BaseAddress = new Uri("http://localhost/") }, useOfflineMode: true));
         var presentationContext = new CompanyPresentationContext();
         presentationContext.SetFormattingCulture("en-US");

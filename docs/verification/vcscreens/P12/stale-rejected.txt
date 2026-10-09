@@ -1,0 +1,138 @@
+- link "Virtual Company":
+  - /url: /dashboard?companyId=11111111-1111-1111-1111-111111111111
+- dialog "Navigation menu":
+  - generic: Company
+  - combobox "Choose company":
+    - option "P01 North Company" [selected]
+    - option "P01 South Company"
+    - option "P07 Ledger Company"
+  - navigation "Primary navigation":
+    - link "Overview":
+      - /url: /dashboard?companyId=11111111-1111-1111-1111-111111111111
+      - generic: Overview
+    - link "Agent team":
+      - /url: /agents/staff?companyId=11111111-1111-1111-1111-111111111111&source=dashboard&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: Agent team
+    - link "Finance":
+      - /url: /finance?companyId=11111111-1111-1111-1111-111111111111&action=open-workspace&range=this-month&source=dashboard&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: $
+      - generic: Finance
+    - link "Sales":
+      - /url: /app/sales?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ↗
+      - generic: Sales
+    - link "Marketing":
+      - /url: /marketing?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: Marketing
+    - link "Support":
+      - /url: /support?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: "?"
+      - generic: Support
+    - link "Work":
+      - /url: /work?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ✓
+      - generic: Work
+  - complementary "P01 North Company, Company":
+    - generic: PN
+    - generic: P01 North Company
+    - generic: Company
+    - button [disabled]
+  - navigation "Restricted tools":
+    - generic: Restricted tools
+    - link "Simulation Lab":
+      - /url: /simulation-lab?companyId=11111111-1111-1111-1111-111111111111
+      - generic: ≋
+      - generic: Simulation Lab
+    - link "System / Admin":
+      - /url: /system/admin/integrations/email-providers?companyId=11111111-1111-1111-1111-111111111111
+      - generic: A
+      - generic: System / Admin
+  - navigation "Settings":
+    - link "History":
+      - /url: /history?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ↶
+      - generic: History
+    - link "Settings":
+      - /url: /settings?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ⚙
+      - generic: Settings
+- main:
+  - article:
+    - text: Company operations
+    - heading "Work" [level=1]
+    - paragraph: Review tasks, approvals, notifications, and messages that need action.
+    - generic: "Timezone: UTC"
+    - navigation "Work sections":
+      - link "Tasks":
+        - /url: /work?companyId=11111111-1111-1111-1111-111111111111&tab=tasks
+      - link "Approvals":
+        - /url: /work?companyId=11111111-1111-1111-1111-111111111111&tab=approvals
+      - link "Messages":
+        - /url: /work?companyId=11111111-1111-1111-1111-111111111111&tab=messages
+      - link "Notifications":
+        - /url: /work?companyId=11111111-1111-1111-1111-111111111111&tab=notifications
+    - region "Approvals":
+      - list:
+        - button "Review meeting invitation Exceeds approval limit Pending":
+          - strong: Review meeting invitation
+          - generic: Exceeds approval limit
+          - generic: Pending
+        - button "P12 expired renewal terms Review the revised customer discount. Pending":
+          - strong: P12 expired renewal terms
+          - generic: Review the revised customer discount.
+          - generic: Pending
+        - button "P12 stale renewal terms Review the revised customer discount. Pending":
+          - strong: P12 stale renewal terms
+          - generic: Review the revised customer discount.
+          - generic: Pending
+        - button "P11 renewal proposal review Review the revised renewal terms. Pending":
+          - strong: P11 renewal proposal review
+          - generic: Review the revised renewal terms.
+          - generic: Pending
+        - button "P02 review proposed follow-up Review the internal proposal Pending":
+          - strong: P02 review proposed follow-up
+          - generic: Review the internal proposal
+          - generic: Pending
+    - complementary "Approval details":
+      - article "Decision review":
+        - text: Stale
+        - heading "P12 stale renewal terms" [level=2]
+        - button "Refresh review"
+        - alert: The proposal changed. Create and review a new approval request.
+        - alert: The proposal changed. A new approval request is required.
+        - heading "Proposed action" [level=3]
+        - paragraph: Review the revised customer discount.
+        - heading "Affected records and recipients" [level=3]
+        - paragraph: "Task: P12 stale renewal terms"
+        - paragraph: P12 stale renewal terms
+        - heading "Before / Proposed" [level=3]
+        - table:
+          - rowgroup:
+            - row "Field Before Proposed":
+              - columnheader "Field"
+              - columnheader "Before"
+              - columnheader "Proposed"
+          - rowgroup:
+            - row "Discount 12% 8%":
+              - rowheader "Discount"
+              - cell "12%"
+              - cell "8%"
+        - heading "Source evidence" [level=3]
+        - link "Open proposed work and source evidence":
+          - /url: /work?companyId=11111111-1111-1111-1111-111111111111&tab=tasks&taskId=93f4a8a4-dcef-4ce6-8f9f-df70b8d51b70&decisionReturnUrl=%2fwork%3fcompanyId%3d11111111-1111-1111-1111-111111111111%26tab%3dapprovals%26itemId%3d7e79e00b-fcf7-4b91-bae6-d2e8c5aa3446
+        - heading "Policy and review scope" [level=3]
+        - paragraph: Review the revised customer discount.
+        - term: Required reviewer
+        - definition: Review completed
+        - term: Expiry
+        - definition: 04/10/2026 16:15
+        - term: Requested
+        - definition: 03/10/2026 16:15
+        - paragraph: Proposal bound to its recorded creation version. Execution also rechecks the owning workflow.
+        - paragraph: Approval does not confirm delivery. Execution rechecks policy and the current proposal.
+        - paragraph:
+          - strong: "Owning workflow:"
+          - text: Blocked
+        - heading "Decision history" [level=3]
+        - paragraph: The proposal changed. Create and review a new approval request.
+        - paragraph: No reviewer decision is recorded.

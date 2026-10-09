@@ -1,0 +1,14 @@
+# P28 issue ledger
+
+| Finding | Priority | Root cause and correction | Evidence |
+| --- | --- | --- | --- |
+| Preview failed for every source | P1 | EF ordered a constructed person record. Order persisted user fields before projecting the owned contract. | Diagnostic `api-final.trx`; corrected seven-source/authorization/review checks in `api-query-fix.trx`. |
+| Simultaneous source confirmations could return 500 | P1 | SQL Server serializable lock conversion chose a deadlock victim outside the save exception handler. Retry the entire disposed transaction, clear tracked state and recheck native authorization/source/idempotency. Dispose rolled-back unique-conflict transactions before reading the winning origin. | Diagnostic `api-sql-regression.trx`; final SQL creation and review race coverage. |
+| Canonical review omitted the planning material and claimed a threshold failure | P1 | Generic task review had no planning-origin comparison. Native review now includes material fields and source evidence, with the existing material hash preserved for unrelated tasks. Render the planning review's own authority notice. | Browser review finding; final canonical review browser evidence and native comparison assertions. |
+| Creation card touched the shell rail and top edge | P2 | New panel omitted native page spacing and its kicker styles. Apply existing `vc-page` spacing; keep the main workflow first at narrow widths. | Final desktop/narrow captures compared with P28 references. |
+| Monthly source return landed on Today | P1 | P28 used `period=monthly` instead of the native `period=month` route value. Correct the native origin source path and browser entry, add an API assertion, and replay every source's original return. | Final browser replay plus monthly source creation/retry test. |
+| Individually valid long fields could produce an unconfirmable preview | P2 | Combined outcome, constraints and review notice exceeded the native task description limit. Preview and confirm now validate the exact shared description before the native command. | Final scope/validation test includes both maximum-length fields. |
+| Browser harness expected client-side API traffic from a server-rendered action | Harness | Blazor InteractiveServer calls the API server-side. Wait for the native decision confirmation, then reconcile status with the API. Use the real affected task heading. | Final browser replay. |
+| In-app browser cannot initialize | Environment | Windows sandbox helper fails while applying deny-read ACLs. Use a fresh headless Edge against native Web/composed API, explicitly scoped as substitute evidence. | `browser-environment.md`; independent in-app/provider/deployed/human gates remain open. |
+
+Acceptance and exact final counts are recorded in `verification.json`; diagnostic runs are not added to accepted totals.

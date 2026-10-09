@@ -93,6 +93,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
         CreatedByActorType = NormalizeRequired(createdByActorType, nameof(createdByActorType), ActorTypeMaxLength);
         CreatedByActorId = createdByActorId;
         InputPayload = CloneNodes(inputPayload);
+        RefreshBusinessAssociations();
         OutputPayload = CloneNodes(outputPayload);
         RationaleSummary = NormalizeOptional(rationaleSummary, nameof(rationaleSummary), RationaleSummaryMaxLength);
         ConfidenceScore = confidenceScore;
@@ -105,6 +106,29 @@ public sealed class WorkTask : ICompanyOwnedEntity
         TriggerEventId = NormalizeOptional(triggerEventId, nameof(triggerEventId), TriggerEventIdMaxLength);
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
+    }
+
+    // Queryable record associations. Owning queries validate the record and company before exposing evidence.
+    public Guid? BusinessDealId { get; private set; }
+    public Guid? BusinessCaseId { get; private set; }
+    public Guid? BusinessInvoiceId { get; private set; }
+    public Guid? BusinessBillId { get; private set; }
+    public Guid? BusinessCampaignId { get; private set; }
+    public Guid? BusinessBriefId { get; private set; }
+    public void RefreshBusinessAssociations()
+    {
+        BusinessDealId = BusinessId("dealId");
+        BusinessCaseId = BusinessId("caseId") ?? BusinessId("supportCaseId");
+        BusinessInvoiceId = BusinessId("invoiceId");
+        BusinessBillId = BusinessId("billId");
+        BusinessCampaignId = BusinessId("campaignId");
+        BusinessBriefId = BusinessId("briefId");
+    }
+    private Guid? BusinessId(string key)
+    {
+        if (!InputPayload.TryGetValue(key, out var value) || value is not JsonValue scalar) return null;
+        if (scalar.TryGetValue<Guid>(out var typed)) return typed == Guid.Empty ? null : typed;
+        return scalar.TryGetValue<string>(out var text) && Guid.TryParse(text, out var id) && id != Guid.Empty ? id : null;
     }
 
     public Guid Id { get; private set; }
@@ -135,6 +159,7 @@ public sealed class WorkTask : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? CompletedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
+    public DecisionWorkOrigin? DecisionOrigin { get; private set; }
     public Agent? AssignedAgent { get; private set; }
     public WorkTask? ParentTask { get; private set; }
     public ICollection<WorkTask> Subtasks { get; } = new List<WorkTask>();

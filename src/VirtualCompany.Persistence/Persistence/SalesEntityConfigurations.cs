@@ -286,6 +286,7 @@ internal sealed class SalesActivityConfiguration : IEntityTypeConfiguration<Sale
         builder.Property(x => x.DealId).HasColumnName("deal_id");
         builder.Property(x => x.ContactId).HasColumnName("contact_id");
         builder.Property(x => x.CustomerCompanyId).HasColumnName("customer_company_id");
+        builder.Property(x => x.RecordedReason).HasMaxLength(500);
         builder.Property(x => x.ActivityType).HasColumnName("activity_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(500).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();

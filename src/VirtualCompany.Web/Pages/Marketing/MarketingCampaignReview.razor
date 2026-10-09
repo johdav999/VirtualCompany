@@ -14,6 +14,10 @@
     {
         <p>As of @review.AsOfUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC. Content approval does not authorize publication or increase spending.</p>
         @if (message is not null) { <p role="status">@message</p> }
+        @if (review.Campaign is not null && !BriefId.HasValue)
+        { <BusinessAgentWorkPanel CompanyId="CompanyId" RecordKind="campaign" RecordId="review.Campaign.Id" RecordSnapshot="review" /> }
+        else if (brief is not null)
+        { <BusinessAgentWorkPanel CompanyId="CompanyId" RecordKind="brief" RecordId="brief.Id" RecordSnapshot="review" /> }
         <div class="marketing-review-columns">
             <div class="marketing-review-main">
                 <section class="vc-panel"><h2>Content and exact version</h2>
@@ -76,13 +80,12 @@
     [SupplyParameterFromQuery] public Guid? AssetId { get; set; }
     [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
     [SupplyParameterFromQuery] public string? RecordReturnUrl { get; set; }
-    [SupplyParameterFromQuery] public string? PriorityReturnUrl { get; set; }
     [SupplyParameterFromQuery] public string? HealthReturnUrl { get; set; }
     private MarketingCampaignReviewViewModel? review; private MarketingContentBriefViewModel? brief; private MarketingContentVariantViewModel? variant;
     private bool loading, busy, disposed; private int version; private string? error, message;
     private string revisionName = "", revisionBody = "", revisionSources = ""; private CancellationTokenSource? read;
     private string Origin => DashboardRoutes.NormalizeOverviewPath(ReturnUrl, CompanyId ?? Guid.Empty) ?? DashboardRoutes.BuildTodayPath(CompanyId ?? Guid.Empty, "marketing");
-    private string Back => MarketingJourneyRoutes.NormalizeRecordReturn(RecordReturnUrl ?? PriorityReturnUrl ?? HealthReturnUrl, CompanyId ?? Guid.Empty) ?? Origin;
+    private string Back => MarketingJourneyRoutes.NormalizeRecordReturn(RecordReturnUrl ?? HealthReturnUrl, CompanyId ?? Guid.Empty) ?? Origin;
     private string CurrentPath => "/" + Navigation.ToBaseRelativePath(Navigation.Uri);
     protected override Task OnParametersSetAsync() => LoadAsync();
     private async Task LoadAsync()

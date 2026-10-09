@@ -49,11 +49,47 @@ public sealed class FinanceOperationalJourneyTests
         ctx.Services.GetRequiredService<NavigationManager>().NavigateTo($"/finance/receivables-aging?companyId={Company}&currency=SEK&bucket=overdue");
         var cut = ctx.RenderComponent<FinanceOperationalReport>(p => p.Add(x => x.CompanyId, Company));
         cut.WaitForAssertion(() => Assert.Contains("Current 1", cut.Markup)); denied = revoke;
-        cut.FindAll("button").Single(x => x.TextContent == "Refresh and download CSV").Click();
+        cut.Find("[data-testid='finance-report-download']").Click();
         cut.WaitForAssertion(() => Assert.Equal(2, reads));
         if (revoke) { cut.WaitForAssertion(() => Assert.Contains("unavailable", cut.Markup)); Assert.DoesNotContain("Current 1", cut.Markup); Assert.Empty(module.Invocations); }
         else { cut.WaitForAssertion(() => Assert.Single(module.Invocations["downloadReport"])); var csv = (string)module.Invocations["downloadReport"].Single().Arguments[1]!; Assert.Contains("Current 2", csv); Assert.DoesNotContain("Current 1", csv); Assert.Contains("' =SUM(1,2)", csv); }
     }
+    [Fact]
+    public void Cash_forecast_preserves_separate_currencies_missing_cash_and_inflow_outflow_source_records()
+    {
+        using var ctx = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var original = Report();
+        var source = original with {
+            Payables = [original.Receivables[0] with { Kind = "bill", Number = "Supplier 1", Currency = "USD", RemainingAmount = 30, DeepLink = "/finance/supplier-bills/" + Guid.NewGuid() }],
+            Receivables = [original.Receivables[0], original.Receivables[0] with { Number = "Outside horizon", DueUtc = new(2026, 10, 17) }],
+            Totals = [original.Totals[0], new("USD", 0, 0, 30, 30, 20, 0, 30, -10)],
+            CashEvidence = [new(Guid.NewGuid(), "Reserve account", 20, "USD", null, "Opening balance evidence"), new(Guid.NewGuid(), "Zero account", 0, "USD")],
+            CoverageGaps = ["Cash evidence unavailable", "Retained balance snapshot missing"]
+        };
+        var http = new HttpClient(new Handler(r => r.RequestUri!.AbsolutePath.Contains("operational-report") ? Json(source) : Json(new CurrentUserContextViewModel {
+            ActiveCompany = new() { CompanyId = Company, CompanyName = "Company", MembershipRole = "owner", Status = "active" },
+            Memberships = [new() { CompanyId = Company, CompanyName = "Company", MembershipRole = "owner", Status = "active" }] }))) { BaseAddress = new("http://localhost/") };
+        ctx.Services.AddSingleton(new FinanceApiClient(new CompanyApiTransport(http))); ctx.Services.AddSingleton(new OnboardingApiClient(http)); ctx.Services.AddSingleton<FinanceAccessResolver>();
+        ctx.Services.GetRequiredService<NavigationManager>().NavigateTo($"/finance/cash-forecast?companyId={Company}");
+        var cut = ctx.RenderComponent<FinanceOperationalReport>(p => p.Add(x => x.CompanyId, Company));
+        cut.WaitForAssertion(() => Assert.Contains("Supplier 1", cut.Markup));
+        Assert.Equal("Unavailable", cut.Find("[data-currency='SEK'] [data-testid='forecast-starting-cash']").TextContent);
+        Assert.Equal("Unavailable", cut.Find("[data-currency='SEK'] [data-testid='forecast-projected-cash']").TextContent);
+        Assert.Contains("USD", cut.Find("[data-currency='USD'] [data-testid='forecast-projected-cash']").TextContent);
+        Assert.Contains("-10.00", cut.Find("[data-currency='USD'] [data-testid='forecast-projected-cash']").TextContent);
+        Assert.Equal(new[] { "Inflow", "Outflow" }, cut.FindAll(".finance-report-flow").Select(x => x.TextContent));
+        Assert.DoesNotContain("Outside horizon", cut.Markup);
+        Assert.Contains("Cash evidence unavailable", cut.Find(".finance-report-coverage").TextContent);
+        Assert.Contains("Observed time unavailable", cut.Find(".finance-report-source").TextContent);
+        Assert.Contains("All 2 cash accounts", cut.Find(".finance-report-source summary").TextContent);
+        Assert.Contains("Zero account", cut.Find(".finance-report-source details").TextContent);
+        Assert.Null(cut.Find(".finance-report-source details").GetAttribute("open"));
+        Assert.Contains("Retained balance snapshot missing", cut.Find(".finance-report-coverage details").TextContent);
+        Assert.Null(cut.Find(".finance-report-coverage details").GetAttribute("open"));
+        Assert.Null(cut.Find(".finance-report-basis details").GetAttribute("open"));
+        Assert.Equal("page", cut.Find("a[href*='cash-forecast'][aria-current]").GetAttribute("aria-current"));
+    }
+
     [Fact]
     public void Durable_report_record_and_overview_returns_survive_reload_and_reject_foreign_or_malformed_origins()
     {

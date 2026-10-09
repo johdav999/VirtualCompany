@@ -28,3 +28,21 @@ public static class AgentWorkStates
         Completed = "completed", Blocked = "blocked", Failed = "failed", Paused = "paused";
     public static IReadOnlyList<string> All { get; } = [Planned, Active, AwaitingApproval, Completed, Blocked, Failed, Paused];
 }
+
+public sealed record BusinessWorkArtifactDto(Guid Id, string Kind, string Name, string Summary,
+    string RecordedState, string ApprovalState, string ExecutionState, string ReviewReason,
+    AgentWorkPersonDto? Agent, DateTime UpdatedUtc, long? Version, string RecordRoute,
+    string? DecisionRoute, IReadOnlyList<string> Diagnostics);
+public sealed record BusinessWorkEvidenceDto(Guid CompanyId, string RecordKind, Guid RecordId,
+    DateTime ObservedUtc, string WorkflowMeaning, string NextAction,
+    IReadOnlyList<BusinessWorkArtifactDto> Artifacts, IReadOnlyList<AgentWorkItemDto> Work,
+    IReadOnlyList<VirtualCompany.Application.Orchestration.CollaborationEvidenceDto> Collaboration,
+    IReadOnlyList<string> Diagnostics, bool IsPartial, IReadOnlyList<BusinessWorkDecisionDto>? Decisions = null);
+
+public interface IBusinessWorkEvidenceQueryService
+{
+    Task<BusinessWorkEvidenceDto> GetAsync(Guid companyId, string kind, Guid id, CancellationToken token);
+}
+
+public sealed record BusinessWorkDecisionDto(Guid TaskId, Guid ApprovalId, string Status, string Reason,
+    string? Limits, string Reviewer, DateTime? ExpiresUtc, bool ProposalChanged, string Route);

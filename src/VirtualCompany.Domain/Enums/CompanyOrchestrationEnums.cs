@@ -9,7 +9,7 @@ public enum OperatingInitiativeStatus { Proposed = 1, Approved = 2, Active = 3, 
 public enum OperatingActionClass { Read = 1, Recommend = 2, InternalMutation = 3, ExternalExecute = 4 }
 public enum OperatingValidationOutcome { Allowed = 1, ReviewRequired = 2, Denied = 3 }
 public enum OperatingReviewOutcome { CloseSuccessful = 1, Continue = 2, Revise = 3, Reassign = 4, RequestEvidence = 5, Escalate = 6, Pause = 7, Stop = 8 }
-public enum OperatingDispatchStatus { Pending = 1, Claimed = 2, Running = 3, AwaitingApproval = 4, RetryScheduled = 5, Completed = 6, Blocked = 7, Failed = 8, DeadLettered = 9 }
+public enum OperatingDispatchStatus { Pending = 1, Claimed = 2, Running = 3, AwaitingApproval = 4, RetryScheduled = 5, Completed = 6, Blocked = 7, Failed = 8, DeadLettered = 9, Paused = 10, Uncertain = 11 }
 public enum OperatingDispatchKind { SingleAgent = 1, MultiAgent = 2 }
 public enum OperatingCollaborationRole { Contributor = 1, Reviewer = 2, Challenger = 3 }
 public enum OperatingCollaborationPattern { Parallel = 1, SequentialHandoff = 2 }
@@ -94,7 +94,7 @@ public static class OperatingDispatchStatusValues
         OperatingDispatchStatus.Running => "running", OperatingDispatchStatus.AwaitingApproval => "awaiting_approval",
         OperatingDispatchStatus.RetryScheduled => "retry_scheduled", OperatingDispatchStatus.Completed => "completed",
         OperatingDispatchStatus.Blocked => "blocked", OperatingDispatchStatus.Failed => "failed",
-        OperatingDispatchStatus.DeadLettered => "dead_lettered", _ => throw new ArgumentOutOfRangeException(nameof(value))
+        OperatingDispatchStatus.DeadLettered => "dead_lettered", OperatingDispatchStatus.Paused => "paused", OperatingDispatchStatus.Uncertain => "uncertain", _ => throw new ArgumentOutOfRangeException(nameof(value))
     };
     public static OperatingDispatchStatus Parse(string value) => EnumStorage.Parse(value,
         new Dictionary<string, OperatingDispatchStatus>(StringComparer.OrdinalIgnoreCase)
@@ -103,7 +103,7 @@ public static class OperatingDispatchStatusValues
             ["running"] = OperatingDispatchStatus.Running, ["awaiting_approval"] = OperatingDispatchStatus.AwaitingApproval,
             ["retry_scheduled"] = OperatingDispatchStatus.RetryScheduled, ["completed"] = OperatingDispatchStatus.Completed,
             ["blocked"] = OperatingDispatchStatus.Blocked, ["failed"] = OperatingDispatchStatus.Failed,
-            ["dead_lettered"] = OperatingDispatchStatus.DeadLettered
+            ["dead_lettered"] = OperatingDispatchStatus.DeadLettered, ["paused"] = OperatingDispatchStatus.Paused, ["uncertain"] = OperatingDispatchStatus.Uncertain
         });
 }
 

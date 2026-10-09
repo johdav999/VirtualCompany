@@ -27,11 +27,12 @@ public static class FinancePlanningReferenceTypes
     public const string VoucherSeries = "voucher_series";
     public const string ReportDefinition = "report_definition";
     public const string ReportLine = "report_line";
+    public const string ForecastVersion = "forecast_version";
 
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         Invoice, Bill, Customer, Supplier, FiscalPeriod, Migration, Account, Journal, VoucherSeries,
-        ReportDefinition, ReportLine
+        ReportDefinition, ReportLine, ForecastVersion
     };
 }
 

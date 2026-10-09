@@ -1,0 +1,29 @@
+@using VirtualCompany.Web.Services
+@if(!Report.CompleteSourceCoverage){<p class="quality-notice">The values below describe the recorded bounded sample. Full company totals are unavailable.</p>}
+<div class="quality-metrics">
+    <article><span>Arrivals</span><strong>@Report.Metrics.Arrivals</strong><small>Prior @Report.Previous.Arrivals · created cohort</small></article>
+    <article><span>Recorded resolution cohort</span><strong>@Report.Metrics.ResolvedCases</strong><small>Prior @Report.Previous.ResolvedCases · distinct cases</small></article>
+    <article><span>Reopened after resolution</span><strong>@Report.Metrics.ReopenedCases of @Report.Metrics.ResolvedCases · @N(Report.Metrics.ReopenRate)%</strong><small>Prior @N(Report.Previous.ReopenRate)% · follow-up through @D(Report.FollowupEndUtc)</small></article>
+    <article><span>Mean first response</span><strong>@N(Report.Metrics.MeanResponseMinutes) min</strong><small>@Report.Metrics.ResponseSample answered arrival-cohort cases; business replay @N(Report.Metrics.MeanResponseBusinessMinutes) min</small></article>
+</div>
+<section class="vc-panel quality-evidence">
+    <h2>Recorded cohort evidence</h2><p>@Report.Query.Year-@Report.Query.Month.ToString("00") · @Report.Period.TimeZoneId · as of @D(Report.AsOfUtc). Mean resolution @N(Report.Metrics.MeanResolutionMinutes) elapsed minutes / @Report.Metrics.ResolutionSample cases.</p>
+    @if(!Report.CompleteSourceCoverage){<div class="alert alert-warning">Recorded sample only: the source bound was reached. Company totals and capacity planning are unavailable.</div>}
+    <p>Scroll across the table to inspect every cohort flag and timestamp. Waiting remains part of elapsed service time.</p>
+    <div class="quality-scroll" tabindex="0" aria-label="Support cohort table"><table><thead><tr><th>Case</th><th>Subject / group</th><th>Created</th><th>Arrival</th><th>Resolution cohort</th><th>Reopened after resolution</th><th>Response minutes</th><th>Evidence</th></tr></thead><tbody>
+    @foreach(var c in Report.Cases.Where(x=>x.Arrival||x.ResolutionCohort)){
+        <tr><th scope="row">@c.Number</th><td class="subject">@c.Subject<br/>@c.Group · @(c.ReviewedGroup?"Reviewed":"System proposed")</td><td>@D(c.CreatedUtc)</td><td>@(c.Arrival&&!c.Merged?"Included":c.Merged?"Merged alias excluded":"Outside cohort")</td><td>@(c.ResolutionCohort?D(c.ResolutionUtc):"Outside cohort")</td><td>@D(c.ReopenedUtc)</td><td>@N(c.ResponseMinutes)</td><td><a href="@Source(c.DeepLink)">Open case</a><details><summary>Recorded events</summary>@foreach(var e in c.Sources){<p class="quality-sources">@D(e.OccurredUtc) · @e.Summary <small>Source @e.Id</small></p>}</details></td></tr>
+    }</tbody></table></div>
+    @if(!Report.Cases.Any(x=>x.Arrival||x.ResolutionCohort)){<p>No recorded cases match this period cohort. Missing samples remain unavailable.</p>}
+    <details><summary>Cohort and waiting-time definitions</summary><p>@Report.Definition</p><p>@Report.Coverage</p></details>
+</section>
+<section class="vc-panel quality-backlog"><h2>Backlog and history coverage</h2>
+    @foreach(var b in Report.Backlog){<p>At @D(b.CutoffUtc): backlog @(b.Open?.ToString()??"Unavailable"), waiting @(b.Waiting?.ToString()??"Unavailable"). @b.KnownOpen known open, @b.UnknownCases cases without usable historical state.</p>}
+    <p>Coverage starts at each recorded state observation. A current case status never fills a missing historical balance.</p>
+</section>
+@code{
+    [Parameter,EditorRequired]public SupportQualityReport Report{get;set;}=null!;
+    [Parameter]public Func<string,string> Source{get;set;}=x=>x;
+    private static string N(decimal? n)=>n?.ToString("N2",System.Globalization.CultureInfo.InvariantCulture)??"Unavailable";
+    private static string D(DateTime? d)=>d?.ToString("yyyy-MM-dd HH:mm")+(d.HasValue?" UTC":"Unavailable");
+}

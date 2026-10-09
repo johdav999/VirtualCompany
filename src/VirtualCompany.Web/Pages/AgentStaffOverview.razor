@@ -9,7 +9,7 @@
     <header><div><span class="dashboard-kicker">AGENT TEAM</span><h1>Agent team</h1><p>Follow company outcomes from plan to completion.</p></div><button class="btn btn-outline-primary" @onclick="Reload" disabled="@loading">Refresh</button></header>
     @if (CompanyId is Guid company)
     {
-        <nav aria-label="Agent work navigation"><a href="@(DashboardRoutes.NormalizeOverviewPath(ReturnUrl,company) ?? DashboardRoutes.BuildTodayPath(company))">Overview</a><a href="@AgentWorkRoutes.Related($"/work?companyId={company:D}&tab=tasks", company, Navigation.Uri)">Work</a><a href="@DashboardRoutes.WithQuery("/agents/staff/summary", ("companyId", company.ToString("D")), ("year", Year?.ToString()), ("month", Month?.ToString()))">Monthly company summary and roster</a></nav>
+        <nav aria-label="Agent work navigation"><a href="@DashboardRoutes.WithQuery("/agents/staff/reports", ("companyId", company.ToString("D")))">Supervision reports</a><a href="@(DashboardRoutes.NormalizeOverviewPath(ReturnUrl,company) ?? DashboardRoutes.BuildTodayPath(company))">Overview</a><a href="@AgentWorkRoutes.Related($"/work?companyId={company:D}&tab=tasks", company, Navigation.Uri)">Work</a><a href="@DashboardRoutes.WithQuery("/agents/staff/summary", ("companyId", company.ToString("D")), ("year", Year?.ToString()), ("month", Month?.ToString()))">Monthly company summary and roster</a></nav>
     }
     <form class="agent-work-filters" @onsubmit="Apply" @onsubmit:preventDefault>
         <label>Responsibility<select @key="(CompanyId, data is not null)" @bind="area" disabled="@loading"><option value="">All permitted</option>@foreach(var option in data?.Responsibilities ?? []) { <option value="@option">@AgentWorkRoutes.Area(option)</option> }</select></label>

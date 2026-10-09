@@ -76,21 +76,20 @@ public sealed class MarketingOperationalJourneyTests
     public void Campaign_report_retains_campaign_evidence_and_exact_record_return()
     {
         var origin = DashboardRoutes.BuildMonthlyPath(Company, "marketing", 2026, 9);
-        var priority = DashboardRoutes.BuildPriorityPath(Company, "marketing", "campaign-risk", origin);
         var health = DashboardRoutes.BuildHealthPath(Company, "marketing", origin);
         var review = DashboardRoutes.WithQuery(MarketingJourneyRoutes.Review(Company, Campaign, null, origin),
-            ("priorityReturnUrl", priority), ("healthReturnUrl", health));
+            ("healthReturnUrl", health));
         var report = MarketingJourneyRoutes.Report(Company, "delivery", origin, Campaign, "http://localhost" + review);
         var query = HttpUtility.ParseQueryString(new Uri("http://localhost" + report).Query);
         Assert.Equal(Campaign.ToString(), query["campaignId"]);
         Assert.Equal(review, query["recordReturnUrl"]);
         Assert.Equal(origin, query["returnUrl"]);
-        Assert.Equal(priority, query["priorityReturnUrl"]);
+        Assert.Null(query["priorityReturnUrl"]);
         Assert.Equal(health, query["healthReturnUrl"]);
         var spend = MarketingJourneyRoutes.Build($"/marketing/reports/spend?campaignId={Campaign}&currency=SEK", Company, "http://localhost" + report);
         var spendQuery = HttpUtility.ParseQueryString(new Uri("http://localhost" + spend).Query);
         Assert.Equal(review, spendQuery["recordReturnUrl"]);
-        Assert.Equal(priority, spendQuery["priorityReturnUrl"]);
+        Assert.Null(spendQuery["priorityReturnUrl"]);
         Assert.Equal("SEK", spendQuery["currency"]);
     }
 
@@ -118,7 +117,7 @@ public sealed class MarketingOperationalJourneyTests
         var foreign = Guid.NewGuid();
         var path = DashboardRoutes.WithQuery(MarketingJourneyRoutes.Review(Company, Campaign, null, null),
             ("recordReturnUrl", MarketingJourneyRoutes.Review(foreign, Campaign, null, null)),
-            ("priorityReturnUrl", DashboardRoutes.BuildPriorityPath(foreign, "marketing", "risk")),
+            ("priorityReturnUrl", $"/dashboard/priorities?companyId={foreign}&lens=marketing&key=risk"),
             ("healthReturnUrl", DashboardRoutes.BuildHealthPath(foreign)));
         var cleared = MarketingJourneyRoutes.Build("/marketing/reports/spend", Company, "http://localhost" + path);
         var query = HttpUtility.ParseQueryString(new Uri("http://localhost" + cleared).Query);

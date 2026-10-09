@@ -46,6 +46,8 @@ public sealed class SupportReplyDeliveryDispatcher(
             ?? throw new InvalidOperationException("The queued support case no longer exists.");
 
         if (draft.SupportCaseId != supportCase.Id) throw new InvalidOperationException("The queued reply does not belong to this case.");
+        if(message.Autonomous&&!SupportAutomaticReplyEligibility.Allows(supportCase,draft))
+            throw new InvalidOperationException("The queued autonomous reply now requires human review before delivery.");
         if (draft.DeliveryStatus == SupportReplyDeliveryStatuses.ReconciliationRequired)
             throw new InvalidOperationException("Reconcile the uncertain delivery outcome before retrying.");
         if (safety is not null) {

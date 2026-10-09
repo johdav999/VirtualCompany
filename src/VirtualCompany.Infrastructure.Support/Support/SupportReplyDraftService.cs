@@ -276,10 +276,7 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
             await _dbContext.SaveChangesAsync(cancellationToken);
             throw new InvalidOperationException("This reply needs changes before it can be sent: " + string.Join(" ", safety.Explanations));
         }
-        var lowRisk = supportCase.Category == SupportCaseCategories.GeneralQuestion ||
-            supportCase.Category == SupportCaseCategories.AccountAccess ||
-            supportCase.Category == SupportCaseCategories.BugReport;
-        if (request.Autonomous && (!lowRisk || draft.Confidence < 0.8m || draft.Answerability < 0.75m))
+        if (request.Autonomous && !SupportAutomaticReplyEligibility.Allows(supportCase,draft))
         {
             await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.reply.send_blocked", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Blocked, "Support reply requires review before sending.", ["support"]), cancellationToken);
             throw new InvalidOperationException("This reply requires review before it can be sent.");

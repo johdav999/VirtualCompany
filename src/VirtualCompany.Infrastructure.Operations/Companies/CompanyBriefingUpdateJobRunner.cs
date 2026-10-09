@@ -115,6 +115,14 @@ public sealed class CompanyBriefingUpdateJobRunner : IBriefingUpdateJobRunner
 
             await _dbContext.SaveChangesAsync(cancellationToken);
 
+            if (job.SourceMetadata.TryGetValue("cadenceDeliveryId", out var cadenceNode) && Guid.TryParse(cadenceNode?.ToString(), out var cadenceId) &&
+                job.Status == CompanyBriefingUpdateJobStatus.Failed)
+            {
+                var delivery = await _dbContext.BriefingCadenceDeliveries.SingleOrDefaultAsync(x => x.CompanyId == job.CompanyId && x.Id == cadenceId, cancellationToken);
+                if (delivery?.Status == BriefingCadenceDeliveryStates.Queued)
+                { delivery.Status = BriefingCadenceDeliveryStates.Failed; delivery.Reason = "Briefing generation failed. Review the update job audit before rescheduling."; delivery.UpdatedUtc = nowUtc; await _dbContext.SaveChangesAsync(cancellationToken); }
+            }
+
             _logger.LogInformation(
                 "Briefing update job {JobId} for company {CompanyId} completed worker cycle with status {Status}.",
                 job.Id,

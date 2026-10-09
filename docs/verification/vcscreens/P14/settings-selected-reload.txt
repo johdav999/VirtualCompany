@@ -1,0 +1,207 @@
+- link "Virtual Company":
+  - /url: /dashboard?companyId=11111111-1111-1111-1111-111111111111
+- dialog "Navigation menu":
+  - generic: Company
+  - combobox "Choose company":
+    - option "P01 North Company" [selected]
+    - option "P01 South Company"
+    - option "P07 Ledger Company"
+  - navigation "Primary navigation":
+    - link "Overview":
+      - /url: /dashboard?companyId=11111111-1111-1111-1111-111111111111
+      - generic: Overview
+    - link "Agent team":
+      - /url: /agents/staff?companyId=11111111-1111-1111-1111-111111111111&source=dashboard&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: Agent team
+    - link "Finance":
+      - /url: /finance?companyId=11111111-1111-1111-1111-111111111111&action=open-workspace&range=this-month&source=dashboard&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: $
+      - generic: Finance
+    - link "Sales":
+      - /url: /app/sales?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ↗
+      - generic: Sales
+    - link "Marketing":
+      - /url: /marketing?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: Marketing
+    - link "Support":
+      - /url: /support?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: "?"
+      - generic: Support
+    - link "Work":
+      - /url: /work?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ✓
+      - generic: Work
+  - complementary "P01 North Company, Company":
+    - generic: PN
+    - generic: P01 North Company
+    - generic: Company
+    - button [disabled]
+  - navigation "Restricted tools":
+    - generic: Restricted tools
+    - link "Simulation Lab":
+      - /url: /simulation-lab?companyId=11111111-1111-1111-1111-111111111111
+      - generic: ≋
+      - generic: Simulation Lab
+    - link "System / Admin":
+      - /url: /system/admin/integrations/email-providers?companyId=11111111-1111-1111-1111-111111111111
+      - generic: A
+      - generic: System / Admin
+  - navigation "Settings":
+    - link "History":
+      - /url: /history?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ↶
+      - generic: History
+    - link "Settings":
+      - /url: /settings?companyId=11111111-1111-1111-1111-111111111111&returnUrl=%2fdashboard%3fcompanyId%3d11111111-1111-1111-1111-111111111111
+      - generic: ⚙
+      - generic: Settings
+- main:
+  - article:
+    - text: SETTINGS
+    - heading "Understand agent authority" [level=1]
+    - paragraph: Read current restrictions, limits and required review.
+    - navigation "Authority returns":
+      - link "Back to agent settings":
+        - /url: /settings/agents?companyId=11111111-1111-1111-1111-111111111111
+    - region "Configured and effective authority":
+      - generic: AUTHORITY · READ ONLY
+      - heading "What may the agent do?" [level=2]
+      - paragraph: Configured intent and current checks have separate meanings.
+      - button "Refresh authority"
+      - text: Agent
+      - combobox "Agent":
+        - option "Ben"
+        - option "P10 Ben"
+        - option "P10 Laura"
+        - option "P11 Alex"
+        - option "P11 Ben"
+        - option "P11 Laura"
+        - option "P11 Reviewer"
+        - option "P13 Finance"
+        - option "P13 Finance"
+        - option "P13 Marketing"
+        - option "P13 Marketing"
+        - option "P13 Sales"
+        - option "P13 Support"
+        - option "P14 Authority specialist" [selected]
+      - group "Company configured intent · read only":
+        - generic: Company configured intent · read only
+        - radio "Advise Review information and recommend. A human decides what happens next." [disabled]
+        - strong: Advise
+        - generic: Review information and recommend. A human decides what happens next.
+        - radio "Organize Arrange permitted internal tasks and plans. Execution still needs its own checks." [disabled]
+        - strong: Organize
+        - generic: Arrange permitted internal tasks and plans. Execution still needs its own checks.
+        - radio "Do internal work Perform permitted internal work within company limits. External actions need human review." [disabled]
+        - strong: Do internal work
+        - generic: Perform permitted internal work within company limits. External actions need human review.
+        - radio "Act within limits Use bounded authority where supported. Company operating external actions still need human review." [checked] [disabled]
+        - strong: Act within limits
+        - generic: Use bounded authority where supported. Company operating external actions still need human review.
+      - paragraph: Company configuration version 2 · checked 03/10/2026 19:41. This view cannot change authority. Agent profiles and Finance grants use their own rules.
+      - generic "Current restrictions, checks and limits"
+      - article:
+        - heading "Task-type policy" [level=3]
+        - paragraph:
+          - strong: Agent Capability Checks
+        - paragraph: Action not evaluated
+        - paragraph: No separately approved task-type policy or company operating plan is bound to this view. Tool checks below describe capabilities without a proposed business payload. The owning workflow must check the actual action before execution.
+        - generic: "Source: Task-type policy"
+      - article:
+        - heading "P14 Authority specialist · agent capability" [level=3]
+        - paragraph: "Profile: Guided"
+        - paragraph: Each row is a current capability and policy check with no proposed business payload. Passing a check does not establish permission for the complete task. Execution rechecks its workflow, actor, payload, integration, limits and approvals.
+        - paragraph: 2 passed · 1 require review · 2 restricted or unavailable
+        - generic "Current action checks (5)"
+        - heading "Categorize Transaction" [level=4]
+        - paragraph: Execute · Human review required
+        - paragraph: The effective Finance approval policy requires review for this execute action.
+        - generic: "Source: Tool guardrail · Integration: Ready"
+        - paragraph: "Actor permission: Finance Edit"
+        - paragraph:
+          - strong: Mandatory human review applies.
+        - heading "Get Cash Balance" [level=4]
+        - paragraph: Read · Passed this check
+        - paragraph: The requested action is within scope, within threshold, and allowed to execute.
+        - generic: "Source: Tool guardrail · Integration: Ready"
+        - paragraph: "Actor permission: Finance View"
+        - heading "List Transactions" [level=4]
+        - paragraph: Read · Integration unavailable
+        - paragraph: A required integration is unavailable for this tool.
+        - generic: "Source: Agent capability · Integration: Unavailable"
+        - paragraph: "Actor permission: Finance View"
+        - heading "Recommend Invoice Approval Decision" [level=4]
+        - paragraph: Recommend · Passed this check
+        - paragraph: The requested action is within scope, within threshold, and allowed to execute.
+        - generic: "Source: Tool guardrail · Integration: Ready"
+        - paragraph: "Actor permission: Finance View"
+        - heading "Finance Removed Tool" [level=4]
+        - paragraph: Not Offered · Unsupported
+        - paragraph: This configured tool is outside the supported capability catalogue for this agent and is not offered for execution.
+        - generic: "Source: Supported capability catalogue · Integration: Not Available"
+        - generic "Other supported capabilities needing configuration (93)"
+      - article:
+        - heading "Finance grants · limits and expiry" [level=3]
+        - heading "Finance Daily Cash" [level=4]
+        - paragraph: Read and monitor · version 1
+        - paragraph:
+          - strong: Permission denied
+          - text: · The Finance autonomy grant has expired.
+        - paragraph: "Proactive Finance: manual review, one action, no business evidence supplied"
+        - term: Effective from
+        - definition: 03/10/2026 19:06
+        - term: Expires
+        - definition: 03/10/2026 19:24
+        - term: Records per run
+        - definition: "10"
+        - term: Actions per run
+        - definition: "1"
+        - term: Amount per run
+        - definition: "100.0"
+        - term: Local time window
+        - definition: 00:00–23:59 (UTC)
+        - term: Evidence freshness (minutes)
+        - definition: "60"
+        - term: Allowed triggers
+        - definition: manual review
+        - term: Runs per window
+        - definition: "1"
+      - complementary:
+        - article:
+          - heading "Company limits and mandatory review" [level=3]
+          - term: Tasks per cycle
+          - definition: "12"
+          - term: Tasks per day
+          - definition: "48"
+          - term: Model calls per cycle
+          - definition: "4"
+          - term: Tool calls per cycle
+          - definition: "20"
+          - term: Model calls per day
+          - definition: "16"
+          - term: Tool calls per day
+          - definition: "80"
+          - term: Monetary budget per cycle
+          - definition: "500.0"
+          - term: Monetary budget per day
+          - definition: Not configured
+          - term: Runtime (seconds)
+          - definition: "120"
+          - term: Cycles per day
+          - definition: "4"
+          - term: Minimum cycle interval (minutes)
+          - definition: "60"
+          - term: Timezone
+          - definition: UTC
+          - term: Company operation
+          - definition: Running
+          - term: Mandatory review
+          - definition: Company operating external actions always require human review, including Act within limits.
+          - term: Expiry
+          - definition: Company configuration has no grant expiry. Separate grants retain their own expiry.
+          - text: Amount limits are shown as recorded. These limit records do not contain a currency field.
+        - article:
+          - heading "Current observation" [level=3]
+          - paragraph: Checked 03/10/2026 19:41
+          - paragraph: Refresh after a configuration, permission, integration or grant change. Expiry is evaluated again on every read.

@@ -217,6 +217,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IDemoTenantExternalSideEffectPolicy? _demoTenantSideEffects;
     private readonly IAuditEventWriter? _auditEventWriter;
     private readonly ICompanyDocumentPublicationService? _documentPublication;
+    private readonly IAgentExecutionControlGate? _executionControls;
+    private readonly CompanyApprovalRequestService? _reviewedTaskPolicies;
+    private readonly IBriefingCadenceService? _briefingCadence;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -253,8 +256,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         IDemoTenantExternalSideEffectPolicy? demoTenantSideEffects = null,
         IAuditEventWriter? auditEventWriter = null,
         ICompanyDocumentPublicationService? documentPublication = null,
-        ISalesRoomWorkDispatcher? salesRoomWork = null)
+        ISalesRoomWorkDispatcher? salesRoomWork = null, IAgentExecutionControlGate? executionControls = null,CompanyApprovalRequestService? reviewedTaskPolicies=null, IBriefingCadenceService? briefingCadence = null)
     {
+        _briefingCadence = briefingCadence;
+        _executionControls = executionControls;
+        _reviewedTaskPolicies=reviewedTaskPolicies;
         _salesRoomWork = salesRoomWork;
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -310,6 +316,55 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         foreach (var message in claimedMessages)
         {
             using var tenantScope = _companyExecutionScopeFactory.BeginScope(message.CompanyId);
+            Guid? controlAdmission = null;
+            try
+            {
+            if(_executionControls is not null&&message.Topic==ReviewedTaskPolicyMessage.Topic)
+            {
+                var reviewed=Deserialize<ReviewedTaskPolicyMessage>(message);
+                if(reviewed.CompanyId!=message.CompanyId)throw new CompanyOutboxPermanentException("Reviewed task scope does not match its outbox record.");
+                var reviewedAttempt=await _dbContext.ToolExecutionAttempts.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==message.CompanyId&&x.Id==reviewed.AttemptId,cancellationToken)
+                    ??throw new CompanyOutboxPermanentException("The reviewed attempt is unavailable.");
+                if(await _executionControls.IsPausedAsync(message.CompanyId,reviewedAttempt.AgentId,cancellationToken,reviewedAttempt.TaskId))
+                {message.DeferForExecutionPause(DateTime.UtcNow.AddMinutes(1));await _dbContext.SaveChangesAsync(cancellationToken);continue;}
+            }
+            if(_executionControls is not null && message.Topic==CompanyOutboxTopics.PaymentBatchSubmissionRequested)
+            {
+                var submission=Deserialize<PaymentBatchSubmissionRequestedMessage>(message);
+                if(submission.CompanyId!=message.CompanyId)throw new CompanyOutboxPermanentException("Payment instruction scope does not match its outbox record.");
+                var executionRow=await _dbContext.PaymentBatchExecutions.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==message.CompanyId&&x.Id==submission.ExecutionId,cancellationToken);
+                var lastSubmission=await _dbContext.PaymentExecutionAttempts.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x=>x.CompanyId==message.CompanyId&&x.ExecutionId==submission.ExecutionId&&x.Operation==PaymentExecutionAttemptOperations.Submit)
+                    .OrderByDescending(x=>x.AttemptNumber).Select(x=>x.Outcome).FirstOrDefaultAsync(cancellationToken);
+                var safeRetry=executionRow?.Status==PaymentExecutionStatuses.Queued && lastSubmission==PaymentExecutionAttemptOutcomes.RetryableFailure;
+                var admissionKey=safeRetry?$"{submission.ExecutionId:D}:{message.AttemptCount}":submission.ExecutionId.ToString("D");
+                try {controlAdmission=await _executionControls.AdmitAsync(message.CompanyId,null,"payment_submission",admissionKey,cancellationToken);}
+                catch(ExecutionPausedException){message.DeferForExecutionPause(DateTime.UtcNow.AddMinutes(1));await _dbContext.SaveChangesAsync(cancellationToken);continue;}
+                catch(ExecutionControlConflictException){message.MarkDiscarded("This payment instruction was already admitted. Use Finance reconciliation before any further provider submission.");await _dbContext.SaveChangesAsync(cancellationToken);continue;}
+            }
+            if (_executionControls is not null && message.Topic == CompanyOutboxTopics.SupportReplyDeliveryRequested)
+            {
+                var delivery = Deserialize<SupportReplyDeliveryRequestedMessage>(message);
+                if(delivery.CompanyId!=message.CompanyId)throw new CompanyOutboxPermanentException("Support instruction scope does not match its outbox record.");
+                if (delivery.Autonomous)
+                {
+                    var draft = await _dbContext.SupportReplyDrafts.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==message.CompanyId&&x.Id==delivery.DraftId,cancellationToken)
+                        ??throw new CompanyOutboxPermanentException("The owning Support draft is unavailable.");
+                    var agentId=draft.CreatedByAgentId;
+                    try { controlAdmission = await _executionControls.AdmitAsync(message.CompanyId,agentId,"support_delivery",delivery.IdempotencyKey,cancellationToken); }
+                    catch (ExecutionPausedException) { message.DeferForExecutionPause(DateTime.UtcNow.AddMinutes(1)); await _dbContext.SaveChangesAsync(cancellationToken); continue; }
+                    catch (ExecutionControlConflictException) { message.MarkDiscarded("This delivery was already admitted. Reconcile the owning Support draft/provider outcome before retrying."); await _dbContext.SaveChangesAsync(cancellationToken); continue; }
+                }
+            }
+            }
+            catch(CompanyOutboxPermanentException ex)
+            {
+                message.MarkDiscarded(ex.Message);await _dbContext.SaveChangesAsync(cancellationToken);continue;
+            }
+            catch(JsonException)
+            {
+                message.MarkDiscarded("The controlled instruction is malformed. Review its owning record.");await _dbContext.SaveChangesAsync(cancellationToken);continue;
+            }
             using var scope = _logger.BeginScope(ExecutionLogScope.ForOutboxMessage(
                 message.Id,
                 message.CompanyId,
@@ -349,6 +404,10 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 innerCancellationToken => DispatchAsync(message, innerCancellationToken),
                 retryDelay,
                 cancellationToken);
+
+            if (controlAdmission.HasValue)
+                await _executionControls!.AcknowledgeAsync(message.CompanyId,controlAdmission.Value,
+                    execution.Outcome is BackgroundJobExecutionOutcome.Succeeded or BackgroundJobExecutionOutcome.IdempotentDuplicate,cancellationToken);
 
             switch (execution.Outcome)
             {
@@ -647,6 +706,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
         switch (message.Topic)
         {
+            case ReviewedTaskPolicyMessage.Topic:
+            {
+                var payload=Deserialize<ReviewedTaskPolicyMessage>(message);
+                if(payload.CompanyId!=message.CompanyId)throw new CompanyOutboxPermanentException("Reviewed task scope changed.");
+                if(_reviewedTaskPolicies is null)throw new CompanyOutboxPermanentException("Reviewed task execution is unavailable.");
+                await _reviewedTaskPolicies.DispatchReviewedTaskPolicyAsync(payload,cancellationToken);
+                break;
+            }
             case CompanyOutboxTopics.DocumentPublicationDeliveryRequested:
             {
                 var payload = Deserialize<DocumentPublicationDeliveryRequestedMessage>(message);
@@ -720,6 +787,13 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
                 await EnqueueBriefingJobForNotificationAsync(message, payload, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.BriefingCadenceDeliveryRequested:
+            {
+                var payload = Deserialize<BriefingCadenceDeliveryRequest>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Briefing delivery tenant does not match the outbox tenant.");
+                await (_briefingCadence ?? throw new InvalidOperationException("Briefing cadence delivery is not configured.")).DeliverAsync(payload, cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.SupportMemoryUpdateRequested:

@@ -1,0 +1,104 @@
+@implements IDisposable
+@inject DecisionWorkApiClient Work
+@inject NavigationManager Navigation
+
+<section class="decision-work vc-page" data-testid="decision-work" data-interactive-ready="@ready.ToString().ToLowerInvariant()" aria-busy="@busy">
+    <header><span class="eyebrow">Management decision · Owned follow-up</span><h1>@(TaskId.HasValue ? "Source decision" : "Create owned work")</h1><p>Retain the decision and define an accountable outcome before handing work over for review.</p></header>
+    @if (busy) { <p role="status">Loading or saving owned work…</p> }
+    @if (error != null) { <div class="alert alert-danger" role="alert">@error <button class="btn btn-outline-secondary" disabled="@busy" @onclick="Retry">Retry</button></div> }
+    @if (Source is { } source)
+    {
+        <div class="decision-work-layout"><main>
+            <section class="decision-card"><h2>@source.Title</h2><p>@Kind(source.Reference.Kind) · Version @source.Version · saved @source.SavedUtc.ToString("yyyy-MM-dd HH:mm") UTC</p>
+                <p>@(document?.RevisionNotice ?? source.RevisionNotice)</p><a href="@source.SourcePath">Open original retained source</a>
+                <details><summary>Inspect retained evidence and version</summary><p class="source-checksum">Source checksum: @source.Fingerprint</p><pre>@Evidence(source.EvidenceJson)</pre></details>
+            </section>
+            @if (document != null)
+            {
+                <section class="decision-card" data-testid="owned-work-detail"><h2>@document.Created.Input.Objective</h2><dl><dt>Accountable owner</dt><dd>@document.Created.Owner</dd><dt>Due date</dt><dd>@Due(document.Created.Input.DueUtc, source.Timezone) · @source.Timezone</dd>
+                    <dt>Acceptance outcome</dt><dd>@document.Created.Input.AcceptanceOutcome</dd><dt>Proposed constraints</dt><dd>@(string.IsNullOrWhiteSpace(document.Created.Input.ProposedConstraints) ? "None proposed" : document.Created.Input.ProposedConstraints)</dd>
+                    <dt>Proposed collaborators</dt><dd>@(document.Created.Collaborators.Count == 0 ? "None proposed" : string.Join(", ", document.Created.Collaborators.Select(x => x.Name)))</dd><dt>Work status</dt><dd>@Status(document.Status)</dd></dl>
+                    <p>@document.Created.RequiredReview</p><a class="btn btn-primary" href="@document.WorkPath">Open task in Work</a>
+                    @if (document.ApprovalId is Guid approval) { <a class="btn btn-outline-primary" href="@($"/work?companyId={CompanyId:D}&tab=approvals&itemId={approval:D}")">Open canonical work review</a> }
+                    else { <button class="btn btn-outline-primary" disabled="@busy" @onclick="Submit">Submit for work review</button> }
+                </section>
+            }
+            else if (context != null && context.Work.Count == 0 && source.IsLatest)
+            {
+                <section class="decision-card"><h2>Work details</h2><div class="decision-fields">
+                    <label>Objective<input aria-label="Work objective" maxlength="200" @bind="objective" @bind:after="Dirty" /></label>
+                    <label>Accountable owner<select aria-label="Work accountable owner" @bind="owner" @bind:after="Dirty"><option value="@Guid.Empty">Choose an owner</option>@foreach (var p in context.Owners) { <option value="@p.Id">@p.Name</option> }</select></label>
+                    <label>Due date (@source.Timezone)<input aria-label="Work due date" type="datetime-local" @bind="due" @bind:after="Dirty" /></label>
+                </div><label>Acceptance outcome<textarea aria-label="Acceptance outcome" maxlength="2000" @bind="acceptance" @bind:after="Dirty"></textarea></label>
+                    <fieldset><legend>Proposed collaborators</legend>@foreach (var p in context.Owners) { <label class="decision-check"><input type="checkbox" aria-label="@($"Collaborator {p.Name}")" checked="@collaborators.Contains(p.Id)" @onchange="e => Toggle(p.Id, e)" />@p.Name</label> }</fieldset>
+                    <label>Proposed constraints<textarea aria-label="Proposed constraints" maxlength="2000" @bind="constraints" @bind:after="Dirty"></textarea></label>
+                    <button class="btn btn-outline-primary" disabled="@busy" @onclick="Preview">Preview work</button>
+                </section>
+                @if (preview != null)
+                {
+                    <section class="decision-card" data-testid="work-preview"><h2>Work preview</h2><h3>@preview.Input.Objective</h3><p>@preview.Owner · @Due(preview.Input.DueUtc, source.Timezone) · @source.Timezone</p><p>@preview.Input.AcceptanceOutcome</p><p>Collaborators: @(preview.Collaborators.Count == 0 ? "None proposed" : string.Join(", ", preview.Collaborators.Select(x => x.Name)))</p><p>Constraints: @preview.Input.ProposedConstraints</p><p>Immutable source: @preview.Source.Title · Version @preview.Source.Version</p><p>@preview.RequiredReview</p>
+                        <button class="btn btn-primary" disabled="@busy" @onclick="Create">Create work</button>
+                    </section>
+                }
+            }
+            @if (context != null) { <section class="decision-card"><h2>Work created from this review</h2>@if (context.Work.Count == 0) { <p>No work created from this finding yet. A saved scenario remains hypothetical.</p> }@foreach (var w in context.Work) { <p><a href="@w.OriginPath">@w.Created.Input.Objective · @Status(w.Status)</a></p> }</section> }
+        </main><aside><section class="decision-card decision-notice"><h2>Planning grants no execution authority</h2><p>These are human follow-up tasks. Proposed collaborators and constraints are retained intent. They change no agent permission, budget or operating policy.</p><p>A work review grants no sending, publication or payment authority. Those actions use their separate current execution controls and approval workflows.</p></section>
+            <section class="decision-card"><h2>Source revisions do not rewrite work</h2><p>The original version, evidence, owner and acceptance outcome stay frozen. A later source revision is disclosed when opening this handoff.</p></section></aside></div>
+    }
+</section>
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public string? KindCode { get; set; }
+    [Parameter] public Guid? VersionId { get; set; }
+    [Parameter] public string? ItemKey { get; set; }
+    [Parameter] public Guid? TaskId { get; set; }
+    private DecisionWorkContext? context; private DecisionWorkPreview? preview; private DecisionWorkDocument? document;
+    private DecisionWorkSource? Source => document?.Created.Source ?? context?.Source;
+    private string objective = "", acceptance = "", constraints = "", retry = "load";
+    private Guid owner, request = Guid.NewGuid(); private DateTime? due; private readonly HashSet<Guid> collaborators = [];
+    private bool busy, ready, disposed; private string? error, key; private int generation, material;
+    private CancellationTokenSource cancellation = new();
+    protected override async Task OnAfterRenderAsync(bool firstRender) { if (firstRender) { ready = true; await InvokeAsync(StateHasChanged); } }
+    protected override async Task OnParametersSetAsync()
+    {
+        var next = $"{CompanyId}:{KindCode}:{VersionId}:{ItemKey}:{TaskId}"; if (key == next) return; key = next;
+        generation++; cancellation.Cancel(); cancellation.Dispose(); cancellation = new(); context = null; preview = null; document = null;
+        objective = acceptance = constraints = ""; owner = Guid.Empty; due = null; collaborators.Clear(); request = Guid.NewGuid(); busy = false; error = null;
+        await Load();
+    }
+    private Task Load() => Run("load", async ct =>
+    {
+        if (TaskId.HasValue) { var d = await Work.Open(CompanyId, TaskId.Value, ct); ct.ThrowIfCancellationRequested(); document = d; }
+        else if (VersionId.HasValue && KindCode != null && ItemKey != null)
+        { var c = await Work.Context(CompanyId, new(KindCode, VersionId.Value, ItemKey), ct); ct.ThrowIfCancellationRequested(); context = c; objective = c.Source.Title; owner = c.Source.SuggestedOwnerId ?? Guid.Empty; }
+        else throw new InvalidOperationException("Open Create work from a saved review, objective, annual decision or checkpoint.");
+    });
+    private void Dirty() { material++; preview = null; request = Guid.NewGuid(); }
+    private void Toggle(Guid id, ChangeEventArgs e) { if (e.Value is true) collaborators.Add(id); else collaborators.Remove(id); Dirty(); }
+    private DecisionWorkInput Input()
+    {
+        if (Source == null || due == null) throw new InvalidOperationException("Enter the due date and complete the work details.");
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(Source.Timezone); var local = DateTime.SpecifyKind(due.Value, DateTimeKind.Unspecified);
+        if (zone.IsInvalidTime(local) || zone.IsAmbiguousTime(local)) throw new InvalidOperationException("Choose an unambiguous local due time outside the daylight-saving transition.");
+        return new(Source.Reference, objective, owner, TimeZoneInfo.ConvertTimeToUtc(local, zone), acceptance, collaborators.Order().ToArray(), constraints);
+    }
+    private Task Preview() => Run("preview", async ct => { var edit = material; var value = await Work.Preview(CompanyId, Input(), ct); ct.ThrowIfCancellationRequested(); if (edit == material) preview = value; });
+    private Task Create() => Run("create", async ct => { var p = preview ?? throw new InvalidOperationException("Preview current work first."); var value = await Work.Create(CompanyId, new(request, p.Input, p.Fingerprint), ct); ct.ThrowIfCancellationRequested(); document = value; Navigation.NavigateTo(value.OriginPath); });
+    private Task Submit() => Run("review", async ct => { var d = await Work.Review(CompanyId, document!.TaskId, ct); ct.ThrowIfCancellationRequested(); document = d; });
+    private Task Retry() => retry switch { "preview" => Preview(), "create" => Create(), "review" => Submit(), _ => Load() };
+    private async Task Run(string action, Func<CancellationToken, Task> body)
+    {
+        if (busy || disposed) return; var version = generation; var ct = cancellation.Token; busy = true; error = null; retry = action;
+        try { await body(ct); }
+        catch (OperationCanceledException) { }
+        catch (TodayWorkspaceAccessException) { if (version == generation && !disposed) { context = null; document = null; preview = null; error = "Access changed. Source and work evidence are withheld. Return to an authorized review."; } }
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or InvalidDataException or ArgumentException)
+        { if (version == generation && !disposed) error = ex is HttpRequestException ? "The request failed. Retry when the connection is available; confirmation keeps its idempotency key." : ex.Message; }
+        finally { if (version == generation && !disposed) busy = false; }
+    }
+    private static string Evidence(string json) { try { using var j = System.Text.Json.JsonDocument.Parse(json); return System.Text.Json.JsonSerializer.Serialize(j, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }); } catch (System.Text.Json.JsonException) { return "Retained evidence cannot be read."; } }
+    private static string Due(DateTime utc, string timezone) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), TimeZoneInfo.FindSystemTimeZoneById(timezone)).ToString("yyyy-MM-dd HH:mm");
+    private static string Kind(string code) => code switch { "month" => "Monthly finding", "quarter" => "Quarter objective", "annual" => "Annual planning decision", "scenario" => "Scenario checkpoint", _ => "Saved decision" };
+    private static string Status(string code) => code switch { "new" => "Review required", "awaiting_approval" => "Waiting for human review", "in_progress" => "In progress", "completed" => "Completed", "blocked" => "Blocked", "failed" => "Failed", _ => "Review current work" };
+    public void Dispose() { disposed = true; generation++; cancellation.Cancel(); cancellation.Dispose(); }
+}

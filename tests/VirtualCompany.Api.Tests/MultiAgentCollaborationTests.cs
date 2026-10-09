@@ -431,6 +431,37 @@ public sealed class MultiAgentCollaborationTests : IDisposable
         Assert.Contains("Worker subtasks cannot create additional subtasks outside an approved manager-worker plan.", body);
     }
 
+    [Theory]
+    [InlineData("parallel", 0)]
+    [InlineData("sequential_handoff", 1)]
+    public async Task Typed_contribution_receipts_pass_exact_versions_and_reuse_successful_retry(string pattern, int edges)
+    {
+        var seed = await SeedScenarioAsync(); using var client = CreateAuthenticatedClient();
+        var command = new StartMultiAgentCollaborationCommand(seed.CompanyId, "P11 bounded renewal review", seed.CoordinatorAgentId,
+            [new(seed.FinanceAgentId, "Margin evidence"), new(seed.OperationsAgentId, "Review proposal", Pattern: pattern, Role: "reviewer")],
+            seed.UserId, "user", CorrelationId: "p11-retry");
+        var route = $"/api/companies/{seed.CompanyId}/tasks/manager-worker-collaborations";
+        var firstResponse = await client.PostAsJsonAsync(route, command); firstResponse.EnsureSuccessStatusCode();
+        var first = (await firstResponse.Content.ReadFromJsonAsync<MultiAgentCollaborationResultDto>())!;
+        var secondResponse = await client.PostAsJsonAsync(route, command); secondResponse.EnsureSuccessStatusCode();
+        var second = (await secondResponse.Content.ReadFromJsonAsync<MultiAgentCollaborationResultDto>())!;
+        Assert.Equal(first.ParentTaskId, second.ParentTaskId); Assert.Equal(first.PlanId, second.PlanId);
+        Assert.Equal(first.Steps.Select(x => x.StepId), second.Steps.Select(x => x.StepId));
+        await _factory.SeedAsync(async db =>
+        {
+            var receipts = await db.CollaborationContributions.IgnoreQueryFilters().Where(x => x.CompanyId == seed.CompanyId).ToListAsync();
+            Assert.Equal(2, receipts.Count); Assert.All(receipts, x => Assert.Equal(1, x.Version));
+            Assert.Equal(edges, await db.CollaborationArtifactHandoffs.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId));
+            Assert.Equal(3, await db.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId));
+            if (edges > 0)
+            {
+                var workerId = receipts.Single(r => r.Sequence == 2).SourceTaskId;
+                var worker = await db.WorkTasks.IgnoreQueryFilters().SingleAsync(x => x.Id == workerId);
+                Assert.Contains(receipts.Single(r => r.Sequence == 1).Id.ToString(), worker.InputPayload["contributionInputs"]!.ToJsonString());
+            }
+        });
+    }
+
     private HttpClient CreateAuthenticatedClient()
     {
         var client = _factory.CreateClient();

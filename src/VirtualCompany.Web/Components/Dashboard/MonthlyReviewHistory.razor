@@ -1,0 +1,112 @@
+@using System.Globalization
+@implements IDisposable
+@inject IMonthlyReviewApiClient Reviews
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<section class="review-panel" data-testid="monthly-review-history" aria-busy="@busy">
+    <header><div><h2>@(opened is null ? "Management review" : $"Saved review · Revision {opened.Summary.Revision}")</h2>
+        <small>@Workspace.Header.CompanyName · @Workspace.ActiveLens · @Workspace.Period.Year-@Workspace.Period.Month.ToString("D2")</small></div>
+        <div class="review-actions">
+            @if(opened is null) { <button disabled="@busy" @onclick="Save">Save current review</button> }
+            else { <button disabled="@busy" @onclick="Refresh">Refresh as new revision</button><button disabled="@busy" @onclick="Export">Export saved results</button><a href="@CurrentPath">Back to current review</a> }
+            <button disabled="@busy" @onclick="History">Saved reviews</button>
+        </div>
+    </header>
+    @if(busy) { <p role="status">Loading or saving review…</p> }
+    @if(error is not null) { <p role="alert">@error</p><button disabled="@busy" @onclick="Retry">Retry</button> }
+    @if(opened is not null)
+    {
+        <p data-testid="saved-review-provenance">As of @opened.Summary.AsOfUtc.ToString("yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture) UTC · Saved @opened.Summary.SavedAtUtc.ToString("yyyy-MM-dd HH:mm",CultureInfo.InvariantCulture) UTC · @opened.Summary.Coverage</p>
+        <p>These are retained results. Source links open current authorized records and may be deleted or restricted.</p>
+        @foreach (var finding in opened.Workspace.Review?.Measures ?? [])
+        { <p><a href="@DecisionWorkRoutes.Create(Workspace.CompanyId, "month", opened.Summary.Id, finding.Key)">Create work: @finding.Label</a></p> }
+        <details><summary>Refresh changes</summary><ul>@foreach(var change in opened.Changes) { <li>@change</li> }</ul></details>
+        <details><summary>Access and retention</summary><p>@opened.Retention</p><p>History is private to the reviewer and requires the original current responsibility scope. A changed scope can withhold an older review.</p></details>
+    }
+    <label for="monthly-review-notes">Review decisions and notes</label>
+    <textarea id="monthly-review-notes" maxlength="2000" @bind="notes" @bind:after="NotesChanged" disabled="@busy" placeholder="Record the review conclusion and next-period decisions. Saving notes does not approve or execute business actions."></textarea>
+    <small>Save captures fresh authorized sources. Edited notes on a saved review are retained only in a new revision.</small>
+    @if(showHistory)
+    {
+        <h3>Saved reviews for this responsibility and month</h3>
+        @if(history?.Items.Count==0) { <p>No accessible saved reviews on this page. Older reviews may be withheld if your access changed.</p> }
+        @foreach(var row in history?.Items ?? [])
+        {
+            <div class="review-history-row"><span>Revision @row.Revision · @row.AsOfUtc.ToString("yyyy-MM-dd HH:mm") UTC · @row.Coverage</span><a href="@SnapshotPath(row.Id)">Open</a></div>
+        }
+        <div class="review-actions"><button disabled="@(busy || skip==0)" @onclick="Previous">Previous page</button><button disabled="@(busy || history?.HasMore!=true)" @onclick="Next">Next page</button></div>
+    }
+</section>
+@code {
+    [Parameter,EditorRequired] public MonthlyWorkspaceViewModel Workspace {get;set;}=null!;
+    [Parameter] public Guid? SnapshotId {get;set;}
+    [Parameter] public EventCallback<MonthlyReviewSnapshotViewModel?> Opened {get;set;}
+    private MonthlyReviewSnapshotViewModel? opened;
+    private MonthlyReviewHistoryViewModel? history;
+    private bool busy,showHistory,disposed;
+    private string? error,key;
+    private string notes="",retryAction="history";
+    private string? operationOrigin;
+    private void NotesChanged()=>request=Guid.NewGuid();
+    private void EnsureCurrent(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if(disposed || Navigation.Uri!=operationOrigin) throw new OperationCanceledException();
+    }
+    private int skip,generation;
+    private Guid request=Guid.NewGuid();
+    private CancellationTokenSource cancellation=new();
+    private string CurrentPath=>DashboardRoutes.BuildMonthlyPath(Workspace.CompanyId,Workspace.ActiveLens,Workspace.Period.Year,Workspace.Period.Month);
+    private string SnapshotPath(Guid id)=>CurrentPath+$"&snapshot={id:D}";
+    protected override async Task OnParametersSetAsync()
+    {
+        var next=$"{Workspace.CompanyId}|{Workspace.ActiveLens}|{Workspace.Period.Year}|{Workspace.Period.Month}|{SnapshotId}";
+        if(key==next)return;
+        key=next; generation++; cancellation.Cancel(); cancellation.Dispose(); cancellation=new();
+        opened=null;history=null;notes="";skip=0;error=null;busy=false;showHistory=false;request=Guid.NewGuid();
+        await Opened.InvokeAsync(null);
+        if(SnapshotId.HasValue) await Run("open",async ct=>{
+            var value=await Reviews.OpenAsync(Workspace.CompanyId,SnapshotId.Value,ct);
+            EnsureCurrent(ct);
+            if(value.Summary.Lens!=Workspace.ActiveLens || value.Summary.Year!=Workspace.Period.Year || value.Summary.Month!=Workspace.Period.Month)
+                throw new InvalidOperationException("The selected saved review belongs to another responsibility or month. Open it from its original review history.");
+            opened=value;notes=value.ReviewNotes;await Opened.InvokeAsync(value);
+        });
+    }
+    private Task Save()=>Run("save",async ct=>{
+        var value=await Reviews.SaveAsync(Workspace.CompanyId,Workspace.ActiveLens,Workspace.Period.Year,Workspace.Period.Month,request,notes,ct);
+        EnsureCurrent(ct);
+        Navigation.NavigateTo(SnapshotPath(value.Summary.Id));
+    });
+    private Task Refresh()=>Run("refresh",async ct=>{
+        var value=await Reviews.RefreshAsync(Workspace.CompanyId,opened!.Summary.Id,opened.Summary.Revision,request,notes,ct);
+        EnsureCurrent(ct);
+        Navigation.NavigateTo(SnapshotPath(value.Summary.Id));
+    });
+    private Task Export()=>Run("export",async ct=>{
+        var result=await Reviews.ExportAsync(Workspace.CompanyId,opened!.Summary.Id,ct);
+        EnsureCurrent(ct);
+        await using var module=await JS.InvokeAsync<IJSObjectReference>("import",ct,"./js/reportDownload.js");
+        EnsureCurrent(ct);
+        await module.InvokeVoidAsync("downloadReport",ct,result.FileName,result.Csv);
+    });
+    private Task History()=>Run("history",async ct=>{var result=await Reviews.ListAsync(Workspace.CompanyId,Workspace.ActiveLens,Workspace.Period.Year,Workspace.Period.Month,skip,ct);EnsureCurrent(ct);history=result;showHistory=true;});
+    private Task Previous(){skip=Math.Max(0,skip-10);return History();}
+    private Task Next(){skip+=10;return History();}
+    private Task Retry()=>retryAction switch {"save"=>Save(),"refresh"=>Refresh(),"export"=>Export(),"open"=>OnOpenRetry(),_=>History()};
+    private Task OnOpenRetry(){key=null;return OnParametersSetAsync();}
+    private async Task Run(string action,Func<CancellationToken,Task> body)
+    {
+        if(busy || disposed)return;
+        var version=generation; operationOrigin=Navigation.Uri; var ct=cancellation.Token;
+        busy=true;error=null;retryAction=action;
+        try {await body(ct);}
+        catch(OperationCanceledException) {}
+        catch(TodayWorkspaceAccessException){if(version==generation && !disposed){opened=null;history=null;await Opened.InvokeAsync(null);error="Access changed. Saved results are withheld. Return to the current authorized review.";}}
+        catch(Exception ex) when(ex is HttpRequestException or InvalidOperationException or InvalidDataException or JSException)
+        {if(version==generation && !disposed)error=ex is HttpRequestException ? "The review request failed. Retry when the connection is available." : ex.Message;}
+        finally {if(version==generation && !disposed)busy=false;}
+    }
+    public void Dispose(){disposed=true;generation++;cancellation.Cancel();cancellation.Dispose();}
+}

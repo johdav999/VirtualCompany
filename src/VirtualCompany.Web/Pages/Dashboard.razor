@@ -5,6 +5,7 @@
 @inject OnboardingApiClient ApiClient
 @inject ITodayWorkspaceApiClient TodayWorkspaceApiClient
 @inject IMonthlyWorkspaceApiClient MonthlyWorkspaceApiClient
+@inject IWeeklyWorkspaceApiClient WeeklyWorkspaceApiClient
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject IDashboardInteractionService DashboardInteractionService
@@ -12,7 +13,7 @@
 @using Microsoft.JSInterop
 @using VirtualCompany.Web.Services
 
-<PageTitle>@(IsMonthly ? CommonText["MonthlyPageTitle"] : CommonText["TodayPageTitle"])</PageTitle>
+<PageTitle>@(IsStrategic ? "Strategic scenarios" : IsAnnual ? "Annual operating plan" : IsQuarterly ? "Quarterly objectives and resources" : IsWeekly ? "Weekly review" : IsMonthly ? CommonText["MonthlyPageTitle"] : CommonText["TodayPageTitle"])</PageTitle>
 
 @if (!isLoading && CompanyId is null)
 {
@@ -63,10 +64,36 @@
 else
 {
     <section class="dashboard-hero today-dashboard-page @(IsMonthly ? "today-dashboard-page--monthly" : "today-dashboard-page--today")">
-        @if (IsMonthly)
+        @if (IsStrategic)
+        {
+            if (isLoading) { <p role="status">Loading company planning…</p> }
+            else if (isUnauthorized || errorMessage is not null) { <p role="alert">Strategic planning is unavailable for this company.</p> }
+            else { <StrategicScenarioWorkspace @key="@($"{CompanyId}:{Year}:{Scenario}:{Compare}")" CompanyId="@(CompanyId ?? Guid.Empty)" FiscalYear="Year" ScenarioId="Scenario" CompareId="Compare" /> }
+        }
+        else if (IsAnnual)
+        {
+            if (isLoading) { <p role="status">Loading company planning…</p> }
+            else if (isUnauthorized || errorMessage is not null) { <p role="alert">Annual planning is unavailable for this company.</p> }
+            else { <AnnualPlanningWorkspace CompanyId="@(CompanyId ?? Guid.Empty)" FiscalYear="Year" PlanId="Plan" /> }
+        }
+        else if (IsQuarterly)
+        {
+            @if (isLoading) { <p role="status">Loading company…</p> }
+            else if (isUnauthorized || errorMessage is not null) { <div role="alert" class="alert alert-danger">@(errorMessage ?? "Company planning is unavailable.")</div> }
+            else { <QuarterlyPlanningWorkspace @key="@($"{CompanyId}:{Year}:{Quarter}:{Review}")" CompanyId="@(CompanyId ?? Guid.Empty)" FiscalYear="Year" Quarter="Quarter" ReviewId="Review" /> }
+        }
+        else if (IsWeekly)
+        {
+            <WeeklyWorkspace CompanyId="@(CompanyId ?? Guid.Empty)" Workspace="weeklyWorkspace" IsLoading="isLoading"
+                             IsUnauthorized="isUnauthorized" ErrorMessage="@errorMessage" Metric="@Metric" Prior="Prior"
+                             SourcePage="@(SourcePage ?? 1)" RetryRequested="ReloadAsync" PeriodChanged="ChangePeriodAsync"
+                             LensChanged="ChangeLensAsync" WeekChanged="ChangeWeekAsync" />
+        }
+        else if (IsMonthly)
         {
             <MonthlyWorkspace CompanyId="@(CompanyId ?? Guid.Empty)"
                               Workspace="monthlyWorkspace"
+                              SnapshotId="Snapshot"
                               IsLoading="isLoading"
                               IsUnauthorized="isUnauthorized"
                               ErrorMessage="@errorMessage"
@@ -114,6 +141,17 @@ else
     [SupplyParameterFromQuery(Name = "month")]
     public int? Month { get; set; }
 
+    [Parameter, SupplyParameterFromQuery(Name = "week")] public string? Week { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "metric")] public string? Metric { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "prior")] public bool Prior { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "sourcePage")] public int? SourcePage { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "snapshot")] public Guid? Snapshot { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "quarter")] public int? Quarter { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "review")] public Guid? Review { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "plan")] public Guid? Plan { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "scenario")] public Guid? Scenario { get; set; }
+    [Parameter, SupplyParameterFromQuery(Name = "compare")] public Guid? Compare { get; set; }
+
     [Parameter]
     [SupplyParameterFromQuery(Name = "welcome")]
     public string? Welcome { get; set; }
@@ -126,6 +164,7 @@ else
     private CompanyDashboardEntryViewModel? dashboardEntry;
     private TodayWorkspaceViewModel? todayWorkspace;
     private MonthlyWorkspaceViewModel? monthlyWorkspace;
+    private WeeklyWorkspaceViewModel? weeklyWorkspace;
     private (int Changed, int Removed, DateTime? PreviousCheck) priorityChanges;
     private string? errorMessage;
     private IJSObjectReference? telemetryModule;
@@ -140,6 +179,10 @@ else
         ?? [];
 
     private bool IsMonthly => string.Equals(Period, "month", StringComparison.OrdinalIgnoreCase);
+    private bool IsWeekly => string.Equals(Period, "week", StringComparison.OrdinalIgnoreCase);
+    private bool IsAnnual => string.Equals(Period, "year", StringComparison.OrdinalIgnoreCase);
+    private bool IsStrategic => string.Equals(Period, "multiyear", StringComparison.OrdinalIgnoreCase);
+    private bool IsQuarterly => string.Equals(Period, "quarter", StringComparison.OrdinalIgnoreCase);
 
     protected override Task OnParametersSetAsync() => LoadAsync();
 
@@ -167,8 +210,14 @@ else
         var requestedCompany = CompanyId;
         var requestedLens = TodayWorkspaceLensValues.Normalize(Lens);
         var requestedMonthly = IsMonthly;
+        var requestedWeekly = IsWeekly;
+        var requestedWeek = Week;
+        var requestedMetric = Metric;
+        var requestedPrior = Prior;
+        var requestedSourcePage = SourcePage;
         var requestedYear = Year;
         var requestedMonth = Month;
+        var requestedSnapshot = Snapshot;
         bool IsCurrent() => !disposed && IsDashboardLocation && version == loadVersion && !token.IsCancellationRequested;
 
         isLoading = true;
@@ -176,6 +225,7 @@ else
         errorMessage = null;
         todayWorkspace = null;
         monthlyWorkspace = null;
+        weeklyWorkspace = null;
         companyAccess = null;
         dashboardEntry = null;
         onboardingProgress = null;
@@ -237,7 +287,29 @@ else
             }
 
             var supportedLens = TodayWorkspaceLensValues.All.Contains(requestedLens) ? requestedLens : null;
-            if (requestedMonthly)
+            if (IsQuarterly || IsAnnual || IsStrategic) return;
+            if (requestedWeekly)
+            {
+                DateOnly? date = null;
+                if (!string.IsNullOrWhiteSpace(requestedWeek))
+                {
+                    if (!DateOnly.TryParseExact(requestedWeek, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.None, out var parsed) || parsed.Year is < 2000 or > 2100)
+                    { errorMessage = "Choose a valid week between 2000 and 2100."; return; }
+                    date = parsed;
+                }
+                var workspace = await WeeklyWorkspaceApiClient.GetAsync(companyId, supportedLens, date, token);
+                if (!IsCurrent()) return;
+                if (workspace is null) { errorMessage = "Weekly sources are unavailable. Retry when connected."; return; }
+                weeklyWorkspace = workspace;
+                if (!string.Equals(requestedLens, workspace.ActiveLens, StringComparison.OrdinalIgnoreCase) || date != workspace.Period.WeekStart)
+                {
+                    var canonical = DashboardRoutes.WithQuery(DashboardRoutes.BuildWeeklyPath(companyId, workspace.ActiveLens, workspace.Period.WeekStart),
+                        ("metric", requestedMetric), ("prior", requestedPrior ? "true" : null), ("sourcePage", requestedSourcePage?.ToString()));
+                    Navigation.NavigateTo(canonical, replace: true);
+                }
+            }
+            else if (requestedMonthly)
             {
                 if (IsInvalidMonthlyPeriod(requestedYear, requestedMonth))
                 {
@@ -255,7 +327,7 @@ else
                 if (!string.Equals(requestedLens, workspace.ActiveLens, StringComparison.OrdinalIgnoreCase) ||
                     requestedYear != workspace.Period.Year || requestedMonth != workspace.Period.Month)
                     Navigation.NavigateTo(DashboardRoutes.BuildMonthlyPath(companyId, workspace.ActiveLens,
-                        workspace.Period.Year, workspace.Period.Month), replace: true);
+                        workspace.Period.Year, workspace.Period.Month, requestedSnapshot), replace: true);
             }
             else
             {
@@ -285,7 +357,11 @@ else
         }
         catch (HttpRequestException)
         {
-            if (IsCurrent()) errorMessage = requestedMonthly ? CommonText["MonthlyErrorDescription"] : CommonText["TodayErrorDescription"];
+            if (IsCurrent()) errorMessage = requestedWeekly ? "Weekly sources could not be loaded. Choose this week or an earlier week and retry." : requestedMonthly ? CommonText["MonthlyErrorDescription"] : CommonText["TodayErrorDescription"];
+        }
+        catch (InvalidDataException)
+        {
+            if (IsCurrent()) errorMessage = "The workspace response could not be verified for this company and period. Retry to load authorized sources.";
         }
         finally
         {
@@ -294,7 +370,7 @@ else
     }
 
     private static bool IsInvalidMonthlyPeriod(int? year, int? month) =>
-        year.HasValue != month.HasValue || month is < 1 or > 12 || year is < 1 or > 9999;
+        year.HasValue != month.HasValue || month is < 1 or > 12 || year is < 2000 or > 2100;
 
     private Task ReloadAsync()
     {
@@ -309,10 +385,11 @@ else
     private Task ChangeLensAsync(string lens)
     {
         if (CompanyId is not Guid companyId) return Task.CompletedTask;
-        var available = monthlyWorkspace?.AvailableLenses ?? todayWorkspace?.AvailableLenses;
+        var available = weeklyWorkspace?.AvailableLenses ?? monthlyWorkspace?.AvailableLenses ?? todayWorkspace?.AvailableLenses;
         if (available is null || !available.Any(x => string.Equals(x.Value, lens, StringComparison.OrdinalIgnoreCase)))
             return Task.CompletedTask;
-        var path = IsMonthly
+        var path = IsWeekly ? DashboardRoutes.BuildWeeklyPath(companyId, lens, weeklyWorkspace?.Period.WeekStart)
+            : IsMonthly
             ? DashboardRoutes.BuildMonthlyPath(companyId, lens, monthlyWorkspace?.Period.Year ?? Year, monthlyWorkspace?.Period.Month ?? Month)
             : DashboardRoutes.BuildTodayPath(companyId, lens);
         DashboardInteractionService.RecordAction(new(
@@ -324,8 +401,12 @@ else
     private Task ChangePeriodAsync(string period)
     {
         if (CompanyId is not Guid companyId) return Task.CompletedTask;
-        var lens = monthlyWorkspace?.ActiveLens ?? todayWorkspace?.ActiveLens ?? Lens;
-        var path = string.Equals(period, "month", StringComparison.OrdinalIgnoreCase)
+        var lens = weeklyWorkspace?.ActiveLens ?? monthlyWorkspace?.ActiveLens ?? todayWorkspace?.ActiveLens ?? Lens;
+        var path = string.Equals(period, "multiyear", StringComparison.OrdinalIgnoreCase) ? $"/dashboard?companyId={companyId}&period=multiyear&lens=company"
+            : string.Equals(period, "year", StringComparison.OrdinalIgnoreCase) ? $"/dashboard?companyId={companyId}&period=year&lens=company"
+            : string.Equals(period, "quarter", StringComparison.OrdinalIgnoreCase) ? DashboardRoutes.BuildQuarterlyPath(companyId)
+            : string.Equals(period, "week", StringComparison.OrdinalIgnoreCase) ? DashboardRoutes.BuildWeeklyPath(companyId, lens)
+            : string.Equals(period, "month", StringComparison.OrdinalIgnoreCase)
             ? DashboardRoutes.BuildMonthlyPath(companyId, lens)
             : DashboardRoutes.BuildTodayPath(companyId, lens);
         DashboardInteractionService.RecordAction(new("period", "change-period", path, SourceType: "overview-period", Label: period));
@@ -339,6 +420,13 @@ else
         var path = DashboardRoutes.BuildMonthlyPath(companyId, monthlyWorkspace?.ActiveLens ?? Lens, period.Year, period.Month);
         DashboardInteractionService.RecordAction(new("period", "change-month", path, SourceType: "monthly-period", Label: $"{period.Year:D4}-{period.Month:D2}"));
         Navigation.NavigateTo(path);
+        return Task.CompletedTask;
+    }
+
+    private Task ChangeWeekAsync(DateOnly? week)
+    {
+        if (CompanyId is Guid companyId)
+            Navigation.NavigateTo(DashboardRoutes.BuildWeeklyPath(companyId, weeklyWorkspace?.ActiveLens ?? Lens, week));
         return Task.CompletedTask;
     }
 
@@ -380,6 +468,7 @@ else
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (disposed) return;
         if (CompanyId is not Guid selectedCompanyId)
         {
             if (!string.IsNullOrWhiteSpace(scrollTrackerId)) await DisposeScrollTrackerAsync();
@@ -399,8 +488,12 @@ else
         try
         {
             telemetryModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/dashboardTelemetry.js");
+            if (disposed) return;
             dotNetReference ??= DotNetObjectReference.Create(this);
-            scrollTrackerId = await telemetryModule.InvokeAsync<string>("registerDashboardScrollTracker", dotNetReference);
+            var module = telemetryModule;
+            var tracker = await module.InvokeAsync<string>("registerDashboardScrollTracker", dotNetReference);
+            if (disposed) { try { await module.InvokeVoidAsync("disposeDashboardScrollTracker", tracker); } catch (JSException) { } return; }
+            scrollTrackerId = tracker;
         }
         catch
         {
@@ -411,7 +504,7 @@ else
     [JSInvokable]
     public Task OnDashboardScrollDepthChanged(double depthPercentage)
     {
-        DashboardInteractionService.RecordScrollDepth(depthPercentage);
+        if (!disposed) DashboardInteractionService.RecordScrollDepth(depthPercentage);
         return Task.CompletedTask;
     }
 

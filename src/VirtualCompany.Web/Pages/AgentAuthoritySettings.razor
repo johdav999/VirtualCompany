@@ -1,0 +1,23 @@
+@page "/settings/agents/authority"
+@rendermode InteractiveServer
+<PageTitle>Agent authority</PageTitle>
+<section class="vc-page"><header class="vc-page-header"><div><span class="vc-kicker">SETTINGS</span><h1>Understand agent authority</h1><p>Read current restrictions, limits and required review.</p></div><nav aria-label="Authority returns">@if(WorkBack is { } back) { <p><a href="@back">Back to work</a></p> }<a href="@($"/settings/agents?companyId={CompanyId:D}")">Back to agent settings</a></nav></header>
+@if(CompanyId == Guid.Empty) { <p role="alert">Choose a company in agent settings before checking authority.</p> }
+else { <AuthorityExplanationPanel CompanyId="CompanyId" AgentId="AgentId" WorkKind="@WorkKind" WorkId="WorkId" ShowSettingsLink="false" /> }
+</section>
+@code {
+    [SupplyParameterFromQuery] public Guid CompanyId { get; set; }
+    [SupplyParameterFromQuery] public Guid? AgentId { get; set; }
+    [SupplyParameterFromQuery] public string? WorkKind { get; set; }
+    [SupplyParameterFromQuery] public Guid? WorkId { get; set; }
+    [SupplyParameterFromQuery] public string? WorkReturnUrl { get; set; }
+    private string? WorkBack {
+        get {
+            if(CompanyId == Guid.Empty || WorkId is not { } id || id == Guid.Empty || !new[]{"task","initiative","case","deal"}.Contains(WorkKind)) return null;
+            var expected=$"/agents/work/{WorkKind}/{id:D}";
+            var local=AgentWorkRoutes.Record(WorkReturnUrl,CompanyId);
+            return local is not null && new Uri("https://local.test"+local).AbsolutePath == expected ? local
+                : DashboardRoutes.WithQuery(expected,("companyId",CompanyId.ToString("D")));
+        }
+    }
+}

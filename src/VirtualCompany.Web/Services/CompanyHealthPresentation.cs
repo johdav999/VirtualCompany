@@ -3,24 +3,29 @@ namespace VirtualCompany.Web.Services;
 // Presentation only: every value is supplied by the existing authorized department projection.
 public static class CompanyHealthPresentation
 {
-    public sealed record DepartmentIndicator(string Label, int? Count = null, decimal? Amount = null, string? Currency = null);
+    public sealed record DepartmentIndicator(string Label, int? Count = null, decimal? Amount = null, string? Currency = null, string? Path = null);
 
     public static IReadOnlyList<DepartmentIndicator> Indicators(TodayWorkspaceViewModel w, string lens) => lens switch
     {
         "finance" when w.Finance is { } finance => [
-            new("HealthOverdueReceivables", finance.OverdueReceivables),
-            new("HealthDuePayables", finance.DuePayables),
-            new("HealthReconciliationExceptions", finance.ReconciliationExceptions)],
+            new("HealthOverdueReceivables", finance.OverdueReceivables, Path: FinanceRoutes.Invoices),
+            new("HealthDuePayables", finance.DuePayables, Path: FinanceRoutes.SupplierBills),
+            new("HealthReconciliationExceptions", finance.ReconciliationExceptions, Path: FinanceRoutes.AccountingReconciliation)],
         "sales" when w.Sales is { } sales => [
-            new("TodayPipeline", Amount: sales.PipelineValue, Currency: sales.Currency),
-            new("TodayDealsAttention", sales.DealsNeedingAttention), new("TodayHotLeads", sales.HotLeads)],
+            new("TodayPipeline", Amount: sales.PipelineValue, Currency: sales.Currency, Path: "/app/sales/pipeline"),
+            new("TodayDealsAttention", sales.DealsNeedingAttention, Path: "/app/sales#sales-deals-attention"),
+            new("TodayHotLeads", sales.HotLeads, Path: "/app/sales/prospects?view=leads")],
         "marketing" when w.Marketing is { } marketing => [
-            new("HealthDueLaunches", marketing.DueLaunches), new("TodayContentDue", marketing.DueContentItems),
-            new("HealthSpendExceptions", marketing.SpendExceptions), new("HealthAttributionGaps", marketing.AttributionGaps)],
+            new("HealthDueLaunches", marketing.DueLaunches, Path: "/marketing?section=Calendar"),
+            new("TodayContentDue", marketing.DueContentItems, Path: "/marketing?section=Content"),
+            new("HealthSpendExceptions", marketing.SpendExceptions, Path: "/marketing/reports/spend"),
+            new("HealthAttributionGaps", marketing.AttributionGaps, Path: "/marketing?section=Performance")],
         "customers" when w.Support is { } support => [
-            new("TodayOpenCases", support.OpenCases), new("TodaySlaBreached", support.SlaBreached),
-            new("TodaySlaRisk", support.SlaAtRisk), new("HealthWaitingCases", support.WaitingCases),
-            new("TodayAwaitingApproval", support.AwaitingApproval)],
+            new("TodayOpenCases", support.OpenCases, Path: "/support?view=open"),
+            new("TodaySlaBreached", support.SlaBreached, Path: "/support?view=breached"),
+            new("TodaySlaRisk", support.SlaAtRisk, Path: "/support?view=sla-risk"),
+            new("HealthWaitingCases", support.WaitingCases, Path: "/support/reports?view=backlog"),
+            new("TodayAwaitingApproval", support.AwaitingApproval, Path: "/support?view=approvals")],
         _ => []
     };
 

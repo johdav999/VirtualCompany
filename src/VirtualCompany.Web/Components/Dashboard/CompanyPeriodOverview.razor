@@ -1,0 +1,30 @@
+<section class="company-period-overview" data-testid="company-period-overview" aria-label="Company overview">
+    <header class="company-period-heading"><div><h2>Company overview</h2><p>Business figures for @CompanyName · @PeriodLabel</p></div>
+        <small>@(Retained ? "Retained review values" : "Recorded company evidence")</small></header>
+    <div class="company-period-areas">
+        @foreach (var area in Areas)
+        {
+            <article class="company-period-area" data-testid="company-overview-@area.Lens">
+                <header><span class="company-period-icon"><MonthlyWorkspaceIcon Kind="@Icon(area.Lens)" Size="22" /></span><h3>@area.Title</h3></header>
+                @if (area.Figures.Count == 0) { <p class="company-period-missing">No recorded measures are available. Open the source to review its coverage.</p> }
+                <dl>
+                    @foreach (var figure in area.Figures.Take(4)) { @Figure(figure) }
+                </dl>
+                @if (area.Figures.Count > 4)
+                {
+                    <details><summary>More business figures (@(area.Figures.Count - 4))</summary><dl>@foreach (var figure in area.Figures.Skip(4)) { @Figure(figure) }</dl></details>
+                }
+                <footer><a href="@area.DeepLink">Open @area.Title.ToLowerInvariant() review <span aria-hidden="true">→</span></a>
+                    <details class="company-period-source"><summary>Source context</summary><p>@area.Coverage</p></details></footer>
+            </article>
+        }
+    </div>
+</section>
+@code {
+    [Parameter] public string CompanyName { get; set; } = "";
+    [Parameter] public string PeriodLabel { get; set; } = "";
+    [Parameter] public bool Retained { get; set; }
+    [Parameter] public IReadOnlyList<CompanyPeriodAreaViewModel> Areas { get; set; } = [];
+    private static string Icon(string lens) => lens switch { "finance" => "finance", "sales" => "sales", "marketing" => "marketing", "customers" => "support", _ => "company" };
+    private RenderFragment Figure(CompanyPeriodFigureViewModel figure) => @<div class="company-period-figure"><dt>@if (figure.DeepLink is not null) { <a href="@figure.DeepLink">@figure.Label</a> } else { @figure.Label }</dt><dd><small>@figure.Context</small><strong>@figure.Value</strong></dd></div>;
+}

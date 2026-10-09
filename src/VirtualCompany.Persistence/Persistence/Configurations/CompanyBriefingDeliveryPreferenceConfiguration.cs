@@ -13,6 +13,7 @@ internal sealed class CompanyBriefingDeliveryPreferenceConfiguration : IEntityTy
     public void Configure(EntityTypeBuilder<CompanyBriefingDeliveryPreference> builder)
     {
         builder.ToTable("company_briefing_delivery_preferences");
+        builder.Property(x => x.CadenceSettingsJson).HasColumnName("cadence_settings_json").HasColumnType("nvarchar(max)");
 
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");

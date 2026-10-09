@@ -13,6 +13,11 @@ public sealed class SupportResponsibilityFilter(ITodayWorkspaceLensResolver acce
         if (context.CompanyId is not Guid companyId) { actionContext.Result = new ForbidResult(); return; }
         var scope = await access.ResolveAsync(companyId, TodayWorkspaceLenses.Customers, actionContext.HttpContext.RequestAborted);
         if (!scope.AvailableLenses.Any(x => x.Lens == TodayWorkspaceLenses.Customers)) { actionContext.Result = new ForbidResult(); return; }
-        await next();
+        var result=await next();
+        if(result.Exception is Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
+        {
+            result.ExceptionHandled=true;
+            result.Result=new ObjectResult(new ProblemDetails{Status=409,Title="This Support case changed.",Detail="Reload the case before saving another change."}){StatusCode=409};
+        }
     }
 }

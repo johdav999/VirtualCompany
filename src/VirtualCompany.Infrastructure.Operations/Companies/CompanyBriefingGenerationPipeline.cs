@@ -8,16 +8,20 @@ namespace VirtualCompany.Infrastructure.Companies;
 public sealed class CompanyBriefingGenerationPipeline : IBriefingGenerationPipeline
 {
     private readonly ICompanyBriefingService _briefingService;
+    private readonly IBriefingCadenceService? _cadence;
 
-    public CompanyBriefingGenerationPipeline(ICompanyBriefingService briefingService)
+    public CompanyBriefingGenerationPipeline(ICompanyBriefingService briefingService, IBriefingCadenceService? cadence = null)
     {
         _briefingService = briefingService;
+        _cadence = cadence;
     }
 
     public Task<CompanyBriefingGenerationResult> GenerateAsync(
         BriefingGenerationJobContext job,
         CancellationToken cancellationToken)
     {
+        if (job.SourceMetadata.ContainsKey("cadenceDeliveryId"))
+            return (_cadence ?? throw new InvalidOperationException("Recipient briefing service is not configured.")).GenerateAsync(job, cancellationToken);
         var briefingType = ResolveBriefingType(job).ToStorageValue();
 
         return _briefingService.GenerateAsync(

@@ -18,6 +18,8 @@ using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Security;
+using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Application.Auth;
 
 namespace VirtualCompany.Infrastructure.Support;
 
@@ -25,6 +27,7 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyKnowledgeSearchService? _knowledgeSearch;
+    private readonly ICompanyContextAccessor? _companyContext;
 
     public SupportKnowledgeContextProvider(VirtualCompanyDbContext dbContext)
     {
@@ -33,10 +36,12 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
 
     public SupportKnowledgeContextProvider(
         VirtualCompanyDbContext dbContext,
-        ICompanyKnowledgeSearchService knowledgeSearch)
+        ICompanyKnowledgeSearchService knowledgeSearch,
+        ICompanyContextAccessor? companyContext = null)
     {
         _dbContext = dbContext;
         _knowledgeSearch = knowledgeSearch;
+        _companyContext = companyContext;
     }
 
     public async Task<SupportKnowledgeContext> RetrieveAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken)
@@ -58,6 +63,15 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
         var queryText = string.Join(' ', queryTerms);
         if (!string.IsNullOrWhiteSpace(queryText))
         {
+            var accessContext=new CompanyKnowledgeAccessContext(companyId, DataScopes: ["support", "knowledge"]);
+            // Native background drafting carries the real originating membership, not an HTTP principal.
+            // Re-read it so revoked membership/role changes never inherit the queued actor's old access.
+            if(_companyContext?.Membership is { } actor && actor.CompanyId==companyId)
+            {
+                var current=await _dbContext.CompanyMemberships.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x=>x.CompanyId==companyId&&x.Id==actor.MembershipId&&x.UserId==actor.UserId&&x.Status==CompanyMembershipStatus.Active,cancellationToken)
+                    ??throw new UnauthorizedAccessException("The originating Support actor no longer has company access.");
+                accessContext=new(companyId,current.Id,current.UserId,current.Role.ToStorageValue(),["support","knowledge"]);
+            }
             var searchResults = _knowledgeSearch is null
                 ? await SearchIndexedKnowledgeForTestsAsync(companyId, queryTerms, cancellationToken)
                 : await _knowledgeSearch.SearchAsync(
@@ -65,7 +79,7 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
                         companyId,
                         queryText,
                         20,
-                        new CompanyKnowledgeAccessContext(companyId, DataScopes: ["support", "knowledge"])),
+                        accessContext),
                     cancellationToken);
             sources.AddRange(RankCustomerFacingResults(searchResults, queryTerms)
                 .Take(4)

@@ -14,6 +14,18 @@ internal sealed class WorkTaskConfiguration : IEntityTypeConfiguration<WorkTask>
     {
         builder.ToTable("tasks");
 
+        builder.Property(x => x.BusinessDealId).HasColumnName("business_deal_id");
+        builder.Property(x => x.BusinessCaseId).HasColumnName("business_case_id");
+        builder.Property(x => x.BusinessInvoiceId).HasColumnName("business_invoice_id");
+        builder.Property(x => x.BusinessBillId).HasColumnName("business_bill_id");
+        builder.Property(x => x.BusinessCampaignId).HasColumnName("business_campaign_id");
+        builder.Property(x => x.BusinessBriefId).HasColumnName("business_brief_id");
+        builder.HasIndex(x => new { x.CompanyId, x.BusinessDealId });
+        builder.HasIndex(x => new { x.CompanyId, x.BusinessCaseId });
+        builder.HasIndex(x => new { x.CompanyId, x.BusinessInvoiceId });
+        builder.HasIndex(x => new { x.CompanyId, x.BusinessBillId });
+        builder.HasIndex(x => new { x.CompanyId, x.BusinessCampaignId });
+        builder.HasIndex(x => new { x.CompanyId, x.BusinessBriefId });
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();

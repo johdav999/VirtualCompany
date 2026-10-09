@@ -5,13 +5,16 @@
 @inject NavigationManager Navigation
 <PageTitle>Work detail</PageTitle>
 <div class="work-detail-page">
-    <nav aria-label="Work returns"><a href="@(AgentWorkRoutes.Board(BoardReturnUrl,CompanyId) ?? $"/agents/staff?companyId={CompanyId:D}")">← Back to filtered board</a>@if(AgentWorkRoutes.Local(RecordReturnUrl,CompanyId) is { } previous) { <a href="@previous">Back to previous view</a> }</nav>
+    <VirtualCompany.Web.Components.Work.AgentWorkReturnLink CompanyId="CompanyId" />
+    <nav aria-label="Work returns"><a href="@(AgentWorkRoutes.Board(BoardReturnUrl,CompanyId) ?? $"/agents/staff?companyId={CompanyId:D}")">← Back to filtered board</a>@if(AgentWorkRoutes.Local(RecordReturnUrl,CompanyId) is { } previous) { <a href="@previous">Back to previous view</a> }@if(ExecutionBack is { } execution){<a href="@execution">Back to execution controls</a>}</nav>
     @if(loading) { <section class="work-detail-card" role="status">Loading work evidence…</section> }
     else if(item is null) { <section class="work-detail-card" role="alert"><h1>Work unavailable</h1><p>@(error ?? "This work is unavailable in the current company and access scope.")</p><button class="btn btn-outline-primary" @onclick="Load">Retry</button></section> }
     else
     {
         <header><div><span class="dashboard-kicker">WORK</span><h1>@item.Title</h1><p>@item.Objective</p></div><span class="work-detail-state work-detail-state--@item.State">@AgentWorkRoutes.State(item.State)</span><button class="btn btn-outline-primary" @onclick="Load">Refresh</button></header>
+        <p><a href="@Collaboration">Follow contributions and handoffs →</a></p>
         @foreach(var gap in item.Diagnostics) { <p class="work-detail-gap" role="status">@gap</p> }
+        <AuthorityExplanationPanel CompanyId="CompanyId" WorkKind="@Kind" WorkId="Id" RefreshVersion="version" />
         <div class="work-detail-layout"><div class="work-detail-primary">
             <section class="work-detail-card"><h2>Current step</h2><p>@item.CurrentStep</p><h3>Next dependency</h3><p>@item.Dependency</p></section>
             <section class="work-detail-card"><h2>Evidence and outputs</h2>@if(item.Evidence.Count == 0) { <p>No retained source evidence is linked.</p> }@foreach(var source in item.Evidence) { <p><a href="@Related(source.Route)">@source.Label</a> · @LocalDateTime.Optional(source.ObservedUtc)</p> }@if(item.Outputs.Count == 0) { <p class="work-detail-gap">No retained output evidence. Review the next dependency with the accountable human.</p> }@foreach(var output in item.Outputs) { <article><h3>@output.Name</h3><p>@output.Summary</p><small>@LocalDateTime.DateTime(output.ObservedUtc)</small>@if(output.Route is not null) { <a href="@Related(output.Route)">Review output</a> }</article> }</section>
@@ -25,6 +28,8 @@
     [SupplyParameterFromQuery] public string? BoardReturnUrl { get; set; }
     [SupplyParameterFromQuery] public string? RecordReturnUrl { get; set; }
     [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? ExecutionReturnUrl { get; set; }
+    private string? ExecutionBack=>AgentWorkRoutes.Local(ExecutionReturnUrl,CompanyId) is { } local && new Uri("https://local.test"+local).AbsolutePath=="/settings/agents/execution"?local:null;
     private AgentWorkItemDto? item; private bool loading=true; private string? error; private int version; private CancellationTokenSource? read;
     protected override Task OnParametersSetAsync()=>Load();
     private async Task Load()
@@ -36,5 +41,9 @@
         finally { if(current==version) loading=false; }
     }
     private string Related(string path)=>AgentWorkRoutes.Related(path,CompanyId,Navigation.Uri);
+    private string Collaboration => DashboardRoutes.WithQuery($"/agents/work/{Kind}/{Id:D}/collaboration", ("companyId", CompanyId.ToString("D")),
+        ("supervisionReturnUrl",AgentWorkRoutes.SupervisionBack(Navigation.Uri,CompanyId)),
+        ("boardReturnUrl", AgentWorkRoutes.Board(BoardReturnUrl, CompanyId)), ("recordReturnUrl", AgentWorkRoutes.Local(RecordReturnUrl, CompanyId)),
+        ("returnUrl", DashboardRoutes.OverviewPathFromLocation(Navigation.Uri, CompanyId)));
     public void Dispose() { version++; read?.Cancel(); read?.Dispose(); }
 }

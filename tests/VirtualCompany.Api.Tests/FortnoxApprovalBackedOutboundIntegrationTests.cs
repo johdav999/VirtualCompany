@@ -628,8 +628,8 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
             }
         };
 
-        var response = await client.PostAsJsonAsync(
-            $"/api/companies/{seed.CompanyId:D}/finance/integrations/fortnox/outbound-actions",
+        var response = await System.Net.Http.Json.HttpClientJsonExtensions.PostAsJsonAsync(
+            client, $"/api/companies/{seed.CompanyId:D}/finance/integrations/fortnox/outbound-actions",
             new
             {
                 commandType = "invoice_export",

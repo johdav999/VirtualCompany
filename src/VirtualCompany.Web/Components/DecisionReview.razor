@@ -1,0 +1,130 @@
+@inject ApprovalApiClient Api
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<article class="vc-decision-review" aria-label="Decision review">
+    <div class="vc-decision-header">
+        <div><span class="vc-kicker">@Human(current.Status)</span><h2>@Title</h2></div>
+        <button type="button" class="btn btn-outline-secondary" disabled="@busy" @onclick="RefreshAsync">Refresh review</button>
+    </div>
+    @if (error is not null) { <p class="alert alert-danger" role="alert">@error</p> }
+    @if (recorded) { <p class="alert alert-info" role="status">Decision recorded. The owning workflow determines the next action.</p> }
+    @if (current.Review?.ProposalChanged == true) { <p class="alert alert-warning" role="alert">The proposal changed. A new approval request is required.</p> }
+    @if (current.Status == "pending" && current.Review?.ExpiresAt <= DateTime.UtcNow)
+    { <p class="alert alert-warning" role="alert">The review period expired. A new approval request is required.</p> }
+    <div class="vc-decision-grid">
+        <section><h3>Proposed action</h3><p>@(current.ApprovalType == "planning_work_review" ? current.ThresholdContext.GetValueOrDefault("authorityNotice")?.ToString() ?? Reason : Reason)</p>
+            <h3>Affected records and recipients</h3><p>@current.AffectedDataSummary</p>
+            @foreach (var entity in current.AffectedEntities) { <p class="vc-decision-evidence">@entity.Label</p> }
+            <h3>Before / Proposed</h3>
+            @if (current.Review?.Comparison.Count > 0)
+            {
+                <div class="table-responsive"><table class="table"><thead><tr><th>Field</th><th>Before</th><th>Proposed</th></tr></thead><tbody>
+                @foreach (var row in current.Review.Comparison) { <tr><th scope="row">@row.Field</th><td>@(row.Before ?? "Not recorded")</td><td>@(row.Proposed ?? "Not recorded")</td></tr> }
+                </tbody></table></div>
+            }
+            else { <p class="text-body-secondary">Before/after evidence was not recorded for this proposal.</p> }
+        </section>
+        <section><h3>Source evidence</h3>
+            @if (current.Review?.Evidence.Count > 0)
+            { @foreach (var evidence in current.Review.Evidence) { <a class="vc-decision-evidence" href="@EvidenceHref(evidence.Href)">@evidence.Label</a> } }
+            else { <p class="text-body-secondary">Source links are unavailable for this proposal.</p> }
+                <div class="vc-decision-policy"><h3>Policy and review scope</h3><p>@(current.ApprovalType == "planning_work_review" ? current.ThresholdContext.GetValueOrDefault("authorityNotice")?.ToString() ?? Reason : current.ThresholdContext.ContainsKey("thresholdKey") ? current.ThresholdSummary ?? Reason : Reason)</p>
+                <dl><dt>Required reviewer</dt><dd>@(current.Review?.Reviewer ?? "Refresh to check reviewer access")</dd>
+                    <dt>Expiry</dt><dd>@(current.Review?.ExpiresAt is DateTime expiry ? LocalDateTime.DateTime(expiry) : "No expiry recorded")</dd>
+                    <dt>Requested</dt><dd>@LocalDateTime.DateTime(current.CreatedAt)</dd></dl>
+                <p class="text-body-secondary">@current.Review?.VersionEvidence</p>
+            </div>
+        </section>
+    </div>
+    @if (current.ThresholdContext.GetValueOrDefault("toolName")?.ToString() is "documents.update" or "documents.create")
+    { <ApprovalDetail Approval="current" ShowActions="false" /> }
+    @if (current.Status.Equals("pending", StringComparison.OrdinalIgnoreCase))
+    {
+        @if (current.Review?.CanDecide == true)
+        {
+            <section class="vc-decision-actions"><h3>Your decision</h3>
+                <label for="decision-review-note">Decision note (required when requesting changes)</label>
+                <textarea id="decision-review-note" class="form-control" rows="3" maxlength="2000" @bind="note" @bind:event="oninput" disabled="@busy"></textarea>
+                <div class="dashboard-actions mt-3">
+                    <button class="btn btn-primary" type="button" disabled="@busy" @onclick='() => DecideAsync("approve")'>Approve</button>
+                    <button class="btn btn-outline-danger" type="button" disabled="@busy" @onclick='() => DecideAsync("reject")'>Reject</button>
+                    <button class="btn btn-outline-secondary" type="button" disabled="@busy" @onclick='() => DecideAsync("request_changes")'>Request changes</button>
+                </div>
+            </section>
+        }
+        else { <p class="alert alert-info">A decision is unavailable. Check the current proposal, expiry and required reviewer.</p> }
+    }
+    <p class="vc-decision-notice">@(current.ApprovalType == "planning_work_review" ? "This reviews internal human follow-up work. It grants no sending, publication or payment authority." : current.TargetEntityType == "annual_plan_version" ? "Annual approval records planning intent and budget governance. It authorizes no execution or payment." : "Approval does not confirm delivery. Execution rechecks policy and the current proposal.")</p>
+    @if (current.Review?.ExecutionStatus is string execution) { <p><strong>Owning workflow:</strong> @Human(execution)</p> }
+    <section><h3>Decision history</h3>
+        @if (!string.IsNullOrWhiteSpace(current.DecisionSummary)) { <p>@current.DecisionSummary</p> }
+        @if (!current.Steps.Any(x => x.DecidedAt.HasValue)) { <p class="text-body-secondary">No reviewer decision is recorded.</p> }
+        @foreach (var step in current.Steps.Where(x => x.DecidedAt.HasValue))
+        { <div class="vc-decision-evidence"><strong>@Human(step.Status)</strong> · @LocalDateTime.DateTime(step.DecidedAt!.Value)
+            <p>@(step.ReviewerName ?? "Recorded reviewer") · Review step @step.SequenceNo</p><p>@step.Comment</p></div> }
+    </section>
+</article>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter, EditorRequired] public ApprovalRequestViewModel Approval { get; set; } = new();
+    [Parameter] public EventCallback<ApprovalRequestViewModel> OnDecision { get; set; }
+    private ApprovalRequestViewModel current = new();
+    private Guid company;
+    private Guid approval;
+    private bool busy, disposed, recorded;
+    private string? error, note;
+    private Guid? requestId;
+    private string? lastDecision, lastNote;
+    private ApprovalRequestViewModel? received;
+    private int generation;
+    private string Title => current.TargetEntityType == "task" ? current.AffectedEntities.FirstOrDefault()?.Label ?? CommonText["PriorityTaskReview"]
+        : current.TargetEntityType == "sales_meeting_invitation" ? "Review meeting invitation" : current.DisplayTitle;
+    private string Reason => current.ThresholdContext.GetValueOrDefault("reason")?.ToString() ??
+        (!string.IsNullOrWhiteSpace(current.RationaleSummary) ? current.RationaleSummary : "Proposal rationale was not recorded.");
+    protected override void OnParametersSet()
+    {
+        if (company != CompanyId || approval != Approval.Id) { generation++; company = CompanyId; approval = Approval.Id; note = error = null; recorded = busy = false; requestId = null; }
+        if (!ReferenceEquals(received, Approval)) { current = Approval; received = Approval; }
+    }
+    private async Task RefreshAsync()
+    {
+        var selectedCompany = company; var selectedApproval = approval; var version = generation;
+        busy = true;
+        try { var result = await Api.GetAsync(selectedCompany, selectedApproval);
+            if (disposed || company != selectedCompany || approval != selectedApproval) return;
+            current = ApprovalPresentationFormatter.Format(result); }
+        catch (Exception ex) { if (!disposed && company == selectedCompany && approval == selectedApproval) error = ex.Message; }
+        finally { if (version == generation) busy = false; }
+    }
+    private async Task DecideAsync(string decision)
+    {
+        if (busy || current.Review?.CanDecide != true || current.CurrentStep is null) return;
+        if (decision == "request_changes" && string.IsNullOrWhiteSpace(note)) { error = "Explain the requested changes before submitting."; return; }
+        var selectedCompany = company; var selectedApproval = approval; var version = generation;
+        if (requestId is null || lastDecision != decision || lastNote != note) { requestId = Guid.NewGuid(); lastDecision = decision; lastNote = note; }
+        busy = true; error = null;
+        try
+        {
+            var result = await Api.DecideAsync(selectedCompany, selectedApproval, new ApprovalDecisionRequest { ApprovalId = selectedApproval,
+                StepId = current.CurrentStep.Id, Decision = decision, Comment = note, ClientRequestId = requestId, ReviewToken = current.Review.Token });
+            if (disposed || company != selectedCompany || approval != selectedApproval) return;
+            current = ApprovalPresentationFormatter.Format(result.Approval); recorded = true; note = null; requestId = null;
+            await OnDecision.InvokeAsync(result.Approval);
+        }
+        catch (Exception ex)
+        {
+            if (disposed || company != selectedCompany || approval != selectedApproval) return;
+            error = ex.Message;
+            // Show current server status after a stale/conflicting decision; retain the user's note.
+            try { var refreshed = await Api.GetAsync(selectedCompany, selectedApproval);
+                if (!disposed && company == selectedCompany && approval == selectedApproval) current = ApprovalPresentationFormatter.Format(refreshed); } catch { }
+        }
+        finally { if (version == generation) busy = false; }
+    }
+    private string EvidenceHref(string href) => DashboardRoutes.WithQuery(href,
+        ("decisionReturnUrl", DecisionReviewRoutes.Local(new Uri(Navigation.Uri).PathAndQuery, company)));
+    private static string Human(string value) => System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(value.Replace('_', ' '));
+    public void Dispose() => disposed = true;
+}

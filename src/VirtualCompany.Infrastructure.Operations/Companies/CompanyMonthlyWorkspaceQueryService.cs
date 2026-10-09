@@ -20,6 +20,7 @@ public sealed class CompanyMonthlyWorkspaceQueryService : IMonthlyWorkspaceQuery
     private readonly VirtualCompanyDbContext _db;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyMonthlyWorkspaceQueryService> _logger;
+    private readonly CompanyWorkVisibility _workVisibility;
 
     public CompanyMonthlyWorkspaceQueryService(
         ITodayWorkspaceLensResolver lensResolver,
@@ -29,7 +30,8 @@ public sealed class CompanyMonthlyWorkspaceQueryService : IMonthlyWorkspaceQuery
         IExecutiveCockpitDashboardCache cache,
         VirtualCompanyDbContext db,
         TimeProvider timeProvider,
-        ILogger<CompanyMonthlyWorkspaceQueryService> logger)
+        ILogger<CompanyMonthlyWorkspaceQueryService> logger,
+        CompanyWorkVisibility workVisibility)
     {
         _lensResolver = lensResolver;
         _contributors = contributors.ToDictionary(x => x.Lens, StringComparer.OrdinalIgnoreCase);
@@ -39,6 +41,7 @@ public sealed class CompanyMonthlyWorkspaceQueryService : IMonthlyWorkspaceQuery
         _db = db;
         _timeProvider = timeProvider;
         _logger = logger;
+        _workVisibility = workVisibility;
     }
 
     public async Task<MonthlyWorkspaceDto> GetAsync(GetMonthlyWorkspaceQuery query, CancellationToken cancellationToken)
@@ -58,7 +61,7 @@ public sealed class CompanyMonthlyWorkspaceQueryService : IMonthlyWorkspaceQuery
             resolution.MembershipId, resolution.MembershipRole.ToStorageValue(), resolution.ResponsibilityRevision,
             resolution.ActiveLens, resolution.AvailableLenses.Select(x => x.Lens), period.StartUtc, period.EndUtc);
         var cached = await _cache.TryGetMonthlyAsync(scope, cancellationToken);
-        if (cached is not null && cached.UserId == resolution.UserId &&
+        if (!query.BypassCache && cached is not null && cached.UserId == resolution.UserId &&
             string.Equals(cached.ActiveLens, resolution.ActiveLens, StringComparison.OrdinalIgnoreCase))
         {
             return cached.Workspace with { CacheTimestampUtc = cached.CachedAtUtc };
@@ -136,13 +139,23 @@ public sealed class CompanyMonthlyWorkspaceQueryService : IMonthlyWorkspaceQuery
             .Select(x => x.OrderByDescending(y => y.UpdatedUtc ?? y.ObservedAtUtc).First())
             .OrderByDescending(x => AgentStateRank(x.AgentState)).ThenByDescending(x => x.UpdatedUtc ?? x.ObservedAtUtc)
             .Take(8).ToList();
+        var workScope = await _workVisibility.ResolveAsync(query.CompanyId, cancellationToken);
+        foreach (var outcome in agentOutcomes.Where(x => x.RelatedTaskId.HasValue).ToArray())
+        {
+            var id = outcome.RelatedTaskId!.Value;
+            if (!await workScope.Tasks(_db.WorkTasks.IgnoreQueryFilters().Where(x => x.CompanyId == query.CompanyId)).AnyAsync(x => x.Id == id, cancellationToken) ||
+                !await CollaborationContentVisibility.AllowsAsync(_db, workScope, id, cancellationToken)) agentOutcomes.Remove(outcome);
+        }
 
         var coverage = contributions.SelectMany(x => x.SourceCoverage)
             .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase).Select(x => x.First()).ToList();
         var currentSources = coverage.Count(x => x.State is "current" or "fresh");
-        var results = SelectResults(contributions, resolution).Take(4).ToList();
+        var results = SelectResults(contributions, resolution).ToList();
         var isPartial = diagnostics.Count > 0 || coverage.Any(x => x.State is "unavailable" or "partial" or "stale");
         var summary = BuildSummary(resolution.ActiveLens, contributions, currentSources, coverage.Count, isPartial);
+        var review = await new MonthlyManagementReviewProjector(_db).ProjectAsync(query.CompanyId, period, results, coverage, cancellationToken);
+        review = review with { WorkSourceIds = contributions.SelectMany(x => x.WorkSourceIds ?? [])
+            .Concat(agentOutcomes.Where(x => x.RelatedTaskId.HasValue).Select(x => x.RelatedTaskId!.Value)).Distinct().ToArray() };
         var workspace = new MonthlyWorkspaceDto(query.CompanyId,
             new(resolution.CompanyName,
                 resolution.ActiveLens == TodayWorkspaceLenses.Company ? $"Monthly review for {resolution.CompanyName}"
@@ -155,7 +168,11 @@ public sealed class CompanyMonthlyWorkspaceQueryService : IMonthlyWorkspaceQuery
             coverage, nowUtc, null, isPartial, diagnostics,
             new(resolution.ResponsibilitiesConfigured, resolution.CanManageResponsibilities,
                 resolution.ResponsibilitiesConfigured ? string.Empty : "Assign responsibility owners so monthly reviews reflect accountable work.",
-                $"/settings/responsibilities?companyId={query.CompanyId:D}"));
+                $"/settings/responsibilities?companyId={query.CompanyId:D}"),
+            review, contributions.Select(x=>x.SalesManagement).FirstOrDefault(x=>x!=null),
+            contributions.Select(x=>x.MarketingManagement).FirstOrDefault(x=>x!=null),
+            contributions.Select(x=>x.FinancePlanning).FirstOrDefault(x=>x!=null),
+            contributions.Select(x=>x.SupportQuality).FirstOrDefault(x=>x!=null));
         var cachedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
         await _cache.SetMonthlyAsync(scope,
             new(query.CompanyId, resolution.UserId, resolution.ActiveLens, cachedAtUtc, workspace), cancellationToken);

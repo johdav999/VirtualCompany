@@ -1,0 +1,37 @@
+@using VirtualCompany.Web.Services
+@using System.Globalization
+@inject NavigationManager Navigation
+<section class="vc-panel" data-testid="sales-management-evidence">
+    <h2>Created opportunity cohort</h2>
+    <p>@Report.Year-@Report.Month.ToString("D2") · @Report.Timezone · [@Report.StartUtc.ToString("u"), @Report.EndUtc.ToString("u")) · As of @Report.AsOfUtc.ToString("u")</p>
+    <p>@Report.Definitions</p>
+    <div class="cohort-table" role="region" aria-label="Recorded opportunity outcomes" tabindex="0">
+    <table><caption>Recorded outcomes; currencies are not added together</caption><thead><tr><th scope="col">Cohort</th><th scope="col">Created</th><th scope="col">Won</th><th scope="col">Lost</th><th scope="col">Undecided</th><th scope="col">Won / created</th><th scope="col">Won / decided</th><th scope="col">Median cycle days</th></tr></thead><tbody>
+        @foreach(var row in new[]{Report.Selected,Report.Prior}){<tr><th>@row.Cohort</th><td>@row.Created</td><td>@row.Won</td><td>@row.Lost</td><td>@row.Undecided</td><td>@Number(row.WonCreatedPercent)%</td><td>@Number(row.WinDecidedPercent)%</td><td>@Number(row.MedianCycleDays)</td></tr>}
+    </tbody></table>
+    </div>
+    <p>Conversion change: @Number(Report.ConversionChangePoints) percentage points. Missing recorded outcome reasons: @Report.Selected.MissingReasons. Missing typed stage history: @Report.Selected.MissingStageHistory.</p>
+    <p>@Report.Coverage</p><p>@Report.OwnershipCoverage</p>
+    @if(Report.Opportunities.Count==0){<p>No opportunities in either created cohort. Conversion and cycle denominators are unavailable.</p>}
+    @foreach(var row in Report.Opportunities){<article><h3><a href="@Deal(row.DealId)">@row.Title</a></h3><p>@row.Cohort · @row.Currency · Created @row.CreatedUtc.ToString("u") · @row.Outcome @row.OutcomeUtc?.ToString("u")</p>
+        <p>Recorded reason: @(row.RecordedReason??"Missing; no explanation inferred") · Typed stage history: @(row.StageHistoryAvailable?"Partial typed evidence; full path not established":"Unavailable")</p>
+        <details><summary>Included native history (@row.History.Count)</summary>@foreach(var e in row.History){<p>@e.Outcome · @e.OccurredUtc.ToString("u") · @(e.RecordedReason??"Reason missing") · @(e.PreviousStageId?.ToString()??"Previous stage missing") → @(e.NewStageId?.ToString()??"Stage missing") · Event author @(e.ActorUserId?.ToString()??"unavailable")</p>}</details>
+    </article>}
+</section>
+<section class="vc-panel"><h2>Current forecast reconciliation</h2><p>Current sources at @Report.AsOfUtc.ToString("u"); distinct from the selected created cohort. Stage probability and risk use the owning Sales calculation.</p>
+    @foreach(var w in Report.CurrentForecastWindows){<p>@w.Days days · @w.Currency · @w.DealCount opportunities · Gross @w.GrossAmount · Expected @w.ExpectedAmount</p>}
+    @foreach(var row in Report.CurrentForecastOpportunities){<p><a href="@Deal(row.DealId)">@row.Title</a> · @row.Amount @row.Currency × @row.StageProbability × (1 − @row.Risk × 0.5) = @row.ExpectedAmount · @(row.RiskCalculatedUtc.HasValue?"Recorded risk":"Default risk 0.5") · Close @row.ExpectedCloseUtc?.ToString("u")</p>}
+    @if(Report.CurrentForecastOpportunities.Count==0){<p>No eligible dated open opportunities in the current 90-day forecast.</p>}
+    <h3>Retained forecast movement</h3><p>30-day change: @Number(Report.ForecastMovement30). Latest selected-month capture compared with latest preceding-month capture of the same currency. Unavailable when that comparison is missing.</p>
+    @foreach(var f in Report.ForecastHistory){<details><summary>@f.AsOfUtc.ToString("u") · @f.Currency · 30/60/90: @f.Expected30 / @f.Expected60 / @f.Expected90</summary><p>@f.Coverage</p>
+        @foreach(var input in f.Capture?.Inputs??[]){<p><a href="@Deal(input.DealId)">@input.DealId</a> · @input.Amount @input.Currency · Stage @input.StageId · Risk @input.Risk · Expected @input.ExpectedAmount · Close @input.ExpectedCloseUtc.ToString("u")</p>}
+    </details>}
+    <details><summary>Current open workload (@Report.CurrentOpenOpportunityIds.Count)</summary>@foreach(var id in Report.CurrentOpenOpportunityIds){<p><a href="@Deal(id)">@id</a></p>}</details>
+</section>
+@code{
+    [Parameter,EditorRequired] public SalesManagementReport Report{get;set;}=null!;
+    [Parameter] public string? ReturnUrl{get;set;}
+    private string Deal(Guid id)=>SalesJourneyRoutes.Build($"/app/sales/deals/{id:D}",Report.CompanyId,ReturnUrl??Navigation.Uri);
+    private static string Number(decimal? value)=>value?.ToString("0.##",CultureInfo.InvariantCulture)??"Unavailable";
+}
+

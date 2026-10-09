@@ -35,6 +35,7 @@ public sealed class FinancePlanningEntityResolver : IFinancePlanningEntityResolv
             FinancePlanningReferenceTypes.VoucherSeries => await ResolveVoucherSeriesAsync(request.CompanyId, reference, take, cancellationToken),
             FinancePlanningReferenceTypes.ReportDefinition => await ResolveReportDefinitionsAsync(request.CompanyId, reference, take, cancellationToken),
             FinancePlanningReferenceTypes.ReportLine => await ResolveReportLinesAsync(request.CompanyId, reference, take, cancellationToken),
+            FinancePlanningReferenceTypes.ForecastVersion => await ResolveForecastVersionsAsync(request.CompanyId, reference, take, cancellationToken),
             _ => []
         };
 
@@ -46,6 +47,12 @@ public sealed class FinancePlanningEntityResolver : IFinancePlanningEntityResolv
         };
         return new FinanceEntityResolutionResult(state, referenceType, reference, candidates.Take(request.MaximumCandidates).ToArray());
     }
+
+    private async Task<IReadOnlyList<FinanceEntityResolutionCandidate>> ResolveForecastVersionsAsync(Guid company, string reference, int take, CancellationToken ct) =>
+        await _db.FinanceForecastRevisions.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == company && (x.Name == reference || x.NativeVersion == reference))
+            .OrderByDescending(x => x.SavedUtc).ThenBy(x => x.Id).Take(take).Select(x => new FinanceEntityResolutionCandidate(
+                FinancePlanningReferenceTypes.ForecastVersion, x.Id.ToString(), "finance_forecast_revision:" + x.Id, x.Checksum, x.SavedUtc,
+                "Accessible retained forecast version; explicit future assumptions, never posted actuals")).ToArrayAsync(ct);
 
     private async Task<IReadOnlyList<FinanceEntityResolutionCandidate>> ResolveInvoicesAsync(
         Guid companyId, string reference, int take, CancellationToken cancellationToken) =>

@@ -1,0 +1,31 @@
+@page "/support/reports/quality"
+@rendermode InteractiveServer
+@inherits SupportQualityPageBase
+@using VirtualCompany.Web.Components.Support
+@inject IMonthlyReviewApiClient Reviews
+<PageTitle>Support quality</PageTitle>
+<SupportQualityShell Title="Support quality" Subtitle="Recorded cohorts and explicit history coverage" Back="@BackPath" Cases="@BuildPath("/support")" Knowledge="@BuildPath("/support/knowledge")" Quality="@QualityPath("quality")" Issues="@QualityPath("issues")" Capacity="@QualityPath("capacity")" Busy="Busy" Error="@(Error??ShellErrorMessage)" Retry="Reload">
+    <section class="vc-panel quality-filters"><label>Year<input type="number" min="2000" max="2100" @bind="year" disabled="@Retained" /></label><label>Month<input type="number" min="1" max="12" @bind="month" disabled="@Retained" /></label><label>Category<select @bind="category" disabled="@Retained"><option value="">All native categories</option>@foreach(var c in categories){<option value="@c">@Label(c)</option>}</select></label><div class="quality-actions"><button class="btn btn-primary" disabled="@(Busy||Retained)" @onclick="Apply">Apply cohort</button><button disabled="@Busy" @onclick="Reload">Reload</button></div></section>
+    @if(Report is not null){
+        @if(Retained){<p class="quality-notice">Original retained Support evidence; source links open current authorized cases. Refresh the monthly review or create a new proposal explicitly to retain new results.</p>}
+        <SupportQualityEvidence Report="Report" Source="ContextLink" />
+        <aside class="vc-panel"><h2>Support lead · @Report.AccountableOwner</h2><p>Review cohort evidence and incomplete history before changing workload assumptions.</p><div class="quality-actions"><a href="@QualityPath("issues")">Review recurring issue evidence</a><a href="@QualityPath("capacity")">Review capacity assumptions</a>@if(!Retained){<button disabled="@(Busy||!Report.CompleteSourceCoverage)" @onclick="Export">Refresh and download CSV</button>}</div></aside>
+    }
+</SupportQualityShell>
+@code{
+    [SupplyParameterFromQuery]public Guid? Snapshot{get;set;}[SupplyParameterFromQuery]public string? Lens{get;set;}[SupplyParameterFromQuery]public Guid? ProposalEvidence{get;set;}
+    private int year,month;private string category="";private bool Retained=>Snapshot.HasValue||ProposalEvidence.HasValue;
+    private static readonly string[] categories=["general_question","billing","technical_issue","complaint","refund","account_access","delivery","feature_request","bug_report","churn_risk"];
+    private static string Label(string s)=>System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s.Replace('_',' '));
+    protected override async Task Read(CancellationToken ct){
+        SupportQualityReport r;
+        if(Snapshot.HasValue){var s=await Reviews.OpenAsync(Company,Snapshot.Value,ct);r=s.Workspace.SupportQuality??throw new InvalidOperationException("This review has no retained Support quality evidence.");if(Lens is not null&&Lens!=s.Summary.Lens)throw new InvalidDataException("Review responsibility differs from this link.");}
+        else if(ProposalEvidence.HasValue)r=(await Quality.Open(Company,ProposalEvidence.Value,ct)).Preview.Report;
+        else r=await Quality.Report(Company,Query(),ct);
+        SupportQualityApiClient.Validate(r,Company);
+        if(Retained&&(Year.HasValue&&Year!=r.Query.Year||Month.HasValue&&Month!=r.Query.Month||Category is not null&&Query().Category!=r.Query.Category))throw new InvalidDataException("Retained report filters differ from this link.");
+        if(ct.IsCancellationRequested)return;Report=r;year=r.Query.Year;month=r.Query.Month;category=r.Query.Category??"";
+    }
+    private Task Apply()=>Run(ct=>{Navigation.NavigateTo(BuildPath($"/support/reports/quality?year={year}&month={month}&category={Uri.EscapeDataString(category)}"));return Task.CompletedTask;});
+    private Task Export()=>Run(async ct=>{if(Report is null||Retained)return;var e=await Quality.Export(Company,Report.Query,ct);if(!ct.IsCancellationRequested)await Download(e,ct);});
+}

@@ -1,0 +1,47 @@
+@page "/support/reports/capacity"
+@rendermode InteractiveServer
+@inherits SupportQualityPageBase
+@using VirtualCompany.Web.Components.Support
+<PageTitle>Support capacity proposal</PageTitle>
+<SupportQualityShell Title="Support capacity proposal" Subtitle="Workload evidence and explicit staffing assumptions" Back="@BackPath" Cases="@BuildPath("/support")" Knowledge="@BuildPath("/support/knowledge")" Quality="@QualityPath("quality")" Issues="@QualityPath("issues")" Capacity="@QualityPath("capacity")" Busy="Busy" Error="@(Error??ShellErrorMessage)" Retry="Reload">
+    @if(Report is not null){
+        <section class="vc-panel"><h2>Proposal details</h2><p>Source @Report.Query.Year-@Report.Query.Month.ToString("00") · @Report.Period.TimeZoneId · accountable reviewer @(retained?.Summary.Owner??Report.AccountableOwner)</p>
+            @if(ReadOnly&&preview is not null){<div class="retained-values"><p><strong>Named proposal</strong><br/>@name</p><p><strong>Target month</strong><br/>@target</p><p><strong>Workload assumptions</strong><br/>@arrivals arrivals + @backlog backlog · @handling minutes/case</p><p><strong>Capacity assumptions</strong><br/>@people people · @hours hours/business day · @utilization% utilization</p><p><strong>Service target assumption</strong><br/>@responseTarget minutes</p><p><strong>Explanation</strong><br/>@explanation</p></div><p>Saved @Date(retained!.Summary.SavedUtc). Original sources and assumptions are immutable.</p><button disabled="@Busy" @onclick="Edit">Create a new revision</button>}
+            else{<div class="capacity-inputs"><label>Named proposal<input maxlength="120" @bind="name" /></label><label>Target month<input type="month" value="@target" @onchange="TargetChanged" /></label><label>Expected arrivals<input type="number" min="0" max="100000" @bind="arrivals" @bind:after="Changed" /></label><label>Backlog to clear<input type="number" min="0" max="100000" @bind="backlog" @bind:after="Changed" /></label><label>Handling minutes per case<input type="number" min="0.01" max="480" step="0.01" @bind="handling" @bind:after="Changed" /></label><label>Available people<input type="number" min="0" max="1000" step="0.01" @bind="people" @bind:after="Changed" /></label><label>Hours per business day<input type="number" min="0.01" max="24" step="0.01" @bind="hours" @bind:after="Changed" /></label><label>Productive utilization percent<input type="number" min="0.01" max="100" step="0.01" @bind="utilization" @bind:after="Changed" /></label><label>Response target minutes<input type="number" min="1" max="10080" @bind="responseTarget" @bind:after="Changed" /></label><label class="span-all">Explanation<textarea maxlength="2000" @bind="explanation" @bind:after="Changed"></textarea></label></div><div class="quality-actions"><button class="btn btn-primary" disabled="@Busy" @onclick="Preview">Preview assumptions</button><button disabled="@(Busy||preview is null)" @onclick="Save">Save named proposal</button></div>}
+        </section>
+        @if(preview is not null){<section class="vc-panel capacity-preview"><h2>Deterministic preview</h2><p>@(ReadOnly?"Original retained result":"Current explicit assumptions") · @preview.Report.Calendar.TimeZoneId · @preview.Result.BusinessDays business days, @Number(preview.Result.ConfiguredHoursPerDay) configured hours/day.</p><div class="quality-metrics"><article><span>Observed / assumed arrivals</span><strong>@preview.Result.ObservedArrivals / @preview.Result.AssumedArrivals</strong><small>@preview.Result.BacklogToClear backlog assumption</small></article><article><span>Required handling hours</span><strong>@Number(preview.Result.RequiredHours)</strong></article><article><span>Available productive hours</span><strong>@Number(preview.Result.AvailableHours)</strong></article><article><span>Shortfall hours</span><strong>@Number(preview.Result.ShortfallHours)</strong></article></div><p>Case capacity @preview.Result.CaseCapacity · required people @Number(preview.Result.RequiredPeople).</p><p>@preview.Result.Limits</p><p>No staffing schedule, case permission or customer promise changes when this proposal is saved.</p>@if(ReadOnly){<div class="quality-actions"><a href="@EvidencePath">Open original quality and case evidence</a><button disabled="@Busy" @onclick="Export">Download original proposal CSV</button></div>}</section>}
+        <details class="vc-panel"><summary>Original workload and case sources</summary><SupportQualityEvidence Report="Report" Source="ContextLink" /></details>
+        <aside class="vc-panel quality-history"><h2>Saved proposals</h2><p>Private to this accountable reviewer; current Support responsibility is required to reopen.</p>@foreach(var h in history){<a href="@VersionPath(h.Id)">@h.Name · @Date(h.SavedUtc) · target @h.TargetYear-@h.TargetMonth.ToString("00")</a>}@if(history.Count==0){<p>No saved proposals on this page.</p>}<div class="quality-actions"><button disabled="@(Busy||skip==0)" @onclick="Previous">Previous history</button><button disabled="@(Busy||history.Count<20)" @onclick="Next">Next history</button><a href="@QualityPath("quality")">Back to quality</a></div></aside>
+    }
+</SupportQualityShell>
+@code{
+    [SupplyParameterFromQuery]public Guid? Proposal{get;set;}
+    private SupportCapacityProposal? retained;private SupportCapacityPreview? preview;private IReadOnlyList<SupportCapacityProposalSummary> history=[];
+    private bool editing;private bool ReadOnly=>retained is not null&&!editing;private int skip;
+    private string name="",target="",explanation="";private int arrivals,backlog,responseTarget=60;private decimal handling=30,people=1,hours=4,utilization=80;
+    private SaveSupportCapacityProposal? pending;
+    protected override void Clear(){base.Clear();retained=null;preview=null;history=[];pending=null;editing=false;}
+    private string VersionPath(Guid id)=>BuildPath($"/support/reports/capacity?{SupportQualityApiClient.Parameters(Query())}&proposal={id:D}");
+    private string EvidencePath=>BuildPath($"/support/reports/quality?{SupportQualityApiClient.Parameters(Report!.Query)}&proposalEvidence={retained!.Summary.Id:D}");
+    protected override async Task Read(CancellationToken ct){
+        var list=await Quality.History(Company,skip,ct);var saved=Proposal.HasValue?await Quality.Open(Company,Proposal.Value,ct):null;
+        var r=saved?.Preview.Report??await Quality.Report(Company,Query(),ct);
+        if(saved is not null&&(Year.HasValue&&Year!=r.Query.Year||Month.HasValue&&Month!=r.Query.Month||Category is not null&&Query().Category!=r.Query.Category))throw new InvalidDataException("Proposal source filters differ from this link.");
+        if(ct.IsCancellationRequested)return;history=list;retained=saved;preview=saved?.Preview;Report=r;editing=false;
+        if(saved is not null){name=saved.Summary.Name;Load(saved.Preview.Assumptions);}else{arrivals=r.Metrics.Arrivals;backlog=0;target=DateTime.UtcNow.ToString("yyyy-MM");}
+    }
+    private void Load(SupportCapacityAssumptions a){target=$"{a.TargetYear}-{a.TargetMonth:00}";arrivals=a.ExpectedArrivals;backlog=a.BacklogToClear;handling=a.HandlingMinutes;people=a.AvailablePeople;hours=a.HoursPerBusinessDay;utilization=a.UtilizationPercent;responseTarget=a.ResponseTargetMinutes;explanation=a.Explanation;}
+    private SupportCapacityAssumptions Assumptions(){if(!DateTime.TryParseExact(target+"-01","yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out var date))throw new ArgumentException("Choose a valid target month.");return new(date.Year,date.Month,arrivals,backlog,handling,people,hours,utilization,responseTarget,explanation);}
+    private void Changed(){preview=null;pending=null;}
+    private void TargetChanged(ChangeEventArgs e){target=e.Value?.ToString()??"";Changed();}
+    private void Edit(){editing=true;Changed();}
+    private Task Preview()=>Run(async ct=>{if(Report is null)return;var value=await Quality.Preview(Company,new(Report.Query,Assumptions()),ct);if(ct.IsCancellationRequested)return;preview=value;Report=value.Report;pending=null;});
+    private Task Save()=>Run(async ct=>{
+        if(preview is null||Report is null||ReadOnly)return;if(Assumptions()!=preview.Assumptions)throw new InvalidOperationException("Assumptions changed. Preview again before saving.");
+        var command=new SaveSupportCapacityProposal(pending?.RequestId??Guid.NewGuid(),name,new(Report.Query,Assumptions()),preview.Fingerprint,retained?.Summary.Id);
+        if(pending is not null&&command!=pending)command=command with{RequestId=Guid.NewGuid()};pending=command;
+        var value=await Quality.Save(Company,command,ct);if(ct.IsCancellationRequested)return;Navigation.NavigateTo(VersionPath(value.Summary.Id));
+    });
+    private Task Export()=>Run(async ct=>{if(retained is null)return;var e=await Quality.ProposalExport(Company,retained.Summary.Id,ct);if(!ct.IsCancellationRequested)await Download(e,ct);});
+    private async Task Next(){skip+=20;await Reload();}private async Task Previous(){skip=Math.Max(0,skip-20);await Reload();}
+}

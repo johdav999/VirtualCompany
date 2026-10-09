@@ -133,7 +133,7 @@ else
         </section>
     }
 
-    @if (Approval.CurrentStep is not null && IsPending(Approval))
+    @if (ShowActions && Approval.CurrentStep is not null && IsPending(Approval))
     {
         <section class="approvals-detail-section">
             <div class="mb-3">
@@ -146,7 +146,7 @@ else
             </div>
         </section>
     }
-    else
+    else if (ShowActions)
     {
         <p class="text-body-secondary mb-0">This approval is not awaiting a decision.</p>
     }
@@ -184,6 +184,7 @@ else
 }
 
 @code {
+    [Parameter] public bool ShowActions { get; set; } = true;
     [Parameter]
     public ApprovalRequestViewModel? Approval { get; set; }
 

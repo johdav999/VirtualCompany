@@ -223,6 +223,10 @@ public sealed class TasksController : ControllerBase
 
             return CreatedAtAction(nameof(GetByIdAsync), new { companyId, taskId = result.ParentTaskId }, result);
         }
+        catch (CollaborationAlreadyRunningException ex)
+        {
+            return Conflict(new ProblemDetails { Title = "Collaboration already running", Detail = ex.Message });
+        }
         catch (MultiAgentCollaborationValidationException ex)
         {
             return ValidationProblem(ex.Errors);

@@ -46,6 +46,12 @@ public sealed class RevenueForecastSnapshot : ICompanyOwnedEntity
         CalculatedUtc = SalesEntityText.NormalizeUtc(calculatedUtc, nameof(calculatedUtc));
     }
 
+    public string? InputsJson { get; private set; }
+    public void CaptureInputs(string json)
+    {
+        if(InputsJson!=null || string.IsNullOrWhiteSpace(json) || System.Text.Encoding.UTF8.GetByteCount(json)>512*1024)throw new ArgumentException("Forecast input payload is invalid or already captured.");
+        InputsJson=json;
+    }
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
     public DateTime AsOfUtc { get; private set; }
@@ -66,4 +72,3 @@ public sealed class RevenueForecastSnapshot : ICompanyOwnedEntity
     public DateTime CalculatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
 }
-

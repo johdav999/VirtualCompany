@@ -1,0 +1,122 @@
+{
+  "migration": {
+    "name": "20261003171638_AddBusinessWorkAssociations",
+    "isolatedSqlServer": "Pass: backfill plus downgrade/re-upgrade; existing tasks/approvals/P11 versions retained",
+    "productionDeployment": "Unverified"
+  },
+  "prompt": "P13",
+  "builds": {
+    "efModel": "Pass: model-check-final.log",
+    "web": "Pass: web-final-build.log",
+    "api": "Pass: rebuilt dependencies in uat-bill-final-build.log",
+    "uat": "Pass: uat-bill-final-build.log",
+    "diffCheck": "Pass: diff-check-exit.txt"
+  },
+  "baselineHead": "9a356c7901abc2044f6ecb6a4e8a5ebf64ceab5b",
+  "handoff": "docs/vcscreens/implementation-status.md: P14 prerequisite handoff",
+  "cleanup": "cleanup.json",
+  "implementation": "Complete",
+  "browser": {
+    "flows": [
+      "F13-01 Sales",
+      "F13-02 Support",
+      "F13-03 Finance invoice/operational bill",
+      "F13-04 Marketing campaign/content",
+      "F13-05 responsive/keyboard"
+    ],
+    "passingAssertions": 14,
+    "acceptedProof": [
+      "sales-artifact-version-two",
+      "sales-returned-proposal",
+      "sales-stale-decision",
+      "sales-stale-refreshed",
+      "support-partial-failed-delivery",
+      "support-decision-changes-requested",
+      "support-refreshed",
+      "support-mobile",
+      "finance-invoice-evidence",
+      "finance-invoice-decision",
+      "finance-invoice-refreshed",
+      "finance-bill-evidence",
+      "finance-bill-decision",
+      "finance-bill-refreshed",
+      "finance-bill-mobile-accepted",
+      "finance-bill-desktop-final",
+      "finance-bill-panel-final.png",
+      "marketing-campaign-evidence",
+      "marketing-campaign-decision",
+      "marketing-campaign-refreshed",
+      "marketing-brief-evidence",
+      "marketing-brief-decision",
+      "marketing-brief-refreshed",
+      "marketing-mobile"
+    ],
+    "intakeBill": "Authenticated API and SQL Server verification; final browser fixture uses operational bill",
+    "diagnosticOnly": [
+      "sales-before-reason-summary",
+      "sales-proposal-contributions",
+      "finance-bill-mobile",
+      "finance-bill-mobile-final"
+    ],
+    "console": "No warnings/errors since final healthy replay at 18:27 UTC; earlier host-stop connection errors retained",
+    "intermediateResolvedFailures": 1
+  },
+  "acceptedRuns": [
+    {
+      "total": 26,
+      "file": "p13-api-final.trx",
+      "sha256": "54A57C482A2577C541CE1CC6454B63D8136D4228B2C37F832571C733F656D653",
+      "skipped": 0,
+      "failed": 0,
+      "passed": 26
+    },
+    {
+      "total": 89,
+      "file": "p13-web-final.trx",
+      "sha256": "1594E6592C3ADE43CB6DCC7A2ABA0E19EC6179CC94D323FE36834E1648242201",
+      "skipped": 0,
+      "failed": 0,
+      "passed": 89
+    },
+    {
+      "total": 9,
+      "file": "p13-wire-final.trx",
+      "sha256": "BE967CDBD773D1EA2D6A8491BC5052B72EDE2A0B29D125D2ABA130D0C70DA82F",
+      "skipped": 0,
+      "failed": 0,
+      "passed": 9
+    },
+    {
+      "total": 2,
+      "file": "p13-sqlserver-final.trx",
+      "sha256": "1974A74B57E581D46AEF69B38EE55C6427360564ADEC86A746089C28C40F8232",
+      "skipped": 0,
+      "failed": 0,
+      "passed": 2
+    }
+  ],
+  "reconciliation": {
+    "firstSessionChecks": 53,
+    "firstSessionReads": 26,
+    "profiles": [
+      "profile.json",
+      "bill-replay-profile.json"
+    ],
+    "billReplayChecks": 2
+  },
+  "localVerification": "Complete",
+  "observedUtc": "2026-10-03T18:31:21.5396104Z",
+  "countsOverlapPriorPhases": true,
+  "independentGates": {
+    "deployedTenant": "Unverified",
+    "humanReleaseApproval": "Pending",
+    "priorNativePhysicalStatutory": "Retained separate gates",
+    "liveProviderDelivery": "Unverified"
+  },
+  "references": [
+    "sales",
+    "support",
+    "finance",
+    "marketing"
+  ]
+}

@@ -93,6 +93,12 @@ public sealed class Budget : ICompanyOwnedEntity
 
 public sealed class Forecast : ICompanyOwnedEntity
 {
+    public Guid? RevisionId { get; private set; }
+    public void LinkRevision(Guid id)
+    {
+        if (id == Guid.Empty || RevisionId.HasValue) throw new ArgumentException("A forecast revision link is immutable.");
+        RevisionId = id;
+    }
     private Forecast()
     {
     }

@@ -1,0 +1,35 @@
+@page "/support/reports/issues"
+@rendermode InteractiveServer
+@inherits SupportQualityPageBase
+@using VirtualCompany.Web.Components.Support
+<PageTitle>Recurring issue evidence</PageTitle>
+<SupportQualityShell Title="Recurring issue evidence" Subtitle="Review category suggestions against permitted case sources" Back="@BackPath" Cases="@BuildPath("/support")" Knowledge="@BuildPath("/support/knowledge")" Quality="@QualityPath("quality")" Issues="@QualityPath("issues")" Capacity="@QualityPath("capacity")" Busy="Busy" Error="@(Error??ShellErrorMessage)" Retry="Reload">
+    @if(Report is not null){
+        <section class="vc-panel"><h2>System-proposed and reviewed groups</h2><p>@Report.Query.Year-@Report.Query.Month.ToString("00") · @Report.Period.TimeZoneId · as of @Date(Report.AsOfUtc). Shared native category is a grouping suggestion, not a confirmed root cause.</p><label>Issue group<select @bind="selectedGroup"><option value="">All groups</option>@foreach(var g in Report.Groups){<option value="@g.Key">@g.Key · @(g.Reviewed?"Reviewed":"System proposed") · @g.CaseIds.Count cases</option>}</select></label>
+            <p>Use source cases and their recorded events to review a recurring issue. Current native category is not historical classification.</p>
+            <div class="quality-scroll" tabindex="0" aria-label="Recurring issue case table"><table><thead><tr><th>Case</th><th>Subject</th><th>Group</th><th>Created</th><th>History coverage</th><th>Evidence</th></tr></thead><tbody>@foreach(var c in Rows){<tr><th>@c.Number</th><td class="subject">@c.Subject</td><td>@c.Group · @(c.ReviewedGroup?"Reviewed":"System proposed")</td><td>@Date(c.CreatedUtc)</td><td>@(c.CompleteStateHistory?"From creation":"Partial") · @Date(c.StateCoverageStartUtc)</td><td><a href="@ContextLink(c.DeepLink)">Open case</a><button disabled="@Busy" @onclick="()=>Select(c)">Review grouping</button></td></tr>}</tbody></table></div>
+            @if(!Rows.Any()){<p>No recorded cohort cases match this group. Change the group or period.</p>}
+        </section>
+        @if(selected is not null){<section class="vc-panel"><h2>Review and correct grouping</h2><p>Selected case @selected.Number · @selected.Subject. This correction changes report grouping only.</p><label>Reviewed group<input maxlength="80" @bind="group" /></label><label>Reason for correction<textarea maxlength="1000" @bind="reason"></textarea></label><div class="quality-actions"><button class="btn btn-primary" disabled="@(Busy||!Report.CompleteSourceCoverage)" @onclick="Save">Save reviewed grouping</button><button disabled="@Busy" @onclick="Reload">Reload source evidence</button></div>@if(saved is not null){<p role="status">Reviewed grouping saved @Date(saved.SavedUtc). Original reason and reviewer are retained in the audit.</p>}
+            <details><summary>Grouping revisions</summary>@foreach(var h in history){<p>@h.Group · @h.Reason · @Date(h.SavedUtc)</p>}</details>
+        </section>}
+        <aside class="vc-panel"><h2>Support lead · @Report.AccountableOwner</h2><p>Grouping evidence does not establish causation or employee performance. Missing or inaccessible knowledge stays unavailable.</p><div class="quality-actions"><a href="@BuildPath("/support/knowledge-gaps")">Knowledge gaps</a><a href="@BuildPath("/support/knowledge")">Knowledge workspace</a><a href="@QualityPath("quality")">Back to quality</a></div><p>@Report.Coverage</p></aside>
+    }
+</SupportQualityShell>
+@code{
+    [SupplyParameterFromQuery]public string? Group{get;set;}[SupplyParameterFromQuery]public Guid? CaseId{get;set;}
+    private string selectedGroup="",group="",reason="";private SupportQualityCase? selected;private SupportIssueGroupingSummary? saved;
+    private IReadOnlyList<SupportIssueGroupingSummary> history=[];private CorrectSupportIssueGrouping? pending;
+    private IEnumerable<SupportQualityCase> Rows=>Report?.Cases.Where(x=>(x.Arrival||x.ResolutionCohort)&&!x.Merged&&(selectedGroup.Length==0||x.Group==selectedGroup))??[];
+    protected override void Clear(){base.Clear();selected=null;history=[];saved=null;pending=null;}
+    protected override async Task Read(CancellationToken ct){var r=await Quality.Report(Company,Query(),ct);if(ct.IsCancellationRequested)return;Report=r;selectedGroup=Group??"";if(CaseId.HasValue){var c=r.Cases.FirstOrDefault(x=>x.Id==CaseId&&(x.Arrival||x.ResolutionCohort)&&!x.Merged)??throw new InvalidOperationException("This cohort case is unavailable.");await SelectCore(c,ct);}}
+    private Task Select(SupportQualityCase c)=>Run(ct=>SelectCore(c,ct));
+    private async Task SelectCore(SupportQualityCase c,CancellationToken ct){var revisions=await Quality.Groups(Company,c.Id,ct);if(ct.IsCancellationRequested)return;selected=c;group=c.Group;reason="";history=revisions;saved=null;pending=null;}
+    private Task Save()=>Run(async ct=>{
+        if(selected is null||Report is null)return;
+        var command=new CorrectSupportIssueGrouping(pending?.RequestId??Guid.NewGuid(),Report.Query,selected.Id,group,reason,Report.Fingerprint,selected.GroupRevisionId);
+        if(pending is not null&&command!=pending)command=command with{RequestId=Guid.NewGuid()};pending=command;
+        var revision=await Quality.Correct(Company,command,ct);var current=await Quality.Report(Company,Report.Query,ct);var revisions=await Quality.Groups(Company,selected.Id,ct);if(ct.IsCancellationRequested)return;
+        Report=current;selected=current.Cases.Single(x=>x.Id==revision.CaseId);saved=revision;history=revisions;group=revision.Group;pending=null;
+    });
+}

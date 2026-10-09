@@ -1,0 +1,11 @@
+# P21 source reconciliation
+
+Native API tests cover company-local cohort boundaries, excluded month-end outcomes, last recorded win/loss, duplicate events counted once, reopened opportunities, zero denominators, stage gaps, absent recorded reasons and currency filters. Native stage/loss commands preserve their existing behavior while recording exact stage IDs, event author and only the supplied reason. Prior message analytics, operational reports, forecasts and Sales commands are exercised in the same accepted regression run.
+
+Forecast captures retain the original owning calculation's inputs. Tests reconcile all three windows and change mutable deal amounts afterward; retained capture contributions remain unchanged. Existing primary-currency and daily-replacement semantics are preserved. Aggregate-only historical/bounded evidence is disclosed. Current forecasts remain currency-separated and show included opportunities, stage probabilities, risk/default risk, close dates and expected contributions.
+
+Proposal checks reconcile capacity, workload, signed gap and territory allocation with retained assumptions, verify exact reopening after current source changes, preserve original revisions, enforce identity retries and conflicting predecessors, and verify business audit. Corruption withholds retained results. Another company/user and revoked Sales scope cannot read/save. P20 captures retain the same Sales payload after native history deletion.
+
+SQL Server upgrades/downgrades/upgrades the P21 migration in an owned disposable database, leaves existing native activity and monthly history intact and does not fabricate typed past reasons. Concurrent successors admit one revision, and duplicate requests resolve to the same durable proposal. The P20 SQL checks also pass with the added schema. Fixture disposal removes only its GUID-owned database.
+
+Rendered pages/components verify report-to-opportunity period/currency/snapshot return, connected planning/monthly destinations, restricted reload clearing, recorded original notes/results/reviewer, refresh action, request identity across conflict retry, and late company-switch responses. Real Web/API wire tests serialize native reports/proposals and reproduce monthly report payloads. Those checks establish component and transport behavior; they do not establish real-browser visual acceptance.

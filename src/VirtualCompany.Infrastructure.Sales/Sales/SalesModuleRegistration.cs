@@ -64,6 +64,7 @@ public static class SalesModuleRegistration
         services.AddScoped<ICampaignSchedulingCoordinator, CampaignSchedulingCoordinator>();
         services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
         services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
+        services.AddScoped<ISalesManagementService, SalesManagementService>();
         services.AddScoped<IConversionAnalyticsService, ConversionAnalyticsService>();
         services.AddScoped<RevenueForecastService>();
         services.AddScoped<IRevenueForecastService>(provider => provider.GetRequiredService<RevenueForecastService>());
@@ -276,6 +277,7 @@ public static class SalesModuleRegistration
         services.AddScoped<ISalesAgentDecisionService, SalesAgentDecisionService>();
         services.AddScoped<IMarketingOperationsService, MarketingOperationsService>();
         services.AddScoped<IMarketingOperationalReportService, MarketingOperationalReportService>();
+        services.AddScoped<IMarketingManagementService, MarketingManagementService>();
         services.AddScoped<IMarketingStrategyService, MarketingStrategyService>();
         services.AddScoped<IGuidedArtifactDefinition, MarketingStrategyGuidedArtifactDefinition>();
         services.AddScoped<IGuidedArtifactDefinition, MarketingSegmentGuidedArtifactDefinition>();
@@ -352,6 +354,8 @@ public static class SalesModuleRegistration
         services.AddScoped<ITodayWorkspaceContributor, MarketingTodayWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceContributor, SalesMonthlyWorkspaceContributor>();
         services.AddScoped<IMonthlyWorkspaceContributor, MarketingMonthlyWorkspaceContributor>();
+        services.AddScoped<IWeeklyWorkspaceContributor, SalesWeeklyWorkspaceContributor>();
+        services.AddScoped<IWeeklyWorkspaceContributor, MarketingWeeklyWorkspaceContributor>();
         services.AddScoped<ISalesRoomCaptureService, SalesRoomCaptureService>();
         services.AddHostedService<SalesRoomCaptureRetentionWorker>();
         return services;

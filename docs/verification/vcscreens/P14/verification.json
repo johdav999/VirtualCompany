@@ -1,0 +1,131 @@
+{
+  "phase": "P14",
+  "implemented": true,
+  "localVerification": "Passed",
+  "humanApproval": "Pending",
+  "head": "9a356c7901abc2044f6ecb6a4e8a5ebf64ceab5b",
+  "verifiedUtc": "2026-10-03T19:46:59.3236492Z",
+  "automated": [
+    {
+      "suite": "api",
+      "passed": 153,
+      "failed": 0,
+      "skipped": 0,
+      "trx": "p14-api.trx",
+      "testClasses": [
+        "VirtualCompany.Api.Tests.AgentEffectiveAuthorityResolverTests",
+        "VirtualCompany.Api.Tests.AgentExecutionPolicyGuardrailTests",
+        "VirtualCompany.Api.Tests.AuthorityExplanationIntegrationTests",
+        "VirtualCompany.Api.Tests.BusinessWorkEvidenceIntegrationTests",
+        "VirtualCompany.Api.Tests.CollaborationEvidenceIntegrationTests",
+        "VirtualCompany.Api.Tests.CompanyOperatingAutonomyPolicyTests",
+        "VirtualCompany.Api.Tests.FinanceAgentAuthorityMatrixTests",
+        "VirtualCompany.Api.Tests.FinanceAutonomyGrantPolicyTests"
+      ]
+    },
+    {
+      "suite": "web",
+      "passed": 108,
+      "failed": 0,
+      "skipped": 0,
+      "trx": "p14-web.trx",
+      "testClasses": [
+        "VirtualCompany.Web.Tests.AgentAuthorityStateBadgeComponentTests",
+        "VirtualCompany.Web.Tests.AgentAuthorityTransparencyPresenterTests",
+        "VirtualCompany.Web.Tests.AgentAuthorityWorkspaceSurfaceTests",
+        "VirtualCompany.Web.Tests.AgentWorkJourneyTests",
+        "VirtualCompany.Web.Tests.AuthorityExplanationJourneyTests",
+        "VirtualCompany.Web.Tests.BusinessWorkEvidenceJourneyTests",
+        "VirtualCompany.Web.Tests.CollaborationEvidenceJourneyTests",
+        "VirtualCompany.Web.Tests.DecisionReviewJourneyTests",
+        "VirtualCompany.Web.Tests.FinanceAgentWorkbenchSurfaceTests"
+      ]
+    },
+    {
+      "suite": "wire",
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "trx": "p14-wire.trx",
+      "testClasses": [
+        "VirtualCompany.Web.Contract.Tests.AgentWorkWireContractTests",
+        "VirtualCompany.Web.Contract.Tests.AuthorityExplanationWireTests",
+        "VirtualCompany.Web.Contract.Tests.BusinessWorkEvidenceWireTests",
+        "VirtualCompany.Web.Contract.Tests.CollaborationEvidenceWireTests"
+      ]
+    }
+  ],
+  "countsOverlapEarlierPhases": true,
+  "builds": [
+    {
+      "warnings": 13,
+      "log": "api-build.log",
+      "errors": 0,
+      "project": "VirtualCompany.Api",
+      "outcome": "Passed"
+    },
+    {
+      "warnings": 0,
+      "log": "web-build.log",
+      "errors": 0,
+      "project": "VirtualCompany.Web",
+      "outcome": "Passed"
+    },
+    {
+      "warnings": 15,
+      "log": "uat-build.log",
+      "errors": 0,
+      "project": "VirtualCompany.Workspace.Uat",
+      "outcome": "Passed"
+    }
+  ],
+  "buildFlags": "DOTNET_PROCESSOR_COUNT=1; --no-restore -m:1 -p:UseSharedCompilation=false",
+  "modelCheck": {
+    "log": "model-check.log",
+    "pendingModelChanges": false,
+    "newP14Migration": false,
+    "outcome": "Passed"
+  },
+  "browser": {
+    "file": "browser-checks.json",
+    "uat": "uat.md",
+    "failed": 0,
+    "passed": 12
+  },
+  "source": {
+    "file": "source-reconciliation.json",
+    "failed": 0,
+    "passed": 25,
+    "script": "reconcile.ps1"
+  },
+  "preservation": {
+    "unexpectedChanges": 0,
+    "unchanged": 393,
+    "expectedSharedEdits": 9,
+    "file": "preservation.json",
+    "headUnchanged": true,
+    "baselineFiles": 402
+  },
+  "cleanup": {
+    "viewportReset": true,
+    "file": "cleanup.json",
+    "ownedProcessesStopped": true,
+    "tabClosed": true,
+    "listenersRemoved": true
+  },
+  "diffCheck": "Passed",
+  "reference": {
+    "prompt": "docs/design/references/authority-p14-reference-prompt.md",
+    "baseline": "docs/design/references/role-time-agent-2026-10-01/09-autonomy-controls.png",
+    "image": "docs/design/references/authority-p14-reference.png",
+    "inspected": true
+  },
+  "limitations": [
+    "NuGet vulnerability feed retrieval unavailable in sandbox; restored dependencies used.",
+    "Existing API analyzer/model warnings retained; no P14 schema changes.",
+    "Local synthetic fixtures; no deployed tenant or live provider validation.",
+    "Production application of earlier P11/P13 migrations and prior native/physical/statutory gates remain separate.",
+    "Human release approval Pending.",
+    "P15 policy preview/edit/apply/history/enforcement remains unimplemented."
+  ]
+}

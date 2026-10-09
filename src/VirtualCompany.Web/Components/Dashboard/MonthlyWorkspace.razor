@@ -16,7 +16,7 @@ else if (!string.IsNullOrWhiteSpace(ErrorMessage))
 {
     <section class="monthly-state" data-testid="monthly-error" role="alert"><h1>@CommonText["MonthlyErrorTitle"]</h1><p>@ErrorMessage</p><button @onclick="RetryRequested">@CommonText["Retry"]</button></section>
 }
-else if (Workspace is null)
+else if (Workspace is null || Workspace.CompanyId != CompanyId)
 {
     <section class="monthly-state" data-testid="monthly-empty" role="status"><h1>@CommonText["MonthlyEmptyTitle"]</h1><p>@CommonText["MonthlyEmptyDescription"]</p></section>
 }
@@ -27,15 +27,15 @@ else
             <div class="monthly-header__title">
                 <h1>@CommonText["MonthlyWorkspaceTitle"]</h1>
                 <div class="monthly-header__meta">
-                    <strong>@Workspace.Header.CompanyName</strong><span aria-hidden="true"></span>
-                    <MonthlyWorkspaceIcon Kind="calendar" Size="14" /><span>@Workspace.Period.Label</span><span aria-hidden="true"></span>
-                    <span>@CommonText["MonthlyComparison", Workspace.Period.ComparisonLabel]</span>
+                    <strong>@Viewed.Header.CompanyName</strong><span aria-hidden="true"></span>
+                    <MonthlyWorkspaceIcon Kind="calendar" Size="14" /><span>@Viewed.Period.Label</span><span aria-hidden="true"></span>
+                    <span>@CommonText["MonthlyComparison", Viewed.Period.ComparisonLabel]</span>
                 </div>
             </div>
             <div class="monthly-header__tools">
                 <div class="monthly-freshness">
-                    <span><i aria-hidden="true"></i>@GeneratedLabel(Workspace.GeneratedAtUtc)</span>
-                    <small>@Workspace.ManagementSummary.CoverageSummary</small>
+                    <span><i aria-hidden="true"></i>@GeneratedLabel(Viewed.GeneratedAtUtc)</span>
+                    <small>@Viewed.ManagementSummary.CoverageSummary</small>
                 </div>
                 <div class="monthly-month-nav" aria-label="@CommonText["MonthlyPeriodNavigation"]">
                     <button type="button" aria-label="@CommonText["MonthlyPrevious"]" @onclick="() => ShiftMonth(-1)"><MonthlyWorkspaceIcon Kind="chevron-left" Size="15" /><span>@CommonText["MonthlyPrevious"]</span></button>
@@ -49,28 +49,60 @@ else
                 <div class="monthly-controls">
                     <div class="workspace-periods" role="group" aria-label="@CommonText["WorkspacePeriodLabel"]" data-testid="workspace-period-picker">
                         <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("today")'>@CommonText["WorkspacePeriodToday"]</button>
+                        <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("week")'>Week</button>
                         <button type="button" class="workspace-periods__active" aria-pressed="true">@CommonText["WorkspacePeriodMonthly"]</button>
+                        <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("quarter")'>Quarter</button>
+                        <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("year")'>Year</button><button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("multiyear")'>Multi-year</button>
                     </div>
-                    @if (Workspace.AvailableLenses.Count > 1)
+                    @if (Viewed.AvailableLenses.Count > 1)
                     {
                         <div class="monthly-lenses" role="group" aria-label="@CommonText["TodayLensPickerLabel"]" data-testid="monthly-lens-picker">
-                            @foreach (var lens in Workspace.AvailableLenses)
+                            @foreach (var lens in Viewed.AvailableLenses)
                             {
-                                var active = string.Equals(lens.Value, Workspace.ActiveLens, StringComparison.OrdinalIgnoreCase);
+                                var active = string.Equals(lens.Value, Viewed.ActiveLens, StringComparison.OrdinalIgnoreCase);
                                 <button type="button" class="@(active ? "active" : null)" aria-pressed="@active.ToString().ToLowerInvariant()" title="@lens.AvailabilityReason" @onclick="() => LensChanged.InvokeAsync(lens.Value)">@LensLabel(lens.Value)</button>
                             }
                         </div>
                     }
-                    @if (Workspace.AvailableLenses.Count == 1)
+                    @if (Viewed.AvailableLenses.Count == 1)
                     {
                         <div class="workspace-current-responsibility" data-testid="monthly-active-responsibility">
-                            <strong>@LensLabel(Workspace.ActiveLens)</strong>
-                            <small>@Workspace.AvailableLenses[0].AvailabilityReason</small>
+                            <strong>@LensLabel(Viewed.ActiveLens)</strong>
+                            <small>@Viewed.AvailableLenses[0].AvailabilityReason</small>
                         </div>
                     }
                 </div>
 
-                @if (Workspace.ResponsibilitySetup is { IsConfigured: false } setup)
+                @if (Viewed.ActiveLens == "company")
+                {
+                    <CompanyPeriodOverview CompanyName="@Viewed.Header.CompanyName" PeriodLabel="@Viewed.Period.Label" Retained="@(openedReview is not null)"
+                        Areas="CompanyPeriodOverviewPresentation.Monthly(Viewed, openedReview?.Summary.Id)" />
+                }
+
+                @if (Viewed.Review is not null)
+                {
+                    <MonthlyReviewHistory @key="@($"{CompanyId}:{Workspace.ActiveLens}:{Workspace.Period.Year}:{Workspace.Period.Month}")"
+                        Workspace="Workspace" SnapshotId="SnapshotId" Opened="ReviewOpened" />
+                }
+
+                @if (Viewed.SalesManagement is not null)
+                {
+                    <section class="monthly-notice"><a href="@Resolve($"/app/sales/reports/management?companyId={CompanyId:D}&year={Viewed.Period.Year}&month={Viewed.Period.Month}&lens={Viewed.ActiveLens}{(SnapshotId.HasValue?$"&snapshot={SnapshotId:D}":string.Empty)}")">Sales management analysis and capacity planning</a><p>Recorded cohort definitions and opportunity evidence are retained with this monthly review.</p></section>
+                }
+                @if (Viewed.MarketingManagement is not null)
+                {
+                    <section class="monthly-notice"><a href="@Resolve($"/marketing/reports/management?companyId={CompanyId:D}&year={Viewed.Period.Year}&month={Viewed.Period.Month}&lens={Viewed.ActiveLens}{(SnapshotId.HasValue?$"&snapshot={SnapshotId:D}":string.Empty)}")">Marketing performance and budget proposals</a><p>Recorded cost, attribution and experiment evidence is retained with this monthly review.</p></section>
+                }
+                @if (Viewed.FinancePlanning is { } planning)
+                {
+                    <section class="monthly-notice"><a href="@Resolve($"/finance/reports/variance?companyId={CompanyId:D}&{FinanceRollingPlanningApiClient.Parameters(planning.Query)}&lens={Viewed.ActiveLens}{(SnapshotId.HasValue?$"&snapshot={SnapshotId:D}":string.Empty)}")">Finance variance and rolling forecasts</a><p>Posted account actuals, selected native planning versions and explanatory evidence are retained with this review.</p></section>
+                }
+                @if (Viewed.SupportQuality is { } support)
+                {
+                    <section class="monthly-notice"><a href="@Resolve($"/support/reports/quality?companyId={CompanyId:D}&{SupportQualityApiClient.Parameters(support.Query)}&lens={Viewed.ActiveLens}{(SnapshotId.HasValue?$"&snapshot={SnapshotId:D}":string.Empty)}")">Support quality and capacity proposals</a><p>Recorded lifecycle cohorts, follow-up dates and historical coverage are retained with this review.</p></section>
+                }
+
+                @if (Viewed.ResponsibilitySetup is { IsConfigured: false } setup)
                 {
                     <section class="monthly-notice" data-testid="monthly-responsibility-setup">
                         <div><strong>@CommonText["TodaySetupTitle"]</strong><p>@setup.Message</p></div>
@@ -78,14 +110,14 @@ else
                     </section>
                 }
 
-                <section class="monthly-summary" data-testid="@(Workspace.IsPartial ? "monthly-partial" : null)" role="@(Workspace.IsPartial ? "status" : null)" aria-labelledby="monthly-summary-title">
+                <section class="monthly-summary" data-testid="@(Viewed.IsPartial ? "monthly-partial" : null)" role="@(Viewed.IsPartial ? "status" : null)" aria-labelledby="monthly-summary-title">
                     <span class="monthly-summary__icon"><MonthlyWorkspaceIcon Kind="sparkles" Size="19" /></span>
-                    <div><h2 id="monthly-summary-title">@Workspace.ManagementSummary.Headline</h2><p>@Workspace.ManagementSummary.Summary</p><small><i aria-hidden="true"></i>@Workspace.ManagementSummary.CoverageSummary</small></div>
+                    <div><h2 id="monthly-summary-title">@Viewed.ManagementSummary.Headline</h2><p>@Viewed.ManagementSummary.Summary</p><small><i aria-hidden="true"></i>@Viewed.ManagementSummary.CoverageSummary</small></div>
                 </section>
 
                 <section class="monthly-results" aria-label="@CommonText["MonthlyResultsLabel"]">
-                    @if (Workspace.Results.Count == 0) { <div class="monthly-inline-empty"><strong>@CommonText["MonthlyResultsEmpty"]</strong></div> }
-                    @foreach (var result in Workspace.Results.Take(4))
+                    @if (Viewed.Results.Count == 0) { <div class="monthly-inline-empty"><strong>@CommonText["MonthlyResultsEmpty"]</strong></div> }
+                    @foreach (var result in Viewed.Results)
                     {
                         var comparison = MetricComparison(result);
                         <a class="monthly-result monthly-result--@Tone(result.Status)" href="@Resolve(result.DeepLink)" @onclick='() => Record("result", result.DeepLink, result.Key, result.EvidenceSourceType, result.Label)'>
@@ -94,23 +126,47 @@ else
                             @if (result.IsAvailable)
                             {
                                 <small class="monthly-result__trend monthly-result__trend--@comparison.Tone">@if (comparison.Direction != 0) { <MonthlyWorkspaceIcon Kind="arrow-up" Size="13" /> }<b>@comparison.Change</b><span>@CommonText["MonthlyComparedWith", result.ComparisonDisplayValue]</span></small>
-                                <small class="monthly-result__source">@Workspace.ManagementSummary.CoverageSummary</small>
+                                <small class="monthly-result__source">@Viewed.ManagementSummary.CoverageSummary</small>
                             }
                             else { <small class="monthly-result__unavailable" title="@(result.UnavailableReason ?? CommonText["MonthlyUnavailable"])">@(result.UnavailableReason ?? CommonText["MonthlyUnavailable"])</small> }
                         </a>
                     }
                 </section>
 
+                @if (Viewed.Review is { } review)
+                {
+                    <section class="monthly-management-review" data-testid="monthly-management-review">
+                        <h2>Results, targets and variances</h2>
+                        <p>@review.Readiness</p><p>@review.CloseReadiness</p>
+                        @if(Viewed.Sections.Any(x=>x.Lens=="finance")) { <a href="@Resolve("/finance/accounting/close-workspace")">Open Finance close workspace</a> }
+                        <div class="monthly-review-table"><table><thead><tr><th>Measure</th><th>Actual / forecast</th><th>Prior month</th><th>Available target</th><th>Variance to target</th><th>Source</th></tr></thead><tbody>
+                        @foreach(var measure in review.Measures)
+                        {
+                            <tr><th scope="row">@measure.Label<small>@measure.Kind</small></th>
+                                <td>@ReviewValue(measure.Actual,measure.Unit)</td><td>@ReviewValue(measure.Prior,measure.Unit)</td>
+                                <td>@(measure.Target.HasValue ? ReviewValue(measure.Target,measure.Unit) : measure.TargetAvailability)</td>
+                                <td>@ReviewValue(measure.TargetVariance,measure.Unit)</td>
+                                <td><a href="@Resolve(measure.SourceLink)">Open source</a><details><summary>Calculation and explanation</summary><p>@measure.Definition</p><p>@measure.Explanation</p><small>Prior-month change: @ReviewValue(measure.Change,measure.Unit)</small></details></td></tr>
+                        }
+                        </tbody></table></div>
+                        <details><summary>Source coverage and review provenance</summary>
+                            <p>Calculation version: @review.CalculationVersion · as of @Viewed.GeneratedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC · @Viewed.Period.Timezone</p>
+                            <p>@review.HistoryLimitation</p>
+                            @foreach(var source in Viewed.SourceCoverage) { <p><strong>@source.Label · @source.State</strong> @source.Message</p> }
+                        </details>
+                    </section>
+                }
+
                 <section aria-labelledby="monthly-priorities-title">
-                    <div class="monthly-heading"><h2 id="monthly-priorities-title">@CommonText["MonthlyPrioritiesTitle"]</h2><span>@Workspace.Priorities.Count</span></div>
-                    @if (Workspace.Priorities.Count == 0)
+                    <div class="monthly-heading"><h2 id="monthly-priorities-title">@CommonText["MonthlyPrioritiesTitle"]</h2><span>@Viewed.Priorities.Count</span></div>
+                    @if (Viewed.Priorities.Count == 0)
                     {
                         <div class="monthly-inline-empty" data-testid="monthly-priorities-empty"><strong>@CommonText["MonthlyPrioritiesEmpty"]</strong><p>@CommonText["MonthlyPrioritiesEmptyDescription"]</p></div>
                     }
                     else
                     {
                         <div class="monthly-priorities">
-                            @foreach (var priority in Workspace.Priorities.Take(5))
+                            @foreach (var priority in Viewed.Priorities.Take(5))
                             {
                                 <article class="monthly-priority">
                                     <b class="monthly-priority__rank" aria-label="@CommonText["TodayPriorityRank", priority.Rank]">@priority.Rank</b>
@@ -132,12 +188,12 @@ else
                 <section aria-labelledby="monthly-features-title">
                     <div class="monthly-heading"><h2 id="monthly-features-title">@CommonText["MonthlyFeatureReviewTitle"]</h2></div>
                     <div class="monthly-sections">
-                        @foreach (var section in Workspace.Sections)
+                        @foreach (var section in Viewed.Sections)
                         {
                             <article class="monthly-section monthly-section--@Tone(section.Status)">
                                 <div class="monthly-section__intro"><span class="monthly-section__icon monthly-feature-icon--@Tone(section.Status)"><MonthlyWorkspaceIcon Kind="@LensIcon(section.Lens)" Size="21" /></span><div><h3>@(section.Title)</h3><p>@(section.Summary)</p></div></div>
                                 <div class="monthly-section__facts">
-                                    @foreach (var fact in section.Facts.Take(4)) { <span class="monthly-fact--@Tone(fact.Status)"><i aria-hidden="true"></i><small>@fact.Label</small><strong>@fact.Value</strong></span> }
+                                    @foreach (var fact in section.Facts.Take(10)) { <span class="monthly-fact--@Tone(fact.Status)"><i aria-hidden="true"></i><small>@fact.Label</small><strong>@fact.Value</strong></span> }
                                 </div>
                                 <div class="monthly-section__action"><small class="monthly-coverage monthly-coverage--@Tone(section.Status)"><i aria-hidden="true"></i>@(section.CoverageSummary)</small><a href="@Resolve(section.SetupDeepLink ?? section.DeepLink)" @onclick='() => Record("section", section.SetupDeepLink ?? section.DeepLink, section.Lens, "monthly_section", section.Title)'>@(section.SetupDeepLink is null ? CommonText["TodayOpenWorkspace"] : CommonText["MonthlySetUpSource"])</a><MonthlyWorkspaceIcon Kind="chevron-right" Size="16" /></div>
                             </article>
@@ -148,12 +204,12 @@ else
 
             <aside class="monthly-rail">
                 <section class="monthly-rail-card" data-testid="monthly-decisions">
-                    <header><MonthlyWorkspaceIcon Kind="decisions" Size="20" /><h2>@CommonText["MonthlyDecisionsTitle"]</h2><button type="button" aria-label="@CommonText["MonthlyDecisionsTitle"]" aria-expanded="@ShowMobileDecisions" @onclick="ToggleMobileDecisions"><span>@Workspace.Decisions.Count</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="15" /></button></header>
+                    <header><MonthlyWorkspaceIcon Kind="decisions" Size="20" /><h2>@CommonText["MonthlyDecisionsTitle"]</h2><button type="button" aria-label="@CommonText["MonthlyDecisionsTitle"]" aria-expanded="@ShowMobileDecisions" @onclick="ToggleMobileDecisions"><span>@Viewed.Decisions.Count</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="15" /></button></header>
                     <div class="monthly-rail-card__body @(ShowMobileDecisions ? "monthly-rail-card__body--open" : null)">
-                        @if (Workspace.Decisions.Count == 0) { <p class="monthly-rail-empty">@CommonText["TodayDecisionsEmpty"]</p> }
+                        @if (Viewed.Decisions.Count == 0) { <p class="monthly-rail-empty">@CommonText["TodayDecisionsEmpty"]</p> }
                         else
                         {
-                            @foreach (var decision in Workspace.Decisions.Take(5))
+                            @foreach (var decision in Viewed.Decisions.Take(5))
                             {
                                 <a class="monthly-decision" href="@Resolve(decision.DeepLink)" @onclick='() => Record("decision", decision.DeepLink, decision.Key, "decision", decision.Title)'><span class="monthly-decision__icon"><MonthlyWorkspaceIcon Kind="company" Size="16" /></span><div><h3>@decision.Title</h3><p>@decision.Summary</p></div><div><span>@CommonText["TodayReviewAction"]</span><small>@decision.ObservedAtUtc.ToLocalTime().ToString("MMM d", CultureInfo.CurrentCulture)</small></div></a>
                             }
@@ -163,9 +219,9 @@ else
                 </section>
 
                 <section class="monthly-rail-card" data-testid="monthly-agent-outcomes">
-                    <header><MonthlyWorkspaceIcon Kind="agents" Size="20" /><h2>@CommonText["MonthlyAgentOutcomesTitle"]</h2><button type="button" aria-label="@CommonText["MonthlyAgentOutcomesTitle"]" aria-expanded="@ShowMobileOutcomes" @onclick="ToggleMobileOutcomes"><span>@Workspace.AgentOutcomes.Count</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="15" /></button></header>
+                    <header><MonthlyWorkspaceIcon Kind="agents" Size="20" /><h2>@CommonText["MonthlyAgentOutcomesTitle"]</h2><button type="button" aria-label="@CommonText["MonthlyAgentOutcomesTitle"]" aria-expanded="@ShowMobileOutcomes" @onclick="ToggleMobileOutcomes"><span>@Viewed.AgentOutcomes.Count</span><MonthlyWorkspaceIcon Kind="chevron-right" Size="15" /></button></header>
                     <div class="monthly-rail-card__body @(ShowMobileOutcomes ? "monthly-rail-card__body--open" : null)">
-                        @if (Workspace.AgentOutcomes.Count == 0) { <p class="monthly-rail-empty">@CommonText["MonthlyAgentOutcomesEmpty"]</p> }
+                        @if (Viewed.AgentOutcomes.Count == 0) { <p class="monthly-rail-empty">@CommonText["MonthlyAgentOutcomesEmpty"]</p> }
                         else
                         {
                             @foreach (var group in OutcomeGroups())
@@ -192,6 +248,17 @@ else
 @code {
     [Parameter] public Guid CompanyId { get; set; }
     [Parameter] public MonthlyWorkspaceViewModel? Workspace { get; set; }
+    [Parameter] public Guid? SnapshotId { get; set; }
+    private MonthlyReviewSnapshotViewModel? openedReview;
+    private string? reviewContext;
+    protected override void OnParametersSet()
+    {
+        var next=$"{CompanyId}:{Workspace?.ActiveLens}:{Workspace?.Period.Year}:{Workspace?.Period.Month}:{SnapshotId}";
+        if (reviewContext!=next) { reviewContext=next; openedReview=null; }
+    }
+    private MonthlyWorkspaceViewModel Viewed => openedReview?.Workspace ?? Workspace!;
+    private Task ReviewOpened(MonthlyReviewSnapshotViewModel? value) { openedReview=value; return Task.CompletedTask; }
+    private static string ReviewValue(decimal? value,string? unit) => value.HasValue ? $"{value:0.##} {unit}".Trim() : "Unavailable";
     [Parameter] public bool IsLoading { get; set; }
     [Parameter] public bool IsUnauthorized { get; set; }
     [Parameter] public string? ErrorMessage { get; set; }
@@ -206,8 +273,8 @@ else
     private void ToggleMobileDecisions() => ShowMobileDecisions = !ShowMobileDecisions;
     private void ToggleMobileOutcomes() => ShowMobileOutcomes = !ShowMobileOutcomes;
 
-    private Task ShiftMonth(int offset) { var date = new DateTime(Workspace!.Period.Year, Workspace.Period.Month, 1).AddMonths(offset); return MonthChanged.InvokeAsync((date.Year, date.Month)); }
-    private string Resolve(string? route) => DashboardRoutes.EnsureWorkspaceContext(route, CompanyId, DashboardRoutes.BuildMonthlyPath(CompanyId, Workspace?.ActiveLens, Workspace?.Period.Year, Workspace?.Period.Month));
+    private Task ShiftMonth(int offset) { var date = new DateTime(Viewed!.Period.Year, Viewed.Period.Month, 1).AddMonths(offset); return MonthChanged.InvokeAsync((date.Year, date.Month)); }
+    private string Resolve(string? route) => DashboardRoutes.EnsureWorkspaceContext(route, CompanyId, DashboardRoutes.BuildMonthlyPath(CompanyId, Viewed?.ActiveLens, Viewed?.Period.Year, Viewed?.Period.Month, openedReview?.Summary.Id));
     private Task Record(string area, string target, string? id, string? source, string? label, int? position = null) => ActionSelected.InvokeAsync(new(area, "open-" + area, Resolve(target), id, source, label, position));
     private string LensLabel(string? lens) => TodayWorkspaceLensValues.Normalize(lens) switch { "finance" => CommonText["TodayFinance"], "sales" => CommonText["TodaySales"], "marketing" => CommonText["TodayMarketing"], "customers" => CommonText["TodayCustomerSupport"], _ => CommonText["TodayCompany"] };
     private static string Tone(string? status) => status?.Trim().ToLowerInvariant() switch { "critical" or "blocked" or "failed" => "danger", "attention" or "unavailable" or "needs_user" => "attention", "positive" or "healthy" or "completed" => "positive", "recommended" => "recommended", _ => "current" };
@@ -249,7 +316,7 @@ else
     {
         if (Workspace is null) return [];
         var order = new[] { "completed", "blocked", "needs_user", "recommended", "working", "monitoring" };
-        return Workspace.AgentOutcomes.Take(8).GroupBy(x => NormalizeAgentState(x.AgentState)).OrderBy(x => Array.IndexOf(order, x.Key)).Select(x => new OutcomeGroupView(AgentState(x.Key), Tone(x.Key), x.ToList())).ToList();
+        return Viewed.AgentOutcomes.Take(8).GroupBy(x => NormalizeAgentState(x.AgentState)).OrderBy(x => Array.IndexOf(order, x.Key)).Select(x => new OutcomeGroupView(AgentState(x.Key), Tone(x.Key), x.ToList())).ToList();
     }
 
     private static string NormalizeAgentState(string? state) => string.IsNullOrWhiteSpace(state) ? "monitoring" : state.Trim().ToLowerInvariant();

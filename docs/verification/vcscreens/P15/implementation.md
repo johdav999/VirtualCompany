@@ -1,0 +1,5 @@
+# P15 completion within P18
+
+The existing five supported task types, versioned previews/apply/history, current-policy evaluator, durable native queue, typed Web policy surface and Finance template adaptation are preserved. P18 verifies real owner output for Sales proposal, Marketing content and Support drafting, including successful committed review and revoked/current actor/material denial. Research/native pause/version/expiry/budget and Finance native owner regressions cover the remaining catalogue entries.
+
+P18 fixes are documented in [its implementation packet](../P18/implementation.md); automatic results are in [verification.json](../P18/verification.json). Policy visibility and activation do not authorize delivery/publication/payment/posting/close. The [catalogue](../release-2/supported-task-catalogue.md) names exact tools/records, boundaries, unsupported states and evidence limits. Browser completion is still blocked and is not inferred from rendered/typed tests. Existing P15 diagnostic files and previous phase artifacts are preserved.

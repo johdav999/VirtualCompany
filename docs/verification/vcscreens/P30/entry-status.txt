@@ -1,0 +1,571 @@
+ M docs/ui-route-inventory.md
+ M docs/vcscreens/implementation-status.md
+ M docs/vcscreens/screen-report-register.md
+ M src/VirtualCompany.Api/Controllers/AgentWorkController.cs
+ M src/VirtualCompany.Api/Controllers/SupportResponsibilityFilter.cs
+ M src/VirtualCompany.Api/Controllers/TasksController.cs
+ M src/VirtualCompany.Application/Agents/AgentEffectiveAuthorityContracts.cs
+ M src/VirtualCompany.Application/Approvals/ApprovalContracts.cs
+ M src/VirtualCompany.Application/Cockpit/AgentWorkContracts.cs
+ M src/VirtualCompany.Application/Cockpit/MonthlyWorkspaceContracts.cs
+ M src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+ M src/VirtualCompany.Application/Finance/Contracts/FinancePlanningContextContracts.cs
+ M src/VirtualCompany.Application/Orchestration/MultiAgentCollaborationContracts.cs
+ M src/VirtualCompany.Application/Sales/SalesContracts.cs
+ M src/VirtualCompany.Domain/Entities/AgentExecutionEntities.cs
+ M src/VirtualCompany.Domain/Entities/BriefingEntities.cs
+ M src/VirtualCompany.Domain/Entities/CompanyInvitationEntities.cs
+ M src/VirtualCompany.Domain/Entities/OperatingDispatch.cs
+ M src/VirtualCompany.Domain/Entities/PlanningEntities.cs
+ M src/VirtualCompany.Domain/Entities/RevenueForecastSnapshot.cs
+ M src/VirtualCompany.Domain/Entities/SalesActivity.cs
+ M src/VirtualCompany.Domain/Entities/SupportCase.cs
+ M src/VirtualCompany.Domain/Entities/SupportCaseEvent.cs
+ M src/VirtualCompany.Domain/Entities/SupportCaseEventTypes.cs
+ M src/VirtualCompany.Domain/Entities/TaskEntities.cs
+ M src/VirtualCompany.Domain/Enums/ApprovalEnums.cs
+ M src/VirtualCompany.Domain/Enums/CompanyOrchestrationEnums.cs
+ M src/VirtualCompany.Infrastructure.Finance/Finance/CompanyFinanceCommandService.Planning.cs
+ M src/VirtualCompany.Infrastructure.Finance/Finance/CompanyFinanceReadService.Variance.cs
+ M src/VirtualCompany.Infrastructure.Finance/Finance/FinanceModuleRegistration.cs
+ M src/VirtualCompany.Infrastructure.Finance/Finance/FinanceMonthlyWorkspaceContributor.cs
+ M src/VirtualCompany.Infrastructure.Finance/Finance/FinancePlanningEntityResolver.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/AgentEffectiveAuthorityResolver.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyAgentToolExecutionService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyAgentWorkQueryService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyApprovalRequestService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyBriefingGenerationPipeline.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyBriefingService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyBriefingUpdateJobRunner.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyMonthlyWorkspaceQueryService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyOperationMonthlyWorkspaceContributor.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyOutboxInfrastructure.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyTaskService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyTodayWorkspaceLensResolver.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyTodayWorkspaceQueryService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/CompanyWorkVisibility.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/FinanceAutonomyRunService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/FinancePlanningContextProjector.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/InternalCompanyToolContract.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/MultiAgentCoordinator.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/OperatingPlanValidationService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/OperatingWorkDispatcher.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/OperationsModuleRegistration.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/SingleAgentOrchestrationService.cs
+ M src/VirtualCompany.Infrastructure.Operations/Companies/StaticCompanyToolRegistry.cs
+ M src/VirtualCompany.Infrastructure.Platform/Platform/PlatformModuleRegistration.cs
+ M src/VirtualCompany.Infrastructure.Sales/Marketing/MarketingMonthlyWorkspaceContributor.cs
+ M src/VirtualCompany.Infrastructure.Sales/Sales/RevenueForecastService.cs
+ M src/VirtualCompany.Infrastructure.Sales/Sales/SalesMeetingSchedulingService.cs
+ M src/VirtualCompany.Infrastructure.Sales/Sales/SalesModuleRegistration.cs
+ M src/VirtualCompany.Infrastructure.Sales/Sales/SalesMonthlyWorkspaceContributor.cs
+ M src/VirtualCompany.Infrastructure.Sales/Sales/SalesOperationsService.cs
+ M src/VirtualCompany.Infrastructure.Support/Support/SupportKnowledgeContextProvider.cs
+ M src/VirtualCompany.Infrastructure.Support/Support/SupportModuleRegistration.cs
+ M src/VirtualCompany.Infrastructure.Support/Support/SupportMonthlyWorkspaceContributor.cs
+ M src/VirtualCompany.Infrastructure.Support/Support/SupportReplyDeliveryDispatcher.cs
+ M src/VirtualCompany.Infrastructure.Support/Support/SupportReplyDraftService.cs
+ M src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+ M src/VirtualCompany.Persistence/Persistence/Configurations/CompanyBriefingDeliveryPreferenceConfiguration.cs
+ M src/VirtualCompany.Persistence/Persistence/Configurations/WorkTaskConfiguration.cs
+ M src/VirtualCompany.Persistence/Persistence/PlanningEntityConfigurations.cs
+ M src/VirtualCompany.Persistence/Persistence/SalesEntityConfigurations.cs
+ M src/VirtualCompany.Persistence/Persistence/SalesForecastEntityConfigurations.cs
+ M src/VirtualCompany.Persistence/Persistence/SupportEntityConfigurations.cs
+ M src/VirtualCompany.Persistence/Persistence/VirtualCompanyDbContext.cs
+ M src/VirtualCompany.Web/Components/ApprovalDetail.razor
+ M src/VirtualCompany.Web/Components/Dashboard/CompanyHealthSummary.razor
+ M src/VirtualCompany.Web/Components/Dashboard/MonthlyWorkspace.razor
+ M src/VirtualCompany.Web/Components/Dashboard/MonthlyWorkspace.razor.css
+ M src/VirtualCompany.Web/Components/Dashboard/TodayWorkspace.razor
+ M src/VirtualCompany.Web/Components/Finance/FinanceJourneyNavigation.razor
+ M src/VirtualCompany.Web/Components/Finance/FinanceOverviewHeader.razor
+ M src/VirtualCompany.Web/Components/Finance/InvoiceReviewDetailContent.razor
+ M src/VirtualCompany.Web/Components/Sales/SalesJourneyNavigation.razor
+ M src/VirtualCompany.Web/Components/Work/AgentWorkReturnLink.razor
+ M src/VirtualCompany.Web/Components/Work/WorkApprovalsPanel.razor
+ M src/VirtualCompany.Web/Localization/Sales/SalesResources.resx
+ M src/VirtualCompany.Web/Localization/Sales/SalesResources.sv-SE.resx
+ M src/VirtualCompany.Web/Pages/AgentSettingsHub.razor
+ M src/VirtualCompany.Web/Pages/AgentStaffOverview.razor
+ M src/VirtualCompany.Web/Pages/AgentWorkDetail.razor
+ M src/VirtualCompany.Web/Pages/Approvals.razor
+ M src/VirtualCompany.Web/Pages/BriefingPreferences.razor
+ M src/VirtualCompany.Web/Pages/Dashboard.razor
+ M src/VirtualCompany.Web/Pages/Finance/BillInboxDetailPage.razor
+ M src/VirtualCompany.Web/Pages/Finance/BillsPage.razor
+ M src/VirtualCompany.Web/Pages/Finance/BillsPage.razor.css
+ M src/VirtualCompany.Web/Pages/Finance/InvoiceReviewDetailPage.razor
+ M src/VirtualCompany.Web/Pages/Finance/PaymentBatchesPage.razor
+ M src/VirtualCompany.Web/Pages/Marketing/MarketingCampaignReview.razor
+ M src/VirtualCompany.Web/Pages/Marketing/MarketingDashboard.razor
+ M src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+ M src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+ M src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+ M src/VirtualCompany.Web/Pages/Support/SupportCaseDetail.razor
+ M src/VirtualCompany.Web/Pages/Support/SupportInbox.razor
+ M src/VirtualCompany.Web/Pages/Support/SupportOperationalReport.razor
+ M src/VirtualCompany.Web/Pages/Work.razor
+ M src/VirtualCompany.Web/Services/AgentAuthorityTransparencyPresenter.cs
+ M src/VirtualCompany.Web/Services/AgentWorkApiClient.cs
+ M src/VirtualCompany.Web/Services/AgentWorkRoutes.cs
+ M src/VirtualCompany.Web/Services/AgentWorkViewModels.cs
+ M src/VirtualCompany.Web/Services/ApprovalApiClient.cs
+ M src/VirtualCompany.Web/Services/ApprovalPresentationFormatter.cs
+ M src/VirtualCompany.Web/Services/DashboardRoutes.cs
+ M src/VirtualCompany.Web/Services/FinanceJourneyRoutes.cs
+ M src/VirtualCompany.Web/Services/MonthlyWorkspaceApiClient.cs
+ M src/VirtualCompany.Web/Services/MonthlyWorkspaceViewModels.cs
+ M src/VirtualCompany.Web/Services/SalesApiClient.cs
+ M src/VirtualCompany.Web/Services/SalesJourneyRoutes.cs
+ M src/VirtualCompany.Web/Services/WebApiClientRegistration.cs
+ M src/VirtualCompany.Web/wwwroot/js/dashboardTelemetry.js
+ M tests/VirtualCompany.Api.Tests/AgentEffectiveAuthorityResolverTests.cs
+ M tests/VirtualCompany.Api.Tests/ApprovalDecisionApiIntegrationTests.cs
+ M tests/VirtualCompany.Api.Tests/DependencyInjectionArchitectureTests.cs
+ M tests/VirtualCompany.Api.Tests/FinancePlanningContextProjectionTests.cs
+ M tests/VirtualCompany.Api.Tests/FinancePlanningEntityResolverTests.cs
+ M tests/VirtualCompany.Api.Tests/FortnoxApprovalBackedOutboundIntegrationTests.cs
+ M tests/VirtualCompany.Api.Tests/InvoiceReviewComponentTests.cs
+ M tests/VirtualCompany.Api.Tests/InvoiceReviewWorkbenchPageTests.cs
+ M tests/VirtualCompany.Api.Tests/MultiAgentCollaborationTests.cs
+ M tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+ M tests/VirtualCompany.Api.Tests/SingleAgentOrchestrationTests.cs
+ M tests/VirtualCompany.Api.Tests/TodayWorkspaceQueryServiceTests.cs
+ M tests/VirtualCompany.Web.Contract.Tests/VirtualCompany.Web.Contract.Tests.csproj
+ M tests/VirtualCompany.Web.Tests/CompanyHealthTests.cs
+ M tests/VirtualCompany.Web.Tests/MonthlyWorkspaceApiClientTests.cs
+ M tests/VirtualCompany.Web.Tests/MonthlyWorkspaceComponentTests.cs
+ M tests/VirtualCompany.Web.Tests/SupportOperationalJourneyTests.cs
+ M tests/VirtualCompany.Web.Tests/TodayWorkspaceComponentTests.cs
+ M tests/VirtualCompany.Web.Tests/VirtualCompany.Web.Tests.csproj
+ M tests/VirtualCompany.Web.Tests/WebTestContextServiceRegistration.cs
+ M tests/VirtualCompany.Web.Tests/WorkspaceShellTests.cs
+ M tests/VirtualCompany.Workspace.Uat/Program.cs
+?? docs/design/references/agent-supervision-p17-bottleneck-reference-prompt.md
+?? docs/design/references/agent-supervision-p17-bottleneck-reference.png
+?? docs/design/references/agent-supervision-p17-reference-prompt.md
+?? docs/design/references/agent-supervision-p17-reference.png
+?? docs/design/references/annual-detail-p26.png
+?? docs/design/references/annual-history-p26.png
+?? docs/design/references/annual-planning-p26-prompts.md
+?? docs/design/references/annual-review-p26.png
+?? docs/design/references/authority-p14-reference-prompt.md
+?? docs/design/references/authority-p14-reference.png
+?? docs/design/references/briefing-cadence-p29-prompts.md
+?? docs/design/references/briefing-cadence-p29.png
+?? docs/design/references/business-evidence-p13-finance-reference-prompt.md
+?? docs/design/references/business-evidence-p13-finance-reference.png
+?? docs/design/references/business-evidence-p13-marketing-reference-prompt.md
+?? docs/design/references/business-evidence-p13-marketing-reference.png
+?? docs/design/references/business-evidence-p13-sales-reference-prompt.md
+?? docs/design/references/business-evidence-p13-sales-reference.png
+?? docs/design/references/business-evidence-p13-support-reference-prompt.md
+?? docs/design/references/business-evidence-p13-support-reference.png
+?? docs/design/references/collaboration-p11-reference-prompt.md
+?? docs/design/references/collaboration-p11-reference.png
+?? docs/design/references/company-period-overview-2026-10-04-prompt.md
+?? docs/design/references/company-period-overview-2026-10-04-reference.png
+?? docs/design/references/create-review-work-p28.png
+?? docs/design/references/decision-review-p12-reference-prompt.md
+?? docs/design/references/decision-review-p12-reference.png
+?? docs/design/references/execution-control-p16-reference-prompt.md
+?? docs/design/references/execution-control-p16-reference.png
+?? docs/design/references/finance-planning-p23-comparison.png
+?? docs/design/references/finance-planning-p23-editor.png
+?? docs/design/references/finance-planning-p23-prompts.md
+?? docs/design/references/finance-planning-p23-variance.png
+?? docs/design/references/marketing-budget-p22-reference.png
+?? docs/design/references/marketing-management-p22-reference-prompts.md
+?? docs/design/references/marketing-management-p22-reference.png
+?? docs/design/references/monthly-p20-ceo-reference.png
+?? docs/design/references/monthly-p20-history-reference.png
+?? docs/design/references/monthly-p20-marketing-reference.png
+?? docs/design/references/monthly-p20-reference-prompts.md
+?? docs/design/references/monthly-p20-sales-reference.png
+?? docs/design/references/monthly-p20-support-reference.png
+?? docs/design/references/multiyear-assumptions-p27.png
+?? docs/design/references/multiyear-comparison-p27.png
+?? docs/design/references/multiyear-planning-p27-prompts.md
+?? docs/design/references/quarterly-objective-resources-p25.png
+?? docs/design/references/quarterly-planning-p25-prompts.md
+?? docs/design/references/quarterly-review-p25.png
+?? docs/design/references/review-work-p28-prompts.md
+?? docs/design/references/review-work-source-p28.png
+?? docs/design/references/sales-capacity-p21-reference.png
+?? docs/design/references/sales-management-p21-reference-prompts.md
+?? docs/design/references/sales-management-p21-reference.png
+?? docs/design/references/support-quality-p24-capacity.png
+?? docs/design/references/support-quality-p24-issues.png
+?? docs/design/references/support-quality-p24-prompts.md
+?? docs/design/references/support-quality-p24-trend.png
+?? docs/design/references/task-policy-p15-reference-prompt.md
+?? docs/design/references/task-policy-p15-reference.png
+?? docs/design/references/weekly-p19-ceo-reference-prompt.md
+?? docs/design/references/weekly-p19-ceo-reference.png
+?? docs/design/references/weekly-p19-detail-reference-prompt.md
+?? docs/design/references/weekly-p19-detail-reference-v2-prompt.md
+?? docs/design/references/weekly-p19-detail-reference-v2.png
+?? docs/design/references/weekly-p19-detail-reference.png
+?? docs/design/references/weekly-p19-finance-reference-prompt.md
+?? docs/design/references/weekly-p19-finance-reference.png
+?? docs/design/references/weekly-p19-sales-reference-prompt.md
+?? docs/design/references/weekly-p19-sales-reference.png
+?? docs/design/references/weekly-p19-support-reference-prompt.md
+?? docs/design/references/weekly-p19-support-reference.png
+?? docs/verification/vcscreens/P11/
+?? docs/verification/vcscreens/P12/
+?? docs/verification/vcscreens/P13/
+?? docs/verification/vcscreens/P14/
+?? docs/verification/vcscreens/P15/
+?? docs/verification/vcscreens/P16/
+?? docs/verification/vcscreens/P17/
+?? docs/verification/vcscreens/P18/
+?? docs/verification/vcscreens/P19/
+?? docs/verification/vcscreens/P20/
+?? docs/verification/vcscreens/P21/
+?? docs/verification/vcscreens/P22/
+?? docs/verification/vcscreens/P23/
+?? docs/verification/vcscreens/P24/
+?? docs/verification/vcscreens/P25/
+?? docs/verification/vcscreens/P26/
+?? docs/verification/vcscreens/P27/
+?? docs/verification/vcscreens/P28/
+?? docs/verification/vcscreens/P29/
+?? docs/verification/vcscreens/P30/
+?? docs/verification/vcscreens/company-period-overview-2026-10-04/
+?? docs/verification/vcscreens/meeting-pipeline-2026-10-05/
+?? docs/verification/vcscreens/release-2/
+?? docs/verification/vcscreens/sales-review-navigation-2026-10-05/
+?? docs/verification/vcscreens/specialist-review-navigation-2026-10-05/
+?? docs/verification/vcscreens/today-freshness-2026-10-05/
+?? src/VirtualCompany.Api/Controllers/AgentSupervisionReportsController.cs
+?? src/VirtualCompany.Api/Controllers/AnnualPlanningController.cs
+?? src/VirtualCompany.Api/Controllers/AuthorityExplanationController.cs
+?? src/VirtualCompany.Api/Controllers/BriefingCadenceController.cs
+?? src/VirtualCompany.Api/Controllers/DecisionWorkController.cs
+?? src/VirtualCompany.Api/Controllers/ExecutionControlsController.cs
+?? src/VirtualCompany.Api/Controllers/InternalFinanceController.RollingPlanning.cs
+?? src/VirtualCompany.Api/Controllers/MarketingManagementController.cs
+?? src/VirtualCompany.Api/Controllers/MonthlyReviewSnapshotsController.cs
+?? src/VirtualCompany.Api/Controllers/QuarterlyPlanningController.cs
+?? src/VirtualCompany.Api/Controllers/SalesManagementController.cs
+?? src/VirtualCompany.Api/Controllers/StrategicScenariosController.cs
+?? src/VirtualCompany.Api/Controllers/SupportQualityController.cs
+?? src/VirtualCompany.Api/Controllers/TaskTypePoliciesController.cs
+?? src/VirtualCompany.Api/Controllers/WeeklyWorkspaceController.cs
+?? src/VirtualCompany.Application/Agents/AgentSupervisionContracts.cs
+?? src/VirtualCompany.Application/Agents/AuthorityExplanationContracts.cs
+?? src/VirtualCompany.Application/Agents/ExecutionControlContracts.cs
+?? src/VirtualCompany.Application/Agents/TaskTypePolicyContracts.cs
+?? src/VirtualCompany.Application/Briefings/BriefingCadenceContracts.cs
+?? src/VirtualCompany.Application/Cockpit/MonthlyReviewAccessContracts.cs
+?? src/VirtualCompany.Application/Cockpit/MonthlyReviewContracts.cs
+?? src/VirtualCompany.Application/Cockpit/WeeklyWorkspaceContracts.cs
+?? src/VirtualCompany.Application/Finance/Contracts/FinanceRollingPlanningContracts.cs
+?? src/VirtualCompany.Application/Finance/Contracts/StrategicScenarioContracts.cs
+?? src/VirtualCompany.Application/Marketing/MarketingManagementContracts.cs
+?? src/VirtualCompany.Application/Orchestration/AnnualPlanningContracts.cs
+?? src/VirtualCompany.Application/Orchestration/CollaborationEvidenceContracts.cs
+?? src/VirtualCompany.Application/Orchestration/QuarterlyPlanningContracts.cs
+?? src/VirtualCompany.Application/Sales/SalesManagementContracts.cs
+?? src/VirtualCompany.Application/Support/SupportBusinessTime.cs
+?? src/VirtualCompany.Application/Support/SupportCapacityCalculation.cs
+?? src/VirtualCompany.Application/Support/SupportQualityCalendarConverter.cs
+?? src/VirtualCompany.Application/Support/SupportQualityContracts.cs
+?? src/VirtualCompany.Application/Tasks/DecisionWorkContracts.cs
+?? src/VirtualCompany.Domain/Entities/AgentExecutionControl.cs
+?? src/VirtualCompany.Domain/Entities/AnnualPlanVersion.cs
+?? src/VirtualCompany.Domain/Entities/BriefingCadenceDelivery.cs
+?? src/VirtualCompany.Domain/Entities/CollaborationContribution.cs
+?? src/VirtualCompany.Domain/Entities/CollaborationExecutionLease.cs
+?? src/VirtualCompany.Domain/Entities/DecisionWorkOrigin.cs
+?? src/VirtualCompany.Domain/Entities/FinanceForecastRevision.cs
+?? src/VirtualCompany.Domain/Entities/FinanceVarianceExplanation.cs
+?? src/VirtualCompany.Domain/Entities/MarketingBudgetProposalRevision.cs
+?? src/VirtualCompany.Domain/Entities/MonthlyReviewSnapshot.cs
+?? src/VirtualCompany.Domain/Entities/QuarterlyReview.cs
+?? src/VirtualCompany.Domain/Entities/SalesCapacityProposalRevision.cs
+?? src/VirtualCompany.Domain/Entities/StrategicScenario.cs
+?? src/VirtualCompany.Domain/Entities/SupportCapacityProposalRevision.cs
+?? src/VirtualCompany.Domain/Entities/SupportIssueGroupingRevision.cs
+?? src/VirtualCompany.Domain/Entities/TaskTypePolicy.cs
+?? src/VirtualCompany.Infrastructure.Finance/Finance/FinancePlanningDimensionValidator.cs
+?? src/VirtualCompany.Infrastructure.Finance/Finance/FinanceRollingPlanningService.Forecasts.cs
+?? src/VirtualCompany.Infrastructure.Finance/Finance/FinanceRollingPlanningService.cs
+?? src/VirtualCompany.Infrastructure.Finance/Finance/FinanceWeeklyWorkspaceContributor.cs
+?? src/VirtualCompany.Infrastructure.Finance/Finance/StrategicScenarioService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/AgentSupervisionReportService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/AnnualPlanningService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/AuthorityExplanationQueryService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/BriefingCadenceCalendar.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/BriefingCadenceService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/BusinessWorkEvidenceQueryService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CollaborationContentVisibility.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CollaborationEvidenceQueryService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyAgentWorkQueryService.BusinessLinks.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyApprovalRequestService.Review.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyApprovalRequestService.TaskPolicy.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyTaskService.BusinessAssociations.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyTaskService.ReviewInvalidation.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyWeeklyWorkspaceContributor.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/CompanyWeeklyWorkspaceQueryService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/DecisionWorkService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/ExecutionControlService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/MonthlyManagementReviewProjector.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/MonthlyReviewSnapshotService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/MultiAgentCoordinator.Contributions.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/MultiAgentCoordinator.ExecutionLease.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/QuarterlyPlanningService.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/TaskDraftToolAdapter.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/TaskTypePolicyEvaluator.cs
+?? src/VirtualCompany.Infrastructure.Operations/Companies/TaskTypePolicyService.cs
+?? src/VirtualCompany.Infrastructure.Platform/Tenancy/AgentExecutionControlGate.cs
+?? src/VirtualCompany.Infrastructure.Sales/Marketing/MarketingManagementService.Proposals.cs
+?? src/VirtualCompany.Infrastructure.Sales/Marketing/MarketingManagementService.cs
+?? src/VirtualCompany.Infrastructure.Sales/Marketing/MarketingWeeklyWorkspaceContributor.cs
+?? src/VirtualCompany.Infrastructure.Sales/Sales/SalesManagementService.cs
+?? src/VirtualCompany.Infrastructure.Sales/Sales/SalesWeeklyWorkspaceContributor.cs
+?? src/VirtualCompany.Infrastructure.Support/Support/SupportAutomaticReplyEligibility.cs
+?? src/VirtualCompany.Infrastructure.Support/Support/SupportQualityService.Planning.cs
+?? src/VirtualCompany.Infrastructure.Support/Support/SupportQualityService.cs
+?? src/VirtualCompany.Infrastructure.Support/Support/SupportWeeklyWorkspaceContributor.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261003140818_AddCollaborationContributionEvidence.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261003140818_AddCollaborationContributionEvidence.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261003171638_AddBusinessWorkAssociations.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261003171638_AddBusinessWorkAssociations.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261003201210_AddTaskTypePolicies.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261003201210_AddTaskTypePolicies.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261004064041_AddAgentExecutionControls.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261004064041_AddAgentExecutionControls.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261004125949_AddMonthlyManagementReviewSnapshots.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261004125949_AddMonthlyManagementReviewSnapshots.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261004140532_AddSalesManagementHistoryAndCapacityProposals.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261004140532_AddSalesManagementHistoryAndCapacityProposals.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261005174943_AddMarketingManagementBudgetProposals.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261005174943_AddMarketingManagementBudgetProposals.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261005190242_AddFinanceRollingPlanningRevisions.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261005190242_AddFinanceRollingPlanningRevisions.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261005202445_AddSupportQualityPlanning.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261005202445_AddSupportQualityPlanning.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006141229_AddQuarterlyPlanning.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006141229_AddQuarterlyPlanning.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006151544_AddAnnualPlanning.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006151544_AddAnnualPlanning.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006160024_AddStrategicScenarios.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006160024_AddStrategicScenarios.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006165512_AddDecisionWorkOrigins.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006165512_AddDecisionWorkOrigins.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006180516_AddBriefingCadenceDelivery.Designer.cs
+?? src/VirtualCompany.Persistence.Migrations/Persistence/Migrations/20261006180516_AddBriefingCadenceDelivery.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/AgentExecutionControlConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/AnnualPlanConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/BriefingCadenceDeliveryConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/CollaborationContributionConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/CollaborationExecutionLeaseConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/DecisionWorkOriginConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/FinanceRollingPlanningConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/MarketingBudgetProposalConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/MonthlyReviewSnapshotConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/QuarterlyReviewConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/SalesCapacityProposalConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/StrategicScenarioConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/SupportCapacityProposalRevisionConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/SupportIssueGroupingRevisionConfiguration.cs
+?? src/VirtualCompany.Persistence/Persistence/Configurations/TaskTypePolicyConfiguration.cs
+?? src/VirtualCompany.Web/Components/BriefingCadencePanel.razor
+?? src/VirtualCompany.Web/Components/BriefingCadencePanel.razor.css
+?? src/VirtualCompany.Web/Components/Dashboard/AnnualPlanningWorkspace.razor
+?? src/VirtualCompany.Web/Components/Dashboard/AnnualPlanningWorkspace.razor.css
+?? src/VirtualCompany.Web/Components/Dashboard/CompanyPeriodOverview.razor
+?? src/VirtualCompany.Web/Components/Dashboard/CompanyPeriodOverview.razor.css
+?? src/VirtualCompany.Web/Components/Dashboard/MonthlyReviewHistory.razor
+?? src/VirtualCompany.Web/Components/Dashboard/MonthlyReviewHistory.razor.css
+?? src/VirtualCompany.Web/Components/Dashboard/QuarterlyPlanningWorkspace.razor
+?? src/VirtualCompany.Web/Components/Dashboard/QuarterlyPlanningWorkspace.razor.css
+?? src/VirtualCompany.Web/Components/Dashboard/StrategicScenarioWorkspace.razor
+?? src/VirtualCompany.Web/Components/Dashboard/StrategicScenarioWorkspace.razor.css
+?? src/VirtualCompany.Web/Components/Dashboard/WeeklyWorkspace.razor
+?? src/VirtualCompany.Web/Components/Dashboard/WeeklyWorkspace.razor.css
+?? src/VirtualCompany.Web/Components/DecisionReview.razor
+?? src/VirtualCompany.Web/Components/DecisionReview.razor.css
+?? src/VirtualCompany.Web/Components/DecisionWorkPanel.razor
+?? src/VirtualCompany.Web/Components/DecisionWorkPanel.razor.css
+?? src/VirtualCompany.Web/Components/Finance/FinancePlanningEvidence.razor
+?? src/VirtualCompany.Web/Components/Finance/FinancePlanningEvidence.razor.css
+?? src/VirtualCompany.Web/Components/Marketing/MarketingManagementEvidence.razor
+?? src/VirtualCompany.Web/Components/Marketing/MarketingManagementEvidence.razor.css
+?? src/VirtualCompany.Web/Components/Sales/SalesDealMeetings.razor
+?? src/VirtualCompany.Web/Components/Sales/SalesDealMeetings.razor.css
+?? src/VirtualCompany.Web/Components/Sales/SalesManagementEvidence.razor
+?? src/VirtualCompany.Web/Components/Sales/SalesManagementEvidence.razor.css
+?? src/VirtualCompany.Web/Components/Support/
+?? src/VirtualCompany.Web/Components/Work/AuthorityExplanationPanel.razor
+?? src/VirtualCompany.Web/Components/Work/AuthorityExplanationPanel.razor.css
+?? src/VirtualCompany.Web/Components/Work/BusinessAgentWorkPanel.razor
+?? src/VirtualCompany.Web/Components/Work/BusinessAgentWorkPanel.razor.css
+?? src/VirtualCompany.Web/Components/Work/DecisionReturnLink.razor
+?? src/VirtualCompany.Web/Components/Work/WorkApprovalsPanel.razor.css
+?? src/VirtualCompany.Web/Pages/AgentAuthoritySettings.razor
+?? src/VirtualCompany.Web/Pages/AgentCollaboration.razor
+?? src/VirtualCompany.Web/Pages/AgentCollaboration.razor.css
+?? src/VirtualCompany.Web/Pages/AgentSupervisionReports.razor
+?? src/VirtualCompany.Web/Pages/AgentSupervisionReports.razor.css
+?? src/VirtualCompany.Web/Pages/AnnualPlanning.razor
+?? src/VirtualCompany.Web/Pages/DecisionWork.razor
+?? src/VirtualCompany.Web/Pages/ExecutionControls.razor
+?? src/VirtualCompany.Web/Pages/ExecutionControls.razor.css
+?? src/VirtualCompany.Web/Pages/Finance/FinanceForecastComparison.razor
+?? src/VirtualCompany.Web/Pages/Finance/FinanceForecastComparison.razor.css
+?? src/VirtualCompany.Web/Pages/Finance/FinancePlanningPageBase.cs
+?? src/VirtualCompany.Web/Pages/Finance/FinanceRollingForecast.razor
+?? src/VirtualCompany.Web/Pages/Finance/FinanceRollingForecast.razor.css
+?? src/VirtualCompany.Web/Pages/Finance/FinanceVariance.razor
+?? src/VirtualCompany.Web/Pages/Finance/FinanceVariance.razor.css
+?? src/VirtualCompany.Web/Pages/Marketing/MarketingBudget.razor
+?? src/VirtualCompany.Web/Pages/Marketing/MarketingBudget.razor.css
+?? src/VirtualCompany.Web/Pages/Marketing/MarketingManagement.razor
+?? src/VirtualCompany.Web/Pages/Marketing/MarketingManagement.razor.css
+?? src/VirtualCompany.Web/Pages/Marketing/MarketingManagementPageBase.cs
+?? src/VirtualCompany.Web/Pages/QuarterPlanning.razor
+?? src/VirtualCompany.Web/Pages/Sales/SalesCapacity.razor
+?? src/VirtualCompany.Web/Pages/Sales/SalesCapacity.razor.css
+?? src/VirtualCompany.Web/Pages/Sales/SalesManagement.razor
+?? src/VirtualCompany.Web/Pages/Sales/SalesManagement.razor.css
+?? src/VirtualCompany.Web/Pages/StrategicScenarios.razor
+?? src/VirtualCompany.Web/Pages/Support/SupportCapacity.razor
+?? src/VirtualCompany.Web/Pages/Support/SupportQuality.razor
+?? src/VirtualCompany.Web/Pages/Support/SupportQualityPageBase.cs
+?? src/VirtualCompany.Web/Pages/Support/SupportRecurringIssues.razor
+?? src/VirtualCompany.Web/Pages/TaskTypePolicies.razor
+?? src/VirtualCompany.Web/Pages/TaskTypePolicies.razor.css
+?? src/VirtualCompany.Web/Services/AgentSupervisionApiClient.cs
+?? src/VirtualCompany.Web/Services/AnnualPlanningApiClient.cs
+?? src/VirtualCompany.Web/Services/AnnualPlanningViewModels.cs
+?? src/VirtualCompany.Web/Services/AuthorityExplanationViewModels.cs
+?? src/VirtualCompany.Web/Services/BriefingCadenceApiClient.cs
+?? src/VirtualCompany.Web/Services/CollaborationEvidenceViewModels.cs
+?? src/VirtualCompany.Web/Services/CompanyPeriodOverviewPresentation.cs
+?? src/VirtualCompany.Web/Services/DecisionReviewRoutes.cs
+?? src/VirtualCompany.Web/Services/DecisionWorkApiClient.cs
+?? src/VirtualCompany.Web/Services/DecisionWorkRoutes.cs
+?? src/VirtualCompany.Web/Services/DecisionWorkViewModels.cs
+?? src/VirtualCompany.Web/Services/ExecutionControlApiClient.cs
+?? src/VirtualCompany.Web/Services/FinanceRollingPlanningApiClient.cs
+?? src/VirtualCompany.Web/Services/FinanceRollingPlanningViewModels.cs
+?? src/VirtualCompany.Web/Services/MarketingManagementApiClient.cs
+?? src/VirtualCompany.Web/Services/MarketingManagementViewModels.cs
+?? src/VirtualCompany.Web/Services/MonthlyReviewApiClient.cs
+?? src/VirtualCompany.Web/Services/QuarterlyPlanningApiClient.cs
+?? src/VirtualCompany.Web/Services/QuarterlyPlanningViewModels.cs
+?? src/VirtualCompany.Web/Services/SalesManagementApiClient.cs
+?? src/VirtualCompany.Web/Services/SalesManagementViewModels.cs
+?? src/VirtualCompany.Web/Services/StrategicScenarioApiClient.cs
+?? src/VirtualCompany.Web/Services/StrategicScenarioViewModels.cs
+?? src/VirtualCompany.Web/Services/SupportQualityApiClient.cs
+?? src/VirtualCompany.Web/Services/SupportQualityViewModels.cs
+?? src/VirtualCompany.Web/Services/TaskTypePolicyApiClient.cs
+?? src/VirtualCompany.Web/Services/WeeklyWorkspaceApiClient.cs
+?? src/VirtualCompany.Web/Services/WeeklyWorkspaceViewModels.cs
+?? tests/VirtualCompany.Api.Tests/AgentSupervisionFixture.cs
+?? tests/VirtualCompany.Api.Tests/AgentSupervisionIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/AgentSupervisionSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/AnnualPlanningFixture.cs
+?? tests/VirtualCompany.Api.Tests/AnnualPlanningIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/AnnualPlanningSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/ApprovalDecisionReviewTests.cs
+?? tests/VirtualCompany.Api.Tests/AuthorityExplanationFixture.cs
+?? tests/VirtualCompany.Api.Tests/AuthorityExplanationIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/BriefingCadenceCalendarTests.cs
+?? tests/VirtualCompany.Api.Tests/BriefingCadenceDeliveryFailureTests.cs
+?? tests/VirtualCompany.Api.Tests/BriefingCadenceFixture.cs
+?? tests/VirtualCompany.Api.Tests/BriefingCadenceIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/BriefingCadenceSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/BusinessEvidenceFixture.cs
+?? tests/VirtualCompany.Api.Tests/BusinessWorkAssociationSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/BusinessWorkEvidenceIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/CollaborationEvidenceFixture.cs
+?? tests/VirtualCompany.Api.Tests/CollaborationEvidenceIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/CollaborationEvidenceSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/DecisionMaterialChangeIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/DecisionWorkFixture.cs
+?? tests/VirtualCompany.Api.Tests/DecisionWorkIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/DecisionWorkSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/ExecutionControlDispatchTests.cs
+?? tests/VirtualCompany.Api.Tests/ExecutionControlFixture.cs
+?? tests/VirtualCompany.Api.Tests/ExecutionControlIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/ExecutionControlNativeFactory.cs
+?? tests/VirtualCompany.Api.Tests/ExecutionControlOutboxTests.cs
+?? tests/VirtualCompany.Api.Tests/ExecutionControlSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/FinanceRollingPlanningFixture.cs
+?? tests/VirtualCompany.Api.Tests/FinanceRollingPlanningIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/FinanceRollingPlanningSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/MarketingManagementFixture.cs
+?? tests/VirtualCompany.Api.Tests/MarketingManagementIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/MarketingManagementSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/MonthlyReviewAccessAndRetentionTests.cs
+?? tests/VirtualCompany.Api.Tests/MonthlyReviewSnapshotIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/MonthlyReviewSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/MultiAgentHandoffRetryTests.cs
+?? tests/VirtualCompany.Api.Tests/QuarterlyPlanningFixture.cs
+?? tests/VirtualCompany.Api.Tests/QuarterlyPlanningIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/QuarterlyPlanningSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/Release2PolicyIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/Release2PolicySqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/Release2RenewalIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/SalesManagementIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/SalesManagementSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/SalesMeetingDecisionDispatchTests.cs
+?? tests/VirtualCompany.Api.Tests/StrategicScenarioFixture.cs
+?? tests/VirtualCompany.Api.Tests/StrategicScenarioIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/StrategicScenarioSqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/SupportQualityFixture.cs
+?? tests/VirtualCompany.Api.Tests/SupportQualityIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/SupportQualitySqlServerTests.cs
+?? tests/VirtualCompany.Api.Tests/WeeklyWorkspaceFixture.cs
+?? tests/VirtualCompany.Api.Tests/WeeklyWorkspaceIntegrationTests.cs
+?? tests/VirtualCompany.Api.Tests/WeeklyWorkspacePeriodTests.cs
+?? tests/VirtualCompany.Api.Tests/WeeklyWorkspaceSqlServerTests.cs
+?? tests/VirtualCompany.Finance.Tests/FinanceRollingPlanningCalculationTests.cs
+?? tests/VirtualCompany.Finance.Tests/StrategicScenarioCalculationTests.cs
+?? tests/VirtualCompany.SupportGrounding.Tests/SupportCapacityCalculationTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/AgentSupervisionWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/AnnualPlanningWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/AuthorityExplanationWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/BriefingCadenceWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/BusinessWorkEvidenceWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/CollaborationEvidenceWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/DecisionWorkWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/ExecutionControlWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/FinanceRollingPlanningWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/MarketingManagementWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/MonthlyReviewWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/QuarterlyPlanningWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/SalesManagementWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/SalesMeetingWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/StrategicScenarioWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/SupportQualityWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/TaskPolicyWireTests.cs
+?? tests/VirtualCompany.Web.Contract.Tests/WeeklyWorkspaceWireTests.cs
+?? tests/VirtualCompany.Web.Tests/AgentSupervisionJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/AnnualPlanningJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/AuthorityExplanationJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/BriefingCadenceJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/BusinessWorkEvidenceJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/CollaborationEvidenceJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/CompanyPeriodOverviewJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/DecisionReviewJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/DecisionWorkJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/ExecutionControlJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/FinanceRollingPlanningJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/MarketingManagementJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/MonthlyReviewJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/QuarterlyPlanningJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/SalesDealMeetingsTests.cs
+?? tests/VirtualCompany.Web.Tests/SalesManagementJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/StrategicScenarioJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/SupportQualityJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/TaskPolicyJourneyTests.cs
+?? tests/VirtualCompany.Web.Tests/WeeklyWorkspaceJourneyTests.cs
+?? tests/VirtualCompany.Workspace.Uat/AgentSupervisionUatFixture.cs
+?? tests/VirtualCompany.Workspace.Uat/DecisionReviewFixture.cs

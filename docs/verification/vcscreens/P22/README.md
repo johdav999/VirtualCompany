@@ -1,0 +1,13 @@
+# P22 evidence packet
+
+Implemented Marketing performance analysis and versioned budget decisions in the same checkout, preserving P01–P21. Marketing workspace and monthly review link to `/marketing/reports/management`; proposal detail is `/marketing/reports/budget`. Report and proposal snapshots use native measurement/portfolio evidence and retain unavailable economics explicitly. Proposals do not publish content or change actual spend limits.
+
+Accepted final checks: **97 API**, including **eight SQL Server** checks; **76 rendered Web**; **50 full typed wire**. All passed with zero failures/skips. API, Web and UAT adapter builds pass; EF reports no pending model changes. SQL Server checks include migration up/down/up, no backfill, native/P20 preservation, concurrent requests/successors, immutable revisions and corrupted-payload withholding. Exact accepted TRX/logs and source hashes are indexed by verification.json and source-manifest.json. Earlier failed/diagnostic runs are retained and excluded from acceptance.
+
+Fresh headless Edge passed Marketing workspace → channel/source/experiment evidence → campaign/exact return → budget save/reopen/retained report → monthly save/reload/exact snapshot report. Final replay uses the rebuilt native UI after panel/control spacing fixes. No page errors or body overflow at desktop 1440×1000 and narrow 390×844; keyboard focus and real captures were reviewed. [Browser record](browser-accepted.json), [report desktop](report-desktop.png), [report narrow](report-mobile.png), [proposal desktop](proposal-desktop.png), [proposal narrow](proposal-mobile.png), [monthly retained report](monthly-retained-report.png).
+
+Read implementation.md, profile.md, uat.md, issue-ledger.md, source-reconciliation.md and handoff.md. Entry/preservation manifests record every pre-existing repository file; prior P01–P21 evidence remains identical, with only identified additive integration/status changes. Owned fixture processes are stopped after verification; existing user hosts are preserved.
+
+Reference-first design used built-in ImageGen: [exact prompts](../../../design/references/marketing-management-p22-reference-prompts.md), [analysis reference](../../../design/references/marketing-management-p22-reference.png), [budget reference](../../../design/references/marketing-budget-p22-reference.png). These generated design inputs are separate from implemented-screen acceptance captures.
+
+User in-app browser control still fails before inventory at the Windows deny-read ACL helper; headless Edge is the stated substitute. Live provider ingestion, deployed migration/tenant validation, physical download and human release approval remain independent and unverified. P23–P30 are outside this request.

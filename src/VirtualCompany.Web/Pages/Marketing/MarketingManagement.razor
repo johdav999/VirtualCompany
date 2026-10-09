@@ -1,0 +1,61 @@
+@page "/marketing/reports/management"
+@rendermode InteractiveServer
+@inherits MarketingManagementPageBase
+@implements IDisposable
+@inject MarketingManagementApiClient Management
+@inject IMonthlyWorkspaceApiClient Monthly
+@inject IMonthlyReviewApiClient Reviews
+@inject IJSRuntime JS
+@using VirtualCompany.Web.Components.Marketing
+<PageTitle>Marketing performance</PageTitle>
+<main class="vc-page marketing-management">
+    <header class="vc-page-header"><div><span class="vc-kicker">MARKETING / REPORTS</span><h1>Marketing performance</h1><p>Recorded channel outcomes and attribution coverage</p></div>@if(report!=null && Previous(report.CompanyId)!=null){<a href="@Previous(report.CompanyId)">Back to previous view</a>}</header>
+    <nav class="vc-section-tabs"><a href="@WorkspacePath">Marketing workspace</a><a href="@OperationalPath">Spend versus budget</a></nav>
+    <section class="vc-panel management-filters"><label>Year<input type="number" min="2000" max="2100" @bind="year" disabled="@Retained" /></label><label>Month<input type="number" min="1" max="12" @bind="month" disabled="@Retained" /></label><label>Currency<input maxlength="3" @bind="currency" disabled="@Retained" placeholder="Separate currencies" /></label>
+        <label>Model version<select @bind="model" disabled="@Retained"><option value="">Inspect all versions; no outcome total</option>@foreach(var item in report?.Models??[]){<option value="@item.Id">@item.Name · Version @item.Version</option>}</select></label>
+        <label>Campaign<select @bind="campaign" disabled="@Retained"><option value="">All included campaigns</option>@foreach(var item in report?.Campaigns??[]){<option value="@item.Id">@item.Name</option>}</select></label>
+        <button class="btn btn-primary" disabled="@(busy||Retained)" @onclick="Apply">Apply cohort</button><button disabled="@busy" @onclick="Load">Reload</button>
+    </section>
+    @if(busy){<section class="vc-panel" role="status">Loading authorized Marketing evidence…</section>}
+    @if(error!=null){<section class="vc-panel" role="alert">@error <button disabled="@busy" @onclick="Load">Retry</button></section>}
+    @if(report!=null){<div class="management-layout"><div>
+        @if(Retained){<section class="vc-panel"><p>Retained report snapshot; included measurements and assumptions remain original. Source links open current records.</p></section>}
+        <MarketingManagementEvidence Report="report" ReturnUrl="@Navigation.Uri" />
+    </div><aside class="vc-panel management-actions"><h2>Next decision</h2><p>Review missing cost and attribution coverage before proposing allocation changes.</p><a class="btn btn-primary" href="@BudgetPath">Review budget assumptions</a><a href="@MonthlyPath">@(Snapshot.HasValue?"Return to saved monthly review":"Monthly review and save snapshot")</a>
+        @if(!Retained){<button disabled="@busy" @onclick="Download">Refresh and download CSV</button>}
+    </aside></div>}
+</main>
+@code{
+    [SupplyParameterFromQuery]public int? Year{get;set;} [SupplyParameterFromQuery]public int? Month{get;set;}
+    [SupplyParameterFromQuery]public string? Currency{get;set;} [SupplyParameterFromQuery]public Guid? ModelId{get;set;}
+    [SupplyParameterFromQuery]public Guid? CampaignId{get;set;} [SupplyParameterFromQuery]public Guid? SegmentVersionId{get;set;}
+    [SupplyParameterFromQuery]public Guid? Snapshot{get;set;} [SupplyParameterFromQuery]public string? Lens{get;set;}
+    [SupplyParameterFromQuery]public Guid? ProposalEvidence{get;set;}
+    private MarketingManagementReport? report;private string? error,currency;private string model="",campaign="";private int year,month,generation;private bool busy,disposed;
+    private CancellationTokenSource read=new();private bool Retained=>Snapshot.HasValue||ProposalEvidence.HasValue;
+    private string WorkspacePath=>Path("/marketing",CompanyId??Guid.Empty);
+    private string OperationalPath=>Path("/marketing/reports/spend",CompanyId??Guid.Empty);
+    private string BudgetPath=>Path("/marketing/reports/budget?"+MarketingManagementApiClient.Parameters(report!.Query),report.CompanyId);
+    private string MonthlyPath=>DashboardRoutes.BuildMonthlyPath(report!.CompanyId,Lens??"marketing",report.Query.Year,report.Query.Month,Snapshot);
+    protected override Task OnParametersSetAsync()=>Load();
+    private void Apply(){if(report==null)return;var q=new MarketingManagementQuery(year,month,currency,Guid.TryParse(campaign,out var c)?c:null,SegmentVersionId,Guid.TryParse(model,out var m)?m:null);Navigation.NavigateTo(Path("/marketing/reports/management?"+MarketingManagementApiClient.Parameters(q),report.CompanyId));}
+    private bool Current(int version,string location)=>!disposed&&generation==version&&Navigation.Uri==location;
+    private async Task Load(){read.Cancel();read.Dispose();read=new();var ct=read.Token;var version=++generation;var location=Navigation.Uri;busy=true;report=null;error=null;
+        try{var company=await Company(ct);if(Year.HasValue!=Month.HasValue)throw new InvalidOperationException("Choose year and month together.");
+            if(Year==null){var current=await Monthly.GetAsync(company,"marketing",cancellationToken:ct)??throw new InvalidOperationException("Current company month is unavailable.");year=current.Period.Year;month=current.Period.Month;}else{year=Year.Value;month=Month!.Value;}
+            if(Snapshot.HasValue&&ProposalEvidence.HasValue)throw new InvalidDataException("Choose one retained report source.");
+            MarketingManagementReport value;
+            if(Snapshot.HasValue){var saved=await Reviews.OpenAsync(company,Snapshot.Value,ct);if(saved.Summary.Lens!=(Lens??"marketing"))throw new InvalidDataException("Saved review responsibility differs.");value=saved.Workspace.MarketingManagement??throw new InvalidOperationException("This older review has no Marketing management report.");}
+            else if(ProposalEvidence.HasValue)value=(await Management.Open(company,ProposalEvidence.Value,ct)).Report;
+            else value=await Management.Report(company,new(year,month,Currency,CampaignId,SegmentVersionId,ModelId),ct);
+            MarketingManagementApiClient.Validate(value,company);
+            if(value.Query.Year!=year||value.Query.Month!=month)throw new InvalidDataException("Retained report month differs from this link.");
+            if((Snapshot.HasValue||ProposalEvidence.HasValue)&&((Currency!=null&&Currency.Trim().ToUpperInvariant()!=value.Query.Currency)||(ModelId.HasValue&&ModelId!=value.Query.ModelId)||(CampaignId.HasValue&&CampaignId!=value.Query.CampaignId)||(SegmentVersionId.HasValue&&SegmentVersionId!=value.Query.SegmentVersionId)))throw new InvalidDataException("Retained report filters differ from this link.");
+            if(Current(version,location)){report=value;currency=value.Query.Currency;model=value.Query.ModelId?.ToString()??"";campaign=value.Query.CampaignId?.ToString()??"";}
+        }catch(OperationCanceledException)when(ct.IsCancellationRequested){}catch(Exception ex)when(Expected(ex)){if(Current(version,location))error=Error(ex);}
+        finally{if(Current(version,location))busy=false;}}
+    private async Task Download(){if(report==null||busy)return;var version=generation;var location=Navigation.Uri;busy=true;error=null;
+        try{var file=await Management.Export(report.CompanyId,report.Query,read.Token);if(!Current(version,location))return;var module=await JS.InvokeAsync<IJSObjectReference>("import",read.Token,"./js/reportDownload.js");try{if(Current(version,location))await module.InvokeVoidAsync("downloadReport",read.Token,file.FileName,file.Csv);}finally{await module.DisposeAsync();}}
+        catch(OperationCanceledException)when(read.IsCancellationRequested){}catch(Exception ex)when(Expected(ex)){if(Current(version,location)){error=Error(ex);if(ex is TodayWorkspaceAccessException)report=null;}}finally{if(Current(version,location))busy=false;}}
+    public void Dispose(){disposed=true;generation++;read.Cancel();read.Dispose();}
+}

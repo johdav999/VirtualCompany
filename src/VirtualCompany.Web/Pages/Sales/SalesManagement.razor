@@ -1,0 +1,47 @@
+@page "/app/sales/reports/management"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@implements IDisposable
+@inject SalesManagementApiClient Management
+@inject IMonthlyReviewApiClient Reviews
+@using VirtualCompany.Web.Components.Sales
+<PageTitle>Sales management</PageTitle>
+<main class="vc-page sales-management">
+    <header class="vc-page-header"><div><span class="vc-kicker">Sales / Reports</span><h1>Sales management</h1><p>Recorded opportunity performance and bounded planning</p></div></header>
+    <SalesJourneyNavigation CompanyId="ResolvedCompanyId" />
+    <section class="vc-panel"><label>Year <input type="number" min="2000" max="2100" @bind="year" disabled="@Snapshot.HasValue" /></label><label>Month <input type="number" min="1" max="12" @bind="month" disabled="@Snapshot.HasValue" /></label><label>Currency (blank = separate currencies) <input maxlength="3" @bind="currency" disabled="@Snapshot.HasValue" /></label><button disabled="@busy" @onclick="Select">Apply cohort</button><button disabled="@busy" @onclick="Load">Reload</button></section>
+    @if(busy){<p role="status">Loading authorized Sales report…</p>}
+    @if(error!=null){<p role="alert">@error</p><button @onclick="Load">Retry</button>}
+    @if(report!=null){
+        <p>@(Snapshot.HasValue?"Retained monthly review results; source links open current records.":"Current authorized report")</p>
+        <nav><a href="@Monthly">@(Snapshot.HasValue?"Return to saved monthly review":"Monthly review and save snapshot")</a> · <a href="@Capacity">Plan capacity</a></nav>
+        <SalesManagementEvidence Report="report" ReturnUrl="@Navigation.Uri" />
+    }
+</main>
+@code{
+    [SupplyParameterFromQuery]public int? Year{get;set;} [SupplyParameterFromQuery]public int? Month{get;set;}
+    [SupplyParameterFromQuery]public string? Currency{get;set;} [SupplyParameterFromQuery]public Guid? Snapshot{get;set;}
+    [SupplyParameterFromQuery]public string? Lens{get;set;}
+    private SalesManagementReport? report;private bool busy,disposed;private string? error,currency;private int year,month;
+    private CancellationTokenSource read=new();private int generation;
+    private string Monthly=>DashboardRoutes.BuildMonthlyPath(report!.CompanyId,Lens??"sales",report.Year,report.Month,Snapshot);
+    private string Capacity=>SalesJourneyRoutes.Build($"/app/sales/reports/capacity?year={report!.Year}&month={report.Month}&currency={Uri.EscapeDataString(report.Currency??"")}",report.CompanyId,Navigation.Uri);
+    protected override Task OnParametersSetAsync()=>Load();
+    private void Select(){if(Snapshot.HasValue)return;Navigation.NavigateTo(SalesJourneyRoutes.Build($"/app/sales/reports/management?year={year}&month={month}&currency={Uri.EscapeDataString(currency??"")}",ResolvedCompanyId!.Value,Navigation.Uri));}
+    private async Task Load(){read.Cancel();read.Dispose();read=new();var ct=read.Token;var version=++generation;var location=Navigation.Uri;busy=true;error=null;report=null;
+        try{if(!await ResolveCompanyAsync(ct))throw new InvalidOperationException(ShellErrorMessage??"Choose a company.");
+            if(Year is null || Month is null){var current=await ReviewsCurrent(ct);year=current.Period.Year;month=current.Period.Month;}else{year=Year.Value;month=Month.Value;}currency=Currency;
+            SalesManagementReport value;
+            if(Snapshot.HasValue){var saved=await Reviews.OpenAsync(ResolvedCompanyId!.Value,Snapshot.Value,ct);value=saved.Workspace.SalesManagement??throw new InvalidOperationException("This older review has no Sales management report.");
+                if(saved.Summary.Lens!=(Lens??"sales") || value.Year!=year || value.Month!=month)throw new InvalidDataException("Saved report period or responsibility differs.");}
+            else value=await Management.Report(ResolvedCompanyId!.Value,new(year,month,currency),ct);
+            if(!disposed && version==generation && location==Navigation.Uri)report=value;
+        }catch(OperationCanceledException){}catch(Exception ex)when(ex is HttpRequestException or InvalidOperationException or InvalidDataException or TodayWorkspaceAccessException){if(version==generation)error=ex is TodayWorkspaceAccessException?"Sales access changed; results withheld.":ex.Message;}
+        finally{if(version==generation)busy=false;}}
+    [Inject]private IMonthlyWorkspaceApiClient MonthlyClient{get;set;}=null!;
+    private async Task<MonthlyWorkspaceViewModel> ReviewsCurrent(CancellationToken ct)=>await MonthlyClient.GetAsync(ResolvedCompanyId!.Value,"sales",cancellationToken:ct)??throw new InvalidOperationException("Current month unavailable.");
+    public void Dispose(){disposed=true;generation++;read.Cancel();read.Dispose();}
+}
+
+
+

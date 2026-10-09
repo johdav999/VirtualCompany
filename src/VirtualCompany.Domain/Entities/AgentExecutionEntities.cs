@@ -483,6 +483,17 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
         UpdatedUtc = DecidedUtc.Value;
     }
 
+    public ApprovalStep RequestChangesCurrentStep(Guid stepId, Guid reviewer, string comment)
+    {
+        var step = CurrentActionableStep ?? throw new InvalidOperationException("Approval has no current actionable step.");
+        if (step.Id != stepId) throw new InvalidOperationException("Only the current approval step can be decided.");
+        if (string.IsNullOrWhiteSpace(comment)) throw new ArgumentException("Explain the requested changes.", nameof(comment));
+        step.MarkChangesRequested(reviewer, comment);
+        MarkChangesRequested(comment);
+        RebuildDecisionChain();
+        return step;
+    }
+
     public void MarkCancelled(string? decisionSummary = null)
     {
         if (Status != ApprovalRequestStatus.Pending)
@@ -747,6 +758,9 @@ public sealed class ApprovalStep
     {
         MarkDecided(ApprovalStepStatus.Rejected, decidedByUserId, comment);
     }
+
+    public void MarkChangesRequested(Guid decidedByUserId, string comment) =>
+        MarkDecided(ApprovalStepStatus.ChangesRequested, decidedByUserId, comment);
 
     private void MarkDecided(ApprovalStepStatus status, Guid decidedByUserId, string? comment)
     {

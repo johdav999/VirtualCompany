@@ -4,7 +4,8 @@ public sealed record GetMonthlyWorkspaceQuery(
     Guid CompanyId,
     string? Lens = null,
     int? Year = null,
-    int? Month = null);
+    int? Month = null,
+    bool BypassCache = false);
 
 public sealed record MonthlyWorkspacePeriodDto(
     int Year,
@@ -69,7 +70,12 @@ public sealed record MonthlyWorkspaceDto(
     DateTime? CacheTimestampUtc,
     bool IsPartial,
     IReadOnlyList<TodayWorkspaceDiagnosticDto> Diagnostics,
-    TodayWorkspaceResponsibilitySetupDto? ResponsibilitySetup = null);
+    TodayWorkspaceResponsibilitySetupDto? ResponsibilitySetup = null,
+    MonthlyReviewDto? Review = null,
+    VirtualCompany.Application.Sales.SalesManagementReport? SalesManagement = null,
+    VirtualCompany.Application.Marketing.MarketingManagementReport? MarketingManagement = null,
+    VirtualCompany.Application.Finance.FinancePlanningReport? FinancePlanning = null,
+    VirtualCompany.Application.Support.SupportQualityReport? SupportQuality = null);
 
 public sealed record MonthlyWorkspaceSummaryDto(
     string Headline,
@@ -151,7 +157,12 @@ public sealed record MonthlyWorkspaceFeatureContribution(
     IReadOnlyList<MonthlyWorkspacePriorityCandidate> PriorityCandidates,
     IReadOnlyList<MonthlyWorkspaceMetricDto> Results,
     IReadOnlyList<TodayWorkspaceAgentUpdateDto> AgentOutcomes,
-    IReadOnlyList<MonthlyWorkspaceSourceCoverageDto> SourceCoverage);
+    IReadOnlyList<MonthlyWorkspaceSourceCoverageDto> SourceCoverage,
+    IReadOnlyList<Guid>? WorkSourceIds = null,
+    VirtualCompany.Application.Sales.SalesManagementReport? SalesManagement = null,
+    VirtualCompany.Application.Marketing.MarketingManagementReport? MarketingManagement = null,
+    VirtualCompany.Application.Finance.FinancePlanningReport? FinancePlanning = null,
+    VirtualCompany.Application.Support.SupportQualityReport? SupportQuality = null);
 
 public interface IMonthlyWorkspaceContributor
 {

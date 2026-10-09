@@ -53,27 +53,7 @@
         }
         else
         {
-            <span class="vc-kicker">@selected.DisplayStatus</span>
-            <h2>@Title(selected)</h2>
-            <p>@Reason(selected)</p>
-            <dl class="vc-detail-list">
-                <dt>@UiText["Reference"]</dt><dd>@selected.DisplayReference</dd>
-                @if (!string.IsNullOrWhiteSpace(selected.DisplayAmount))
-                {
-                    <dt>@UiText["Amount"]</dt><dd>@selected.DisplayAmount</dd>
-                }
-                <dt>@UiText["Requested"]</dt><dd>@LocalDateTime.DateTime(selected.CreatedAt)</dd>
-                <dt>@UiText["AffectedData"]</dt><dd>@selected.AffectedDataSummary</dd>
-            </dl>
-            @if (selected.CurrentStep is not null && IsPending(selected))
-            {
-                <label class="form-label mt-3" for="work-approval-comment">@UiText["DecisionNote"]</label>
-                <textarea id="work-approval-comment" class="form-control" rows="3" @bind="decisionComment"></textarea>
-                <div class="dashboard-actions mt-3">
-                    <button class="btn btn-primary" type="button" disabled="@isDeciding" @onclick='() => DecideAsync("approve")'>@UiText["Approve"]</button>
-                    <button class="btn btn-outline-danger" type="button" disabled="@isDeciding" @onclick='() => DecideAsync("reject")'>@UiText["Reject"]</button>
-                </div>
-            }
+            <DecisionReview CompanyId="CompanyId" Approval="selected" OnDecision="ReviewDecidedAsync" />
         }
     </aside>
 </div>
@@ -84,15 +64,14 @@
     [Parameter] public EventCallback<Guid> SelectedIdChanged { get; set; }
 
     private static bool IsTaskReview(ApprovalRequestViewModel item) => item.TargetEntityType == "task" && !item.ApprovalType.Contains("payment", StringComparison.OrdinalIgnoreCase);
-    private string Title(ApprovalRequestViewModel item) => IsTaskReview(item) ? CommonText["PriorityTaskReview"] : item.DisplayTitle;
+    private string Title(ApprovalRequestViewModel item) => IsTaskReview(item) ? item.AffectedEntities.FirstOrDefault()?.Label ?? CommonText["PriorityTaskReview"]
+        : item.TargetEntityType == "sales_meeting_invitation" ? "Review meeting invitation" : item.DisplayTitle;
     private string Reason(ApprovalRequestViewModel item) => IsTaskReview(item)
         ? item.ThresholdContext.TryGetValue("reason", out var reason) && reason is not null ? reason.ToString() : CommonText["PriorityTaskReviewReason"].Value
         : item.DisplayReason;
     private List<ApprovalRequestViewModel> approvals = [];
     private ApprovalRequestViewModel? selected;
     private bool isLoading = true;
-    private bool isDeciding;
-    private string? decisionComment;
     private string? errorMessage;
     private int loadVersion;
     private bool disposed;
@@ -109,7 +88,7 @@
         bool Current() => !disposed && version == loadVersion && !token.IsCancellationRequested;
         isLoading = true;
         errorMessage = null;
-        selected = null; approvals = []; decisionComment = null; decisionRecorded = false;
+        selected = null; approvals = []; decisionRecorded = false;
         try
         {
             var items = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(company, "pending", token));
@@ -143,47 +122,17 @@
         {
             var detail = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(company, id));
             if (disposed || version != loadVersion || company != CompanyId) return;
-            selected = detail; decisionComment = null; errorMessage = null;
+            selected = detail; errorMessage = null;
             await SelectedIdChanged.InvokeAsync(id);
         }
         catch (Exception ex) { if (!disposed && version == loadVersion) errorMessage = ex.Message; }
     }
 
-    private async Task DecideAsync(string decision)
+    private async Task ReviewDecidedAsync(ApprovalRequestViewModel result)
     {
-        if (selected?.CurrentStep is null || isDeciding)
-        {
-            return;
-        }
-
-        isDeciding = true;
-        errorMessage = null;
-        var company = CompanyId; var version = loadVersion;
-        var approval = selected;
-        try
-        {
-            await ApprovalApiClient.DecideAsync(company, approval.Id, new ApprovalDecisionRequest
-            {
-                ApprovalId = approval.Id,
-                StepId = approval.CurrentStep.Id,
-                Decision = decision,
-                Comment = decisionComment
-            });
-            var items = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(company, "pending"));
-            if (disposed || version != loadVersion) return;
-            approvals = items;
-            selected = null;
-            decisionComment = null;
-            decisionRecorded = true;
-        }
-        catch (Exception ex)
-        {
-            if (!disposed && version == loadVersion) errorMessage = ex.Message;
-        }
-        finally
-        {
-            if (!disposed) isDeciding = false;
-        }
+        selected = ApprovalPresentationFormatter.Format(result);
+        approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(CompanyId, "pending"));
+        decisionRecorded = true;
     }
 
     private string ItemClass(Guid id) => selected?.Id == id ? "vc-list-item selected" : "vc-list-item";

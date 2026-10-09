@@ -1,0 +1,62 @@
+@using System.Globalization
+@inject NavigationManager Navigation
+@if (Meetings.Count > 0)
+{
+    @if (Compact)
+    {
+        var meeting = Meetings.FirstOrDefault(x => x.Status == "scheduled") ?? Meetings[0];
+        <span class="deal-meeting-summary" data-testid="pipeline-meeting" data-invitation-id="@meeting.Id">
+            <span class="bi bi-calendar-event" aria-hidden="true"></span>
+            <strong>@Status(meeting.Status)</strong>
+            <span>@meeting.Title</span>
+            <span>@DateLabel(meeting)</span>
+            @if (Meetings.Count > 1) { <small>@SalesText["OtherMeetingInvitations", Meetings.Count - 1]</small> }
+        </span>
+    }
+    else
+    {
+        <section class="deal-meetings" data-testid="deal-meetings" aria-label="@SalesText["MeetingBookings"]">
+            <h2>@SalesText["MeetingBookings"]</h2>
+            @foreach (var meeting in Meetings)
+            {
+                <article class="deal-meeting" @key="meeting.Id" data-invitation-id="@meeting.Id">
+                    <div><strong>@meeting.Title</strong><span class="deal-meeting-status">@Status(meeting.Status)</span></div>
+                    <p><time datetime="@meeting.StartsUtc.ToString("O")">@DateLabel(meeting)</time></p>
+                    <div class="deal-meeting-actions">
+                        <a href="@Path($"/app/sales/leads/{meeting.LeadId:D}")">@SalesText["ReviewMeetingBooking"]</a>
+                        @if (meeting.Status == "scheduled")
+                        {
+                            <a href="@Path($"/app/sales/meeting-invitations/{meeting.Id:D}/prepare")">@SalesText["PrepareMeetingBooking"]</a>
+                            @if (meeting.BrowserRoomId is Guid room && room != Guid.Empty)
+                            { <a class="deal-meeting-host" href="@Path($"/app/sales/rooms/{room:D}")">@SalesText["OpenHostRoom"]</a> }
+                        }
+                    </div>
+                </article>
+            }
+        </section>
+    }
+}
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public IReadOnlyList<SalesDealMeetingResponse> Meetings { get; set; } = [];
+    [Parameter] public bool Compact { get; set; }
+    private string Path(string path) => DashboardRoutes.WithQuery(
+        SalesJourneyRoutes.Build(path, CompanyId, Navigation.Uri),
+        ("recordReturnUrl", SalesJourneyRoutes.Normalize(new Uri(Navigation.Uri).PathAndQuery, CompanyId)));
+    private string Status(string status) => status == "scheduled" ? SalesText["InvitationScheduled"] : SalesStatusPresenter.Present(status, SalesText);
+    private static string DateLabel(SalesDealMeetingResponse meeting)
+    {
+        DateTime start = DateTime.SpecifyKind(meeting.StartsUtc, DateTimeKind.Utc);
+        DateTime end = DateTime.SpecifyKind(meeting.EndsUtc, DateTimeKind.Utc);
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(meeting.TimeZoneId);
+            start = TimeZoneInfo.ConvertTimeFromUtc(start, zone);
+            end = TimeZoneInfo.ConvertTimeFromUtc(end, zone);
+        }
+        catch (TimeZoneNotFoundException) { return $"{start:yyyy-MM-dd HH:mm}–{end:yyyy-MM-dd HH:mm} UTC"; }
+        catch (InvalidTimeZoneException) { return $"{start:yyyy-MM-dd HH:mm}–{end:yyyy-MM-dd HH:mm} UTC"; }
+        var endLabel = end.ToString(start.Date == end.Date ? "HH:mm" : "ddd, d MMM yyyy HH:mm", CultureInfo.CurrentCulture);
+        return $"{start.ToString("ddd, d MMM yyyy · HH:mm", CultureInfo.CurrentCulture)}–{endLabel} · {meeting.TimeZoneId}";
+    }
+}

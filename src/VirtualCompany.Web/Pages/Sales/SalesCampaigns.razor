@@ -427,6 +427,8 @@
 </div>
 
 @code {
+    [SupplyParameterFromQuery(Name = "campaignId")] public Guid? RequestedCampaignId { get; set; }
+    private Guid? loadedCampaignCompany;
     private bool isLoading = true;
     private bool isSubmitting;
     private bool showBuilder;
@@ -464,6 +466,13 @@
 
     private async Task LoadAsync()
     {
+        var read = BeginSalesRead();
+        var requestedCampaign = RequestedCampaignId;
+        if (loadedCampaignCompany != CompanyId)
+        {
+            selectedCampaign = null; initiative = null; readiness = null; performance = null;
+            activities = []; presentationConfigurations = [];
+        }
         isLoading = true;
         errorMessage = null;
         try
@@ -475,29 +484,44 @@
             }
 
             var companyId = ResolvedCompanyId!.Value;
-            campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
-            audienceOptions = await SalesApiClient.GetCampaignAudienceOptionsAsync(companyId);
-            segments = (await SalesApiClient.ListCampaignSegmentsAsync(companyId)).ToList();
+            var campaignRows = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
+            if (!SalesReadIsCurrent(read)) return;
+            campaigns = campaignRows;
+            var audience = await SalesApiClient.GetCampaignAudienceOptionsAsync(companyId);
+            if (!SalesReadIsCurrent(read)) return;
+            audienceOptions = audience;
+            var segmentRows = (await SalesApiClient.ListCampaignSegmentsAsync(companyId)).ToList();
+            if (!SalesReadIsCurrent(read)) return;
+            segments = segmentRows;
             var presetItems = await PresentationPresetApi.ListAsync(companyId);
+            if (!SalesReadIsCurrent(read)) return;
             var presetTasks = presetItems.Where(x => x.CurrentPublishedVersion.HasValue).Select(x => PresentationPresetApi.GetAsync(companyId, x.Id)).ToArray();
             var presetDetails = await Task.WhenAll(presetTasks);
+            if (!SalesReadIsCurrent(read)) return;
             publishedPresets = presetDetails.Where(x => x?.CurrentPublished is not null).Select(x => x!).ToList();
-            if (selectedCampaign is not null)
+            loadedCampaignCompany = companyId;
+            if (requestedCampaign.HasValue)
             {
-                await LoadCampaignDetailAsync(companyId, selectedCampaign.Id);
+                selectedCampaign = null; initiative = null; readiness = null; performance = null; activities = [];
+                if (!campaigns.Any(x => x.Id == requestedCampaign.Value))
+                { errorMessage = "This campaign is unavailable in the selected company."; return; }
+                await LoadCampaignDetailAsync(companyId, requestedCampaign.Value, read);
             }
-
+            else if (selectedCampaign is not null)
+            {
+                await LoadCampaignDetailAsync(companyId, selectedCampaign.Id, read);
+            }
+            if (!SalesReadIsCurrent(read)) return;
             EnsureAudienceSource();
             await RefreshAgentPanelAsync();
         }
         catch (SalesApiException ex)
         {
-            errorMessage = ex.Message;
-            AgentPanelErrorMessage = ex.Message;
+            if (SalesReadIsCurrent(read)) { errorMessage = ex.Message; AgentPanelErrorMessage = ex.Message; }
         }
         finally
         {
-            isLoading = false;
+            if (SalesReadIsCurrent(read)) isLoading = false;
         }
     }
 
@@ -533,29 +557,34 @@
         }
     }
 
-    private async Task LoadCampaignDetailAsync(Guid companyId, Guid campaignId)
+    private async Task LoadCampaignDetailAsync(Guid companyId, Guid campaignId, (int Version, string Location)? pendingRead = null)
     {
+        var read = pendingRead ?? BeginSalesRead();
         var detailTask = SalesApiClient.GetCampaignAsync(companyId, campaignId);
         var initiativeTask = SalesApiClient.GetCampaignInitiativeAsync(companyId, campaignId);
         var readinessTask = SalesApiClient.GetCampaignReadinessAsync(companyId, campaignId);
         var activitiesTask = SalesApiClient.ListCampaignActivitiesAsync(companyId, campaignId);
         var performanceTask = SalesApiClient.GetCampaignPerformanceAsync(companyId, campaignId);
         await Task.WhenAll(detailTask, initiativeTask, readinessTask, activitiesTask, performanceTask);
+        if (!SalesReadIsCurrent(read) || ResolvedCompanyId != companyId) return;
         selectedCampaign = await detailTask;
         initiative = await initiativeTask;
         readiness = await readinessTask;
         activities = (await activitiesTask).ToList();
-        await LoadPresentationConfigurationsAsync(companyId, campaignId);
+        await LoadPresentationConfigurationsAsync(companyId, campaignId, read);
+        if (!SalesReadIsCurrent(read)) return;
         performance = await performanceTask;
         activeTab = "Overview";
     }
 
-    private async Task LoadPresentationConfigurationsAsync(Guid companyId, Guid campaignId)
+    private async Task LoadPresentationConfigurationsAsync(Guid companyId, Guid campaignId, (int Version, string Location)? pendingRead = null)
     {
+        var read = pendingRead ?? BeginSalesRead();
         var presentationActivities = activities.Where(x => x.ActivityType == "presentation").ToArray();
         var tasks = presentationActivities.ToDictionary(x => x.Id,
             x => SalesApiClient.GetCampaignPresentationActivityAsync(companyId, campaignId, x.Id));
         await Task.WhenAll(tasks.Values);
+        if (!SalesReadIsCurrent(read) || ResolvedCompanyId != companyId) return;
         presentationConfigurations = tasks.ToDictionary(x => x.Key, x => x.Value.Result);
     }
 

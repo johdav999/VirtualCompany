@@ -1,0 +1,89 @@
+@page "/agents/work/{Kind}/{Id:guid}/collaboration"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject AgentWorkApiClient WorkApi
+@inject NavigationManager Navigation
+<PageTitle>Collaboration evidence</PageTitle>
+<div class="collaboration-page">
+    <VirtualCompany.Web.Components.Work.AgentWorkReturnLink CompanyId="CompanyId" />
+    <VirtualCompany.Web.Components.Work.DecisionReturnLink CompanyId="CompanyId" />
+    @if (AgentWorkRoutes.BusinessRecord(RecordReturnUrl, CompanyId) is string businessOrigin) { <a href="@businessOrigin">Back to business record</a> }
+    <nav aria-label="Collaboration returns"><a href="@Parent">← Back to owning work</a><a href="@(AgentWorkRoutes.Board(BoardReturnUrl, CompanyId) ?? $"/agents/staff?companyId={CompanyId:D}")">Back to filtered board</a></nav>
+    @if (loading) { <section class="collaboration-card" role="status">Loading collaboration evidence…</section> }
+    else if (evidence is null) { <section class="collaboration-card" role="alert"><h1>Collaboration unavailable</h1><p>@(error ?? "This work is unavailable in the current company and access scope.")</p><button class="btn btn-outline-primary" @onclick="Load">Retry</button></section> }
+    else
+    {
+        <header><div><span class="dashboard-kicker">AGENT TEAM</span><h1>Collaboration</h1><p>@evidence.Objective</p></div><span class="collaboration-state">@AgentWorkRoutes.State(evidence.OutcomeState)</span><button class="btn btn-outline-primary" @onclick="Load">Refresh</button></header>
+        <p class="collaboration-note">Observed @LocalDateTime.DateTime(evidence.ObservedUtc). Contributor completion is separate from the business outcome.</p>
+        @foreach (var gap in evidence.Diagnostics) { <p class="collaboration-gap" role="status">@gap</p> }
+        @if (evidence.HasRestrictedEvidence) { <p class="collaboration-gap" role="status">Some contributions and their derived outputs are unavailable in your access scope.</p> }
+        <div class="collaboration-layout"><section class="collaboration-card">
+            <div class="collaboration-switch" aria-label="Evidence view"><button class="btn @(View == "list" ? "btn-outline-primary" : "btn-primary")" aria-pressed="@(View != "list")" @onclick='() => ChangeView("flow")'>Flow</button><button class="btn @(View == "list" ? "btn-primary" : "btn-outline-primary")" aria-pressed="@(View == "list")" @onclick='() => ChangeView("list")'>Chronological list</button></div>
+            <h2>@(View == "list" ? "Recorded sequence" : "Contributions and handoffs")</h2>
+            @if (evidence.Artifacts.Count == 0) { <p>No permitted contributions are recorded. Open owning work to review existing evidence.</p> }
+            <ol class="@(View == "list" ? "collaboration-list" : "collaboration-flow")" aria-label="Recorded contributions">
+            @foreach (var artifact in evidence.Artifacts.OrderBy(x => x.CreatedUtc).ThenBy(x => x.Sequence).ThenBy(x => x.Version))
+            {
+                <li class="contribution contribution--@artifact.State @(artifact.InputIds.Count > 0 ? "contribution--handoff" : "")" data-artifact-id="@artifact.Id">
+                    <button class="contribution-open" aria-pressed="@(ArtifactId == artifact.Id)" @onclick="() => Select(artifact.Id)"><span class="contribution-person">@artifact.Agent.Name · @Role(artifact.Role)</span><strong>@artifact.Objective</strong><span>Version @artifact.Version · @State(artifact.State)</span><small>@LocalDateTime.DateTime(artifact.CreatedUtc)</small></button>
+                    <p>@(artifact.Pattern == "sequential_handoff" ? "Sequential handoff" : "Independent contribution") · @(evidence.Artifacts.Any(x => x.ParentTaskId == artifact.ParentTaskId && x.Sequence == artifact.Sequence && x.Version > artifact.Version) ? "Earlier version" : "Latest recorded version")</p>
+                    @foreach (var edge in evidence.Handoffs.Where(x => x.RecipientId == artifact.Id))
+                    {
+                        var input = evidence.Artifacts.Single(x => x.Id == edge.InputId);
+                        <p class="handoff"><button @onclick="() => Select(input.Id)">@(edge.Passed ? "← Received" : "← Blocked by") @input.Agent.Name, version @input.Version</button>@if (edge.Reason is not null) { <span>@edge.Reason</span> }</p>
+                    }
+                </li>
+            }
+            </ol>
+        </section><aside class="collaboration-rail">
+            <section class="collaboration-card"><h2>Next dependency</h2><p>@evidence.NextDependency</p><h3>Accountable human</h3><p>@evidence.AccountableHuman</p>@foreach (var link in evidence.RelatedRecords) { <p><a href="@Related(link.Route)">@link.Label →</a></p> }</section>
+            <section class="collaboration-card" aria-labelledby="artifact-heading" aria-live="polite"><h2 id="artifact-heading">Contribution detail</h2>
+                @if (Selected is { } selected)
+                {
+                    <h3>@selected.Objective</h3><p>@selected.Agent.Name · @Role(selected.Role) · Version @selected.Version</p><p>@State(selected.State)</p>
+                    <h3>Business output</h3><p class="contribution-output">@(string.IsNullOrWhiteSpace(selected.Output) ? "No output recorded." : selected.Output)</p>
+                    <h3>Business rationale</h3><p>@(selected.Rationale ?? "Not recorded.")</p>
+                    <h3>Recorded review or challenge</h3><p>@(selected.ReviewOutcome ?? "No review conclusion is recorded for this version.")</p>
+                    <h3>Versions passed</h3>@if (selected.InputIds.Count == 0) { <p>No incoming version is recorded.</p> }
+                    @foreach (var inputId in selected.InputIds) { var input = evidence.Artifacts.Single(x => x.Id == inputId); <p><button class="artifact-link" @onclick="() => Select(input.Id)">@input.Agent.Name · @input.Objective · version @input.Version</button></p> }
+                    <h3>Source references</h3>@foreach (var source in selected.Sources) { <p><a href="@Related(source.Route)">@source.Label →</a></p> }
+                    <h3>Revision history</h3>@foreach (var version in evidence.Artifacts.Where(x => x.ParentTaskId == selected.ParentTaskId && x.Sequence == selected.Sequence).OrderBy(x => x.Version)) { <p><button class="artifact-link" @onclick="() => Select(version.Id)">Version @version.Version · @State(version.State) · @LocalDateTime.DateTime(version.CreatedUtc)</button></p> }
+                }
+                else { <p>Select a contribution to inspect its retained output, sources and version history.</p> }
+            </section>
+        </aside></div>
+    }
+</div>
+@code {
+    [Parameter] public string Kind { get; set; } = "task";
+    [Parameter] public Guid Id { get; set; }
+    [SupplyParameterFromQuery] public Guid CompanyId { get; set; }
+    [SupplyParameterFromQuery] public string? BoardReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? RecordReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? View { get; set; }
+    [SupplyParameterFromQuery] public Guid? ArtifactId { get; set; }
+    private CollaborationEvidenceDto? evidence; private bool loading = true; private string? error;
+    private CancellationTokenSource? read; private int generation;
+    private CollaborationArtifactDto? Selected => evidence?.Artifacts.FirstOrDefault(x => x.Id == ArtifactId);
+    private string Parent => DashboardRoutes.WithQuery($"/agents/work/{Kind}/{Id:D}", ("companyId", CompanyId.ToString("D")),
+        ("supervisionReturnUrl",AgentWorkRoutes.SupervisionBack(Navigation.Uri,CompanyId)),
+        ("boardReturnUrl", AgentWorkRoutes.Board(BoardReturnUrl, CompanyId)), ("recordReturnUrl", AgentWorkRoutes.Local(RecordReturnUrl, CompanyId)),
+        ("returnUrl", DashboardRoutes.OverviewPathFromLocation(Navigation.Uri, CompanyId)));
+    protected override Task OnParametersSetAsync() => Load();
+    private async Task Load()
+    {
+        var current = ++generation; read?.Cancel(); read?.Dispose(); read = new(); var token = read.Token;
+        loading = true; evidence = null; error = null;
+        try { var result = await WorkApi.CollaborationAsync(CompanyId, Kind, Id, token); if (current == generation && !token.IsCancellationRequested) evidence = result; }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) when (ex is OnboardingApiException or ArgumentException) { if (current == generation) error = ex.Message; }
+        finally { if (current == generation) loading = false; }
+    }
+    private void Select(Guid id) => Navigation.NavigateTo(DashboardRoutes.WithQuery(new Uri(Navigation.Uri).PathAndQuery, ("artifactId", id.ToString("D"))), replace: true);
+    private void ChangeView(string view) => Navigation.NavigateTo(DashboardRoutes.WithQuery(new Uri(Navigation.Uri).PathAndQuery, ("view", view)), replace: true);
+    private string Related(string route) => AgentWorkRoutes.Related(route, CompanyId, Navigation.Uri);
+    private static string Role(string role) => role switch { "reviewer" => "Reviewer", "challenger" => "Challenger", _ => "Contributor" };
+    private static string State(string state) => state switch { "needs_review" or "awaiting_approval" => "Needs review", "running" => "In progress", "partial" => "Partial result", _ => AgentWorkRoutes.State(state) };
+    public void Dispose() { generation++; read?.Cancel(); read?.Dispose(); }
+}

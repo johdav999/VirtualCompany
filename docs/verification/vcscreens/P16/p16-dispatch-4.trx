@@ -1,0 +1,320 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TestRun id="d220da48-18fd-4821-92dd-bb6380dbb387" name="Johan@DESKTOP-388F6FT 2026-10-04 09:12:13" runUser="DESKTOP-388F6FT\Johan" xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <Times creation="2026-10-04T09:12:13.6933107+02:00" queuing="2026-10-04T09:12:13.6933111+02:00" start="2026-10-04T09:11:55.7792012+02:00" finish="2026-10-04T09:12:16.9053329+02:00" />
+  <TestSettings name="default" id="7f56ba9f-de00-474c-bd88-8e7a419d5844">
+    <Deployment runDeploymentRoot="Johan_DESKTOP-388F6FT_2026-10-04_09_12_13" />
+  </TestSettings>
+  <Results>
+    <UnitTestResult executionId="d43209a5-3813-4270-bbc2-6e6023cc9d86" testId="cbf9d4c0-5a5a-2609-48a3-c1d2b5cbc9ff" testName="VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(revoke: False)" computerName="DESKTOP-388F6FT" duration="00:00:16.0228583" startTime="2026-10-04T09:12:13.6730991+02:00" endTime="2026-10-04T09:12:13.6731162+02:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="d43209a5-3813-4270-bbc2-6e6023cc9d86">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : P16 fixture queue failed: {"type":"https://httpstatuses.com/500","title":"An unexpected error occurred.","status":500,"detail":"The server encountered an unexpected error. Use the provided identifiers when contacting support.","instance":"/api/companies/dd9918b9-aef4-498f-a1e6-2486d5187bee/task-policies/queue","correlationId":"2b0e59d26d754de98e2c5ffad429aaae","traceId":"2b0e59d26d754de98e2c5ffad429aaae"}&#xD;
+---- System.InvalidOperationException : Initiative cannot transition from active.</Message>
+          <StackTrace>   at VirtualCompany.Api.Tests.ExecutionControlFixture.SeedAsync(TestWebApplicationFactory factory, Guid company, Guid owner, String subject) in C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlFixture.cs:line 30&#xD;
+   at VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(Boolean revoke) in C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlDispatchTests.cs:line 15&#xD;
+--- End of stack trace from previous location ---&#xD;
+----- Inner Stack Trace -----&#xD;
+   at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 144&#xD;
+   at VirtualCompany.Domain.Entities.OperatingInitiative.Approve() in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 140&#xD;
+   at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 127&#xD;
+   at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 130&#xD;
+   at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs:line 27&#xD;
+   at lambda_method4019(Closure, Object)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+--- End of stack trace from previous location ---&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+   at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76&#xD;
+   at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+--- End of stack trace from previous location ---&#xD;
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult executionId="822ee9a1-3d01-4a6f-827e-b15f492ebc8a" testId="bda24bec-63c0-e2f7-7cc7-8d82d65fb4b2" testName="VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(revoke: True)" computerName="DESKTOP-388F6FT" duration="00:00:03.1472478" startTime="2026-10-04T09:12:16.8191761+02:00" endTime="2026-10-04T09:12:16.8191763+02:00" testType="13cdc9d9-ddb5-4fa4-a97d-d965ccfc6d4b" outcome="Failed" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" relativeResultsDirectory="822ee9a1-3d01-4a6f-827e-b15f492ebc8a">
+      <Output>
+        <ErrorInfo>
+          <Message>System.InvalidOperationException : P16 fixture queue failed: {"type":"https://httpstatuses.com/500","title":"An unexpected error occurred.","status":500,"detail":"The server encountered an unexpected error. Use the provided identifiers when contacting support.","instance":"/api/companies/0d907622-02f4-42a7-9012-4e8eaf5f39d8/task-policies/queue","correlationId":"2292e06724e0485b855c44e40663f703","traceId":"2292e06724e0485b855c44e40663f703"}&#xD;
+---- System.InvalidOperationException : Initiative cannot transition from active.</Message>
+          <StackTrace>   at VirtualCompany.Api.Tests.ExecutionControlFixture.SeedAsync(TestWebApplicationFactory factory, Guid company, Guid owner, String subject) in C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlFixture.cs:line 30&#xD;
+   at VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(Boolean revoke) in C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlDispatchTests.cs:line 15&#xD;
+--- End of stack trace from previous location ---&#xD;
+----- Inner Stack Trace -----&#xD;
+   at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 144&#xD;
+   at VirtualCompany.Domain.Entities.OperatingInitiative.Approve() in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 140&#xD;
+   at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 127&#xD;
+   at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 130&#xD;
+   at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs:line 27&#xD;
+   at lambda_method6444(Closure, Object)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+--- End of stack trace from previous location ---&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+   at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+   at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+   at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76&#xD;
+   at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+--- End of stack trace from previous location ---&#xD;
+   at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+   at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(revoke: False)" storage="c:\users\johan\source\repos\virtual company\tests\virtualcompany.api.tests\bin\debug\net9.0\virtualcompany.api.tests.dll" id="cbf9d4c0-5a5a-2609-48a3-c1d2b5cbc9ff">
+      <Execution id="d43209a5-3813-4270-bbc2-6e6023cc9d86" />
+      <TestMethod codeBase="C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\bin\Debug\net9.0\VirtualCompany.Api.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="VirtualCompany.Api.Tests.ExecutionControlDispatchTests" name="Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy" />
+    </UnitTest>
+    <UnitTest name="VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(revoke: True)" storage="c:\users\johan\source\repos\virtual company\tests\virtualcompany.api.tests\bin\debug\net9.0\virtualcompany.api.tests.dll" id="bda24bec-63c0-e2f7-7cc7-8d82d65fb4b2">
+      <Execution id="822ee9a1-3d01-4a6f-827e-b15f492ebc8a" />
+      <TestMethod codeBase="C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\bin\Debug\net9.0\VirtualCompany.Api.Tests.dll" adapterTypeName="executor://xunit/VsTestRunner2/netcoreapp" className="VirtualCompany.Api.Tests.ExecutionControlDispatchTests" name="Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy" />
+    </UnitTest>
+  </TestDefinitions>
+  <TestEntries>
+    <TestEntry testId="cbf9d4c0-5a5a-2609-48a3-c1d2b5cbc9ff" executionId="d43209a5-3813-4270-bbc2-6e6023cc9d86" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestEntry testId="bda24bec-63c0-e2f7-7cc7-8d82d65fb4b2" executionId="822ee9a1-3d01-4a6f-827e-b15f492ebc8a" testListId="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+  </TestEntries>
+  <TestLists>
+    <TestList name="Results Not in a List" id="8c84fa94-04c1-424b-9868-57a2d4851a1d" />
+    <TestList name="All Loaded Results" id="19431567-8539-422a-85d7-44ee4e166bda" />
+  </TestLists>
+  <ResultSummary outcome="Failed">
+    <Counters total="2" executed="2" passed="0" failed="2" error="0" timeout="0" aborted="0" inconclusive="0" passedButRunAborted="0" notRunnable="0" notExecuted="0" disconnected="0" warning="0" completed="0" inProgress="0" pending="0" />
+    <Output>
+      <StdOut>[xUnit.net 00:00:00.00] xUnit.net VSTest Adapter v2.8.2+699d445a1a (64-bit .NET 9.0.19)&#xD;
+[xUnit.net 00:00:00.97]   Discovering: VirtualCompany.Api.Tests&#xD;
+[xUnit.net 00:00:01.25]   Discovered:  VirtualCompany.Api.Tests&#xD;
+[xUnit.net 00:00:01.26]   Starting:    VirtualCompany.Api.Tests&#xD;
+info: VirtualCompany.Api[0]&#xD;
+      ASP.NET Core Data Protection keys are persisted to C:\Users\Johan\AppData\Local\Temp\virtual-company-tests\data-protection-cd0fefbe8b9c4813964a61d9038859b7. Preserve this directory across restarts and deployments.&#xD;
+info: DatabaseInitializationService[0]&#xD;
+      Database initialization is disabled for this host.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'BankTransaction' has a global query filter defined and is the required end of a relationship with the entity 'BankReconciliationFollowUp'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'CompanyBankAccount' has a global query filter defined and is the required end of a relationship with the entity 'BankStatementImport'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'CompanyBankAccount' has a global query filter defined and is the required end of a relationship with the entity 'BankStatementImportJob'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'BankTransaction' has a global query filter defined and is the required end of a relationship with the entity 'BankStatementImportRow'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'CompanyDocumentRepositoryOnboardingSession' has a global query filter defined and is the required end of a relationship with the entity 'CompanyDocumentRepositoryProvisioning'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'Agent' has a global query filter defined and is the required end of a relationship with the entity 'CompanyDocumentRepositoryProvisioningAgent'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'OperatingInitiative' has a global query filter defined and is the required end of a relationship with the entity 'OperatingDispatch'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[10622]&#xD;
+      Entity 'Agent' has a global query filter defined and is the required end of a relationship with the entity 'OperatingInitiativeCollaborator'. This may lead to unexpected results when the required entity is filtered out. Either configure the navigation as optional, or define matching query filters for both entities in the navigation. See https://go.microsoft.com/fwlink/?linkid=2131316 for more information.&#xD;
+warn: Microsoft.EntityFrameworkCore.Model.Validation[20601]&#xD;
+      The 'SalesMeetingConfirmationStatus' property 'ConfirmationStatus' on entity type 'SalesMeetingInvitation' is configured with a database-generated default, but has no configured sentinel value. The database-generated default will always be used for inserts when the property has the value '0', since this is the CLR default for the 'SalesMeetingConfirmationStatus' type. Consider using a nullable type, using a nullable backing field, or setting the sentinel value for the property to ensure the database default is used when, and only when, appropriate. See https://aka.ms/efcore-docs-default-values for more information.&#xD;
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]&#xD;
+      Invalidated executive cockpit cache namespace for company dd9918b9-aef4-498f-a1e6-2486d5187bee from trigger direct; lag 2.0515 ms.&#xD;
+warn: Microsoft.AspNetCore.HttpsPolicy.HttpsRedirectionMiddleware[3]&#xD;
+      Failed to determine the https port for redirect.&#xD;
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]&#xD;
+      Invalidated executive cockpit cache namespace for company dd9918b9-aef4-498f-a1e6-2486d5187bee from trigger direct; lag 0.0189 ms.&#xD;
+info: VirtualCompany.Infrastructure.Companies.CompanyOutboxEnqueuer[0]&#xD;
+      Enqueued company outbox message task_created (VirtualCompany.Application.Workflows.PlatformEventEnvelope) for company dd9918b9-aef4-498f-a1e6-2486d5187bee.&#xD;
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]&#xD;
+      Invalidated executive cockpit cache namespace for company dd9918b9-aef4-498f-a1e6-2486d5187bee from trigger direct; lag 0.0178 ms.&#xD;
+warn: Microsoft.EntityFrameworkCore.Query[20504]&#xD;
+      Compiling a query which loads related collections for more than one collection navigation, either via 'Include' or through projection, but no 'QuerySplittingBehavior' has been configured. By default, Entity Framework will use 'QuerySplittingBehavior.SingleQuery', which can potentially result in slow query performance. See https://go.microsoft.com/fwlink/?linkid=2134277 for more information. To identify the query that's triggering this warning call 'ConfigureWarnings(w =&gt; w.Throw(RelationalEventId.MultipleCollectionIncludeWarning))'.&#xD;
+fail: Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware[1]&#xD;
+      An unhandled exception has occurred while executing the request.&#xD;
+      System.InvalidOperationException: Initiative cannot transition from active.&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 144&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Approve() in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 140&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 127&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 130&#xD;
+         at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs:line 27&#xD;
+         at lambda_method4019(Closure, Object)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+         at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76&#xD;
+         at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+         at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)&#xD;
+fail: VirtualCompany.Infrastructure.Observability.GlobalExceptionHandler[0]&#xD;
+      Unhandled exception System.InvalidOperationException for HTTP POST /api/companies/dd9918b9-aef4-498f-a1e6-2486d5187bee/task-policies/queue. TraceId: 2b0e59d26d754de98e2c5ffad429aaae.&#xD;
+      System.InvalidOperationException: Initiative cannot transition from active.&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 144&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Approve() in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 140&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 127&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 130&#xD;
+         at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs:line 27&#xD;
+         at lambda_method4019(Closure, Object)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+         at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76&#xD;
+         at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+         at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)&#xD;
+[xUnit.net 00:00:17.31]       System.InvalidOperationException : P16 fixture queue failed: {"type":"https://httpstatuses.com/500","title":"An unexpected error occurred.","status":500,"detail":"The server encountered an unexpected error. Use the provided identifiers when contacting support.","instance":"/api/companies/dd9918b9-aef4-498f-a1e6-2486d5187bee/task-policies/queue","correlationId":"2b0e59d26d754de98e2c5ffad429aaae","traceId":"2b0e59d26d754de98e2c5ffad429aaae"}&#xD;
+[xUnit.net 00:00:17.31]       ---- System.InvalidOperationException : Initiative cannot transition from active.&#xD;
+[xUnit.net 00:00:17.31]       Stack Trace:&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlFixture.cs(30,0): at VirtualCompany.Api.Tests.ExecutionControlFixture.SeedAsync(TestWebApplicationFactory factory, Guid company, Guid owner, String subject)&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlDispatchTests.cs(15,0): at VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(Boolean revoke)&#xD;
+[xUnit.net 00:00:17.31]         --- End of stack trace from previous location ---&#xD;
+[xUnit.net 00:00:17.31]         ----- Inner Stack Trace -----&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs(144,0): at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected)&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs(140,0): at VirtualCompany.Domain.Entities.OperatingInitiative.Approve()&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs(127,0): at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct)&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs(130,0): at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct)&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs(27,0): at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action)&#xD;
+[xUnit.net 00:00:17.31]            at lambda_method4019(Closure, Object)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+[xUnit.net 00:00:17.31]         --- End of stack trace from previous location ---&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+[xUnit.net 00:00:17.31]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs(76,0): at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+[xUnit.net 00:00:17.31]         --- End of stack trace from previous location ---&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+[xUnit.net 00:00:17.31]            at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)&#xD;
+info: VirtualCompany.Api[0]&#xD;
+      ASP.NET Core Data Protection keys are persisted to C:\Users\Johan\AppData\Local\Temp\virtual-company-tests\data-protection-ff0a8bff27094ead89c644100563c232. Preserve this directory across restarts and deployments.&#xD;
+info: DatabaseInitializationService[0]&#xD;
+      Database initialization is disabled for this host.&#xD;
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]&#xD;
+      Invalidated executive cockpit cache namespace for company 0d907622-02f4-42a7-9012-4e8eaf5f39d8 from trigger direct; lag 0.0029 ms.&#xD;
+warn: Microsoft.AspNetCore.HttpsPolicy.HttpsRedirectionMiddleware[3]&#xD;
+      Failed to determine the https port for redirect.&#xD;
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]&#xD;
+      Invalidated executive cockpit cache namespace for company 0d907622-02f4-42a7-9012-4e8eaf5f39d8 from trigger direct; lag 0.0047 ms.&#xD;
+info: VirtualCompany.Infrastructure.Companies.CompanyOutboxEnqueuer[0]&#xD;
+      Enqueued company outbox message task_created (VirtualCompany.Application.Workflows.PlatformEventEnvelope) for company 0d907622-02f4-42a7-9012-4e8eaf5f39d8.&#xD;
+info: VirtualCompany.Infrastructure.Companies.ExecutiveCockpitDashboardCache[0]&#xD;
+      Invalidated executive cockpit cache namespace for company 0d907622-02f4-42a7-9012-4e8eaf5f39d8 from trigger direct; lag 0.0024 ms.&#xD;
+fail: Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware[1]&#xD;
+      An unhandled exception has occurred while executing the request.&#xD;
+      System.InvalidOperationException: Initiative cannot transition from active.&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 144&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Approve() in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 140&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 127&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 130&#xD;
+         at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs:line 27&#xD;
+         at lambda_method6444(Closure, Object)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+         at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76&#xD;
+         at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+         at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)&#xD;
+fail: VirtualCompany.Infrastructure.Observability.GlobalExceptionHandler[0]&#xD;
+      Unhandled exception System.InvalidOperationException for HTTP POST /api/companies/0d907622-02f4-42a7-9012-4e8eaf5f39d8/task-policies/queue. TraceId: 2292e06724e0485b855c44e40663f703.&#xD;
+      System.InvalidOperationException: Initiative cannot transition from active.&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 144&#xD;
+         at VirtualCompany.Domain.Entities.OperatingInitiative.Approve() in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs:line 140&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 127&#xD;
+         at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs:line 130&#xD;
+         at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs:line 27&#xD;
+         at lambda_method6444(Closure, Object)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+         at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+         at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next) in C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs:line 76&#xD;
+         at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+      --- End of stack trace from previous location ---&#xD;
+         at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+         at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)&#xD;
+[xUnit.net 00:00:20.46]       System.InvalidOperationException : P16 fixture queue failed: {"type":"https://httpstatuses.com/500","title":"An unexpected error occurred.","status":500,"detail":"The server encountered an unexpected error. Use the provided identifiers when contacting support.","instance":"/api/companies/0d907622-02f4-42a7-9012-4e8eaf5f39d8/task-policies/queue","correlationId":"2292e06724e0485b855c44e40663f703","traceId":"2292e06724e0485b855c44e40663f703"}&#xD;
+[xUnit.net 00:00:20.46]       ---- System.InvalidOperationException : Initiative cannot transition from active.&#xD;
+[xUnit.net 00:00:20.46]       Stack Trace:&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlFixture.cs(30,0): at VirtualCompany.Api.Tests.ExecutionControlFixture.SeedAsync(TestWebApplicationFactory factory, Guid company, Guid owner, String subject)&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\tests\VirtualCompany.Api.Tests\ExecutionControlDispatchTests.cs(15,0): at VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(Boolean revoke)&#xD;
+[xUnit.net 00:00:20.46]         --- End of stack trace from previous location ---&#xD;
+[xUnit.net 00:00:20.46]         ----- Inner Stack Trace -----&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs(144,0): at VirtualCompany.Domain.Entities.OperatingInitiative.Require(OperatingInitiativeStatus expected)&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Domain\Entities\CompanyOperatingEntities.cs(140,0): at VirtualCompany.Domain.Entities.OperatingInitiative.Approve()&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs(127,0): at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct)&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Operations\Companies\TaskTypePolicyService.cs(130,0): at VirtualCompany.Infrastructure.Companies.TaskTypePolicyService.QueueAsync(Guid company, QueueTaskPolicyWork command, CancellationToken ct)&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Api\Controllers\TaskTypePoliciesController.cs(27,0): at VirtualCompany.Api.Controllers.TaskTypePoliciesController.Run[T](Func`1 action)&#xD;
+[xUnit.net 00:00:20.46]            at lambda_method6444(Closure, Object)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ActionMethodExecutor.AwaitableObjectResultExecutor.Execute(ActionContext actionContext, IActionResultTypeMapper mapper, ObjectMethodExecutor executor, Object controller, Object[] arguments)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeActionMethodAsync&gt;g__Awaited|12_0(ControllerActionInvoker invoker, ValueTask`1 actionResultValueTask)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.&lt;InvokeNextActionFilterAsync&gt;g__Awaited|10_0(ControllerActionInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Rethrow(ActionExecutedContextSealed context)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.Next(State&amp; next, Scope&amp; scope, Object&amp; state, Boolean&amp; isCompleted)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ControllerActionInvoker.InvokeInnerFilterAsync()&#xD;
+[xUnit.net 00:00:20.46]         --- End of stack trace from previous location ---&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeFilterPipelineAsync&gt;g__Awaited|20_0(ResourceInvoker invoker, Task lastTask, State next, Scope scope, Object state, Boolean isCompleted)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Mvc.Infrastructure.ResourceInvoker.&lt;InvokeAsync&gt;g__Awaited|17_0(ResourceInvoker invoker, Task task, IDisposable scope)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Authorization.AuthorizationMiddleware.Invoke(HttpContext context)&#xD;
+[xUnit.net 00:00:20.46]         C:\Users\Johan\source\repos\Virtual Company\src\VirtualCompany.Infrastructure.Platform\Tenancy\CompanyContextResolutionMiddleware.cs(76,0): at VirtualCompany.Infrastructure.Tenancy.CompanyContextResolutionMiddleware.InvokeAsync(HttpContext context, RequestDelegate next)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Builder.UseMiddlewareExtensions.InterfaceMiddlewareBinder.&lt;&gt;c__DisplayClass2_0.&lt;&lt;CreateMiddleware&gt;b__0&gt;d.MoveNext()&#xD;
+[xUnit.net 00:00:20.46]         --- End of stack trace from previous location ---&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Authentication.AuthenticationMiddleware.Invoke(HttpContext context)&#xD;
+[xUnit.net 00:00:20.46]            at Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddlewareImpl.&lt;Invoke&gt;g__Awaited|10_0(ExceptionHandlerMiddlewareImpl middleware, HttpContext context, Task task)&#xD;
+[xUnit.net 00:00:20.46]   Finished:    VirtualCompany.Api.Tests&#xD;
+</StdOut>
+    </Output>
+    <RunInfos>
+      <RunInfo computerName="DESKTOP-388F6FT" outcome="Error" timestamp="2026-10-04T09:12:13.6699878+02:00">
+        <Text>[xUnit.net 00:00:17.31]     VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(revoke: False) [FAIL]</Text>
+      </RunInfo>
+      <RunInfo computerName="DESKTOP-388F6FT" outcome="Error" timestamp="2026-10-04T09:12:16.8174808+02:00">
+        <Text>[xUnit.net 00:00:20.46]     VirtualCompany.Api.Tests.ExecutionControlDispatchTests.Pause_prevents_real_dispatch_and_resume_rechecks_the_retained_task_policy(revoke: True) [FAIL]</Text>
+      </RunInfo>
+    </RunInfos>
+  </ResultSummary>
+</TestRun>

@@ -24,7 +24,8 @@ public sealed record ApprovalDecisionCommand(
     string Decision,
     Guid? StepId = null,
     string? Comment = null,
-    Guid? ClientRequestId = null);
+    Guid? ClientRequestId = null,
+    string? ReviewToken = null);
 
 public sealed record ApprovalRequestDto(
     Guid Id,
@@ -46,7 +47,15 @@ public sealed record ApprovalRequestDto(
     string AffectedDataSummary,
     IReadOnlyList<ApprovalAffectedEntityDto> AffectedEntities,
     string? ThresholdSummary,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    ApprovalReviewDto? Review = null);
+
+public sealed record ApprovalReviewDto(string Token, bool CanDecide, bool ProposalChanged,
+    DateTime? ExpiresAt, string Reviewer, string VersionEvidence,
+    IReadOnlyList<ApprovalComparisonDto> Comparison, IReadOnlyList<ApprovalEvidenceDto> Evidence,
+    string? ExecutionStatus = null);
+public sealed record ApprovalComparisonDto(string Field, string? Before, string? Proposed);
+public sealed record ApprovalEvidenceDto(string Label, string Href);
 
 public sealed record ApprovalAffectedEntityDto(
     string EntityType,
@@ -61,7 +70,8 @@ public sealed record ApprovalStepDto(
     string Status,
     Guid? DecidedByUserId = null,
     DateTime? DecidedAt = null,
-    string? Comment = null);
+    string? Comment = null,
+    string? ReviewerName = null);
 
 public sealed record ApprovalDecisionResultDto(
     ApprovalRequestDto Approval,

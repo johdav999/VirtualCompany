@@ -1,0 +1,125 @@
+@using System.Globalization
+@using VirtualCompany.Web.Services
+@inject NavigationManager Navigation
+
+@if (IsLoading)
+{
+    <section class="weekly-state" role="status" data-testid="weekly-loading"><h1>Loading weekly review</h1><p>Reading recorded weekly sources…</p></section>
+}
+else if (IsUnauthorized)
+{
+    <section class="weekly-state" role="alert" data-testid="weekly-restricted"><h1>Access restricted</h1><p>Select a company and responsibility you can access.</p></section>
+}
+else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+{
+    <section class="weekly-state" role="alert" data-testid="weekly-error"><h1>Weekly review unavailable</h1><p>@ErrorMessage</p><button class="btn btn-primary" @onclick="RetryRequested">Retry</button> <a href="@DashboardRoutes.BuildWeeklyPath(CompanyId)">Open this week</a></section>
+}
+else if (Workspace is null || Workspace.CompanyId != CompanyId)
+{
+    <section class="weekly-state" role="status" data-testid="weekly-empty"><h1>No weekly review available</h1><p>Select a company or retry when connected.</p><button class="btn btn-primary" @onclick="RetryRequested">Retry</button></section>
+}
+else
+{
+    <div class="weekly-workspace" data-testid="weekly-workspace">
+        <header class="weekly-header"><div><span class="weekly-kicker">@Workspace.CompanyName</span><h1>@(SelectedMetric?.Label ?? "Weekly review")</h1><p>@Workspace.Period.Label · @(Workspace.Period.IsWeekToDate ? "Week to date" : "Completed week")</p></div>
+            <div><span>@Workspace.Period.Timezone</span><small>Updated @Local(Workspace.GeneratedAtUtc)</small><button class="btn btn-outline-primary" @onclick="RetryRequested">Refresh</button></div></header>
+        <div class="weekly-controls">
+            <div class="workspace-periods" role="group" aria-label="Workspace period" data-testid="workspace-period-picker">
+                <button @onclick='() => PeriodChanged.InvokeAsync("today")'>Today</button><button class="workspace-periods__active" aria-pressed="true">Week</button><button @onclick='() => PeriodChanged.InvokeAsync("month")'>Monthly</button><button @onclick='() => PeriodChanged.InvokeAsync("quarter")'>Quarter</button>
+                        <button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("year")'>Year</button><button type="button" aria-pressed="false" @onclick='() => PeriodChanged.InvokeAsync("multiyear")'>Multi-year</button>
+            </div>
+            <div class="weekly-lenses" role="group" aria-label="Responsibility">
+                @foreach (var lens in Workspace.AvailableLenses)
+                {
+                    <button type="button" aria-pressed="@((lens.Value == Workspace.ActiveLens).ToString().ToLowerInvariant())" title="@lens.AvailabilityReason" @onclick="() => LensChanged.InvokeAsync(lens.Value)">@lens.Label</button>
+                }
+            </div>
+        </div>
+        <div class="weekly-period-nav"><button class="btn btn-outline-primary" @onclick="() => WeekChanged.InvokeAsync(Workspace.Period.WeekStart.AddDays(-7))">Previous week</button>
+            <label>Week containing <input type="date" value="@Workspace.Period.WeekStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)" max="@CurrentLocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)" min="2000-01-01" @onchange="SelectWeek" /></label>
+            <button class="btn btn-outline-primary" disabled="@Workspace.Period.IsWeekToDate" @onclick="() => WeekChanged.InvokeAsync(Workspace.Period.WeekStart.AddDays(7))">Next week</button>
+            <button class="btn btn-outline-primary" @onclick="() => WeekChanged.InvokeAsync(null)">This week</button>
+        </div>
+        <p class="weekly-context">Compared with @Workspace.Period.ComparisonLabel. Activity cutoff @Local(Workspace.Period.ActivityEndUtc) (exclusive).</p>
+        @if (Workspace.IsPartial) { <p class="weekly-notice" role="status" data-testid="weekly-partial">Some history is incomplete. Recorded activity remains visible; unavailable balances are not estimated.</p> }
+        @foreach (var diagnostic in Workspace.Diagnostics) { <p class="weekly-notice" role="alert">@diagnostic.Message</p> }
+        @if (!string.IsNullOrWhiteSpace(Metric) && SelectedMetric is null)
+        {
+            <section class="weekly-state" data-testid="weekly-detail-unavailable"><h2>This measure is unavailable for the current responsibility</h2><a href="@Overview">Back to weekly review</a></section>
+        }
+        else if (SelectedMetric is { } selected)
+        {
+            <a class="weekly-back" href="@Overview">← Back to weekly review</a>
+            <section class="weekly-detail" data-testid="weekly-detail"><h2>Source details</h2><p>@selected.Definition</p><strong class="weekly-detail-value">@selected.DisplayValue</strong><p>Comparison: @selected.ComparisonDisplayValue</p><p>@selected.Coverage</p>
+                <p>@MeasureTiming(selected)</p>
+                <div class="weekly-source-tabs"><a href="@DetailPath(selected.Key, false, 1)" aria-current="@(!Prior ? "page" : null)">Selected week</a><a href="@DetailPath(selected.Key, true, 1)" aria-current="@(Prior ? "page" : null)">Comparison sources</a></div>
+                @if (Sources.Count == 0) { <p role="status" data-testid="weekly-sources-empty">@((Prior ? selected.ComparisonValue : selected.Value).HasValue ? "No recorded source rows in this interval and scope." : "Source history is unavailable. Review the coverage explanation.")</p> }
+                else
+                {
+                    <p>@Sources.Count included source rows · @(selected.IsComplete ? "retained cohort" : "incomplete history or bounded cohort") · page @EffectivePage of @PageCount</p>
+                    <div class="weekly-table-wrap"><table><thead><tr><th>Time</th><th>Recorded source</th><th>Action</th></tr></thead><tbody>
+                        @foreach (var source in Sources.Skip((EffectivePage - 1) * PageSize).Take(PageSize))
+                        { <tr><td>@Local(source.OccurredUtc)</td><td>@source.Title</td><td><a href="@Resolve(source.DeepLink, DetailPath(selected.Key, Prior, EffectivePage))">Open record</a></td></tr> }
+                    </tbody></table></div>
+                    <nav class="weekly-source-pages" aria-label="Source pages">@if (EffectivePage > 1) { <a href="@DetailPath(selected.Key, Prior, EffectivePage - 1)">Previous sources</a> }@if (EffectivePage < PageCount) { <a href="@DetailPath(selected.Key, Prior, EffectivePage + 1)">Next sources</a> }</nav>
+                }
+            </section>
+        }
+        else
+        {
+            @if (Workspace.ActiveLens == "company")
+            {
+                <CompanyPeriodOverview CompanyName="@Workspace.CompanyName" PeriodLabel="@Workspace.Period.Label" Areas="CompanyPeriodOverviewPresentation.Weekly(Workspace)" />
+            }
+            @foreach (var contribution in Workspace.Contributions)
+            {
+                <section class="weekly-role" data-testid="weekly-role-@contribution.Lens"><h2>@contribution.Title</h2>
+                    <div class="weekly-metrics">@foreach (var measure in contribution.Metrics)
+                        { <a class="weekly-metric" href="@DetailPath(measure.Key, false, 1)"><span>@measure.Label</span><strong>@measure.DisplayValue</strong><small>Comparison: @measure.ComparisonDisplayValue</small><p>@measure.Definition</p><small>@(measure.IsComplete ? "Recorded evidence" : "Incomplete history")</small></a> }
+                    </div>
+                    <div class="weekly-body"><section class="weekly-commitments"><h3>Commitments and near-term risks</h3><p>Current evidence as of @Local(Workspace.GeneratedAtUtc); due dates retain the selected week's context.</p>
+                        @if (contribution.Commitments.Count == 0) { <p role="status">No recorded commitments in this scope. Missing history remains disclosed below.</p> }
+                        @foreach (var commitment in contribution.Commitments)
+                        { <article><div><h4>@commitment.Title</h4><p>@commitment.Summary</p><small>@commitment.ResponsiblePerson @if (commitment.WorkingAgent is { } agent) { <span> · @agent</span> } · @(commitment.DueUtc.HasValue ? "Due " + Local(commitment.DueUtc.Value) : "No recorded deadline")</small></div><a href="@Resolve(commitment.DeepLink, Overview)">Open record</a></article> }
+                    </section><aside class="weekly-coverage"><h3>Accountable team</h3><p>@(contribution.ResponsiblePerson ?? "No accountable person recorded")</p><p>@(contribution.WorkingAgent ?? "No working agent recorded")</p><h3>Sources and history coverage</h3>@foreach (var gap in contribution.CoverageGaps) { <p>@gap</p> }<p>Opening a source does not approve, send or execute work.</p></aside></div>
+                </section>
+            }
+        }
+        <footer class="weekly-calendar">@Workspace.CalendarMeaning</footer>
+    </div>
+}
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public WeeklyWorkspaceViewModel? Workspace { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsUnauthorized { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public string? Metric { get; set; }
+    [Parameter] public bool Prior { get; set; }
+    [Parameter] public int SourcePage { get; set; } = 1;
+    [Parameter] public EventCallback RetryRequested { get; set; }
+    [Parameter] public EventCallback<string> PeriodChanged { get; set; }
+    [Parameter] public EventCallback<string> LensChanged { get; set; }
+    [Parameter] public EventCallback<DateOnly?> WeekChanged { get; set; }
+    private const int PageSize = 24;
+    private WeeklyWorkspaceMetricViewModel? SelectedMetric => Workspace?.Contributions.SelectMany(x => x.Metrics).FirstOrDefault(x => x.Key == Metric);
+    private IReadOnlyList<WeeklyWorkspaceSourceViewModel> Sources => SelectedMetric is { } m ? (Prior ? m.ComparisonSources ?? [] : m.Sources) : [];
+    private int PageCount => Math.Max(1, (Sources.Count + PageSize - 1) / PageSize);
+    private int EffectivePage => Math.Clamp(SourcePage, 1, PageCount);
+    private string Overview => DashboardRoutes.BuildWeeklyPath(CompanyId, Workspace?.ActiveLens, Workspace?.Period.WeekStart);
+    private string DetailPath(string key, bool prior, int page) => DashboardRoutes.WithQuery(Overview, ("metric", key), ("prior", prior ? "true" : "false"), ("sourcePage", page.ToString(CultureInfo.InvariantCulture)));
+    private string Resolve(string path, string origin) => DashboardRoutes.EnsureWorkspaceContext(path, CompanyId, origin);
+    private DateOnly CurrentLocalDate => DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(Workspace!.GeneratedAtUtc, DateTimeKind.Utc), Zone));
+    private TimeZoneInfo Zone => TimeZoneInfo.FindSystemTimeZoneById(Workspace!.Period.Timezone);
+    private string Local(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), Zone).ToString("MMM d, yyyy HH:mm", CultureInfo.CurrentCulture);
+    private string MeasureTiming(WeeklyWorkspaceMetricViewModel metric) => metric.Kind switch
+    {
+        "current_due_schedule" => $"Due-date window: {Local(Workspace!.Period.StartUtc)} → {Local(Workspace.Period.EndUtc)} (exclusive). Current schedule observed {Local(metric.ObservedAtUtc ?? Workspace.GeneratedAtUtc)}; historical schedule comparison unavailable.",
+        "balance" => metric.Value.HasValue ? $"Selected balance cutoff: {Local(metric.ObservedAtUtc ?? Workspace!.Period.ActivityEndUtc.AddTicks(-1))}. Prior balance cutoff: {Local(Workspace!.Period.ComparisonEndUtc.AddTicks(-1))}. Availability follows the retained source evidence."
+            : "Balance history is unavailable; no dated comparison is inferred.",
+        _ => $"Selected interval: {Local(Workspace!.Period.StartUtc)} → {Local(Workspace.Period.ActivityEndUtc)} (exclusive). Prior interval: {Local(Workspace.Period.ComparisonStartUtc)} → {Local(Workspace.Period.ComparisonEndUtc)} (exclusive)."
+    };
+    private Task SelectWeek(ChangeEventArgs e) => DateOnly.TryParseExact(e.Value?.ToString(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var value)
+        ? WeekChanged.InvokeAsync(value) : Task.CompletedTask;
+}

@@ -199,7 +199,9 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
             }
 
             var completedAtUtc = DateTime.UtcNow;
-            var status = toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+            var status = toolResults.Any(x => x.Status is "denied" or "failed" or "rejected" or "uncertain")
+                ? OrchestrationStatusValues.Failed
+                : toolResults.Any(x => string.Equals(x.Status, ToolExecutionStatus.AwaitingApproval.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
                 ? OrchestrationStatusValues.AwaitingApproval
                 : OrchestrationStatusValues.Completed;
             var userFacingOutput = BuildUserFacingOutput(runtimeContext, toolResults);
@@ -505,6 +507,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
 
         var taskStatus = string.Equals(result.Status, OrchestrationStatusValues.AwaitingApproval, StringComparison.OrdinalIgnoreCase)
             ? WorkTaskStatus.AwaitingApproval
+            : string.Equals(result.Status, OrchestrationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
+            ? WorkTaskStatus.Blocked
             : WorkTaskStatus.Completed;
 
         task.SetCorrelationId(result.CorrelationId);
@@ -937,6 +941,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
     {
         var taskStatus = string.Equals(orchestrationStatus, OrchestrationStatusValues.AwaitingApproval, StringComparison.OrdinalIgnoreCase)
             ? WorkTaskStatus.AwaitingApproval.ToStorageValue()
+            : string.Equals(orchestrationStatus, OrchestrationStatusValues.Failed, StringComparison.OrdinalIgnoreCase)
+            ? WorkTaskStatus.Blocked.ToStorageValue()
             : WorkTaskStatus.Completed.ToStorageValue();
 
         return new OrchestrationTaskArtifact(
@@ -1403,10 +1409,13 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
 public sealed class AgentToolOrchestrationExecutor : IToolExecutor
 {
     private readonly IAgentToolExecutionService _agentToolExecutionService;
+    private readonly VirtualCompany.Application.Auth.ICurrentUserAccessor _currentUser;
+    private readonly IDurableTaskToolExecutionService _durable;
 
-    public AgentToolOrchestrationExecutor(IAgentToolExecutionService agentToolExecutionService)
+    public AgentToolOrchestrationExecutor(IAgentToolExecutionService agentToolExecutionService,VirtualCompany.Application.Auth.ICurrentUserAccessor currentUser,IDurableTaskToolExecutionService durable)
     {
         _agentToolExecutionService = agentToolExecutionService;
+        _currentUser=currentUser;_durable=durable;
     }
 
     public async Task<ToolInvocationResult> ExecuteAsync(
@@ -1418,10 +1427,7 @@ public sealed class AgentToolOrchestrationExecutor : IToolExecutor
         ArgumentNullException.ThrowIfNull(request);
 
         var startedAtUtc = DateTime.UtcNow;
-        var result = await _agentToolExecutionService.ExecuteAsync(
-            runtimeContext.Company.CompanyId,
-            runtimeContext.Agent.Id,
-            new ExecuteAgentToolCommand(
+        var command = new ExecuteAgentToolCommand(
                 request.ToolName,
                 request.ActionType,
                 request.Scope,
@@ -1432,8 +1438,10 @@ public sealed class AgentToolOrchestrationExecutor : IToolExecutor
                 request.SensitiveAction,
                 runtimeContext.Task.Id,
                 runtimeContext.Task.WorkflowInstanceId,
-                runtimeContext.CorrelationId),
-            cancellationToken);
+                runtimeContext.CorrelationId);
+        var result = !_currentUser.IsAuthenticated && TaskTypePolicyCatalogue.All.Any(x=>!x.Finance&&x.Code==runtimeContext.Task.Type)
+            ? await _durable.ExecutePersistedTaskAsync(runtimeContext.Company.CompanyId,runtimeContext.Agent.Id,command,cancellationToken)
+            : await _agentToolExecutionService.ExecuteAsync(runtimeContext.Company.CompanyId,runtimeContext.Agent.Id,command,cancellationToken);
 
         return new ToolInvocationResult(
             result.ExecutionId,

@@ -9,44 +9,135 @@
 @using System.Globalization
 
 <PageTitle>@Title</PageTitle>
-<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@Title" Description="Inspect the included obligations and dated cash evidence." ShowShellHeader="false">
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@Title" Description="Inspect the included obligations and dated cash evidence." ShowShellHeader="false" ReportStyle="true">
     <main class="vc-page finance-report" data-testid="finance-operational-report">
-        <header class="vc-page-header"><div><span class="vc-kicker">FINANCE</span><h1>@Title</h1><p>Current operational evidence, separated by currency.</p></div></header>
+        <header class="finance-report-header">
+            <div><span class="finance-report-kicker">FINANCE / @(Kind == "forecast" ? "CASH PLANNING" : "OBLIGATION REVIEW")</span><h1>@Title</h1>
+                <p>@(Kind == "forecast" ? "Operational cash outlook based on recorded balances and open obligations." : "Review outstanding amounts and overdue obligations, separated by currency.")</p>
+            </div>
+            <div class="finance-report-actions">
+                <button class="btn btn-outline-primary" disabled="@loading" type="button" @onclick="Load">Refresh</button>
+                <button class="btn btn-primary" data-testid="finance-report-download" disabled="@(loading || report is null)" type="button" @onclick="Download">Download CSV</button>
+            </div>
+        </header>
+        @if (report is not null)
+        {
+            <div class="finance-report-metadata"><span>As of @Date(report.AsOfDate) UTC</span>
+                @if (Kind == "forecast") { <span>Through @Date(report.ThroughDate) UTC</span><span>@(report.ThroughDate.DayNumber - report.AsOfDate.DayNumber)-day horizon</span> }
+                <span>Updated @report.ObservedAtUtc.ToString("dd MMM yyyy HH:mm", CultureInfo.CurrentCulture) UTC</span>
+            </div>
+        }
         <form class="vc-panel finance-report-filters" @onsubmit="Apply" @onsubmit:preventDefault>
             <label>As-of date (UTC)<input type="date" @bind="cutoff" /></label>
-            <label>Currency<input maxlength="3" placeholder="All, separately" @bind="currency" @bind:event="oninput" /></label>
+            <label>Currency code<input maxlength="3" pattern="[A-Za-z]{3}" placeholder="All currencies" @bind="currency" @bind:event="oninput" /></label>
             <label>Aging bucket<select @bind="bucket"><option value="">All buckets</option><option value="current">Not overdue</option><option value="overdue">All overdue</option><option value="past_due_1_30">1–30 days</option><option value="past_due_31_60">31–60 days</option><option value="past_due_61_90">61–90 days</option><option value="past_due_over_90">Over 90 days</option></select></label>
             @if (Kind == "forecast") { <label>Horizon (days)<input type="number" min="1" max="30" @bind="horizon" /></label> }
-            <button class="btn btn-primary" disabled="@loading" type="submit">Apply filters</button><button class="btn btn-outline-primary" disabled="@loading" type="button" @onclick="Load">Refresh</button>
+            <button class="btn btn-primary" disabled="@loading" type="submit">Apply filters</button>
         </form>
-        @if (loading) { <section class="vc-panel" role="status">Loading current Finance evidence…</section> }
-        else if (error is not null) { <section class="vc-panel" role="alert"><h2>Finance evidence unavailable</h2><p>@error</p><button class="btn btn-primary" @onclick="Load">Retry</button></section> }
+        @if (downloadMessage is not null) { <p class="finance-report-feedback" role="status">@downloadMessage</p> }
+        @if (loading) { <section class="vc-panel finance-report-state" role="status"><h2>Updating your report</h2><p>Loading the current balances and obligations for this company.</p></section> }
+        else if (error is not null) { <section class="vc-panel finance-report-state" role="alert"><h2>Finance evidence unavailable</h2><p>@error</p><button class="btn btn-primary" @onclick="Load">Retry</button></section> }
         else if (report is not null)
         {
-            <section class="finance-report-totals">
+            <section class="finance-report-summary" aria-label="Financial summary">
                 @foreach (var total in report.Totals)
                 {
-                    <article class="vc-panel"><h2>@total.Currency</h2>
-                        @if (Kind == "forecast") { <p>Starting cash <strong>@Money(total.StartingCash, total.Currency)</strong></p><p>Expected inflows <strong>@Money(total.ExpectedInflows, total.Currency)</strong></p><p>Expected outflows <strong>@Money(total.ExpectedOutflows, total.Currency)</strong></p><p>Projected cash <strong>@Money(total.ProjectedCash, total.Currency)</strong></p> }
-                        else { <p>Remaining <strong>@Money(Kind == "receivables" ? total.Receivables : total.Payables, total.Currency)</strong></p><p>Overdue <strong>@Money(Kind == "receivables" ? total.OverdueReceivables : total.OverduePayables, total.Currency)</strong></p> }
-                    </article>
+                    <div class="finance-report-currency" data-currency="@total.Currency">
+                        <div class="finance-report-section-heading"><h2>@total.Currency</h2><span>Amounts in this currency only</span></div>
+                        <dl class="finance-report-totals @(Kind == "forecast" ? "" : "finance-report-totals--aging")">
+                            @if (Kind == "forecast")
+                            {
+                                <div class="vc-panel finance-report-metric"><dt>Starting cash</dt><dd data-testid="forecast-starting-cash">@Money(total.StartingCash, total.Currency)</dd><small>At the selected cutoff</small></div>
+                                <div class="vc-panel finance-report-metric"><dt>Expected inflows</dt><dd data-testid="forecast-inflows">@Money(total.ExpectedInflows, total.Currency)</dd><small>Included customer invoices</small></div>
+                                <div class="vc-panel finance-report-metric"><dt>Expected outflows</dt><dd data-testid="forecast-outflows">@Money(total.ExpectedOutflows, total.Currency)</dd><small>Included supplier obligations</small></div>
+                                <div class="vc-panel finance-report-metric finance-report-metric--projected"><dt>Projected cash</dt><dd data-testid="forecast-projected-cash">@Money(total.ProjectedCash, total.Currency)</dd><small>At the end of the horizon</small></div>
+                            }
+                            else
+                            {
+                                <div class="vc-panel finance-report-metric"><dt>Remaining</dt><dd>@Money(Kind == "receivables" ? total.Receivables : total.Payables, total.Currency)</dd><small>Open recorded obligations</small></div>
+                                <div class="vc-panel finance-report-metric"><dt>Overdue</dt><dd>@Money(Kind == "receivables" ? total.OverdueReceivables : total.OverduePayables, total.Currency)</dd><small>Past their recorded due date</small></div>
+                            }
+                        </dl>
+                    </div>
                 }
-                <article class="vc-panel"><span>Included records</span><strong class="finance-report-count">@Rows.Count</strong><small>Same filters in source rows and CSV</small></article>
+                @if (report.Totals.Count == 0) { <div class="vc-panel finance-report-state"><h2>No currency totals available</h2><p>No recorded financial evidence matches the selected currency and filters.</p></div> }
             </section>
-            <section class="vc-panel"><p>Cutoff @report.AsOfDate.ToString("yyyy-MM-dd") UTC · observed @report.ObservedAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC · @report.CalculationVersion</p><p>@report.Meaning</p>
-                @if (Kind == "forecast") { <p>Through @report.ThroughDate.ToString("yyyy-MM-dd") UTC. @report.ForecastAssumptions</p> }
-                @foreach (var gap in report.CoverageGaps) { <p class="alert alert-warning" role="status">@gap</p> }
-                <button class="btn btn-outline-primary" disabled="@loading" @onclick="Download">Refresh and download CSV</button>
-                @if (downloadMessage is not null) { <p role="status">@downloadMessage</p> }
-            </section>
-            <section class="vc-panel finance-report-table"><h2>Included source obligations</h2>
-                @if (Rows.Count == 0) { <p>No recorded obligations match these filters. Missing cash evidence remains unavailable.</p> }
-                else { <div class="finance-report-scroll"><table><thead><tr><th>Record</th><th>Counterparty</th><th>Due UTC</th><th>Days overdue</th><th>Remaining</th><th>Recorded status</th><th>Next step</th></tr></thead><tbody>
-                    @foreach (var row in Rows) { <tr><td>@row.Number</td><td>@row.Counterparty</td><td>@row.DueUtc.ToString("yyyy-MM-dd")</td><td>@row.DaysOverdue</td><td>@Money(row.RemainingAmount, row.Currency)</td><td>@row.Status.Replace('_', ' ')</td><td><a href="@BuildFinancePath(row.DeepLink)">Review</a></td></tr> }
-                </tbody></table></div> }
-            </section>
-            @if (Kind == "forecast") { <section class="vc-panel"><h2>Starting cash sources</h2>@foreach (var cash in report.CashEvidence) { <p>@cash.AccountName · @Money(cash.Amount, cash.Currency) · source @(cash.SourceObservedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "unavailable") UTC. @cash.Basis <a href="@BuildFinancePath(FinanceRoutes.Balances)">Review balances</a></p> }</section> }
-            <section class="vc-panel"><h2>Laura · Finance Manager</h2><p>Use record review for the next permitted action. Payment instructions, provider acceptance, uncertain outcomes and settlement remain distinct.</p><a href="@BuildFinancePath(FinanceRoutes.Payments)">Review payments</a> · <a href="@BuildFinancePath(FinanceRoutes.AccountingReconciliation)">Bank reconciliation</a> · <a href="@BuildFinancePath(FinanceRoutes.AccountingCloseWorkspace)">Accounting close</a></section>
+            @if (report.CoverageGaps.Count > 0)
+            {
+                <section class="finance-report-coverage" role="status"><div><strong>Coverage needs attention</strong>
+                    @if (report.CoverageGaps.Count == 1) { <p>@report.CoverageGaps[0]</p> }
+                    else { <p>@report.CoverageGaps.Count source limitations are recorded. Review the coverage notes before relying on this report.</p> }
+                    <details><summary>Coverage notes (@report.CoverageGaps.Count)</summary><ul>@foreach (var gap in report.CoverageGaps) { <li>@gap</li> }</ul></details>
+                </div><a href="@BuildFinancePath(FinanceRoutes.Balances)">Review balances →</a></section>
+            }
+            <div class="finance-report-layout">
+                <section class="vc-panel finance-report-table">
+                    <div class="finance-report-table-header"><div><h2>@(Kind == "forecast" ? "Included cash movements" : "Included source obligations")</h2>
+                        <p>@(Kind == "forecast" ? $"Due on or before {Date(report.ThroughDate)} UTC. Open amounts are assumed collected or paid in full." : "Outstanding records matching the selected cutoff and aging filters.")</p></div>
+                        <span class="finance-report-record-count">@Rows.Count @(Rows.Count == 1 ? "record" : "records")</span>
+                    </div>
+                    @if (Rows.Count == 0) { <div class="finance-report-empty"><h3>No obligations match these filters</h3><p>Try another currency, aging bucket or horizon. Missing cash evidence remains unavailable.</p></div> }
+                    else
+                    {
+                        <div class="finance-report-scroll" tabindex="0" role="region" aria-label="Included obligations, scroll horizontally to review all columns">
+                            <table><caption class="visually-hidden">Included obligations, separated by currency</caption><thead><tr><th scope="col">Record</th><th scope="col">Counterparty</th><th scope="col">Due date (UTC)</th>
+                                <th scope="col">@(Kind == "forecast" ? "Cash flow" : "Days overdue")</th><th scope="col" class="finance-report-amount">Remaining amount</th><th scope="col">Status</th><th scope="col">Action</th>
+                            </tr></thead><tbody>
+                                @foreach (var row in Rows)
+                                {
+                                    <tr><th scope="row">@row.Number</th><td>@row.Counterparty</td><td class="finance-report-date">@row.DueUtc.ToString("dd MMM yyyy", CultureInfo.CurrentCulture)</td>
+                                        <td>@if (Kind == "forecast") { <span class="finance-report-flow @(report.Receivables.Contains(row) ? "finance-report-flow--in" : "finance-report-flow--out")">@(report.Receivables.Contains(row) ? "Inflow" : "Outflow")</span> } else { @row.DaysOverdue }</td>
+                                        <td class="finance-report-amount">@Money(row.RemainingAmount, row.Currency)</td><td><span class="finance-report-status">@row.Status.Replace('_', ' ')</span></td>
+                                        <td><a class="finance-report-review" aria-label="Review @row.Number" href="@BuildFinancePath(row.DeepLink)">Review →</a></td>
+                                    </tr>
+                                }
+                            </tbody></table>
+                        </div>
+                    }
+                    <footer class="finance-report-table-footer">CSV export refreshes the authorized records and uses these same filters.</footer>
+                </section>
+                <aside class="finance-report-rail" aria-label="Report sources and next steps">
+                    @if (Kind == "forecast")
+                    {
+                        <section class="vc-panel finance-report-source"><h2>Starting cash evidence</h2>
+                            @if (report.CashEvidence.Count == 0) { <p>No cash source is available for this cutoff.</p> }
+                            @foreach (var cash in VisibleCashEvidence)
+                            {
+                                <article><h3>@cash.AccountName</h3><strong>@Money(cash.Amount, cash.Currency)</strong>
+                                    <p>Observed @(cash.SourceObservedUtc is DateTime observed ? observed.ToString("dd MMM yyyy HH:mm", CultureInfo.CurrentCulture) + " UTC" : "time unavailable")</p>
+                                    @if (!string.IsNullOrWhiteSpace(cash.Basis)) { <small>@cash.Basis</small> }
+                                </article>
+                            }
+                            @if (report.CashEvidence.Count > 0 && VisibleCashEvidence.Count == 0) { <p>All recorded cash accounts have zero balances.</p> }
+                            @if (report.CashEvidence.Count > VisibleCashEvidence.Count)
+                            {
+                                <details><summary>All @report.CashEvidence.Count cash accounts</summary><ul>
+                                    @foreach (var cash in report.CashEvidence)
+                                    {
+                                        <li><span>@cash.AccountName</span><strong>@Money(cash.Amount, cash.Currency)</strong>
+                                            <small>Observed @(cash.SourceObservedUtc is DateTime observed ? observed.ToString("dd MMM yyyy HH:mm", CultureInfo.CurrentCulture) + " UTC" : "time unavailable")</small>
+                                            @if (!string.IsNullOrWhiteSpace(cash.Basis)) { <small>@cash.Basis</small> }
+                                        </li>
+                                    }
+                                </ul></details>
+                            }
+                            <a href="@BuildFinancePath(FinanceRoutes.Balances)">Review balances →</a>
+                        </section>
+                    }
+                    <section class="vc-panel finance-report-basis"><h2>@(Kind == "forecast" ? "Forecast basis" : "Report basis")</h2>
+                        <p>@(Kind == "forecast" ? "Included open amounts are assumed collected or paid in full. Currencies are kept separate." : "Based on recorded outstanding obligations at the selected cutoff.")</p>
+                        <details><summary>Calculation details</summary><div><p>@report.Meaning</p>
+                            @if (Kind == "forecast") { <p>@report.ForecastAssumptions</p> }
+                            <dl><dt>Cutoff</dt><dd>@Date(report.AsOfDate) UTC</dd><dt>Calculation</dt><dd>@report.CalculationVersion</dd></dl>
+                        </div></details>
+                    </section>
+                    <section class="vc-panel finance-report-next"><h2>Next steps</h2><p>Review the underlying records before taking action.</p>
+                        <a href="@BuildFinancePath(FinanceRoutes.Invoices)">Review customer invoices →</a>
+                        <a href="@BuildFinancePath(FinanceRoutes.Payments)">Review payments →</a>
+                        <a href="@BuildFinancePath(FinanceRoutes.AccountingReconciliation)">Bank reconciliation →</a>
+                    </section>
+                </aside>
+            </div>
         }
     </main>
 </FinancePageLayout>
@@ -62,6 +153,8 @@
     private CancellationTokenSource? cts; private int version;
     private IReadOnlyList<FinanceObligationRowResponse> Rows => report is null ? [] : Kind == "receivables" ? report.Receivables : Kind == "payables" ? report.Payables : report.Receivables.Concat(report.Payables).Where(x => DateOnly.FromDateTime(x.DueUtc) <= report.ThroughDate).ToArray();
     private string Money(decimal? amount, string code) => amount.HasValue ? LocalMoney.Format(amount.Value, code) : "Unavailable";
+    private static string Date(DateOnly date) => date.ToString("dd MMM yyyy", CultureInfo.CurrentCulture);
+    private IReadOnlyList<FinanceCashEvidenceResponse> VisibleCashEvidence => report?.CashEvidence.Where(x => x.Amount != 0).Take(3).ToArray() ?? [];
     protected override async Task OnParametersSetAsync()
     {
         cts?.Cancel(); report = null; error = null; downloadMessage = null;

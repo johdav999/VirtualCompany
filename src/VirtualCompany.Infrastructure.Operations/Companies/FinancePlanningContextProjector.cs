@@ -297,6 +297,7 @@ public sealed class FinancePlanningContextProjector : IFinancePlanningContextPro
         FinancePlanningReferenceTypes.VoucherSeries => "Accessible voucher-series match",
         FinancePlanningReferenceTypes.ReportDefinition => "Accessible report-definition match",
         FinancePlanningReferenceTypes.ReportLine => "Accessible report-line match",
+        FinancePlanningReferenceTypes.ForecastVersion => "Accessible retained forecast-version match",
         _ => "Accessible Finance record match"
     };
 
@@ -335,7 +336,8 @@ internal static partial class FinancePlanningReferenceParser
         [FinancePlanningReferenceTypes.Journal] = ReferencePattern("journal"),
         [FinancePlanningReferenceTypes.VoucherSeries] = ReferencePattern("voucher series"),
         [FinancePlanningReferenceTypes.ReportDefinition] = NamedReferencePattern("report definition"),
-        [FinancePlanningReferenceTypes.ReportLine] = NamedReferencePattern("report line")
+        [FinancePlanningReferenceTypes.ReportLine] = NamedReferencePattern("report line"),
+        [FinancePlanningReferenceTypes.ForecastVersion] = NamedReferencePattern("forecast version")
     };
 
     public static IReadOnlyList<FinancePlanningReference> Extract(

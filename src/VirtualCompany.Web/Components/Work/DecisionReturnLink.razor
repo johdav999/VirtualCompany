@@ -1,0 +1,11 @@
+@inject NavigationManager Navigation
+@implements IDisposable
+@if ((DecisionReviewRoutes.Local(ReturnUrl, CompanyId) ?? DecisionReviewRoutes.Back(Navigation.Uri, CompanyId)) is string origin)
+{ <a href="@origin">Back to decision review</a> }
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
+    protected override void OnInitialized() => Navigation.LocationChanged += LocationChanged;
+    private void LocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs args) => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Navigation.LocationChanged -= LocationChanged;
+}

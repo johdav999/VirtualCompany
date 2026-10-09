@@ -31,6 +31,11 @@ public sealed class MonthlyWorkspaceApiClient(ICompanyApiTransport transport, bo
             throw new TodayWorkspaceAccessException(response.StatusCode);
         if (response.StatusCode == HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<MonthlyWorkspaceViewModel>(cancellationToken: cancellationToken);
+        var workspace = await response.Content.ReadFromJsonAsync<MonthlyWorkspaceViewModel>(cancellationToken: cancellationToken);
+        if (workspace is not null && (workspace.CompanyId != companyId ||
+            !workspace.AvailableLenses.Any(x => x.Value == workspace.ActiveLens) ||
+            year.HasValue && (workspace.Period.Year != year || workspace.Period.Month != month)))
+            throw new InvalidDataException("Monthly workspace has inconsistent company, responsibility or period context.");
+        return workspace;
     }
 }

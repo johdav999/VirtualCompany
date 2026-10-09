@@ -7,12 +7,12 @@ namespace VirtualCompany.Web.Services;
 public sealed class ApprovalApiClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly HttpClient _httpClient;
+    private readonly ICompanyApiTransport _transport;
     private readonly bool _useOfflineMode;
 
     public ApprovalApiClient(HttpClient httpClient, bool useOfflineMode = false)
     {
-        _httpClient = httpClient;
+        _transport = new CompanyApiTransport(httpClient);
         _useOfflineMode = useOfflineMode;
     }
 
@@ -21,25 +21,19 @@ public sealed class ApprovalApiClient
         string? status = "pending",
         CancellationToken cancellationToken = default)
     {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<ApprovalRequestViewModel>>(OfflineApprovals(companyId));
-        }
+        EnsureOnline(companyId);
 
         var uri = string.IsNullOrWhiteSpace(status)
             ? $"api/companies/{companyId}/approvals"
             : $"api/companies/{companyId}/approvals?status={Uri.EscapeDataString(status)}";
-        return GetAsync<IReadOnlyList<ApprovalRequestViewModel>>(uri, cancellationToken);
+        return GetAsync<IReadOnlyList<ApprovalRequestViewModel>>(companyId, uri, cancellationToken);
     }
 
     public Task<ApprovalRequestViewModel> GetAsync(Guid companyId, Guid approvalId, CancellationToken cancellationToken = default)
     {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult(OfflineApprovals(companyId).Single(x => x.Id == approvalId));
-        }
+        EnsureOnline(companyId);
 
-        return GetAsync<ApprovalRequestViewModel>($"api/companies/{companyId}/approvals/{approvalId}", cancellationToken);
+        return GetAsync<ApprovalRequestViewModel>(companyId, $"api/companies/{companyId}/approvals/{approvalId}", cancellationToken);
     }
 
     public Task<ApprovalDecisionResultViewModel> DecideAsync(
@@ -48,34 +42,20 @@ public sealed class ApprovalApiClient
         ApprovalDecisionRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (_useOfflineMode)
-        {
-            var approval = OfflineApprovals(companyId).Single(x => x.Id == approvalId);
-            approval.Status = request.Decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase) ? "rejected" : "approved";
-            var currentStep = approval.CurrentStep;
-            if (currentStep is not null)
-            {
-                currentStep.Status = approval.Status;
-                currentStep.DecidedAt = DateTime.UtcNow;
-                currentStep.Comment = request.Comment?.Trim();
-                approval.RejectionComment = approval.Status == "rejected" ? currentStep.Comment : null;
-            }
-
-            return Task.FromResult(new ApprovalDecisionResultViewModel { Approval = approval, DecidedStep = currentStep, IsFinalized = true });
-        }
+        EnsureOnline(companyId);
 
         return SendAsync<ApprovalDecisionResultViewModel>(
-            HttpMethod.Post,
+            companyId, HttpMethod.Post,
             $"api/companies/{companyId}/approvals/{approvalId}/decisions",
             request,
             cancellationToken);
     }
 
-    private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
+    private async Task<T> GetAsync<T>(Guid companyId, string uri, CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await _httpClient.GetAsync(uri, cancellationToken);
+            using var response = await _transport.SendAsync(companyId, HttpMethod.Get, uri, null, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
@@ -90,15 +70,11 @@ public sealed class ApprovalApiClient
         }
     }
 
-    private async Task<T> SendAsync<T>(HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
+    private async Task<T> SendAsync<T>(Guid companyId, HttpMethod method, string uri, object payload, CancellationToken cancellationToken)
     {
         try
         {
-            using var request = new HttpRequestMessage(method, uri)
-            {
-                Content = JsonContent.Create(payload)
-            };
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            using var response = await _transport.SendAsync(companyId, method, uri, JsonContent.Create(payload), cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken)
@@ -115,7 +91,9 @@ public sealed class ApprovalApiClient
 
     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
-        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+        ApiProblemResponse? problem = null;
+        try { problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken); }
+        catch (JsonException) { }
         return problem?.Errors is { Count: > 0 }
             ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
             : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
@@ -123,8 +101,14 @@ public sealed class ApprovalApiClient
 
     private OnboardingApiException CreateNetworkException(HttpRequestException ex)
     {
-        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
+        var baseAddress = _transport.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
+    }
+
+    private void EnsureOnline(Guid companyId)
+    {
+        if (companyId == Guid.Empty) throw new ArgumentException("A company context is required.", nameof(companyId));
+        if (_useOfflineMode) throw new OnboardingApiException("Approval review is unavailable offline. Reconnect and retry.");
     }
 
     internal static IReadOnlyList<ApprovalRequestViewModel> OfflineApprovals(Guid companyId) =>
@@ -183,6 +167,7 @@ public sealed class ApprovalRequestViewModel
     public string AffectedDataSummary { get; set; } = string.Empty;
     public List<ApprovalAffectedEntityViewModel> AffectedEntities { get; set; } = [];
     public string? ThresholdSummary { get; set; }
+    public ApprovalReviewViewModel? Review { get; set; }
     public DateTime CreatedAt { get; set; }
     public string DisplayType { get; set; } = string.Empty;
     public string DisplayTitle { get; set; } = string.Empty;
@@ -207,6 +192,7 @@ public sealed class ApprovalAffectedEntityViewModel
 
 public sealed class ApprovalStepViewModel
 {
+    public string? ReviewerName { get; set; }
     public Guid Id { get; set; }
     public int SequenceNo { get; set; }
     public string ApproverType { get; set; } = string.Empty;
@@ -219,6 +205,8 @@ public sealed class ApprovalStepViewModel
 
 public sealed class ApprovalDecisionRequest
 {
+    public Guid? ClientRequestId { get; set; }
+    public string? ReviewToken { get; set; }
     public Guid ApprovalId { get; set; }
     public string Decision { get; set; } = string.Empty;
     public Guid? StepId { get; set; }
@@ -231,4 +219,28 @@ public sealed class ApprovalDecisionResultViewModel
     public ApprovalStepViewModel? DecidedStep { get; set; }
     public ApprovalStepViewModel? NextStep { get; set; }
     public bool IsFinalized { get; set; }
+}
+
+public sealed class ApprovalReviewViewModel
+{
+    public string? ExecutionStatus { get; set; }
+    public string Token { get; set; } = "";
+    public bool CanDecide { get; set; }
+    public bool ProposalChanged { get; set; }
+    public DateTime? ExpiresAt { get; set; }
+    public string Reviewer { get; set; } = "";
+    public string VersionEvidence { get; set; } = "";
+    public List<ApprovalComparisonViewModel> Comparison { get; set; } = [];
+    public List<ApprovalEvidenceViewModel> Evidence { get; set; } = [];
+}
+public sealed class ApprovalComparisonViewModel
+{
+    public string Field { get; set; } = "";
+    public string? Before { get; set; }
+    public string? Proposed { get; set; }
+}
+public sealed class ApprovalEvidenceViewModel
+{
+    public string Label { get; set; } = "";
+    public string Href { get; set; } = "";
 }

@@ -370,6 +370,12 @@ public sealed class CompanyOutboxMessage : ICompanyOwnedEntity
         ClaimedUtc = null;
         ClaimToken = null;
     }
+    public void DeferForExecutionPause(DateTime availableUtc)
+    {
+        AvailableUtc = availableUtc; Status = CompanyOutboxMessageStatus.Pending;
+        LastError = "Autonomous delivery is paused before provider admission.";
+        ClaimedUtc = null; ClaimToken = null;
+    }
 
     public void MarkDiscarded(string error)
     {

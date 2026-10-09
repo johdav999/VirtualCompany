@@ -51,6 +51,7 @@ internal sealed class SupportCaseConfiguration : IEntityTypeConfiguration<Suppor
             .IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.StateRevision).HasColumnName("state_revision").IsConcurrencyToken();
 
         builder.HasIndex(x => new { x.CompanyId, x.CaseNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
@@ -117,6 +118,12 @@ internal sealed class SupportCaseEventConfiguration : IEntityTypeConfiguration<S
         builder.Property(x => x.OccurredUtc).HasColumnName("occurred_at").IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId, x.OccurredUtc });
         builder.HasIndex(x => new { x.CompanyId, x.EventType, x.OccurredUtc });
+        builder.Property(x => x.FromStatus).HasColumnName("from_status").HasMaxLength(80);
+        builder.Property(x => x.ToStatus).HasColumnName("to_status").HasMaxLength(80);
+        builder.Property(x => x.IsStateBaseline).HasColumnName("is_state_baseline");
+        builder.Property(x => x.MergeTargetCaseId).HasColumnName("merge_target_case_id");
+        builder.Property(x => x.StateSequence).HasColumnName("state_sequence");
+        builder.HasOne<SupportCase>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MergeTargetCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.SupportCase).WithMany(x => x.Events).HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
     }
 }

@@ -1,0 +1,23 @@
+import {createRequire} from 'node:module';
+import {writeFile,readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+const {chromium}=createRequire(import.meta.url)('C:/Users/Johan/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const out=fileURLToPath(new URL('.',import.meta.url)),base='http://localhost:5062',company='43e6a825-d1b7-429a-8608-7e668087d005',deal='015351a5-f2ec-4bf7-8b26-c6718b9e1363',mode=process.argv[2]??'after';
+const origin=`/dashboard?companyId=${company}&lens=sales`,prospects=`/app/sales/prospects?companyId=${company}&returnUrl=${encodeURIComponent(origin)}`,path=`/app/sales/deals/${deal}?companyId=${company}&returnUrl=${encodeURIComponent(origin)}&salesReturnUrl=${encodeURIComponent(prospects)}`,url=base+path;
+const browser=await chromium.launch({channel:'msedge',headless:true}),page=await browser.newPage({viewport:{width:1725,height:837}}),results=[],errors=[];
+page.setDefaultTimeout(25000);page.on('pageerror',e=>errors.push(String(e)));
+const check=(ok,why)=>{if(!ok)throw new Error(why);};
+async function open(){await page.goto(url);await page.locator('[data-testid="deal-meetings"] .deal-meeting').first().waitFor();await page.waitForTimeout(1000);}
+try{
+ await open();const bookings=await page.locator('.deal-meeting').evaluateAll(nodes=>nodes.map(e=>({id:e.dataset.invitationId,title:e.querySelector('strong').textContent,status:e.querySelector('.deal-meeting-status').textContent,time:e.querySelector('time').textContent,host:e.querySelector('.deal-meeting-host')?.getAttribute('href')??null})));
+ await page.screenshot({path:out+`${mode}-desktop.png`,fullPage:true});await page.locator('.deal-meetings').screenshot({path:out+`${mode}-bookings.png`});
+ if(mode==='before'){results.push({bookings});}
+ else{
+  const prior=JSON.parse(await readFile(out+'before-browser.json','utf8')).results[0].bookings;check(JSON.stringify(prior.map(({host,...b})=>b))===JSON.stringify(bookings.map(({host,...b})=>b)),'Booking identity or state changed');
+  const hosts=bookings.filter(b=>b.host);check(hosts.length>0,'Existing booked meetings must show at least one host room');for(const booking of bookings){if(booking.status!=='Invitation scheduled')check(booking.host===null,'Host room offered for failed/cancelled booking');if(booking.host){const destination=new URL(booking.host,base);check(/^\/app\/sales\/rooms\/[0-9a-f-]{36}$/.test(destination.pathname),'Host room route invalid');check(destination.searchParams.get('companyId')===company,'Host company lost');check(destination.searchParams.get('returnUrl')===origin,'Dashboard return lost');check(new URL(destination.searchParams.get('recordReturnUrl'),base).pathname===`/app/sales/deals/${deal}`,'Deal return lost');}}
+  results.push({flow:'Original booking actions',bookings,hostCount:hosts.length});
+  const hostLink=page.getByRole('link',{name:'Open Host room',exact:true}).first();await hostLink.focus();await page.keyboard.press('Enter');await page.waitForURL(u=>u.pathname.startsWith('/app/sales/rooms/'));await page.getByRole('heading',{name:'Join your meeting',exact:true}).waitFor();await page.waitForTimeout(1500);const ended=await page.locator('.human-room').innerText().then(t=>t.includes('This meeting has ended'));check(ended||await page.getByRole('button',{name:'Join meeting',exact:true}).count()===1,'Host entry or ended-room feedback missing');check(await page.getByRole('heading',{name:'Browser meeting',exact:true}).count()===0,'Room joined without user action');await page.screenshot({path:out+'host-entry.png',fullPage:true});results.push({flow:'Keyboard host-room navigation',url:page.url(),joined:false,ended});
+  await page.setViewportSize({width:390,height:844});await open();check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Deal page overflows on phone');for(const link of await page.locator('.deal-meeting-host').all()){const box=await link.boundingBox();check(box.width>=90&&box.height>=32&&box.x+box.width<=390,'Phone host button clipped');}await page.locator('.deal-meetings').screenshot({path:out+'after-narrow-bookings.png'});results.push({flow:'Phone booking actions',contained:true});check(errors.length===0,'Browser runtime errors: '+errors.join(';'));
+ }
+ await writeFile(out+`${mode}-browser.json`,JSON.stringify({url,results,errors},null,2));console.log(JSON.stringify({mode,groups:results.length,errors}));
+}catch(error){await writeFile(out+'browser-failure.json',JSON.stringify({error:String(error),url:page.url(),results,errors,alerts:await page.locator('[role="alert"]').allTextContents()},null,2));await page.screenshot({path:out+'browser-failure.png',fullPage:true});throw error;}finally{await browser.close();}

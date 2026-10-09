@@ -5,6 +5,21 @@ namespace VirtualCompany.Web.Services;
 
 public static class AgentAuthorityTransparencyPresenter
 {
+    public static IReadOnlyList<AuthorityPosition> CompanyPositions { get; } = [
+        new("recommend", "Advise", "Review information and recommend. A human decides what happens next."),
+        new("organize", "Organize", "Arrange permitted internal tasks and plans. Execution still needs its own checks."),
+        new("operate_internally", "Do internal work", "Perform permitted internal work within company limits. External actions need human review."),
+        new("controlled_execution", "Act within limits", "Use bounded authority where supported. Company operating external actions still need human review.") ];
+    public static string CheckLabel(string state) => state switch {
+        "available" => "Passed this check", "approval_required" => "Human review required", "permission_denied" => "Permission denied",
+        "scope_denied" => "Outside scope", "configuration_required" => "Configuration required", "integration_unavailable" => "Integration unavailable",
+        "not_implemented" => "Unsupported", "evaluation_failed" => "Evaluation unavailable", _ => "Action not evaluated" };
+    public static string ProfileLabel(string level) => level switch {
+        "level_0" => "Human-led", "level_1" => "Assisted", "level_2" => "Guided", "level_3" => "Extended with guardrails", _ => "Profile unavailable" };
+    public static string GrantLabel(string level) => level switch {
+        "read_monitor" => "Read and monitor", "recommend_draft" => "Recommend and draft", "supervised_internal_execute" => "Supervised internal execution",
+        "scheduled_bounded_execute" => "Scheduled bounded execution", _ => "Grant level unavailable" };
+    public static string HumanLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace('_', ' ').Replace('.', ' '));
     private static readonly string[] ActionOrder = ["read", "recommend", "execute"];
 
     public static IReadOnlyList<AgentAuthorityCapabilityRow> SelectCapabilityRows(
@@ -254,6 +269,8 @@ public static class AgentAuthorityTransparencyPresenter
 
     private static string Normalize(string? value) => value?.Trim().ToLowerInvariant() ?? string.Empty;
 }
+
+public sealed record AuthorityPosition(string Value, string Label, string Consequence);
 
 public sealed record AgentAuthorityCapabilityRow(
     string ToolName,

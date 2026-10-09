@@ -1,0 +1,43 @@
+@using VirtualCompany.Web.Services
+@using System.Globalization
+<section class="vc-panel management-table" data-testid="marketing-channel-performance" tabindex="0" aria-label="Channel performance and horizontally scrollable evidence table">
+    <h2>Channel performance</h2><p>@Report.Query.Year-@Report.Query.Month.ToString("D2") · @Report.Timezone · As of @Report.AsOfUtc.ToString("u")</p>
+    <p>Included touch cohort: [@Report.StartUtc.ToString("u"), @Report.EndUtc.ToString("u")). Units and currencies remain separate.</p>
+    @if(Report.Channels.Count==0){<p>No channel cost evidence in this cohort. Costs and acquisition economics are unavailable.</p>}
+    <table><caption>Known cost and credited outcome units; attribution is not causal proof</caption><thead><tr><th>Channel</th><th>Currency</th><th>Known cost</th><th>Cost coverage</th><th>Attributed outcomes</th><th>Cost per attributed unit</th></tr></thead><tbody>
+    @foreach(var channel in Report.Channels){<tr><th>@channel.Channel</th><td>@(channel.Currency??"Unknown")</td><td>@Number(channel.KnownCost)</td><td>@channel.IncludedTouches included · @channel.UnknownCostTouches unknown costs · @channel.AttributedTouches attributed touches</td><td>@foreach(var metric in channel.Economics){<p>@Number(metric.AttributedValue) @metric.Unit</p>}@if(channel.Economics.Count==0){<span>Unavailable; select a model or inspect missing sources</span>}</td><td>@foreach(var metric in channel.Economics){<p>@Number(metric.CostPerAttributedUnit) @(channel.Currency??"Unknown") / @metric.Unit</p>}@if(channel.Economics.Count==0){<span>Unavailable</span>}</td></tr><tr><td colspan="6">@channel.Coverage</td></tr>}
+    </tbody></table>
+</section>
+<section class="vc-panel"><h2>Definitions and coverage</h2>@foreach(var item in Report.Coverage){<p>@item</p>}
+    <h3>Source connection health</h3>@if((Report.SourceHealth?.Count??0)==0){<p>No channel health evidence recorded. Successful ingestion is not established.</p>}
+    @foreach(var source in Report.SourceHealth??[]){<p>@source.Name · @source.Provider · @source.ConnectionState.Replace('_',' ') · @source.HealthState.Replace('_',' ') · @source.CheckedUtc?.ToString("u") · @source.Coverage</p>}
+</section>
+<section class="vc-panel"><h2>Campaign and segment evidence</h2>
+    @foreach(var campaign in Report.Campaigns){<article><h3><a href="@CampaignPath(campaign.Id)">@campaign.Name</a></h3><p>Current recorded campaign budget: @Number(campaign.RecordedBudget) @campaign.Currency</p>
+        @if(campaign.Segments.Count==0){<p>No recorded portfolio segment association.</p>}
+        @foreach(var segment in campaign.Segments){<p><a href="@SegmentPath(segment.SegmentVersionId)">Recorded segment version @segment.Version</a> · @segment.Rationale</p>}
+    </article>}
+    <details><summary>Included and excluded cost sources (@Report.Costs.Count)</summary>@foreach(var cost in Report.Costs){<p>@cost.SourceReference · Version @cost.SourceVersion · @cost.Channel · @Number(cost.Cost) @(cost.Currency??"Unknown currency") · @cost.OccurredUtc.ToString("u") · @cost.Coverage<small>Touch @cost.Id · Recorded subject @cost.SubjectType @cost.SubjectId</small></p>}</details>
+</section>
+<section class="vc-panel"><h2>Attribution model and recorded windows</h2>
+    @if(Report.Attribution.Count==0){<p>No whole-window attribution runs recorded in this cohort. Outcomes remain unavailable.</p>}
+    @foreach(var run in Report.Attribution){<details><summary>@run.Model.Replace('_',' ') · @run.Value @run.Unit · @(run.Included?"Included":"Excluded")</summary><p>Recorded version @run.ModelVersion · Configured lookback @run.LookbackDays days · Actual run [@run.StartUtc.ToString("u"), @run.EndUtc.ToString("u")]</p><p>@run.Coverage @run.Limitations</p>
+        @foreach(var allocation in run.Allocations){<p>Touch @allocation.TouchId · Weight @allocation.Weight · Credit @allocation.Value · Retained evidence @allocation.EvidenceVersion</p>}
+    </details>}
+</section>
+<section class="vc-panel" data-testid="marketing-experiment-decisions"><h2>Experiment decision history</h2>
+    @if(Report.Experiments.Count==0){<p>No recorded experiment overlaps this cohort. Causal results are unavailable.</p>}
+    @foreach(var experiment in Report.Experiments){<article><h3>@experiment.Name</h3><p>@experiment.Hypothesis · Primary measure @experiment.PrimaryMetric · Guardrail @experiment.GuardrailMetric</p>
+        <p>Minimum sample @experiment.MinimumSample · Recorded exposures @experiment.RecordedExposures · @experiment.StartUtc.ToString("u") through @experiment.EndUtc.ToString("u")</p>
+        @if(experiment.Decision is {} decision){<p>@decision.Decision.Replace('_',' ') · Sample @decision.SampleSize · Contamination @decision.ContaminationRate · Guardrail breached @(decision.GuardrailBreached?"Yes":"No") · Causal eligibility @(decision.CausalEligible?"Limited to the recorded experiment":"Not established")</p><p>@decision.Limitations</p><details><summary>Recorded decision evidence</summary><pre>@decision.EvidenceJson</pre></details>}
+        else{<p>No recorded decision; inspect the current experiment evidence.</p>}
+        <p>@experiment.Coverage</p>@if(experiment.CampaignId.HasValue){<a href="@CampaignPath(experiment.CampaignId.Value)">Open campaign evidence</a>}
+    </article>}
+</section>
+@code{
+    [Parameter,EditorRequired]public MarketingManagementReport Report{get;set;}=null!;
+    [Parameter,EditorRequired]public string ReturnUrl{get;set;}="";
+    private string CampaignPath(Guid id)=>MarketingJourneyRoutes.Build($"/marketing/review?campaignId={id:D}",Report.CompanyId,ReturnUrl,true);
+    private string SegmentPath(Guid id)=>MarketingJourneyRoutes.Build("/marketing/reports/management?"+MarketingManagementApiClient.Parameters(Report.Query with{CampaignId=null,SegmentVersionId=id}),Report.CompanyId,ReturnUrl,true);
+    private static string Number(decimal? value)=>value?.ToString("0.####",CultureInfo.InvariantCulture)??"Unavailable";
+}

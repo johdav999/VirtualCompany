@@ -4,6 +4,12 @@ namespace VirtualCompany.Web.Services;
 
 public static class AgentWorkRoutes
 {
+    public static string? Supervision(string? path, Guid company)
+    {
+        var local=Local(path,company);
+        return local is not null&&new Uri("https://local.test"+local).AbsolutePath=="/agents/staff/reports"?local:null;
+    }
+    public static string? SupervisionBack(string location, Guid company)=>Supervision(HttpUtility.ParseQueryString(new Uri(location).Query)["supervisionReturnUrl"],company);
     public static string? Local(string? path, Guid company)
     {
         var normalized = ReturnUrlNavigation.NormalizeLocalReturnUrl(path);
@@ -27,12 +33,26 @@ public static class AgentWorkRoutes
     public static string? Record(string? path, Guid company)
     {
         var local = Local(path, company); if (local is null) return null;
+        if (BusinessRecord(local, company) is not null) return local;
         var route = new Uri("https://local.test" + local).AbsolutePath;
         var segments = route.Split('/');
         return route is "/agents/staff" or "/agents/staff/summary" ||
-            segments.Length == 5 && segments[1] == "agents" && segments[2] == "work" &&
+            (segments.Length == 5 || segments.Length == 6 && segments[5] == "collaboration") && segments[1] == "agents" && segments[2] == "work" &&
             new[] { "task", "initiative", "case", "deal" }.Contains(segments[3]) && Guid.TryParse(segments[4],out _)
             ? local : null;
+    }
+    public static string? BusinessRecord(string? path, Guid company)
+    {
+        var local = Local(path, company); if (local is null) return null;
+        var uri = new Uri("https://local.test" + local); var segments = uri.AbsolutePath.Split('/');
+        var record = (segments.Length == 5 && segments[1] == "app" && segments[2] == "sales" && segments[3] == "deals") ||
+            (segments.Length == 4 && segments[1] == "support" && segments[2] == "cases") ||
+            (segments.Length == 4 && segments[1] == "finance" && segments[2] is "reviews" or "bill-inbox" or "supplier-bills" or "bills") ||
+            (segments.Length == 5 && segments[1] == "finance" && segments[2] == "supplier-bills" && segments[3] == "review");
+        if (record && Guid.TryParse(segments[^1], out var id) && id != Guid.Empty) return local;
+        var query = HttpUtility.ParseQueryString(uri.Query);
+        return uri.AbsolutePath == "/marketing/review" &&
+            (Guid.TryParse(query["briefId"], out var brief) && brief != Guid.Empty || Guid.TryParse(query["campaignId"], out var campaign) && campaign != Guid.Empty) ? local : null;
     }
     public static string? Back(string location, Guid company)
     {
@@ -43,6 +63,7 @@ public static class AgentWorkRoutes
     {
         var current = new Uri(location); var query = HttpUtility.ParseQueryString(current.Query);
         return DashboardRoutes.WithQuery(path,
+            ("supervisionReturnUrl",Supervision(current.PathAndQuery,company)??Supervision(query["supervisionReturnUrl"],company)),
             ("boardReturnUrl", Board(current.PathAndQuery, company) ?? Board(query["boardReturnUrl"], company)),
             ("agentWorkReturnUrl", Record(BoundedReturn(current.PathAndQuery, company, 2), company) ?? Record(query["agentWorkReturnUrl"],company)),
             ("recordReturnUrl", BoundedReturn(current.PathAndQuery, company, 2)),

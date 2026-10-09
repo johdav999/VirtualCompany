@@ -1,12 +1,15 @@
 @inject NavigationManager Navigation
-<nav class="d-flex flex-wrap gap-2 mb-3" aria-label="Finance journey">
-    <a class="btn btn-outline-primary" data-testid="finance-journey-return" href="@FinanceJourneyRoutes.Back(Navigation.Uri, CompanyId)">← Back to previous view</a>
-    <a class="btn btn-outline-secondary" href="@Link("/finance/receivables-aging")">Receivables aging</a>
-    <a class="btn btn-outline-secondary" href="@Link("/finance/payables-aging")">Payables aging</a>
-    <a class="btn btn-outline-secondary" href="@Link("/finance/cash-forecast")">Cash forecast</a>
+<nav class="@(ReportStyle ? "finance-journey" : "d-flex flex-wrap gap-2 mb-3")" aria-label="Finance journey">
+    <a class="@(ReportStyle ? "finance-journey__return" : "btn btn-outline-primary")" data-testid="finance-journey-return" href="@FinanceJourneyRoutes.Back(Navigation.Uri, CompanyId)">← Back to previous view</a>
+    @foreach (var item in new[] { ("/finance/receivables-aging", "Receivables aging"), ("/finance/payables-aging", "Payables aging"), ("/finance/cash-forecast", "Cash forecast"), ("/finance/reports/variance", "Actual versus plan"), ("/finance/reports/rolling-forecast", "Rolling forecast") })
+    {
+        var active = new Uri(Navigation.Uri).AbsolutePath == item.Item1;
+        <a class="@(ReportStyle ? "finance-journey__link" + (active ? " is-active" : "") : "btn btn-outline-secondary")" aria-current="@(active ? "page" : null)" href="@Link(item.Item1)">@item.Item2</a>
+    }
 </nav>
 @code {
     [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public bool ReportStyle { get; set; }
     private string Link(string path) => new Uri(Navigation.Uri).AbsolutePath.StartsWith("/finance/accounting/", StringComparison.Ordinal)
         ? AccountingJourneyRoutes.Build(path, CompanyId, Navigation.Uri)
         : FinanceJourneyRoutes.Build(path, CompanyId, Navigation.Uri);

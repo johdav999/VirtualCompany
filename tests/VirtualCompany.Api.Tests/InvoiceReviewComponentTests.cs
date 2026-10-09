@@ -604,6 +604,7 @@ public sealed class InvoiceReviewComponentTests
     {
         var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
+        context.Services.AddSingleton(new AgentWorkApiClient(new CompanyApiTransport(new HttpClient(new StubHttpMessageHandler(request => CreateNotFoundResponse())) { BaseAddress = new Uri("http://localhost/") })));
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new StubHttpMessageHandler(request =>
         {

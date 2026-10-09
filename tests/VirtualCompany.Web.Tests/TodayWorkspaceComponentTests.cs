@@ -34,6 +34,8 @@ public sealed class TodayWorkspaceComponentTests
             var query = System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost" + link.GetAttribute("href")).Query);
             Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "company"), query["returnUrl"]);
         }
+        Assert.DoesNotContain("Priority details", cut.Markup);
+        Assert.DoesNotContain("/dashboard/priorities", cut.Markup);
     }
 
     [Fact]
@@ -103,12 +105,14 @@ public sealed class TodayWorkspaceComponentTests
             .Add(x => x.PeriodChanged, EventCallback.Factory.Create<string>(this, value => selected = value)));
 
         var buttons = cut.FindAll("[data-testid='workspace-period-picker'] button");
-        Assert.Equal(2, buttons.Count);
+        Assert.Equal(6, buttons.Count);
         Assert.Equal("true", buttons[0].GetAttribute("aria-pressed"));
 
-        buttons[1].Click();
+        buttons[2].Click();
 
         Assert.Equal("month", selected);
+        buttons.Single(x=>x.TextContent=="Multi-year").Click();
+        Assert.Equal("multiyear", selected);
     }
 
     [Fact]
@@ -120,10 +124,74 @@ public sealed class TodayWorkspaceComponentTests
         var route = cut.Find("[data-testid='today-priority'] .today-priority__button").GetAttribute("href");
 
         Assert.Contains($"companyId={CompanyId:D}", route, StringComparison.OrdinalIgnoreCase);
-        Assert.StartsWith("/dashboard/priorities", route, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(DashboardRoutes.EnsureWorkspaceContext(CreateOwnerWorkspace().Priorities[0].DeepLink, CompanyId, DashboardRoutes.BuildTodayPath(CompanyId, "company")), route);
         var query = System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost" + route).Query);
-        Assert.Equal(CreateOwnerWorkspace().Priorities[0].Key, query["key"]);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", query["taskId"]);
         Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "company"), query["returnUrl"]);
+    }
+
+    [Fact]
+    public void Sales_priority_review_opens_owning_record_without_priority_details_and_keeps_return_context()
+    {
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace = CreateOwnerWorkspace();
+        var dealPath = "/app/sales/deals/22222222-2222-2222-2222-222222222222";
+        workspace = workspace with
+        {
+            ActiveLens = "sales",
+            Priorities = [workspace.Priorities[1] with { DeepLink = dealPath }]
+        };
+        var cut = Render(context, workspace);
+        var review = cut.Find(".today-priority__button").GetAttribute("href")!;
+        Assert.StartsWith(dealPath + "?", review, StringComparison.Ordinal);
+        var query = System.Web.HttpUtility.ParseQueryString(new Uri("http://localhost" + review).Query);
+        Assert.Equal(CompanyId.ToString("D"), query["companyId"]);
+        Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "sales"), query["returnUrl"]);
+        Assert.Empty(cut.FindAll("[data-testid='today-priority-evidence']"));
+        Assert.Equal(DashboardRoutes.BuildTodayPath(CompanyId, "sales"),
+            SalesJourneyRoutes.Back("http://localhost" + review, CompanyId));
+        var salesReview = cut.Find("[data-testid='sales-today-section'] .today-feature__action").GetAttribute("href")!;
+        Assert.StartsWith("/app/sales?", salesReview, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("company", "/app/sales/deals/22222222-2222-2222-2222-222222222222")]
+    [InlineData("sales", "/app/sales/deals/22222222-2222-2222-2222-222222222222")]
+    [InlineData("finance", "/finance/invoices/22222222-2222-2222-2222-222222222222?financeSource=operational")]
+    [InlineData("finance", "/finance/supplier-bills/22222222-2222-2222-2222-222222222222?financeSource=fortnox")]
+    [InlineData("marketing", "/marketing/review?campaignId=22222222-2222-2222-2222-222222222222&variantId=33333333-3333-3333-3333-333333333333")]
+    [InlineData("marketing", "/marketing/reports/spend?campaignId=22222222-2222-2222-2222-222222222222")]
+    [InlineData("customers", "/support/cases/22222222-2222-2222-2222-222222222222")]
+    public void Specialist_review_opens_source_action_screen_and_preserves_all_record_filters(string lens, string source)
+    {
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace = CreateOwnerWorkspace();
+        workspace = workspace with { ActiveLens = lens, Priorities = [workspace.Priorities[0] with { Lens = lens, DeepLink = source }] };
+        DashboardActionTelemetryContext? recorded = null;
+        var cut = context.RenderComponent<TodayWorkspace>(p => p.Add(x => x.CompanyId, CompanyId)
+            .Add(x => x.Workspace, workspace)
+            .Add(x => x.ActionSelected, EventCallback.Factory.Create<DashboardActionTelemetryContext>(this, value => recorded = value)));
+        var review = cut.Find(".today-priority__button");
+        var expected = DashboardRoutes.EnsureWorkspaceContext(source, CompanyId, DashboardRoutes.BuildTodayPath(CompanyId, lens));
+        Assert.Equal(expected, review.GetAttribute("href"));
+        review.Click();
+        Assert.NotNull(recorded);
+        Assert.Equal(expected, recorded!.Target);
+        Assert.Empty(cut.FindAll("[data-testid='today-priority-evidence']"));
+    }
+
+    [Theory]
+    [InlineData("finance")]
+    [InlineData("marketing")]
+    [InlineData("customers")]
+    public void Specialist_review_falls_back_to_owning_workspace_when_no_action_link_is_available(string lens)
+    {
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace = CreateOwnerWorkspace();
+        workspace = workspace with { ActiveLens = lens, Priorities = [workspace.Priorities[0] with { DeepLink = "" }] };
+        var cut = Render(context, workspace);
+        Assert.Equal(DashboardRoutes.EnsureWorkspaceContext(CompanyHealthPresentation.Route(CompanyId, workspace.Priorities[0].Lens), CompanyId, DashboardRoutes.BuildTodayPath(CompanyId, lens)),
+            cut.Find(".today-priority__button").GetAttribute("href"));
     }
 
     [Fact]
@@ -248,6 +316,25 @@ public sealed class TodayWorkspaceComponentTests
         Assert.Contains(label, update.TextContent);
         Assert.Contains("Evidence-backed rationale", update.TextContent);
         Assert.Contains("Shown because", update.TextContent);
+    }
+
+    [Fact]
+    public void Agent_briefings_include_recorded_business_reviews_after_blockers_and_do_not_duplicate_the_same_explanation()
+    {
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
+        var workspace = CreateOwnerWorkspace() with
+        {
+            AgentUpdates = [
+                new("blocked-1", "Support review failed", "The cited evidence was not supplied.", "Ben", NowUtc, "agent_run", "/agents", AgentState: "blocked"),
+                new("blocked-2", "Mailbox scan", "Checking invoices.", "Laura", NowUtc, "work_task", "/work", AgentState: "blocked", RationaleSummary: "Mailbox provider could not be reached."),
+                new("review", "Sales operating cadence", "One renewal needs review; pipeline is SEK 12,000.", "Alex", NowUtc, "agent_run", "/agents", AgentState: "recommended", RationaleSummary: "One renewal needs review; pipeline is SEK 12,000.")]
+        };
+        var cut = Render(context, workspace);
+        var cards = cut.FindAll("[data-testid='today-agent-briefings'] .today-agent-update");
+        Assert.Equal(3, cards.Count);
+        Assert.Contains("One renewal needs review; pipeline is SEK 12,000.", cards[2].TextContent);
+        Assert.Null(cards[2].QuerySelector(".today-agent-update__rationale"));
+        Assert.Contains("Mailbox provider could not be reached.", cards[1].QuerySelector(".today-agent-update__rationale")!.TextContent);
     }
 
     [Theory]

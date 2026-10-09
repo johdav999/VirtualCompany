@@ -12,6 +12,7 @@ public static class CompanyOutboxTopics
     public const string InvitationAccepted = "company.invitation.accepted";
     public const string MembershipRoleChanged = "company.membership.role_changed";
     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
+    public const string BriefingCadenceDeliveryRequested = "company.briefing.cadence_delivery_requested";
     public const string SupportMemoryUpdateRequested = "support.memory.update_requested";
     public const string SupportReplyDeliveryRequested = "support.reply.delivery_requested";
     public const string CustomerInvoiceRenderRequested = "finance.customer_invoice.render_requested";

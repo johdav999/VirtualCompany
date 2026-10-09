@@ -20,6 +20,8 @@ public static class SupportCaseEventTypes
     public const string Closed = "closed";
     public const string SlaRisk = "sla_risk";
     public const string SlaBreached = "sla_breached";
-    public static string Normalize(string value) => SupportCaseStatuses.NormalizeKnownForSupport(value, [Created, MessageReceived, Triaged, Assigned, StatusChanged, PriorityChanged, ReplyDrafted, ReplySent, Escalated, ApprovalRequested, ApprovalResolved, InternalTaskCreated, Resolved, Reopened, Closed, SlaRisk, SlaBreached], nameof(value));
+    public const string StateRecorded = "state_recorded";
+    public const string Merged = "merged";
+    public static string Normalize(string value) => SupportCaseStatuses.NormalizeKnownForSupport(value, [Created, MessageReceived, Triaged, Assigned, StatusChanged, PriorityChanged, ReplyDrafted, ReplySent, Escalated, ApprovalRequested, ApprovalResolved, InternalTaskCreated, Resolved, Reopened, Closed, SlaRisk, SlaBreached, StateRecorded, Merged], nameof(value));
 }
 
