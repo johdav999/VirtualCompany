@@ -20,6 +20,7 @@ internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration
         builder.Property(x => x.AccountId).HasColumnName("account_id").IsRequired();
         builder.Property(x => x.CounterpartyId).HasColumnName("counterparty_id");
         builder.Property(x => x.InvoiceId).HasColumnName("invoice_id");
+        builder.Property(x => x.BillId).HasColumnName("bill_id");
         builder.Property(x => x.TransactionUtc).HasColumnName("transaction_at").IsRequired();
         builder.Property(x => x.TransactionType).HasColumnName("transaction_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
@@ -33,6 +34,25 @@ internal sealed class FinanceTransactionConfiguration : IEntityTypeConfiguration
         builder.HasIndex(x => new { x.CompanyId, x.ExternalReference }).IsUnique();
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Transactions).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+
+        // Preserve the constraint name established before this entity's table mapping was applied.
+        FinanceSourceTrackingMapping.Configure(builder, "CK_FinanceTransactions_source_type");
+
+        builder.Property(x => x.DocumentId).HasColumnName("document_id");
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentId });
+        builder.HasOne(x => x.Document)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.DocumentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
+        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
+        builder.HasOne(x => x.SourceSimulationEventRecord)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

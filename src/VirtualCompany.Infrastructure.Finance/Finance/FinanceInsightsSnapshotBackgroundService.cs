@@ -98,7 +98,7 @@ internal readonly record struct FinanceInsightSnapshotExecutionDescriptor(
 public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJobRunner
 {
     private readonly VirtualCompanyDbContext _dbContext;
-    private readonly IFinanceReadService _financeReadService;
+    private readonly IFinanceInsightRefreshService _insightRefreshService;
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
     private readonly IOptions<FinanceInsightsSnapshotWorkerOptions> _options;
     private readonly ILogger<FinanceInsightsSnapshotJobRunner> _logger;
@@ -108,7 +108,7 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
 
     public FinanceInsightsSnapshotJobRunner(
         VirtualCompanyDbContext dbContext,
-        IFinanceReadService financeReadService,
+        IFinanceInsightRefreshService insightRefreshService,
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
         IBackgroundJobExecutor backgroundJobExecutor,
         IBackgroundExecutionRetryPolicy retryPolicy,
@@ -117,7 +117,7 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
         ILogger<FinanceInsightsSnapshotJobRunner> logger)
     {
         _dbContext = dbContext;
-        _financeReadService = financeReadService;
+        _insightRefreshService = insightRefreshService;
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
         _backgroundJobExecutor = backgroundJobExecutor;
         _retryPolicy = retryPolicy;
@@ -153,7 +153,7 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
             var result = await _backgroundJobExecutor.ExecuteAsync(
                 new BackgroundJobExecutionContext("finance-insights-snapshot", attempt, maxAttempts,
                     execution.CompanyId, execution.CorrelationId, execution.IdempotencyKey, requireCompanyContext: true),
-                token => _financeReadService.RefreshInsightsSnapshotAsync(descriptor.ToCommand(execution.CompanyId), token),
+                token => _insightRefreshService.RefreshInsightsSnapshotAsync(descriptor.ToCommand(execution.CompanyId), token),
                 retryDelay, cancellationToken);
             switch (result.Outcome)
             {

@@ -17,7 +17,7 @@ public sealed class AccountingGovernanceApiSurfaceTests
     [InlineData("SubmitCommerceAccountingEventAsync", CompanyPolicies.AccountingAdmin)]
     public void Governance_endpoints_require_the_expected_company_policy(string methodName, string policy)
     {
-        var method = typeof(InternalFinanceController).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+        var method = typeof(InternalFinanceAccountingAdministrationController).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(method);
         Assert.Contains(method!.GetCustomAttributes<AuthorizeAttribute>(), attribute => attribute.Policy == policy);
     }

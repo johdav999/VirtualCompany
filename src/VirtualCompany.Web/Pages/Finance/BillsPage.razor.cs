@@ -512,7 +512,7 @@ public partial class BillsPage : FinancePageBase
             paidExpensePosting,
             needsPaymentReview ? "Needs review" : null,
             needsPaymentReview ? "danger" : "neutral",
-            bill.RelatedTransactions.Select(ToRelatedTransactionViewModel).ToList());
+            (bill.RelatedTransactions ?? []).Select(ToRelatedTransactionViewModel).ToList());
     }
 
     private async Task SuggestEnrichmentAsync()
@@ -1144,8 +1144,7 @@ public partial class BillsPage : FinancePageBase
             return;
         }
 
-        SelectedBill.CorrectionActions.RemoveAll(x => string.Equals(x.ActionType, action.ActionType, StringComparison.OrdinalIgnoreCase));
-        SelectedBill.CorrectionActions.Add(action);
+        SelectedBill.CorrectionActions = [.. (SelectedBill.CorrectionActions ?? []).Where(x => !string.Equals(x.ActionType, action.ActionType, StringComparison.OrdinalIgnoreCase)), action];
     }
 
     private FinanceTransactionPaymentContextResponse? SelectPaymentContext(
@@ -2032,7 +2031,7 @@ public partial class BillsPage : FinancePageBase
                         : "Resolve the listed items before Laura posts this expense."
                     : availability.Message,
                 availability.AccountCode,
-                availability.BlockingReasons);
+                availability.BlockingReasons ?? []);
         }
 
         return new PaidExpensePostingViewModel(

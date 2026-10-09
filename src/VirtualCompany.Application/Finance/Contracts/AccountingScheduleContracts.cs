@@ -39,42 +39,6 @@ public sealed record RegenerateAccountingScheduleOccurrenceCommand(Guid CompanyI
 public sealed record ListAccountingSchedulesQuery(Guid CompanyId, string? Status = null, int Skip = 0, int Take = 100);
 public sealed record GetAccountingScheduleQuery(Guid CompanyId, Guid ScheduleId);
 
-public sealed record AccountingScheduleLineDto(Guid Id, int Sequence, Guid FinanceAccountId,
-    string AccountCode, string AccountName, decimal DebitAmount, decimal CreditAmount,
-    string Description, IReadOnlyList<Guid> DimensionMemberIds);
-public sealed record AccountingScheduleEvidenceDto(Guid DocumentId, string Title, string ContentHash, string OriginalFileName);
-public sealed record AccountingScheduleVersionDto(Guid Id, int VersionNumber, string PayloadHash,
-    string Description, DateOnly EffectiveFrom, DateTime CreatedUtc,
-    IReadOnlyList<AccountingScheduleLineDto> Lines, IReadOnlyList<AccountingScheduleEvidenceDto> Evidence);
-public sealed record AccountingScheduleApprovalDto(Guid ApprovalRequestId, string Status, int VersionNumber,
-    string PayloadHash, DateTime BoundUtc, string? DecisionSummary);
-public sealed record AccountingScheduleExceptionDto(Guid Id, string ReasonCode, string Explanation,
-    string SafeNextAction, string Status, DateTime CreatedUtc, DateTime? ResolvedUtc);
-public sealed record AccountingScheduleOccurrenceDto(Guid Id, DateOnly OccurrenceDate, DateOnly PostingDate,
-    decimal ScheduledAmount, decimal ReleasedAmount, decimal ReversedAmount, string Currency, string Status,
-    Guid? LedgerEntryId, Guid? ReversalLedgerEntryId, DateOnly? ReversalDueDate, int AttemptCount,
-    string? FailureCode, string? FailureSummary, long Version, DateTime UpdatedUtc,
-    IReadOnlyList<AccountingScheduleExceptionDto> Exceptions);
-public sealed record AccountingScheduleReconciliationDto(decimal OriginalAmount, decimal ReleasedAmount,
-    decimal ReversedAmount, decimal? RemainingAmount, decimal ExceptionAmount, string Currency,
-    int PlannedOccurrences, int PostedOccurrences, int ReversedOccurrences, int ExceptionOccurrences,
-    bool IsReconciled);
-public sealed record AccountingScheduleDto(Guid Id, Guid CompanyId, string Code, string Name,
-    string ScheduleType, string Cadence, string AmountBasis, string ProrationRule, DateOnly StartDate,
-    DateOnly? EndDate, int OccurrenceDay, string TimeZoneId, string VoucherSeriesCode, string Currency,
-    string ReversalRule, string Status, DateOnly NextOccurrenceDate, int CurrentVersionNumber,
-    string? CurrentVersionHash, long Version, Guid CreatedByUserId, Guid UpdatedByUserId,
-    DateTime CreatedUtc, DateTime UpdatedUtc, AccountingScheduleVersionDto? CurrentVersion,
-    AccountingScheduleApprovalDto? Approval, IReadOnlyList<AccountingScheduleOccurrenceDto> Occurrences,
-    AccountingScheduleReconciliationDto Reconciliation,
-    IReadOnlyList<string> AllowedActions);
-public sealed record AccountingScheduleListResult(IReadOnlyList<AccountingScheduleDto> Items,
-    int TotalCount, int Skip, int Take, decimal ReleasedAmount, decimal ReversedAmount,
-    decimal RemainingAmount, int ActiveCount, int DueCount, int ExceptionCount, string Currency);
-public sealed record AccountingSchedulePreviewDto(AccountingScheduleDto Schedule,
-    AccountingPostingPreview PostingPreview, decimal OccurrenceAmount, DateOnly PostingDate,
-    int PlannedOccurrences, IReadOnlyList<AccountingPostingIssue> Issues);
-
 public interface IAccountingScheduleService
 {
     Task<AccountingScheduleDto> CreateAsync(CreateAccountingScheduleCommand command, CancellationToken cancellationToken);

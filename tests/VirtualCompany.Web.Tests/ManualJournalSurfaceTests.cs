@@ -28,7 +28,7 @@ public sealed class ManualJournalSurfaceTests
         Assert.Contains("ManualJournalConflictApiException", workbenchCode, StringComparison.Ordinal);
         Assert.Contains("OriginalLedgerEntryId", workbenchCode, StringComparison.Ordinal);
         Assert.Contains("SourceRecords = Model.SourceRecords", workbenchCode, StringComparison.Ordinal);
-        Assert.Contains("ManualJournalSourceReferenceResponse", client, StringComparison.Ordinal);
+        Assert.Equal(typeof(IReadOnlyList<ManualJournalSourceReferenceResponse>), typeof(ManualJournalDraftResponse).GetProperty("SourceRecords")!.PropertyType);
         Assert.Contains("@media", journalCss, StringComparison.Ordinal);
         Assert.Contains("@media", workbenchCss, StringComparison.Ordinal);
         Assert.DoesNotContain("tenant", journal + workbench, StringComparison.OrdinalIgnoreCase);

@@ -33,7 +33,7 @@ public sealed partial class FinanceApiClient
             ? Task.FromResult<FinanceInvoiceReviewDetailResponse?>(null)
             : GetAsync<FinanceInvoiceReviewDetailResponse>(companyId, $"internal/companies/{companyId}/finance/reviews/{invoiceId}", allowNotFound: true, cancellationToken);
 
-    public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
+    public async Task<FinanceMonthlySummaryViewModel?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
     {
         FinanceSimulationClockResponse? clock = null;
         var resolvedReferenceUtc = referenceUtc;
@@ -46,7 +46,7 @@ public sealed partial class FinanceApiClient
             }
 
             clock = await GetSimulationClockAsync(companyId, cancellationToken);
-            resolvedReferenceUtc = clock?.SimulatedUtc ?? DateTime.UtcNow;
+            resolvedReferenceUtc = clock?.CurrentUtc ?? DateTime.UtcNow;
         }
 
         var monthStartUtc = new DateTime(resolvedReferenceUtc.Value.Year, resolvedReferenceUtc.Value.Month, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -54,7 +54,7 @@ public sealed partial class FinanceApiClient
 
         if (_useOfflineMode)
         {
-            return new FinanceMonthlySummaryResponse
+            return new FinanceMonthlySummaryViewModel
             {
                 CompanyId = companyId,
                 ReferenceUtc = resolvedReferenceUtc.Value,
@@ -97,7 +97,7 @@ public sealed partial class FinanceApiClient
             allowNotFound: true,
             cancellationToken);
 
-        return new FinanceMonthlySummaryResponse
+        return new FinanceMonthlySummaryViewModel
         {
             CompanyId = companyId,
             ReferenceUtc = resolvedReferenceUtc.Value,

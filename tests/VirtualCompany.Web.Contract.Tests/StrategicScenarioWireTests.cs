@@ -1,7 +1,6 @@
 using System.Text.Json;
 using VirtualCompany.Api.Tests;
 using VirtualCompany.Web.Services;
-using StrategicScenarioInput=VirtualCompany.Web.Services.StrategicScenarioInput;
 namespace VirtualCompany.Web.Contract.Tests;
 public sealed class StrategicScenarioWireTests
 {

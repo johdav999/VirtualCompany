@@ -15,6 +15,7 @@ $resultsPath = [System.IO.Path]::GetFullPath($ResultsRoot, $repositoryRoot)
 New-Item -ItemType Directory -Path $resultsPath -Force | Out-Null
 
 $hermeticProjects = @(
+    'tests/VirtualCompany.Domain.Tests/VirtualCompany.Domain.Tests.csproj',
     'tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj',
     'tests/VirtualCompany.Finance.Tests/VirtualCompany.Finance.Tests.csproj',
     'tests/VirtualCompany.Infrastructure.Mailbox.Tests/VirtualCompany.Infrastructure.Mailbox.Tests.csproj',

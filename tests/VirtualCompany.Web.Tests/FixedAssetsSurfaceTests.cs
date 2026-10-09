@@ -15,12 +15,12 @@ public sealed class FixedAssetsSurfaceTests
         Assert.Contains("LegacyAssetsNeedReview", workspace, StringComparison.Ordinal);
         Assert.Contains("AssetTimeline", workspace, StringComparison.Ordinal);
         Assert.Contains("AssetComponents", workspace, StringComparison.Ordinal);
-        Assert.Contains("FixedAssetComponentResponse", client, StringComparison.Ordinal);
+        Assert.Equal(typeof(IReadOnlyList<FixedAssetComponentResponse>), typeof(FixedAssetResponse).GetProperty("Components")!.PropertyType);
         Assert.Contains("ReviewDepreciation", workspace, StringComparison.Ordinal);
         Assert.Contains("LedgerEntryId", workspace, StringComparison.Ordinal);
         Assert.Contains("role=\"alert\"", workspace, StringComparison.Ordinal);
         Assert.Contains("EnsureOnlineMutation", client, StringComparison.Ordinal);
-        Assert.Contains("PopulationHash", client, StringComparison.Ordinal);
+        Assert.NotNull(typeof(FixedAssetDepreciationPreviewResponse).GetProperty("PopulationHash"));
         Assert.Contains("@media(max-width:640px)", css, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references",
             "finance-fixed-assets-reference.png")));

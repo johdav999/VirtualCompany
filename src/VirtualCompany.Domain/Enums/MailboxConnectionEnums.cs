@@ -19,18 +19,7 @@ public enum MailboxTlsMode
     StartTls = 2
 }
 
-[Flags]
-public enum MailboxCapability
-{
-    None = 0,
-    ReadMessages = 1 << 0,
-    ReadAttachments = 1 << 1,
-    ListFolders = 1 << 2,
-    ThreadCorrelation = 1 << 3,
-    CreateDrafts = 1 << 4,
-    SendMessages = 1 << 5,
-    IncrementalSync = 1 << 6
-}
+
 
 public enum MailboxCursorStatus
 {

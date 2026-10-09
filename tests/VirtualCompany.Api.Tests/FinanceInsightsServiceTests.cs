@@ -61,6 +61,8 @@ public sealed class FinanceInsightsServiceTests
         await dbContext.SaveChangesAsync();
 
         var service = new CompanyFinanceReadService(dbContext);
+        await CreateRefreshService(dbContext, service).RefreshInsightsSnapshotAsync(
+            new RefreshFinanceInsightsSnapshotCommand(companyId, new DateTime(2026, 2, 15, 0, 0, 0, DateTimeKind.Utc)), CancellationToken.None);
         var result = await service.GetInsightsAsync(
             new GetFinanceInsightsQuery(companyId, new DateTime(2026, 2, 15, 0, 0, 0, DateTimeKind.Utc)),
             CancellationToken.None);
@@ -99,6 +101,7 @@ public sealed class FinanceInsightsServiceTests
         await dbContext.SaveChangesAsync();
 
         var service = new CompanyFinanceReadService(dbContext);
+        await CreateRefreshService(dbContext, service).RefreshInsightsSnapshotAsync(new RefreshFinanceInsightsSnapshotCommand(companyA), CancellationToken.None);
         var result = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyA), CancellationToken.None);
         Assert.Equal(companyA, result.CompanyId);
     }
@@ -119,6 +122,7 @@ public sealed class FinanceInsightsServiceTests
         await dbContext.SaveChangesAsync();
 
         var service = new CompanyFinanceReadService(dbContext);
+        await CreateRefreshService(dbContext, service).RefreshInsightsSnapshotAsync(new RefreshFinanceInsightsSnapshotCommand(companyId), CancellationToken.None);
         var fullResult = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
         var sourceInsight = fullResult.Items.First(x => x.PrimaryEntity is not null);
         var entityType = sourceInsight.PrimaryEntity!.EntityType;
@@ -154,7 +158,7 @@ public sealed class FinanceInsightsServiceTests
         var accessor = new TestCompanyContextAccessor(companyId);
         var service = new CompanyFinanceReadService(dbContext, accessor, null, null, null, cache, timeProvider);
 
-        var refreshed = await service.RefreshInsightsSnapshotAsync(
+        var refreshed = await CreateRefreshService(dbContext, service, cache, timeProvider).RefreshInsightsSnapshotAsync(
             new RefreshFinanceInsightsSnapshotCommand(companyId, Retention: TimeSpan.FromMinutes(30)),
             CancellationToken.None);
 
@@ -191,10 +195,10 @@ public sealed class FinanceInsightsServiceTests
         var accessor = new TestCompanyContextAccessor(companyId);
         var service = new CompanyFinanceReadService(dbContext, accessor, null, null, null, CreateDistributedCache(), TimeProvider.System);
 
-        await service.QueueInsightsSnapshotRefreshAsync(
+        await CreateRefreshService(dbContext, service).QueueInsightsSnapshotRefreshAsync(
             new QueueFinanceInsightsSnapshotRefreshCommand(companyId, CorrelationId: "insights-queue-001"),
             CancellationToken.None);
-        await service.QueueInsightsSnapshotRefreshAsync(
+        await CreateRefreshService(dbContext, service).QueueInsightsSnapshotRefreshAsync(
             new QueueFinanceInsightsSnapshotRefreshCommand(companyId, CorrelationId: "insights-queue-001"),
             CancellationToken.None);
 
@@ -260,9 +264,11 @@ public sealed class FinanceInsightsServiceTests
         await dbContext.SaveChangesAsync();
 
         var service = new CompanyFinanceReadService(dbContext, new TestCompanyContextAccessor(companyId), null, null, new NullFinanceSeedingStateService());
+        await CreateRefreshService(dbContext, service).RefreshInsightsSnapshotAsync(new RefreshFinanceInsightsSnapshotCommand(companyId, AsOfUtc: now), CancellationToken.None);
         var first = await service.GetInsightsAsync(
             new GetFinanceInsightsQuery(companyId, AsOfUtc: now, IncludeResolved: true, PreferSnapshot: false),
             CancellationToken.None);
+        await CreateRefreshService(dbContext, service).RefreshInsightsSnapshotAsync(new RefreshFinanceInsightsSnapshotCommand(companyId, AsOfUtc: now), CancellationToken.None);
         var second = await service.GetInsightsAsync(
             new GetFinanceInsightsQuery(companyId, AsOfUtc: now, IncludeResolved: true, PreferSnapshot: false),
             CancellationToken.None);
@@ -285,6 +291,9 @@ public sealed class FinanceInsightsServiceTests
                 .OrderBy(x => x)
                 .ToArray());
     }
+
+    private static FinanceInsightRefreshService CreateRefreshService(VirtualCompanyDbContext db, CompanyFinanceReadService reader, IDistributedCache? cache = null, TimeProvider? clock = null) =>
+        new(db, reader, new FinanceInsightPersistenceService(new FinanceAgentInsightRepository(db), clock), cache, clock);
 
     private static IDistributedCache CreateDistributedCache() =>
         new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));

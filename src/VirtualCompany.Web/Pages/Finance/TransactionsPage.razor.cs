@@ -43,7 +43,7 @@ public partial class TransactionsPage : FinancePageBase
 
     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Transactions.Count == 0;
     private bool CanEditTransactionCategory =>
-        SelectedTransaction?.Permissions.CanEditTransactionCategory ?? FinanceAccess.CanEditTransactionCategory(AccessState.MembershipRole);
+        SelectedTransaction?.Permissions.CanChangeTransactionCategory ?? FinanceAccess.CanEditTransactionCategory(AccessState.MembershipRole);
     private string FromInputValue => From?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
     private string ToInputValue => To?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty;
     private string? CategoryFilterValue => NormalizeOptionalText(Category);
@@ -475,7 +475,7 @@ public partial class TransactionsPage : FinancePageBase
             return "Supplier bill";
         }
 
-        if (transaction.LinkedDocument.CanNavigate)
+        if (transaction.LinkedDocument.CanOpen)
         {
             return "Linked document";
         }

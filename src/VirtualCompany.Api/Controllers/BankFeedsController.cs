@@ -71,7 +71,3 @@ public sealed class BankFeedsController : ControllerBase
         return StatusCode(status, details);
     }
 }
-
-public sealed record RequestBankFeedSynchronizationRequest(Guid? CheckpointId);
-public sealed record RequestBankFeedBackfillRequest(DateOnly DateFrom, DateOnly DateTo,
-    long ExpectedCheckpointVersion, string Reason);

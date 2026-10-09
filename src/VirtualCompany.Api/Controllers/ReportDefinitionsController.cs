@@ -151,13 +151,6 @@ public sealed class CopyReportTemplateRequest
     public string IdempotencyKey { get; set; } = string.Empty;
 }
 public sealed class CreateReportDefinitionVersionRequest { public Guid SourceVersionId { get; set; } public string IdempotencyKey { get; set; } = string.Empty; }
-public class ReportDefinitionRevisionRequest { public int ExpectedRevision { get; set; } public string IdempotencyKey { get; set; } = string.Empty; }
 public sealed class DecideReportDefinitionRequest : ReportDefinitionRevisionRequest { public bool Approve { get; set; } public string? DecisionNote { get; set; } }
 public sealed class ActivateReportDefinitionRequest : ReportDefinitionRevisionRequest { public DateOnly EffectiveFrom { get; set; } }
 public sealed class RetireReportDefinitionRequest : ReportDefinitionRevisionRequest { public DateOnly EffectiveTo { get; set; } }
-public sealed class UpdateReportDefinitionRequest : ReportDefinitionRevisionRequest
-{
-    public string Name { get; set; } = string.Empty;
-    public IReadOnlyList<ReportDefinitionSectionInput> Sections { get; set; } = [];
-    public ReportDefinitionComparisonDto Comparison { get; set; } = new("none", 1, false, false);
-}

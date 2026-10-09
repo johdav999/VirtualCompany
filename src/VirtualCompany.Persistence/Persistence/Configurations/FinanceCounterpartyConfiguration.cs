@@ -37,6 +37,8 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguratio
         builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType });
         builder.HasIndex(x => new { x.CompanyId, x.MergedIntoCounterpartyId });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+
+        FinanceSourceTrackingMapping.Configure(builder);
     }
 }
 

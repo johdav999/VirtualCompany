@@ -121,6 +121,6 @@ public sealed class BusinessWorkEvidenceIntegrationTests
     internal static Task SeedOwner(TestWebApplicationFactory factory,Guid company,Guid owner)=>factory.SeedAsync(db=>{
         db.Users.Add(new User(owner,"p13-owner@example.com","P13 Owner","dev-header","p13-owner"));db.Companies.Add(new Company(company,"P13 Company"));
         db.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(),company,owner,CompanyMembershipRole.Owner,CompanyMembershipStatus.Active));return Task.CompletedTask;});
-    internal static HttpClient Client(TestWebApplicationFactory factory,string subject="p13-owner") {var c=factory.CreateClient();c.DefaultRequestHeaders.Add("X-Dev-Auth-Subject",subject);c.DefaultRequestHeaders.Add("X-Dev-Auth-Email",subject+"@example.com");return c;}
+    internal static HttpClient Client(TestWebApplicationFactory factory,string subject="p13-owner") => BusinessEvidenceFixture.Client(factory, subject);
     private static string Route(Guid company,string kind,Guid id)=>$"/api/companies/{company}/agent-work/business/{kind}/{id}";
 }

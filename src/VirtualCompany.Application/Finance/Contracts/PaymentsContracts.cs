@@ -17,32 +17,6 @@ public sealed record FinanceHistoricalReceivablePaymentDto(
     string Currency,
     Guid? CustomerId = null);
 
-public sealed record SupplierInvoicePaymentProposalDto(
-    Guid Id,
-    Guid BillId,
-    Guid SupplierId,
-    string SupplierName,
-    decimal Amount,
-    string Currency,
-    DateTime DueUtc,
-    string PaymentReference,
-    string Status,
-    Guid? TaskId,
-    Guid? ApprovalRequestId,
-    Guid? RequestedByUserId,
-    Guid? DecidedByUserId,
-    DateTime? DecidedUtc,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    string ExportMode = "register_payment",
-    string ExportStatus = "not_exported",
-    string? ExportProviderKey = null,
-    Guid? ExportConnectionId = null,
-    Guid? ExportRequestedByUserId = null,
-    DateTime? ExportRequestedUtc = null,
-    DateTime? ExportedUtc = null,
-    string? ExportResponseSummary = null);
-
 public sealed record RequestSupplierInvoicePaymentProposalCommand(
     Guid CompanyId,
     Guid BillId,
@@ -67,11 +41,4 @@ public interface IFinanceSupplierPaymentProposalService
         ExportSupplierInvoicePaymentInstructionCommand command,
         CancellationToken cancellationToken);
 }
-
-public sealed record FinanceTransactionPaymentContextDto(
-    bool IsPartiallyPaid,
-    decimal PaidAmount,
-    decimal TotalAmount,
-    decimal RemainingAmount,
-    string Currency);
 

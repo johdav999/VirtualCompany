@@ -21,26 +21,6 @@ public static class NativeReceivablesReadinessSignalKeys
     public const string DocumentArchiveFailures = "document_archive_failures";
 }
 
-public sealed record NativeReceivablesReadinessSignalDto(
-    string Key,
-    string Status,
-    int Count,
-    decimal? Amount,
-    string? Currency,
-    string Explanation,
-    string OperatorAction,
-    IReadOnlyList<Guid> SubjectIds);
-
-public sealed record NativeReceivablesReadinessDto(
-    Guid CompanyId,
-    string Status,
-    bool IsReady,
-    DateTime EvaluatedUtc,
-    int BlockingCheckCount,
-    int AttentionCheckCount,
-    int HealthyCheckCount,
-    IReadOnlyList<NativeReceivablesReadinessSignalDto> Signals);
-
 public sealed record GetNativeReceivablesReadinessQuery(Guid CompanyId);
 
 public interface INativeReceivablesReadinessService

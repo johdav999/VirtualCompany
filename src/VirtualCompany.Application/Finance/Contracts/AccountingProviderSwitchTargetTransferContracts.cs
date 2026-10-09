@@ -100,62 +100,6 @@ public sealed record ReconcileAccountingProviderSwitchTargetTransferItemCommand(
     Guid ActorUserId,
     string CorrelationId);
 
-public sealed record AccountingProviderSwitchTargetTransferAttemptDto(
-    Guid Id,
-    int AttemptNumber,
-    string Outcome,
-    string? FailureCategory,
-    string? SafeSummary,
-    bool ProviderAcceptedRequest,
-    DateTime StartedUtc,
-    DateTime? CompletedUtc);
-
-public sealed record AccountingProviderSwitchTargetTransferItemDto(
-    Guid Id,
-    Guid StagedRecordId,
-    string Dataset,
-    string SourceIdentity,
-    string SourceVersion,
-    int? MappingVersion,
-    string OperationMode,
-    string Action,
-    string StableIdentity,
-    string Status,
-    Guid? WriteRequestId,
-    Guid? ApprovalRequestId,
-    string? ProviderExternalId,
-    string? FailureCategory,
-    string? SafeSummary,
-    bool ReconciliationNeeded,
-    long Version,
-    IReadOnlyList<AccountingProviderSwitchTargetTransferAttemptDto> Attempts);
-
-public sealed record AccountingProviderSwitchTargetTransferBatchDto(
-    Guid Id,
-    Guid CompanyId,
-    Guid SwitchId,
-    Guid PlanId,
-    int PlanVersion,
-    string PlanHash,
-    string TargetProviderKey,
-    string PackageHash,
-    string Status,
-    int TotalItemCount,
-    int PreviewItemCount,
-    int PreparatoryItemCount,
-    int FinalItemCount,
-    int CompletedItemCount,
-    int FailedItemCount,
-    int ReconciliationItemCount,
-    string? FailureCode,
-    string? FailureSummary,
-    DateTime RequestedUtc,
-    DateTime? CompletedUtc,
-    long Version,
-    bool IsReadyForCutover,
-    string ReadinessExplanation,
-    IReadOnlyList<AccountingProviderSwitchTargetTransferItemDto> Items);
-
 public interface IAccountingProviderSwitchTargetTransferService
 {
     Task<AccountingProviderSwitchTargetTransferBatchDto> StartAsync(

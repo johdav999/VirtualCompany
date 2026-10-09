@@ -46,30 +46,6 @@ public sealed record CloseAccountingProviderSwitchMonitoringCommand(Guid Company
 public sealed record CreateCorrectiveAccountingProviderSwitchCommand(Guid CompanyId, Guid SwitchId,
     Guid EffectiveFiscalPeriodId, long ExpectedVersion, Guid ActorUserId, string Reason, string CorrelationId);
 
-public sealed record AccountingProviderSwitchMonitoringCheckDto(string CheckKey, string Status, string Severity,
-    bool IsBlocking, string ReasonCode, string Explanation, string EvidenceJson, DateTime ObservedUtc);
-public sealed record AccountingProviderSwitchMonitoringIncidentDto(Guid Id, string CheckKey, string Severity,
-    bool IsBlocking, string Explanation, string Status, Guid? TaskId, int OccurrenceCount,
-    DateTime FirstObservedUtc, DateTime LastObservedUtc, Guid? AcceptedByUserId, string? ExceptionExplanation,
-    string? ExceptionScope, decimal? FinancialImpact, string? EvidenceReference, long Version);
-public sealed record AccountingProviderSwitchMonitoringAllowedActionsDto(bool CanRunNow, bool CanRetry,
-    bool CanReconnectAccess, bool CanReconcileProviderOutcome, bool CanRequestClosure, bool CanClose,
-    bool CanCreateCorrectiveCutover, string Explanation);
-public sealed record AccountingProviderSwitchMonitoringDto(Guid Id, Guid CompanyId, Guid SwitchId,
-    Guid ActivationExecutionId, int WindowDays, Guid AssignedOwnerUserId, Guid? AssignedOwnerAgentId,
-    string Status, int CheckSequence, int AttemptCount, int ConsecutiveFailureCount, DateTime StartedUtc,
-    DateTime WindowEndsUtc, DateTime? LastSuccessfulCheckUtc, DateTime? NextRunUtc, string? FailureCode,
-    string? FailureSummary, Guid? ClosureApprovalRequestId, Guid? CorrectiveSwitchId, DateTime? ClosedUtc,
-    long Version, IReadOnlyList<AccountingProviderSwitchMonitoringCheckDto> Checks,
-    IReadOnlyList<AccountingProviderSwitchMonitoringIncidentDto> Incidents,
-    AccountingProviderSwitchMonitoringAllowedActionsDto AllowedActions);
-
-public sealed record AccountingProviderSwitchOperationIssueDto(string Category, string Severity, long Count,
-    string Explanation, string NextAction);
-public sealed record AccountingProviderSwitchOperationsDto(Guid CompanyId, DateTime CalculatedUtc,
-    long StuckWorkflows, long ExpiredApprovals, long StaleFreezes, long ExhaustedRetries,
-    long AmbiguousOutcomes, long UnreconciledTotals, IReadOnlyList<AccountingProviderSwitchOperationIssueDto> Issues);
-
 public interface IAccountingProviderSwitchMonitoringService
 {
     Task<AccountingProviderSwitchMonitoringDto> GetAsync(GetAccountingProviderSwitchMonitoringQuery query, CancellationToken cancellationToken);

@@ -1,3 +1,13 @@
+using StartMailboxConnectionRequest = VirtualCompany.Shared.Contracts.MailboxConnections.StartMailboxConnectionRequest;
+using MailboxProviderAvailabilityResponse = VirtualCompany.Shared.Contracts.MailboxConnections.MailboxProviderAvailabilityResponse;
+using MailboxProviderAvailability = VirtualCompany.Shared.Contracts.MailboxConnections.MailboxProviderAvailability;
+using MailboxFolderSelectionRequest = VirtualCompany.Shared.Contracts.MailboxConnections.MailboxFolderSelectionRequest;
+using StartMailboxConnectionResponse = VirtualCompany.Shared.Contracts.MailboxConnections.StartMailboxConnectionResponse;
+using MailboxEndpointRequest = VirtualCompany.Shared.Contracts.MailboxConnections.MailboxEndpointRequest;
+using MailboxEndpointResponse = VirtualCompany.Shared.Contracts.MailboxConnections.MailboxEndpointResponse;
+using StandardMailboxConnectionRequest = VirtualCompany.Shared.Contracts.MailboxConnections.StandardMailboxConnectionRequest;
+using StandardMailboxProfileResponse = VirtualCompany.Shared.Contracts.MailboxConnections.StandardMailboxProfileResponse;
+using StandardMailboxConnectionResponse = VirtualCompany.Shared.Contracts.MailboxConnections.StandardMailboxConnectionResponse;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -352,53 +362,4 @@ public sealed class MailboxConnectionsController : ControllerBase
 
     private static bool IsMailboxProviderConfigurationError(InvalidOperationException exception) =>
         exception.Message.Contains("mailbox OAuth client settings are not configured", StringComparison.OrdinalIgnoreCase);
-
-    public sealed record StartMailboxConnectionRequest(
-        string? ReturnUri,
-        IReadOnlyCollection<MailboxFolderSelectionRequest>? ConfiguredFolders);
-
-    public sealed record MailboxProviderAvailabilityResponse(
-        MailboxProviderAvailability Gmail,
-        MailboxProviderAvailability Microsoft365,
-        MailboxProviderAvailability HostedEmail);
-
-    public sealed record MailboxProviderAvailability(
-        string Provider,
-        string DisplayName,
-        bool IsConfigured,
-        string? UnavailableReason);
-
-    public sealed record MailboxFolderSelectionRequest(string ProviderFolderId, string? DisplayName);
-    public sealed record StartMailboxConnectionResponse(string AuthorizationUrl);
-    public sealed record MailboxEndpointRequest(string Host, int Port, string TlsMode);
-    public sealed record MailboxEndpointResponse(string Host, int Port, string TlsMode);
-    public sealed record StandardMailboxConnectionRequest(
-        string ProfileKey,
-        string EmailAddress,
-        string Username,
-        string AuthenticationType,
-        string? Credential,
-        MailboxEndpointRequest? Imap,
-        MailboxEndpointRequest? Smtp,
-        IReadOnlyCollection<string>? SelectedFolderIds,
-        string? TestTarget = null,
-        string? ReturnUri = null);
-    public sealed record StandardMailboxProfileResponse(
-        string ProfileKey,
-        string DisplayName,
-        string Region,
-        MailboxEndpointResponse Imap,
-        MailboxEndpointResponse Smtp,
-        IReadOnlyList<string> AuthenticationTypes,
-        bool AllowsEndpointOverride);
-    public sealed record StandardMailboxConnectionResponse(
-        Guid? ConnectionId,
-        bool IncomingSucceeded,
-        bool SendingSucceeded,
-        string EmailAddress,
-        int Capabilities,
-        IReadOnlyList<MailboxTransportFolder> Folders,
-        string? FailureCode,
-        string? FailureMessage,
-        DateTime CheckedUtc);
 }

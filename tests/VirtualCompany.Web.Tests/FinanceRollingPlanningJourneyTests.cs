@@ -8,10 +8,6 @@ using VirtualCompany.Web.Components.Finance;
 using VirtualCompany.Web.Pages.Finance;
 using VirtualCompany.Web.Services;
 using ComparisonPage=VirtualCompany.Web.Pages.Finance.FinanceForecastComparison;
-using FinancePlanningQuery=VirtualCompany.Web.Services.FinancePlanningQuery;
-using FinancePlanningReport=VirtualCompany.Web.Services.FinancePlanningReport;
-using FinanceForecastRevision=VirtualCompany.Web.Services.FinanceForecastRevision;
-using PreviewFinanceForecast=VirtualCompany.Web.Services.PreviewFinanceForecast;
 namespace VirtualCompany.Web.Tests;
 
 public sealed class FinanceRollingPlanningJourneyTests
@@ -21,9 +17,9 @@ public sealed class FinanceRollingPlanningJourneyTests
     {
         var first=Saved();var later=Saved();var deny=false;
         using var c=Context(r=>r.RequestUri!.AbsolutePath.Contains("/export")
-            ?deny?new(HttpStatusCode.Forbidden):Json(new VirtualCompany.Web.Services.FinancePlanningExport("finance.csv","Account,Value\nRevenue,-1300",new string('A',64)))
+            ?deny?new(HttpStatusCode.Forbidden):Json(new VirtualCompany.Application.Finance.FinancePlanningExport("finance.csv","Account,Value\nRevenue,-1300",new string('A',64)))
             :r.RequestUri.AbsolutePath.EndsWith("/versions")?Json(new[]{first.Summary,later.Summary})
-            :compare?Json(new VirtualCompany.Web.Services.FinanceForecastComparison(first,later,[])):Json(Report()));
+            :compare?Json(new VirtualCompany.Application.Finance.FinanceForecastComparison(first,later,[])):Json(Report()));
         var module=c.JSInterop.SetupModule("./js/reportDownload.js");
         module.SetupVoid("downloadReport",_=>true).SetVoidResult();
         if(compare)c.Services.GetRequiredService<NavigationManager>().NavigateTo($"/finance/reports/forecast-comparison?companyId={Company}&earlier={first.Summary.Id}&later={later.Summary.Id}");

@@ -60,32 +60,11 @@ public sealed record SalesMessagePerformanceDto(
     DateTime? ExpectedCloseAt,
     decimal? PipelineRiskScore);
 
-public sealed record PerformanceFunnelCounts(
-    int Sent,
-    int Delivered,
-    int Bounced,
-    int Opened,
-    int Replied,
-    int DealCreated,
-    int Converted);
-
-public sealed record PerformanceFunnelRates(
-    decimal DeliveryRate,
-    decimal OpenRate,
-    decimal ReplyRate,
-    decimal ConversionRate);
-
 public sealed record RevenueWindowSummary(
     decimal ExpectedRevenue30Days,
     decimal ExpectedRevenue60Days,
     decimal ExpectedRevenue90Days,
     string? Currency);
-
-public sealed record RiskDistributionSummary(
-    int Unknown,
-    int Low,
-    int Medium,
-    int High);
 
 public sealed record CampaignPerformanceSummaryDto(
     Guid CompanyId,
@@ -115,25 +94,3 @@ public sealed record ContactPerformanceSummaryDto(
     string? VariantKey,
     PerformanceFunnelCounts Counts,
     DateTime UpdatedUtc);
-
-public sealed record VariantPerformanceSummaryDto(
-    Guid? CampaignId,
-    Guid? SequenceId,
-    Guid? SequenceStepId,
-    string VariantKey,
-    PerformanceFunnelCounts Counts,
-    PerformanceFunnelRates Rates);
-
-public sealed record CampaignPerformanceListItemDto(
-    Guid CampaignId,
-    string CampaignName,
-    Guid? SequenceId,
-    PerformanceFunnelCounts Counts,
-    PerformanceFunnelRates Rates);
-
-public sealed record SalesAnalyticsDashboardDto(
-    Guid CompanyId,
-    PerformanceFunnelCounts Funnel,
-    PerformanceFunnelRates Rates,
-    IReadOnlyList<CampaignPerformanceListItemDto> Campaigns,
-    IReadOnlyList<VariantPerformanceSummaryDto> Variants);

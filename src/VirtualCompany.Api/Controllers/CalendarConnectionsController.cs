@@ -101,7 +101,4 @@ public sealed class CalendarConnectionsController : ControllerBase
         ? id : throw new UnauthorizedAccessException("A resolved user is required.");
 }
 
-public sealed record StartCalendarConnectionRequest(string? ReturnUri);
-public sealed record StartCalendarConnectionResponse(string AuthorizationUrl);
-
 public sealed record CalendarConnectionResponse(Guid Id, string Provider, string AccountEmail, string? DisplayName, string CalendarId, string? TimeZoneId, int Capabilities, string Status, bool HasRequiredPermissions, bool RequiresReconnect, DateTime? LastHealthCheckUtc, string? LastErrorSummary);

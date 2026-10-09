@@ -13,6 +13,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFinanceReadService _financeReadService;
+    private readonly IFinanceInsightRefreshService _insightRefreshService;
     private readonly IFinanceApprovalTaskService _financeApprovalTaskService;
     private readonly IFinanceCashPositionWorkflowService _financeCashPositionWorkflowService;
     private readonly TimeProvider _timeProvider;
@@ -22,6 +23,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
     public FinanceWorkflowTriggerService(
         VirtualCompanyDbContext dbContext,
         IFinanceReadService financeReadService,
+        IFinanceInsightRefreshService insightRefreshService,
         IFinanceApprovalTaskService financeApprovalTaskService,
         IFinanceCashPositionWorkflowService financeCashPositionWorkflowService,
         IFinanceWorkflowTriggerRegistry triggerRegistry,
@@ -30,6 +32,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
     {
         _dbContext = dbContext;
         _financeReadService = financeReadService;
+        _insightRefreshService = insightRefreshService;
         _financeApprovalTaskService = financeApprovalTaskService;
         _financeCashPositionWorkflowService = financeCashPositionWorkflowService;
         _triggerRegistry = triggerRegistry;
@@ -285,7 +288,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
     {
         try
         {
-            await _financeReadService.RefreshInsightsSnapshotAsync(
+            await _insightRefreshService.RefreshInsightsSnapshotAsync(
                 new RefreshFinanceInsightsSnapshotCommand(
                     companyId,
                     occurredAtUtc,

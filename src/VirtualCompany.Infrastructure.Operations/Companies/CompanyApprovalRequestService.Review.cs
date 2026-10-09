@@ -1,4 +1,4 @@
-using System.Security.Cryptography;
+using static VirtualCompany.Infrastructure.Companies.ApprovalPayloadValues;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -26,74 +26,8 @@ public sealed partial class CompanyApprovalRequestService
         approval.SetDecisionChain(chain);
     }
 
-    private async Task<string> MaterialHashAsync(ApprovalRequest approval, CancellationToken ct)
-    {
-        object? material = null;
-        if (approval.TargetEntityType == "annual_plan_version")
-            material = await _serviceProvider.GetRequiredService<VirtualCompany.Application.Orchestration.IAnnualPlanningService>()
-                .ApprovalMaterialAsync(approval.CompanyId, approval.TargetEntityId, ct);
-        if (approval.TargetEntityType == "task")
-        {
-            var task = await _dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            var artifacts = await _dbContext.CollaborationContributions.AsNoTracking()
-                .Where(x => x.CompanyId == approval.CompanyId && (x.SourceTaskId == task.Id ||
-                    _dbContext.WorkTasks.Any(t => t.CompanyId == approval.CompanyId && t.Id == x.ParentTaskId && t.ParentTaskId == task.Id)))
-                .OrderBy(x => x.Id).Select(x => new { x.Id, x.Version }).ToListAsync(ct);
-            var artifactIds = artifacts.Select(x => x.Id).ToArray();
-            var handoffs = await _dbContext.CollaborationArtifactHandoffs.AsNoTracking()
-                .Where(x => x.CompanyId == approval.CompanyId && artifactIds.Contains(x.ReceivingContributionId))
-                .OrderBy(x => x.Id).Select(x => new { x.Id, x.InputContributionId, x.ReceivingContributionId, x.Passed, x.Reason }).ToListAsync(ct);
-            var planningOrigin = await _dbContext.Set<DecisionWorkOrigin>().AsNoTracking().Where(x => x.CompanyId == approval.CompanyId && x.TaskId == task.Id)
-                .Select(x => new { x.OwnerUserId, x.DueUtc, x.Objective, x.AcceptanceOutcome, x.ProposedConstraints, x.SourceKind, x.SourceVersionId, x.SourceVersion, x.SourceFingerprint, x.PreviewChecksum }).SingleOrDefaultAsync(ct);
-            material = new { task.Title, task.Description, task.Type, task.AssignedAgentId, task.InputPayload, task.OutputPayload, artifacts, handoffs };
-            if (planningOrigin != null) material = new { task.Title, task.Description, task.Type, task.AssignedAgentId, task.InputPayload, task.OutputPayload, artifacts, handoffs, planningOrigin };
-        }
-        else if (approval.TargetEntityType == "action")
-        {
-            var action = await _dbContext.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            material = new { action.ToolName, action.ToolVersion, action.AgentId, action.ActionType, action.Scope, action.RequestPayload };
-        }
-        else if (approval.TargetEntityType == "sales_meeting_invitation")
-        {
-            var invitation = await _dbContext.SalesMeetingInvitations.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            material = new { invitation.Title, invitation.Description, invitation.AttendeeEmail, invitation.OrganizerEmail,
-                invitation.StartsUtc, invitation.EndsUtc, invitation.TimeZoneId, invitation.Location, invitation.CalendarConnectionId, invitation.Conferencing };
-        }
-        else if (approval.TargetEntityType == "sales_meeting_change_proposal")
-        {
-            var proposal = await _dbContext.SalesMeetingChangeProposals.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            material = new { proposal.TargetType, proposal.TargetId, proposal.Action, proposal.Field, proposal.ProposedValueJson,
-                proposal.BeforeValueJson, proposal.TargetVersion, proposal.EvidenceVersionHash, proposal.SourceIdsJson, proposal.PolicyVersion };
-        }
-        else if (approval.TargetEntityType == "marketing_channel_action")
-        {
-            var action = await _dbContext.MarketingChannelActions.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            material = new { action.MarketingChannelConnectionId, action.MarketingContentBriefId, action.ContentBriefVersion,
-                action.DestinationReference, action.ActionType, action.PayloadJson, action.ScheduledUtc };
-        }
-        else if (approval.TargetEntityType == "finance_integration_write")
-        {
-            var write = await _dbContext.FinanceIntegrationWriteCommands.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            material = new { write.CommandType, write.HttpMethod, write.Path, write.TargetCompany, write.ConnectionId, write.PayloadHash, write.SanitizedPayloadJson };
-        }
-        else if (approval.TargetEntityType == "workflow")
-        {
-            var workflow = await _dbContext.WorkflowInstances.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            material = new { workflow.DefinitionId, workflow.InputPayload, workflow.ContextJson };
-        }
-        // Other immutable/versioned proposals use the owner's stored approval binding and revalidation.
-        var node = JsonSerializer.SerializeToNode(new { approval.CompanyId, approval.TargetEntityId, approval.TargetEntityType,
-            approval.ApprovalType, approval.RequiredRole, approval.RequiredUserId, approval.ThresholdContext, material });
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(node))));
-    }
-
-    private static string Canonical(JsonNode? node) => node switch
-    {
-        JsonObject obj => "{" + string.Join(",", obj.OrderBy(x => x.Key, StringComparer.Ordinal)
-            .Select(x => JsonSerializer.Serialize(x.Key) + ":" + Canonical(x.Value))) + "}",
-        JsonArray array => "[" + string.Join(",", array.Select(Canonical)) + "]",
-        _ => node?.ToJsonString() ?? "null"
-    };
+    private Task<string> MaterialHashAsync(ApprovalRequest approval, CancellationToken ct) =>
+        _serviceProvider.GetRequiredService<ApprovalReviewMaterialHasher>().ComputeHashAsync(approval, ct);
 
     private static DateTime? ReviewExpiry(ApprovalRequest approval)
     {
@@ -105,8 +39,7 @@ public sealed partial class CompanyApprovalRequestService
 
     private async Task<bool> CanReadReviewAsync(ApprovalRequest approval, ResolvedCompanyMembershipContext membership, CancellationToken ct)
     {
-        if (approval.TargetEntityType == "annual_plan_version" && !await _serviceProvider
-            .GetRequiredService<VirtualCompany.Application.Orchestration.IAnnualPlanningService>().CanReadApprovalAsync(approval.CompanyId, approval.TargetEntityId, ct)) return false;
+        if (TargetHandler(approval) is { } targetHandler && !await targetHandler.CanReadAsync(approval, ct)) return false;
         if (membership.MembershipRole is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin) &&
             !IsInitiatingUser(approval, membership.UserId) && !approval.Steps.Any(step => CanDecide(step, membership))) return false;
         var finance = approval.TargetEntityType is not ("task" or "workflow" or "action" or "operating_plan" or "operating_decision" or
@@ -153,65 +86,13 @@ public sealed partial class CompanyApprovalRequestService
         }
         var evidence = new List<ApprovalEvidenceDto>();
         string? executionStatus = null;
-        if (approval.TargetEntityType == "annual_plan_version")
+        if (TargetHandler(approval) is { } targetHandler)
         {
-            var annual = await _dbContext.Set<AnnualPlanVersion>().AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            comparisons.Add(new("Annual version", null, $"FY {annual.FiscalYear}, version {annual.Version}"));
-            var proposedObjectives = await _dbContext.Set<AnnualObjective>().AsNoTracking().Where(x => x.CompanyId == approval.CompanyId && x.PlanId == annual.Id).OrderBy(x => x.GoalId).ToListAsync(ct);
-            var beforeObjectives = annual.PreviousId.HasValue ? await _dbContext.Set<AnnualObjective>().AsNoTracking().Where(x => x.CompanyId == approval.CompanyId && x.PlanId == annual.PreviousId).ToListAsync(ct) : [];
-            foreach (var objective in proposedObjectives)
-            {
-                var prior = beforeObjectives.SingleOrDefault(x => x.GoalId == objective.GoalId);
-                comparisons.Add(new(objective.Name + " target", prior is null ? null : $"{prior.Target:0.####} {prior.Unit}", $"{objective.Target:0.####} {objective.Unit}"));
-                comparisons.Add(new(objective.Name + " owner", prior?.OwnerName, objective.OwnerName));
-            }
-            var proposedAllocations = await _dbContext.Set<AnnualAllocation>().AsNoTracking().Where(x => x.CompanyId == approval.CompanyId && x.PlanId == annual.Id).OrderBy(x => x.Title).ToListAsync(ct);
-            var beforeAllocations = annual.PreviousId.HasValue ? await _dbContext.Set<AnnualAllocation>().AsNoTracking().Where(x => x.CompanyId == approval.CompanyId && x.PlanId == annual.PreviousId).OrderBy(x => x.Title).ToListAsync(ct) : [];
-            comparisons.Add(new("Expense allocations", annual.PreviousId.HasValue ? string.Join("; ", beforeAllocations.Select(x => $"{x.Title}: {x.Amount:0.##} {annual.Currency}")) : null, string.Join("; ", proposedAllocations.Select(x => $"{x.Title}: {x.Amount:0.##} {annual.Currency}"))));
-            executionStatus = "Planning governance only; no execution authorized";
-            evidence.Add(new("Open exact annual targets, budgets and version comparison", $"/dashboard/planning/year?companyId={annual.CompanyId}&year={annual.FiscalYear}&plan={annual.Id}"));
+            var details = await targetHandler.GetReviewDetailsAsync(approval, ct);
+            comparisons.AddRange(details.Comparison);
+            evidence.AddRange(details.Evidence);
+            executionStatus = details.ExecutionStatus;
         }
-        if (approval.TargetEntityType == "task")
-        {
-            executionStatus = (await _dbContext.WorkTasks.Where(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId)
-                .Select(x => x.Status).SingleAsync(ct)).ToStorageValue().Replace('_', ' ');
-            evidence.Add(new("Open proposed work and source evidence", $"/work?companyId={approval.CompanyId}&tab=tasks&taskId={approval.TargetEntityId}"));
-            if (approval.ApprovalType == "planning_work_review")
-            {
-                var origin = await _dbContext.Set<DecisionWorkOrigin>().AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.TaskId == approval.TargetEntityId, ct);
-                comparisons.Add(new("Objective", null, origin.Objective));
-                comparisons.Add(new("Accountable owner", null, await _dbContext.Users.Where(x => x.Id == origin.OwnerUserId).Select(x => x.DisplayName).SingleAsync(ct)));
-                comparisons.Add(new("Due date (UTC)", null, origin.DueUtc.ToString("yyyy-MM-dd HH:mm")));
-                comparisons.Add(new("Acceptance outcome", null, origin.AcceptanceOutcome));
-                comparisons.Add(new("Proposed constraints", null, origin.ProposedConstraints));
-                var people = await _dbContext.Set<DecisionWorkCollaborator>().Where(x => x.CompanyId == approval.CompanyId && x.OriginId == origin.Id).OrderBy(x => x.Name).Select(x => x.Name).ToListAsync(ct);
-                comparisons.Add(new("Proposed collaborators", null, people.Count == 0 ? "None proposed" : string.Join(", ", people)));
-                comparisons.Add(new("Retained source version", null, $"Version {origin.SourceVersion}"));
-                evidence.Add(new("Open retained source decision and work snapshot", $"/work/source?companyId={approval.CompanyId}&taskId={approval.TargetEntityId}"));
-            }
-            var artifacts = await _dbContext.CollaborationContributions.AsNoTracking().Where(x => x.CompanyId == approval.CompanyId &&
-                (x.SourceTaskId == approval.TargetEntityId || _dbContext.WorkTasks.Any(t => t.CompanyId == approval.CompanyId && t.Id == x.ParentTaskId && t.ParentTaskId == approval.TargetEntityId)))
-                .OrderBy(x => x.Sequence).ThenBy(x => x.Version).Take(50).ToListAsync(ct);
-            evidence.AddRange(artifacts.Select(x => new ApprovalEvidenceDto($"{x.Objective}, version {x.Version}",
-                $"/agents/work/task/{approval.TargetEntityId}/collaboration?companyId={approval.CompanyId}&artifactId={x.Id}&view=list")));
-        }
-        if (approval.TargetEntityType == "sales_meeting_invitation")
-        {
-            var invitation = await _dbContext.SalesMeetingInvitations.AsNoTracking().SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, ct);
-            comparisons.Add(new("Recipient", null, invitation.AttendeeEmail));
-            comparisons.Add(new("Subject", null, invitation.Title));
-            executionStatus = invitation.Status.ToStorageValue().Replace('_', ' ');
-            evidence.Add(new("Open Sales meeting record", $"/app/sales/leads/{invitation.LeadId}?companyId={approval.CompanyId}"));
-        }
-        if (approval.TargetEntityType == "action")
-        {
-            executionStatus = (await _dbContext.ToolExecutionAttempts.Where(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId)
-                .Select(x => x.Status).SingleAsync(ct)).ToStorageValue().Replace('_', ' ');
-            if(approval.Status==ApprovalRequestStatus.Approved&&executionStatus=="awaiting approval"&&await _dbContext.CompanyOutboxMessages.AnyAsync(x=>x.CompanyId==approval.CompanyId&&x.Topic==ReviewedTaskPolicyMessage.Topic&&x.IdempotencyKey==$"reviewed-task:{approval.Id:N}:{approval.TargetEntityId:N}",ct))executionStatus="Queued for internal execution";
-        }
-        if (approval.TargetEntityType == "finance_integration_write")
-            executionStatus = (await _dbContext.FinanceIntegrationWriteCommands.Where(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId)
-                .Select(x => x.Status).SingleAsync(ct)).Replace('_', ' ');
         return new($"{approval.UpdatedUtc.Ticks}:{hash}", approval.Status == ApprovalRequestStatus.Pending &&
             !changed && !(expiry <= DateTime.UtcNow) && step is not null && membership is not null && CanDecide(step, membership), changed, expiry,
             reviewer,

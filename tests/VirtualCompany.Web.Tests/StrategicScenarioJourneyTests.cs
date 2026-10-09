@@ -5,12 +5,6 @@ using VirtualCompany.Api.Tests;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Web.Services;
 using VirtualCompany.Web.Components.Dashboard;
-using StrategicScenarioHistoryPage=VirtualCompany.Web.Services.StrategicScenarioHistoryPage;
-using StrategicScenarioOptions=VirtualCompany.Web.Services.StrategicScenarioOptions;
-using StrategicScenarioDocument=VirtualCompany.Web.Services.StrategicScenarioDocument;
-using StrategicScenarioInput=VirtualCompany.Web.Services.StrategicScenarioInput;
-using ScenarioSource=VirtualCompany.Web.Services.ScenarioSource;
-using ScenarioYearResult=VirtualCompany.Web.Services.ScenarioYearResult;
 namespace VirtualCompany.Web.Tests;
 public sealed class StrategicScenarioJourneyTests
 {

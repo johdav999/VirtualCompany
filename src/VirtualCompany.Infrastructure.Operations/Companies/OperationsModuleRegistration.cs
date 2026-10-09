@@ -1,3 +1,5 @@
+using VirtualCompany.Application.Approvals;
+using VirtualCompany.Domain.Enums;
 using VirtualCompany.Application.CustomerMemory;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
@@ -509,6 +511,13 @@ public static class OperationsModuleRegistration
         services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
         services.AddScoped<IMultiAgentCoordinator, MultiAgentCoordinator>();
         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
+        services.AddKeyedScoped<IApprovalTargetHandler, AnnualPlanVersionApprovalTargetHandler>(ApprovalTargetEntityType.AnnualPlanVersion);
+        services.AddKeyedScoped<IApprovalTargetHandler, TaskApprovalTargetHandler>(ApprovalTargetEntityType.Task);
+        services.AddKeyedScoped<IApprovalTargetHandler, WorkflowApprovalTargetHandler>(ApprovalTargetEntityType.Workflow);
+        services.AddKeyedScoped<IApprovalTargetHandler, ActionApprovalTargetHandler>(ApprovalTargetEntityType.Action);
+        services.AddKeyedScoped<IApprovalTargetHandler, OperatingPlanApprovalTargetHandler>(ApprovalTargetEntityType.OperatingPlan);
+        services.AddKeyedScoped<IApprovalTargetHandler, OperatingDecisionApprovalTargetHandler>(ApprovalTargetEntityType.OperatingDecision);
+        services.AddScoped<ApprovalReviewMaterialHasher>();
         services.AddScoped<CompanyApprovalRequestService>();
         services.AddScoped<IApprovalRequestService>(services => services.GetRequiredService<CompanyApprovalRequestService>());
         services.AddScoped<IApprovalAutomationService>(services => services.GetRequiredService<CompanyApprovalRequestService>());

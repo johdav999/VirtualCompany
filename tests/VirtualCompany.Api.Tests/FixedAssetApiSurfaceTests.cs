@@ -21,7 +21,7 @@ public sealed class FixedAssetApiSurfaceTests
     [InlineData("ReverseFixedAssetEventAsync", CompanyPolicies.FinanceApproval)]
     public void Fixed_asset_endpoints_require_the_expected_company_policy(string methodName, string policy)
     {
-        var method = typeof(InternalFinanceController).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+        var method = typeof(InternalFinanceFixedAssetsController).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(method);
         Assert.Contains(method!.GetCustomAttributes<AuthorizeAttribute>(), attribute => attribute.Policy == policy);
     }

@@ -38,16 +38,6 @@ public sealed record OutboundAutomationPolicyResponse(
     Guid? WebsiteLeadFollowUpSequenceId,
     DateTime UpdatedUtc);
 
-public sealed record UpdateOutboundAutomationPolicyRequest(
-    bool OutboundEnabled,
-    int MaxEmailsPerDay,
-    bool RequireApprovalFirstContact,
-    bool RequireApprovalPricingDiscussion,
-    bool RequireApprovalFollowUps,
-    bool RequireApprovalReEngagement,
-    int WebsiteLeadDeduplicationWindowMinutes,
-    Guid? WebsiteLeadFollowUpSequenceId);
-
 public sealed record OutboundPolicyEvaluationResult(
     string Outcome,
     string ReasonCode,
@@ -112,13 +102,6 @@ public sealed record OutboundReviewQueueDetailResponse(
     DateTime? DecidedUtc,
     string? DecisionComment,
     DateTime RequestedUtc);
-
-public sealed record OutboundReviewDecisionRequest(string? Comment);
-
-public sealed record OutboundEditAndApproveRequest(
-    string Subject,
-    string Body,
-    string? Comment);
 
 public sealed record WebsiteLeadSubmissionRequest(
     string TenantKey,

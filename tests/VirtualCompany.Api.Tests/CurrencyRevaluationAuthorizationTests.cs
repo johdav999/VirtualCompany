@@ -10,7 +10,7 @@ public sealed class CurrencyRevaluationAuthorizationTests
     [Fact]
     public void Revaluation_reads_require_accounting_view_and_mutations_require_accounting_admin()
     {
-        var type = typeof(InternalFinanceController);
+        var type = typeof(InternalFinanceCurrencyRevaluationController);
         foreach (var methodName in new[] { "ListCurrencyRevaluationsAsync", "GetCurrencyRevaluationAsync",
                      "ListCurrencyRevaluationAccountsAsync", "GetCurrencyRevaluationScheduleAsync" })
         {

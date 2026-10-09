@@ -5,9 +5,9 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="bunit" Version="1.30.3" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.1" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.14" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
@@ -17,53 +17,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\VirtualCompany.Web\VirtualCompany.Web.csproj" />
     <ProjectReference Include="..\..\src\VirtualCompany.Api\VirtualCompany.Api.csproj" />
-    <ProjectReference Include="..\..\src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj" />
+    <ProjectReference Include="../VirtualCompany.TestSupport/VirtualCompany.TestSupport.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="GlobalUsings.cs" />
-    <Compile Include="TodayPriorityWireContractTests.cs" />
-    <Compile Include="AgentWorkWireContractTests.cs" />
-    <Compile Include="CollaborationEvidenceWireTests.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\CollaborationEvidenceFixture.cs" Link="Support\CollaborationEvidenceFixture.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\AgentWorkLifecycleFixture.cs" Link="Support\AgentWorkLifecycleFixture.cs" />
-    <Compile Include="SupportOperationalWireContractTests.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\FinanceInvoiceDetailMappingIntegrationTests.cs" Link="FinanceInvoiceDetailMappingIntegrationTests.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\FinanceTransactionDetailMappingIntegrationTests.cs" Link="FinanceTransactionDetailMappingIntegrationTests.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\FinanceReadEndpointsIntegrationTests.cs" Link="FinanceReadEndpointsIntegrationTests.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\FinanceSummaryUiContractIntegrationTests.cs" Link="FinanceSummaryUiContractIntegrationTests.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\FinanceDetailTestScenarioFactory.cs" Link="Support\FinanceDetailTestScenarioFactory.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\TestWebApplicationFactory.cs" Link="Support\TestWebApplicationFactory.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\ApiSqlServerFactAttribute.cs" Link="Support\ApiSqlServerFactAttribute.cs" />
-    <Compile Include="..\VirtualCompany.Api.Tests\ObservabilityTestDoubles.cs" Link="Support\ObservabilityTestDoubles.cs" />
-    <Compile Include="BusinessWorkEvidenceWireTests.cs" />
-    <Compile Include="AuthorityExplanationWireTests.cs" />
-    <Compile Include="ExecutionControlWireTests.cs" />
-    <Compile Include="AgentSupervisionWireTests.cs" />
-    <Compile Include="TaskPolicyWireTests.cs" />
-    <Compile Include="WeeklyWorkspaceWireTests.cs" />
-    <Compile Include="SalesManagementWireTests.cs" />
-    <Compile Include="MarketingManagementWireTests.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/MarketingManagementFixture.cs" Link="Shared/MarketingManagementFixture.cs" />
-    <Compile Include="SalesMeetingWireTests.cs" />
-    <Compile Include="MonthlyReviewWireTests.cs" />
-    <Compile Include="SupportQualityWireTests.cs" />
-    <Compile Include="AnnualPlanningWireTests.cs" />
-    <Compile Include="StrategicScenarioWireTests.cs" />
-    <Compile Include="DecisionWorkWireTests.cs" />
-    <Compile Include="BriefingCadenceWireTests.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/BriefingCadenceFixture.cs" Link="Shared/BriefingCadenceFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/DecisionWorkFixture.cs" Link="Shared/DecisionWorkFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/StrategicScenarioFixture.cs" Link="Shared/StrategicScenarioFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/AnnualPlanningFixture.cs" Link="Shared/AnnualPlanningFixture.cs" />
-    <Compile Include="QuarterlyPlanningWireTests.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/QuarterlyPlanningFixture.cs" Link="Shared/QuarterlyPlanningFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/QuarterlyPlanningIntegrationTests.cs" Link="Shared/QuarterlyPlanningIntegrationTests.cs" />
-    <Compile Include="FinanceRollingPlanningWireTests.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/FinanceRollingPlanningFixture.cs" Link="Shared/FinanceRollingPlanningFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/SupportQualityFixture.cs" Link="Shared/SupportQualityFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/WeeklyWorkspaceFixture.cs" Link="Shared/WeeklyWorkspaceFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/AgentSupervisionFixture.cs" Link="Shared/AgentSupervisionFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/AuthorityExplanationFixture.cs" Link="Shared/AuthorityExplanationFixture.cs" />
-    <Compile Include="../VirtualCompany.Api.Tests/BusinessEvidenceFixture.cs" Link="Shared/BusinessEvidenceFixture.cs" />
+    <None Update="Fixtures/WireContract*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

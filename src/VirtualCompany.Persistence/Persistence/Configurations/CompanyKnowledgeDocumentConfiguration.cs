@@ -77,6 +77,8 @@ internal sealed class CompanyKnowledgeDocumentConfiguration : IEntityTypeConfigu
         builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingRequestedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.IndexingStatus, x.IndexingStartedUtc });
         builder.HasOne(x => x.Company).WithMany(x => x.Documents).HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
     }
 }
 

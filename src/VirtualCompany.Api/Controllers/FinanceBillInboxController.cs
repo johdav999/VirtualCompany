@@ -290,7 +290,3 @@ public sealed class FinanceBillInboxController : ControllerBase
         User.FindFirstValue(ClaimTypes.Email) ??
         "Finance user";
 }
-
-public sealed record SetSupplierApprovalAutomationRequest(bool Enabled);
-
-public sealed record FinanceBillReviewActionRequest(string Rationale);

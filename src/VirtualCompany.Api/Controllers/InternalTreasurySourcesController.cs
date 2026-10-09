@@ -135,24 +135,3 @@ public sealed class InternalTreasurySourcesController : ControllerBase
     private Guid Actor() => _currentUser.UserId ?? throw new UnauthorizedAccessException("A resolved company user is required.");
     private ProblemDetails Problem(string detail, int status) => new() { Title = "Treasury request failed", Detail = detail, Status = status, Instance = HttpContext.Request.Path };
 }
-
-public sealed record CreateTreasuryTransferRequest(string SourceIdentity, Guid FromBankAccountId, Guid ToBankAccountId,
-    decimal Amount, decimal FeeAmount, string Currency, Guid? FeeFinanceAccountId, decimal MaterialityThreshold,
-    Guid? CorrectionOfTransferId, Guid? OutboundBankTransactionId, Guid? InboundBankTransactionId,
-    IReadOnlyList<TreasuryEvidenceInputDto>? Evidence);
-public sealed record CreateBankAdjustmentRequest(string SourceIdentity, string AdjustmentKind, Guid BankAccountId,
-    Guid BankTransactionId, Guid CounterpartFinanceAccountId, decimal Amount, string Currency, string Description,
-    decimal MaterialityThreshold, Guid? CorrectionOfAdjustmentId, IReadOnlyList<TreasuryEvidenceInputDto>? Evidence);
-public sealed record CreateCardSettlementRequest(string SourceIdentity, string ProviderBatchReference, Guid BankAccountId,
-    Guid ReceivableFinanceAccountId, decimal GrossAmount, decimal FeeAmount, decimal NetAmount, string Currency,
-    decimal MaterialityThreshold, Guid? CorrectionOfSettlementId, Guid? BankTransactionId,
-    IReadOnlyList<TreasuryEvidenceInputDto>? Evidence);
-public sealed record CreatePayoutSettlementRequest(string SourceIdentity, string ProviderBatchReference, Guid BankAccountId,
-    Guid PayoutClearingFinanceAccountId, decimal GrossAmount, decimal FeeAmount, decimal NetAmount, string Currency,
-    decimal MaterialityThreshold, Guid? CorrectionOfSettlementId, Guid? BankTransactionId,
-    IReadOnlyList<TreasuryEvidenceInputDto>? Evidence);
-public sealed record LinkTreasuryBankEvidenceRequest(Guid BankTransactionId, string? TransferLegRole, long ExpectedVersion);
-public sealed record BindTreasuryApprovalRequest(Guid ApprovalRequestId, long ExpectedVersion);
-public sealed record PreviewTreasuryPostingRequest(Guid FiscalPeriodId, DateOnly PostingDate);
-public sealed record PostTreasurySourceRequest(Guid FiscalPeriodId, DateOnly PostingDate, long ExpectedVersion);
-public sealed record ReverseTreasurySourceRequest(Guid FiscalPeriodId, DateOnly PostingDate, long ExpectedVersion, string Reason);

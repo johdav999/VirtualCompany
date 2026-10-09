@@ -222,7 +222,7 @@ public sealed class FinanceIntegrationFoundationTests
         var response = await controller.ProvidersAsync(companyId, CancellationToken.None);
 
         var ok = Assert.IsType<OkObjectResult>(response.Result);
-        var providers = Assert.IsAssignableFrom<IReadOnlyList<FinanceIntegrationConnectionsController.FinanceIntegrationProviderMetadataResponse>>(ok.Value);
+        var providers = Assert.IsAssignableFrom<IReadOnlyList<VirtualCompany.Shared.Contracts.FinanceIntegrationConnections.FinanceIntegrationProviderMetadataResponse>>(ok.Value);
         var metadata = Assert.Single(providers);
         Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, metadata.ProviderKey);
         Assert.Equal("Fortnox", metadata.DisplayName);

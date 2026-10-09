@@ -1,11 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using VirtualCompany.Shared.Contracts.Documents;
 
 namespace VirtualCompany.Domain.Entities;
 
 [JsonConverter(typeof(CompanyKnowledgeDocumentAccessScopeJsonConverter))]
-public sealed class CompanyKnowledgeDocumentAccessScope
+public sealed class CompanyKnowledgeDocumentAccessScope : CompanyKnowledgeDocumentAccessScopeDto
 {
     public const string CompanyVisibility = "company";
 
@@ -22,14 +23,6 @@ public sealed class CompanyKnowledgeDocumentAccessScope
         "user_id",
         "user_ids"
     };
-
-    [JsonPropertyName("visibility")]
-    public string Visibility { get; init; } = string.Empty;
-
-    [JsonPropertyName("company_id")]
-    public Guid CompanyId { get; init; }
-
-    public JsonObject AdditionalProperties { get; init; } = [];
 
     public CompanyKnowledgeDocumentAccessScope()
     {
@@ -325,60 +318,15 @@ internal sealed class CompanyKnowledgeDocumentAccessScopeJsonConverter : JsonCon
 {
     public override CompanyKnowledgeDocumentAccessScope Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        using var document = JsonDocument.ParseValue(ref reader);
-        if (document.RootElement.ValueKind != JsonValueKind.Object)
-        {
-            throw new JsonException("CompanyKnowledgeDocumentAccessScope must be a JSON object.");
-        }
-
-        string visibility = string.Empty;
-        var companyId = Guid.Empty;
-        var additionalProperties = new JsonObject();
-
-        foreach (var property in document.RootElement.EnumerateObject())
-        {
-            if (property.NameEquals("visibility"))
-            {
-                visibility = property.Value.ValueKind == JsonValueKind.String
-                    ? property.Value.GetString() ?? string.Empty
-                    : string.Empty;
-                continue;
-            }
-
-            if (property.NameEquals("company_id"))
-            {
-                if (property.Value.ValueKind == JsonValueKind.String &&
-                    Guid.TryParse(property.Value.GetString(), out var parsedCompanyId))
-                {
-                    companyId = parsedCompanyId;
-                }
-
-                continue;
-            }
-
-            additionalProperties[property.Name] = JsonNode.Parse(property.Value.GetRawText());
-        }
-
+        var wire = JsonSerializer.Deserialize<CompanyKnowledgeDocumentAccessScopeDto>(ref reader, options)!;
         return new CompanyKnowledgeDocumentAccessScope
         {
-            Visibility = visibility,
-            CompanyId = companyId,
-            AdditionalProperties = additionalProperties
+            Visibility = wire.Visibility,
+            CompanyId = wire.CompanyId,
+            AdditionalProperties = wire.AdditionalProperties
         };
     }
 
-    public override void Write(Utf8JsonWriter writer, CompanyKnowledgeDocumentAccessScope value, JsonSerializerOptions options)
-    {
-        writer.WriteStartObject();
-        writer.WriteString("visibility", value.Visibility);
-        writer.WriteString("company_id", value.CompanyId);
-
-        foreach (var property in value.AdditionalProperties)
-        {
-            writer.WritePropertyName(property.Key);
-            (property.Value ?? JsonValue.Create((string?)null))!.WriteTo(writer, options);
-        }
-
-        writer.WriteEndObject();
-    }
+    public override void Write(Utf8JsonWriter writer, CompanyKnowledgeDocumentAccessScope value, JsonSerializerOptions options) =>
+        JsonSerializer.Serialize<CompanyKnowledgeDocumentAccessScopeDto>(writer, value, options);
 }

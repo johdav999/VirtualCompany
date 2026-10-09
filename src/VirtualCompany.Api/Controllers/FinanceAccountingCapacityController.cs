@@ -84,10 +84,3 @@ public sealed class FinanceAccountingCapacityController(IAccountingCapacityServi
             : throw new UnauthorizedAccessException("An authenticated user id is required for accounting cleanup.");
     }
 }
-
-public sealed record AccountingRetentionPreviewRequest(int BatchSize = 100);
-public sealed record AccountingRetentionCleanupRequest(
-    string PreviewToken,
-    int BatchSize,
-    string Reason,
-    string? CorrelationId = null);

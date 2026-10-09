@@ -67,14 +67,6 @@ public sealed record StatutoryDocumentInput(
     IReadOnlyList<Guid>? ApprovalIds = null,
     long SourceVersion = 1);
 
-public sealed record StatutoryDocumentPolicyIssueDto(string ReasonCode, string Explanation, string? Field = null);
-public sealed record StatutoryDocumentPolicyDecisionDto(bool IsAllowed, IReadOnlyList<StatutoryDocumentPolicyIssueDto> Issues);
-
-public sealed record StatutoryDocumentSeriesDto(
-    Guid Id, string Code, string DocumentType, DateOnly FiscalYearStart, DateOnly FiscalYearEnd,
-    string Prefix, int NumberWidth, long NextNumber, bool IsActive, long Version,
-    DateTime CreatedUtc, DateTime UpdatedUtc);
-
 public sealed record CreateStatutoryDocumentSeriesCommand(
     Guid CompanyId, string Code, string DocumentType, DateOnly FiscalYearStart, DateOnly FiscalYearEnd,
     string Prefix, int NumberWidth, long FirstNumber, Guid ActorUserId, string? CorrelationId = null);
@@ -82,20 +74,6 @@ public sealed record CreateStatutoryDocumentSeriesCommand(
 public sealed record UpdateStatutoryDocumentSeriesCommand(
     Guid CompanyId, Guid SeriesId, long ExpectedVersion, string Prefix, int NumberWidth,
     bool IsActive, Guid ActorUserId, string? CorrelationId = null);
-
-public sealed record StatutoryDocumentAllocationDto(
-    Guid Id, Guid SeriesId, string SeriesCode, string FiscalYearKey, long Number,
-    string FormattedNumber, string Status, string? GapReason, string BusinessKey,
-    long SourceVersion, Guid? IssuedDocumentId, Guid ActorUserId, DateTime AllocatedUtc);
-
-public sealed record StatutoryIssuedDocumentDto(
-    Guid Id, string DocumentType, string Authority, string DocumentNumber, Guid SourceRecordId,
-    long SourceVersion, Guid? SeriesId, string? FiscalYearKey, long? SequenceNumber,
-    Guid StatutoryProfileId, long StatutoryProfileVersion, string PolicyPackKey,
-    string PolicyPackVersion, string PolicyPackDefinitionHash, string SnapshotHash,
-    Guid? OriginalIssuedDocumentId, DateTime IssuedUtc, bool IsImmutable,
-    IReadOnlyList<Guid> ApprovalIds, string? RenderedEvidenceReference, string? DeliveryEvidenceReference,
-    long EvidenceVersion);
 
 public sealed record PreviewStatutoryDocumentQuery(Guid CompanyId, StatutoryDocumentInput Document);
 public sealed record IssueNativeCustomerDocumentCommand(

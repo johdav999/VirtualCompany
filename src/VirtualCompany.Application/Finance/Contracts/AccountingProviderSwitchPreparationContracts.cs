@@ -33,25 +33,6 @@ public sealed record EvaluateAccountingProviderSwitchInternalReadinessQuery(
     Guid SwitchId,
     Guid? PlanId = null);
 
-public sealed record AccountingProviderSwitchReadinessCheckDto(
-    string CheckKey,
-    bool IsReady,
-    bool IsBlocking,
-    string? ReasonCode,
-    string Explanation,
-    string EvidenceJson);
-
-public sealed record AccountingProviderSwitchInternalReadinessDto(
-    Guid CompanyId,
-    Guid SwitchId,
-    Guid? PlanId,
-    string? PlanHash,
-    bool IsReady,
-    bool IsStatutoryComplianceValidated,
-    string ComplianceDisclosure,
-    IReadOnlyList<AccountingProviderSwitchReadinessCheckDto> Checks,
-    IReadOnlyList<AccountingProviderSwitchGapDto> UnresolvedGaps);
-
 public sealed record StartAccountingProviderSwitchPreparationCommand(
     Guid CompanyId,
     Guid SwitchId,
@@ -80,84 +61,6 @@ public sealed record ListAccountingProviderSwitchNativeCandidatesQuery(
     string? CandidateKind = null,
     string? Status = null,
     int Limit = 500);
-
-public sealed record AccountingProviderSwitchCandidateValidationDto(
-    Guid Id,
-    string ReasonCode,
-    bool IsBlocking,
-    string Explanation,
-    string EvidenceJson,
-    DateTime ValidatedUtc);
-
-public sealed record AccountingProviderSwitchNativeCandidateDto(
-    Guid Id,
-    Guid CompanyId,
-    Guid SwitchId,
-    Guid PreparedByRunId,
-    Guid StagedRecordId,
-    string CandidateKind,
-    string SourceDataset,
-    string SourceIdentity,
-    string SourceVersion,
-    string SourceHash,
-    string IdempotencyKey,
-    Guid? FiscalPeriodId,
-    DateOnly? DocumentDate,
-    DateOnly? PostingDate,
-    decimal FinancialAmount,
-    string? Currency,
-    string Status,
-    string PayloadJson,
-    string EvidenceHash,
-    Guid? ExternalReferenceId,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    IReadOnlyList<AccountingProviderSwitchCandidateValidationDto> Validations);
-
-public sealed record AccountingProviderSwitchArchiveDependencyDto(
-    Guid Id,
-    Guid CompanyId,
-    Guid SwitchId,
-    Guid PreparedByRunId,
-    Guid? StagedRecordId,
-    string Dataset,
-    string SourceIdentity,
-    string ReasonCode,
-    string Explanation,
-    string EvidenceHash,
-    Guid ApprovedPlanId,
-    string ApprovedPlanHash,
-    DateTime CreatedUtc);
-
-public sealed record AccountingProviderSwitchPreparationDto(
-    Guid Id,
-    Guid CompanyId,
-    Guid SwitchId,
-    Guid PlanId,
-    string PlanHash,
-    string Strategy,
-    string Status,
-    int CompletedWorkItems,
-    int TotalWorkItems,
-    int ProgressPercent,
-    int CandidateCount,
-    int ValidCandidateCount,
-    int RejectedCandidateCount,
-    int ExistingReferenceCount,
-    int ArchiveDependencyCount,
-    int AttemptCount,
-    DateTime? NextAttemptUtc,
-    string? FailureCode,
-    string? FailureSummary,
-    DateTime RequestedUtc,
-    DateTime? StartedUtc,
-    DateTime? CompletedUtc,
-    long Version,
-    bool IsActivationReady,
-    string ActivationReadinessExplanation,
-    AccountingProviderSwitchInternalReadinessDto Readiness,
-    IReadOnlyList<AccountingProviderSwitchNativeCandidateDto> Candidates,
-    IReadOnlyList<AccountingProviderSwitchArchiveDependencyDto> ArchiveDependencies);
 
 public interface IAccountingProviderSwitchInternalReadinessPolicy
 {

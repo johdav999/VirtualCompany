@@ -21,39 +21,6 @@ public sealed record CompanyDocumentIngestionFailure(
     string? TechnicalDetail = null,
     bool CanRetry = false);
 
-public sealed record CompanyKnowledgeDocumentDto(
-    Guid Id,
-    Guid CompanyId,
-    string Title,
-    string DocumentType,
-    string SourceType,
-    string OriginalFileName,
-    string? ContentType,
-    string FileExtension,
-    long FileSizeBytes,
-    string StorageKey,
-    string? StorageUrl,
-    IReadOnlyDictionary<string, JsonNode?> Metadata,
-    CompanyKnowledgeDocumentAccessScope AccessScope,
-    string IngestionStatus,
-    string? FailureCode,
-    string? FailureMessage,
-    string? FailureAction,
-    bool CanRetry,
-    string IndexingStatus,
-    string? IndexingFailureCode,
-    string? IndexingFailureMessage,
-    int CurrentChunkSetVersion,
-    int ActiveChunkCount,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    DateTime? IndexedUtc,
-    DateTime? UploadedUtc,
-    DateTime? ProcessingStartedUtc,
-    DateTime? ProcessedUtc,
-    DateTime? FailedUtc,
-    string? SourceRef = null);
-
 public interface ICompanyDocumentService
 {
     Task<IReadOnlyList<CompanyKnowledgeDocumentDto>> ListAsync(Guid companyId, CancellationToken cancellationToken);

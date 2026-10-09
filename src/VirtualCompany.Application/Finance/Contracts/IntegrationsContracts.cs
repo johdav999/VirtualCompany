@@ -112,22 +112,6 @@ public interface ISupplierInvoiceDraftActionProvider
         CancellationToken cancellationToken);
 }
 
-public sealed record CustomerInvoiceFortnoxActionDto(
-    Guid InvoiceId,
-    Guid? CreateWriteRequestId,
-    Guid? CreateApprovalId,
-    string CreateStatus,
-    Guid? BookkeepWriteRequestId,
-    Guid? BookkeepApprovalId,
-    string? BookkeepStatus,
-    string Message,
-    bool CanRequestCreate,
-    bool CanExecuteCreate,
-    bool CanRequestBookkeep,
-    bool CanExecuteBookkeep,
-    string? FortnoxInvoiceNumber,
-    DateTime? LastSyncedUtc);
-
 public sealed record RequestCustomerInvoiceFortnoxExportCommand(
     Guid CompanyId,
     Guid InvoiceId,

@@ -25,26 +25,17 @@ public sealed partial class CompanyFinanceReadService
             FinanceInsightSnapshotKeys.Default);
         var computed = await ComputeOperationalAnalyticsAsync(parameters, cancellationToken);
 
-        var insights = query.RefreshInsightsSnapshot
-            ? (await RefreshInsightsSnapshotAsync(
-                new RefreshFinanceInsightsSnapshotCommand(
-                    query.CompanyId,
-                    query.AsOfUtc,
-                    query.ExpenseWindowDays,
-                    query.TrendWindowDays,
-                    query.PayableWindowDays,
-                    FinanceInsightSnapshotKeys.Default),
-                cancellationToken)).Insights!
-            : await GetInsightsAsync(
-                new GetFinanceInsightsQuery(
-                    query.CompanyId,
-                    query.AsOfUtc,
-                    query.ExpenseWindowDays,
-                    query.TrendWindowDays,
-                    query.PayableWindowDays,
-                    IncludeResolved: true,
-                    PreferSnapshot: true),
-                cancellationToken);
+        // Legacy refresh flag bypasses the cache, but a query never reconciles or publishes.
+        var insights = await GetInsightsAsync(
+            new GetFinanceInsightsQuery(
+                query.CompanyId,
+                query.AsOfUtc,
+                query.ExpenseWindowDays,
+                query.TrendWindowDays,
+                query.PayableWindowDays,
+                IncludeResolved: true,
+                PreferSnapshot: !query.RefreshInsightsSnapshot),
+            cancellationToken);
 
         var summaryQueryService = new CompanyFinanceSummaryQueryService(
             _dbContext,

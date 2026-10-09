@@ -1,3 +1,5 @@
+using CancelMicrosoftOnboardingRequest = VirtualCompany.Shared.Contracts.CompanyDocumentRepositories.CancelMicrosoftOnboardingRequest;
+using DisconnectDocumentRepositoryRequest = VirtualCompany.Shared.Contracts.CompanyDocumentRepositories.DisconnectDocumentRepositoryRequest;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -84,8 +86,6 @@ public sealed class CompanyDocumentRepositoriesController(ICompanyDocumentReposi
         catch (DocumentRepositoryOnboardingException exception) { return OnboardingProblem(exception); }
     }
 
-    public sealed record CancelMicrosoftOnboardingRequest(long ExpectedConcurrencyVersion);
-
     [HttpPost("microsoft/onboarding/{sessionHandle}/access")]
     public async Task<ActionResult<Microsoft365RepositoryAccessDraftDto>> ConfigureMicrosoftAccessAsync(Guid companyId, string sessionHandle, [FromBody] ConfigureMicrosoft365RepositoryAccessCommand command, CancellationToken cancellationToken)
     {
@@ -163,8 +163,6 @@ public sealed class CompanyDocumentRepositoriesController(ICompanyDocumentReposi
         await service.DisconnectAsync(companyId, connectionId, request.ExpectedConcurrencyVersion, cancellationToken);
         return NoContent();
     }
-
-    public sealed record DisconnectDocumentRepositoryRequest(long ExpectedConcurrencyVersion);
 
     [HttpPost("{connectionId:guid}/pause")]
     public Task<DocumentRepositoryConnectionDto> SetPauseAsync(Guid companyId, Guid connectionId,

@@ -24,11 +24,3 @@ public sealed partial class SalesApiClient
             $"api/companies/{companyId:D}/calendar-connections/{calendarConnectionId:D}",
             new { }, cancellationToken);
 }
-
-public sealed record StartCalendarConnectionRequest(string ReturnUri);
-public sealed record StartCalendarConnectionResponse(string AuthorizationUrl);
-public sealed record CalendarConnectionSummaryResponse(
-    Guid Id, string Provider, string AccountEmail, string? DisplayName,
-    string CalendarId, string? TimeZoneId, int Capabilities, string Status,
-    bool HasRequiredPermissions, bool RequiresReconnect,
-    DateTime? LastHealthCheckUtc, string? LastErrorSummary);

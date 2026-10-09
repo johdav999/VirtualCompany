@@ -1,3 +1,4 @@
+using SelectCompanyRequest = VirtualCompany.Shared.Contracts.Auth.SelectCompanyRequest;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
@@ -71,6 +72,4 @@ public sealed class AuthController : ControllerBase
             request.CompanyId.ToString(),
             activeCompany));
     }
-
-    public sealed record SelectCompanyRequest(Guid CompanyId);
 }

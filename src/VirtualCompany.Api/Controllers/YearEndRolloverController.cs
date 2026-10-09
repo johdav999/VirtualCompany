@@ -122,17 +122,10 @@ public sealed class YearEndRolloverController(
         }
     }
 }
-
-public sealed record PrepareYearEndRunRequest(DateOnly FiscalYearStart, Guid TargetFiscalPeriodId,
-    Guid RetainedEarningsAccountId, Guid OpeningBalanceClearingAccountId, string VoucherSeriesCode,
-    string IdempotencyKey);
 public sealed record YearEndVersionedRequest(long ExpectedVersion, string IdempotencyKey);
 public sealed record YearEndEvidenceRequest(long ExpectedVersion, string ExpectedEvidenceHash, string IdempotencyKey);
 public sealed record ReviewYearEndRunRequest(long ExpectedVersion, string ExpectedEvidenceHash,
     bool Approve, string? Reason, string IdempotencyKey);
-public sealed record RecordYearEndSubsequentEventRequest(DateOnly EventDate, string Title, string Description,
-    decimal? EstimatedAmount, string Currency, string Decision, Guid OwnerUserId,
-    Guid? EvidenceDocumentId, string IdempotencyKey);
 public sealed record ReviewYearEndSubsequentEventRequest(long ExpectedVersion, bool Approve,
     string? Reason, string IdempotencyKey);
 public sealed record LinkYearEndCorrectionRequest(long ExpectedVersion, Guid? CorrectionLedgerEntryId,

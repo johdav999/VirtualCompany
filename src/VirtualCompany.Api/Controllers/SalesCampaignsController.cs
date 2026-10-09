@@ -1,3 +1,8 @@
+using StopCampaignRequest = VirtualCompany.Shared.Contracts.SalesCampaigns.StopCampaignRequest;
+using DealCreatedStopRequest = VirtualCompany.Shared.Contracts.SalesCampaigns.DealCreatedStopRequest;
+using StopConditionResponse = VirtualCompany.Shared.Contracts.SalesCampaigns.StopConditionResponse;
+using CampaignVersionRequest = VirtualCompany.Shared.Contracts.SalesCampaigns.CampaignVersionRequest;
+using CaptureCampaignAudienceRequest = VirtualCompany.Shared.Contracts.SalesCampaigns.CaptureCampaignAudienceRequest;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -302,10 +307,4 @@ public sealed class SalesCampaignsController : ControllerBase
 
     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
         base.ValidationProblem(StableProblemDetails.CreateValidation(HttpContext, errors, ApiProblemCodes.SalesRequestInvalid));
-
-    public sealed record StopCampaignRequest(string? Reason);
-    public sealed record DealCreatedStopRequest(Guid DealId);
-    public sealed record StopConditionResponse(int CancelledPendingSteps);
-    public sealed record CampaignVersionRequest(long ExpectedVersion);
-    public sealed record CaptureCampaignAudienceRequest(Guid SegmentId);
 }

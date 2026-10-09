@@ -411,7 +411,8 @@ public partial class InvoicesPage : FinancePageBase
         FinanceInvoiceDetailResponse invoice,
         FinanceTransactionPaymentContextResponse? listPaymentContext)
     {
-        var paymentContext = SelectPaymentContext(invoice.PaymentContext, listPaymentContext);
+        // The detail endpoint supplies workflow information; payment evidence comes from the invoice list.
+        var paymentContext = listPaymentContext;
         var paymentSummary = BuildPaymentSummary(paymentContext, invoice.ProviderStatus, invoice.Amount, invoice.Currency);
         var status = ResolveStatusPresentation(
             invoice.PostingStatus,
@@ -447,7 +448,7 @@ public partial class InvoicesPage : FinancePageBase
             paymentSummary,
             needsPaymentReview ? "Needs review" : null,
             needsPaymentReview ? "danger" : "neutral",
-            invoice.RelatedTransactions.Select(ToRelatedTransactionViewModel).ToList());
+            []);
     }
 
     private FinanceTransactionPaymentContextResponse? SelectPaymentContext(

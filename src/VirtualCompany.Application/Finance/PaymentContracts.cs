@@ -83,21 +83,6 @@ public sealed record ReverseFinancePaymentAllocationCommand(
     string? CorrelationId = null);
 public sealed record BackfillFinancePaymentAllocationsCommand(Guid CompanyId, bool SynthesizeMissingPayments = true);
 
-public sealed record FinancePaymentDto(
-    Guid Id,
-    Guid CompanyId,
-    string PaymentType,
-    decimal Amount,
-    string Currency,
-    DateTime PaymentDate,
-    string Method,
-    string Status,
-    string CounterpartyReference,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights,
-    string Source = FinanceDataSources.Simulation);
-
 public sealed record FinancePaymentAllocationDto(
     Guid Id,
     Guid CompanyId,

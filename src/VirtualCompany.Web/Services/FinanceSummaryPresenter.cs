@@ -86,7 +86,7 @@ public static class FinanceSummaryPresenter
             .ToArray());
     }
 
-    public static MonthlySummaryViewModel? ToMonthlySummaryViewModel(FinanceMonthlySummaryResponse? response)
+    public static MonthlySummaryViewModel? ToMonthlySummaryViewModel(FinanceMonthlySummaryViewModel? response)
     {
         if (response is null || response.ProfitAndLoss is null)
         {

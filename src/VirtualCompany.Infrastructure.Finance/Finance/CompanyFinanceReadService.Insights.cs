@@ -39,152 +39,21 @@ public sealed partial class CompanyFinanceReadService
             }
         }
 
-        return await BuildInsightsAsync(
-            parameters,
-            fromSnapshot: false,
-            snapshotExpiresAtUtc: null,
-            entityType: query.EntityType,
-            entityId: query.EntityId,
-            includeResolved: query.IncludeResolved,
-            cancellationToken: cancellationToken);
+        // A cache miss reads the last reconciled records; only refresh commands run checks.
+        var items = await _financeInsightPersistenceService.ListAsync(
+            query.CompanyId, query.EntityType, query.EntityId, query.IncludeResolved, cancellationToken);
+        return new FinanceInsightsDto(query.CompanyId, parameters.GeneratedAtUtc, false, null, items);
     }
 
-    public async Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
-        RefreshFinanceInsightsSnapshotCommand command,
-        CancellationToken cancellationToken)
+    internal Task EnsureInsightAccessAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        EnsureTenant(command.CompanyId);
-        await EnsureFinanceInitializedAsync(command.CompanyId, cancellationToken);
-
-        var parameters = NormalizeInsightsQuery(
-            command.CompanyId,
-            command.AsOfUtc,
-            command.ExpenseWindowDays,
-            command.TrendWindowDays,
-            command.PayableWindowDays,
-            command.SnapshotKey);
-
-        var refreshed = await BuildInsightsAsync(
-            parameters,
-            fromSnapshot: false,
-            snapshotExpiresAtUtc: null,
-            entityType: null,
-            entityId: null,
-            includeResolved: true,
-            cancellationToken: cancellationToken);
-        var retention = NormalizeSnapshotRetention(command.Retention);
-        var expiresAtUtc = GetUtcNow().Add(retention);
-
-        if (_insightSnapshotCache is not null)
-        {
-            var payload = JsonSerializer.Serialize(
-                new FinanceInsightsSnapshotCacheEnvelope(
-                    parameters.SnapshotKey,
-                    parameters.CacheKey,
-                    expiresAtUtc,
-                    refreshed with { SnapshotExpiresAtUtc = expiresAtUtc }),
-                InsightSnapshotSerializerOptions);
-
-            await _insightSnapshotCache.SetStringAsync(
-                parameters.CacheKey,
-                payload,
-                new DistributedCacheEntryOptions
-                {
-                    AbsoluteExpirationRelativeToNow = retention
-                },
-                cancellationToken);
-        }
-
-        return new FinanceInsightsSnapshotRefreshResultDto(
-            command.CompanyId,
-            parameters.SnapshotKey,
-            parameters.CacheKey,
-            GetUtcNow(),
-            $"finance-insights-refresh:{command.CompanyId:N}:{parameters.SnapshotKey}",
-            Queued: false,
-            Refreshed: true,
-            expiresAtUtc,
-            refreshed with { SnapshotExpiresAtUtc = expiresAtUtc });
+        EnsureTenant(companyId);
+        return EnsureFinanceInitializedAsync(companyId, cancellationToken);
     }
 
-    public async Task<FinanceInsightsSnapshotRefreshResultDto> QueueInsightsSnapshotRefreshAsync(
-        QueueFinanceInsightsSnapshotRefreshCommand command,
-        CancellationToken cancellationToken)
+    internal async Task<FinanceInsightEvaluation> EvaluateInsightChecksAsync(
+        FinanceInsightQueryParameters parameters, CancellationToken cancellationToken)
     {
-        EnsureTenant(command.CompanyId);
-        await EnsureFinanceInitializedAsync(command.CompanyId, cancellationToken);
-
-        var parameters = NormalizeInsightsQuery(
-            command.CompanyId,
-            command.AsOfUtc,
-            command.ExpenseWindowDays,
-            command.TrendWindowDays,
-            command.PayableWindowDays,
-            command.SnapshotKey);
-
-        var descriptor = new FinanceInsightSnapshotExecutionDescriptor(
-            parameters.SnapshotKey,
-            command.AsOfUtc?.Date,
-            parameters.ExpenseWindowDays,
-            parameters.TrendWindowDays,
-            parameters.PayableWindowDays,
-            Math.Clamp(command.RetentionMinutes, 15, 60 * 24 * 7));
-        var correlationId = string.IsNullOrWhiteSpace(command.CorrelationId)
-            ? $"finance-insights-refresh:{command.CompanyId:N}:{descriptor.ToStorageValue()}"
-            : command.CorrelationId.Trim();
-        var idempotencyKey = $"finance-insights:{command.CompanyId:N}:{descriptor.ToStorageValue()}";
-        var utcNow = GetUtcNow();
-
-        var execution = await _dbContext.BackgroundExecutions
-            .IgnoreQueryFilters()
-            .SingleOrDefaultAsync(
-                x => x.CompanyId == command.CompanyId &&
-                     x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
-                     x.IdempotencyKey == idempotencyKey,
-                cancellationToken);
-
-        if (execution is null)
-        {
-            execution = new BackgroundExecution(
-                Guid.NewGuid(),
-                command.CompanyId,
-                BackgroundExecutionType.FinanceInsightRefresh,
-                BackgroundExecutionRelatedEntityTypes.FinanceInsightSnapshot,
-                descriptor.ToStorageValue(),
-                correlationId,
-                idempotencyKey,
-                maxAttempts: 3);
-            _dbContext.BackgroundExecutions.Add(execution);
-        }
-        else if (command.ResetAttempts || execution.IsTerminal)
-        {
-            execution.Queue(utcNow, correlationId, resetAttempts: command.ResetAttempts);
-        }
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return new FinanceInsightsSnapshotRefreshResultDto(
-            command.CompanyId,
-            parameters.SnapshotKey,
-            parameters.CacheKey,
-            utcNow,
-            correlationId,
-            Queued: true,
-            Refreshed: false,
-            ExpiresAtUtc: null,
-            Insights: null);
-    }
-
-    private async Task<FinanceInsightsDto> BuildInsightsAsync(
-        FinanceInsightQueryParameters parameters,
-        bool fromSnapshot,
-        string? entityType,
-        string? entityId,
-        bool includeResolved,
-        DateTime? snapshotExpiresAtUtc,
-        CancellationToken cancellationToken)
-    {
-        var generatedAt = parameters.GeneratedAtUtc;
         var asOfUtc = parameters.AsOfUtc;
         var context = new FinancialCheckContext(
             parameters.CompanyId,
@@ -220,19 +89,7 @@ public sealed partial class CompanyFinanceReadService
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        await _financeInsightPersistenceService.ReconcileAsync(
-            context,
-            knownCheckCodes,
-            currentResults,
-            cancellationToken);
-
-        var items = await _financeInsightPersistenceService.ListAsync(
-            parameters.CompanyId,
-            entityType,
-            entityId,
-            includeResolved,
-            cancellationToken);
-        return new FinanceInsightsDto(parameters.CompanyId, generatedAt, fromSnapshot, snapshotExpiresAtUtc, items);
+        return new FinanceInsightEvaluation(context, knownCheckCodes, currentResults);
     }
 
     private async Task<FinanceInsightsDto?> TryGetCachedInsightsAsync(
@@ -254,7 +111,6 @@ public sealed partial class CompanyFinanceReadService
         var snapshot = JsonSerializer.Deserialize<FinanceInsightsSnapshotCacheEnvelope>(payload, InsightSnapshotSerializerOptions);
         if (snapshot is null || snapshot.ExpiresAtUtc <= GetUtcNow())
         {
-            await _insightSnapshotCache.RemoveAsync(parameters.CacheKey, cancellationToken);
             return null;
         }
 
@@ -265,7 +121,7 @@ public sealed partial class CompanyFinanceReadService
         };
     }
 
-    private FinanceInsightQueryParameters NormalizeInsightsQuery(
+    internal FinanceInsightQueryParameters NormalizeInsightsQuery(
         Guid companyId,
         DateTime? asOfUtc,
         int expenseWindowDays,
@@ -293,7 +149,7 @@ public sealed partial class CompanyFinanceReadService
             cacheKey);
     }
 
-    private static TimeSpan NormalizeSnapshotRetention(TimeSpan? retention)
+    internal static TimeSpan NormalizeSnapshotRetention(TimeSpan? retention)
     {
         var candidate = retention ?? TimeSpan.FromHours(6);
         if (candidate < TimeSpan.FromMinutes(15))
@@ -751,7 +607,12 @@ public sealed partial class CompanyFinanceReadService
 
     private sealed record InsightAllocationRow(Guid DocumentId, decimal Amount);
 
-    private sealed record FinanceInsightQueryParameters(
+    internal sealed record FinanceInsightEvaluation(
+        FinancialCheckContext Context,
+        IReadOnlyList<string> CheckCodes,
+        IReadOnlyList<FinancialCheckResult> Results);
+
+    internal sealed record FinanceInsightQueryParameters(
         Guid CompanyId,
         DateTime GeneratedAtUtc,
         DateTime AsOfUtc,
@@ -761,7 +622,7 @@ public sealed partial class CompanyFinanceReadService
         string SnapshotKey,
         string CacheKey);
 
-    private sealed record FinanceInsightsSnapshotCacheEnvelope(
+    internal sealed record FinanceInsightsSnapshotCacheEnvelope(
         string SnapshotKey,
         string CacheKey,
         DateTime ExpiresAtUtc,

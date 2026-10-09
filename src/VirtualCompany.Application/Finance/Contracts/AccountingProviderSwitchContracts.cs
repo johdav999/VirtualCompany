@@ -31,53 +31,6 @@ public static class AccountingProviderSwitchReasonCodes
     public const string StagingIncomplete = "accounting_provider_switch_staging_incomplete";
 }
 
-public sealed record AccountingProviderSwitchEndpointDto(string Kind, string? ProviderKey, string DisplayName);
-
-public sealed record AccountingProviderSwitchDto(
-    Guid Id,
-    Guid CompanyId,
-    AccountingProviderSwitchEndpointDto Source,
-    AccountingProviderSwitchEndpointDto Target,
-    string Direction,
-    Guid EffectiveFiscalPeriodId,
-    DateOnly EffectiveFrom,
-    DateOnly EffectiveTo,
-    string MigrationStrategy,
-    string MigrationStrategyLabel,
-    string Reason,
-    Guid ResponsibleUserId,
-    Guid? ResponsibleAgentId,
-    string Status,
-    string StatusLabel,
-    string? BlockedFromStatus,
-    string? FailureCode,
-    string? FailureSummary,
-    Guid CreatedByUserId,
-    Guid UpdatedByUserId,
-    Guid? CancelledByUserId,
-    string? CancellationReason,
-    string CorrelationId,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    DateTime StatusChangedUtc,
-    DateTime? BlockedUtc,
-    DateTime? CancelledUtc,
-    DateTime? CompletedUtc,
-    long Version);
-
-public sealed record AccountingProviderSwitchAllowedActionsDto(
-    Guid SwitchId,
-    long Version,
-    string Status,
-    bool IsTerminal,
-    bool CanUpdatePlan,
-    bool CanCancel,
-    bool IsReadyForNextStep,
-    IReadOnlyList<string> AllowedTransitions,
-    string Explanation,
-    string? BlockingReasonCode,
-    string? BlockingSummary);
-
 public sealed record CreateAccountingProviderSwitchCommand(
     Guid CompanyId,
     string SourceKind,

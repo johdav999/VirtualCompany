@@ -2,32 +2,6 @@ using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Finance;
 
-public sealed record CurrencyDefinitionResult(
-    Guid Id,
-    string Code,
-    string Name,
-    int MinorUnitPrecision,
-    bool IsEnabled,
-    long Version);
-
-public sealed record ExchangeRateSourceResult(
-    Guid Id,
-    string SourceKey,
-    string DisplayName,
-    string SourceKind,
-    string SourceVersion,
-    int Priority,
-    bool RequiresApproval,
-    int MaxStalenessDays,
-    int RefreshIntervalHours,
-    string LicenseSummary,
-    bool IsEnabled,
-    DateTime? LastSuccessfulRefreshUtc,
-    DateTime? NextRefreshUtc,
-    string? LastFailureReasonCode,
-    string? LastFailureSummary,
-    long Version);
-
 public sealed record ExchangeRateSetResult(
     Guid Id,
     Guid SourceId,
@@ -47,51 +21,6 @@ public sealed record ExchangeRateSetResult(
     long Version,
     int ObservationCount);
 
-public sealed record ExchangeRateObservationResult(
-    Guid Id,
-    Guid RateSetId,
-    string SourceKey,
-    long SourceSetVersion,
-    string BaseCurrency,
-    string QuoteCurrency,
-    decimal Rate,
-    int RatePrecision,
-    string QuotationConvention,
-    DateOnly EffectiveDate,
-    DateTime ObservedUtc,
-    Guid? CorrectsObservationId,
-    string ApprovalStatus,
-    string EvidenceChecksum);
-
-public sealed record ExchangeRateLookupLeg(
-    Guid ObservationId,
-    string SourceKey,
-    long SourceSetVersion,
-    string FromCurrency,
-    string ToCurrency,
-    decimal SourceRate,
-    decimal Factor,
-    int RatePrecision,
-    DateOnly EffectiveDate,
-    int AgeDays,
-    string QuotationConvention,
-    string EvidenceChecksum);
-
-public sealed record ExchangeRateLookupResult(
-    string Status,
-    string ReasonCode,
-    string Explanation,
-    string FromCurrency,
-    string ToCurrency,
-    DateOnly RequestedDate,
-    string Purpose,
-    decimal? EffectiveRate,
-    DateOnly? SelectedRateDate,
-    IReadOnlyList<ExchangeRateLookupLeg> Legs)
-{
-    public bool IsReady => Status == ExchangeRateDecisionStatuses.Ready;
-}
-
 public sealed record ExchangeRateConversionResult(
     Guid Id,
     string IdempotencyKey,
@@ -108,19 +37,6 @@ public sealed record ExchangeRateConversionResult(
     string RoundingMode,
     DateTime CreatedUtc,
     IReadOnlyList<ExchangeRateLookupLeg> Legs);
-
-public sealed record ExchangeRateReadinessIssue(string ReasonCode, string Explanation, string Severity);
-
-public sealed record ExchangeRateReadinessResult(
-    string Status,
-    string? FunctionalCurrency,
-    int EnabledCurrencyCount,
-    int EnabledSourceCount,
-    int PendingReviewSetCount,
-    int FailedRefreshJobCount,
-    DateTime? LatestApprovedObservationUtc,
-    IReadOnlyList<ExchangeRateReadinessIssue> Issues,
-    IReadOnlyList<ExchangeRateSourceResult> Sources);
 
 public sealed record ConfigureCurrencyCommand(
     Guid CompanyId,
@@ -182,19 +98,6 @@ public sealed record QueueExchangeRateRefreshCommand(
     IReadOnlyCollection<string> Currencies,
     string IdempotencyKey,
     string? CorrelationId);
-
-public sealed record ExchangeRateRefreshJobResult(
-    Guid Id,
-    Guid SourceId,
-    string Status,
-    DateOnly RequestedDate,
-    IReadOnlyList<string> RequestedCurrencies,
-    int AttemptCount,
-    DateTime? NextAttemptUtc,
-    string? FailureReasonCode,
-    string? FailureSummary,
-    Guid? RateSetId,
-    long Version);
 
 public sealed record ExchangeRateLookupQuery(
     Guid CompanyId,

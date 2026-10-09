@@ -64,39 +64,3 @@ public sealed partial class FinanceApiClient
             request, cancellationToken);
     }
 }
-
-public sealed record ProposeCustomerInvoiceCorrectionApiRequest(string CorrectionType, decimal Amount,
-    string Currency, string Reason, string EvidenceReference, string IdempotencyKey,
-    string? BeneficiaryReference = null, string? PaymentEvidenceReference = null,
-    string? ProviderKey = null, SaveCustomerInvoiceDraftApiRequest? CreditDraft = null);
-public sealed record ExecuteCustomerInvoiceCorrectionApiRequest(long ExpectedVersion,
-    string ExpectedSourceHash, string IdempotencyKey, Guid? SeriesId = null,
-    Guid? FiscalPeriodId = null, DateOnly? AccountingDate = null, string? VoucherSeriesCode = null,
-    Guid? ExpenseAccountId = null);
-public sealed record ReconcileCustomerInvoiceRefundApiRequest(long ExpectedVersion,
-    bool ProviderConfirmedSucceeded, bool ProviderConfirmedAbsent, string EvidenceReference,
-    string? ProviderReference = null);
-public sealed record CustomerInvoiceCorrectionEvidenceResponse(string Key, string Value);
-public sealed record CustomerInvoiceCorrectionPolicyResponse(bool IsAllowed, string ReasonCode,
-    string Explanation, bool RequiresApproval, decimal InvoiceAmount, decimal AllocatedPaidAmount,
-    decimal PriorCreditAmount, decimal PriorRefundAmount, decimal PriorWriteOffAmount,
-    decimal RemainingEconomicBalance, decimal MaximumAllowedAmount, string Currency,
-    string SourceVersion, string SourceHash, bool RequiresCurrentPeriodPosting,
-    bool RequiresVatCorrectionReturn, Guid? OriginalVatReturnId,
-    IReadOnlyList<CustomerInvoiceCorrectionEvidenceResponse> Evidence);
-public sealed record CustomerInvoiceRefundExecutionResponse(Guid Id, string? ProviderKey, string Status,
-    int AttemptCount, DateTime AvailableUtc, string? ProviderReference, string? FailureCategory,
-    string? SafeFailureSummary, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? CompletedUtc);
-public sealed record CustomerInvoiceCorrectionResponse(Guid Id, Guid CompanyId, Guid InvoiceId,
-    string InvoiceNumber, string CorrectionType, decimal Amount, string Currency, string Reason,
-    string Status, long Version, string SourceVersion, string SourceHash, string EvidenceReference,
-    Guid? ApprovalRequestId, string? ApprovalStatus, Guid? TaskId, Guid? CreditDraftId,
-    Guid? CorrectingInvoiceId, Guid? LedgerEntryId, Guid? OriginalVatReturnId,
-    Guid? CorrectionVatReturnId, Guid? ExpenseAccountId, string? ProviderKey,
-    string? BeneficiaryReference, string? PaymentEvidenceReference, Guid CreatedByUserId,
-    Guid? ExecutedByUserId, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? ExecutedUtc,
-    string? FailureReasonCode, string? FailureSummary,
-    CustomerInvoiceRefundExecutionResponse? RefundExecution, IReadOnlyList<string> AllowedActions,
-    bool IsIdempotentReplay = false);
-public sealed record CustomerInvoiceCorrectionListResponse(IReadOnlyList<CustomerInvoiceCorrectionResponse> Items,
-    int TotalCount, int Skip, int Take);

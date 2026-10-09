@@ -1,3 +1,4 @@
+using ImportDefaultSupportKnowledgeResponse = VirtualCompany.Shared.Contracts.CompanyDocuments.ImportDefaultSupportKnowledgeResponse;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Authorization;
@@ -200,10 +201,6 @@ public sealed class CompanyDocumentsController : ControllerBase
         [FromForm(Name = "file")]
         public IFormFile? File { get; init; }
     }
-
-    public sealed record ImportDefaultSupportKnowledgeResponse(
-        IReadOnlyList<CompanyKnowledgeDocumentDto> Imported,
-        IReadOnlyList<string> Skipped);
 
     private sealed record DefaultSupportKnowledgeDocument(string CatalogKey, string Title, string FileName, string DocumentType)
     {

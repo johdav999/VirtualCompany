@@ -35,8 +35,6 @@ public static class BankReconciliationAdjustmentKinds
     public const string Suspense = AccountingAccountRoleKeys.Suspense;
 }
 
-public sealed record BankReconciliationAdjustmentDto(string Kind, decimal DebitAmount, decimal CreditAmount, string Explanation);
-
 public sealed record ImportBankStatementRowDto(
     string RowIdentity,
     DateTime BookingDateUtc,
@@ -77,54 +75,6 @@ public sealed record ReclassifyBankSuspenseCommand(
     Guid ActorUserId,
     string? CorrelationId = null);
 
-public sealed record BankReconciliationCandidatePaymentDto(
-    Guid PaymentId,
-    string PaymentType,
-    decimal Amount,
-    decimal AlreadyLinkedAmount,
-    decimal AvailableAmount,
-    string Currency,
-    DateTime PaymentDate,
-    string CounterpartyReference,
-    Guid? InvoiceId,
-    string? InvoiceNumber,
-    Guid? BillId,
-    string? BillNumber);
-
-public sealed record BankReconciliationJournalLinkDto(
-    Guid LedgerEntryId,
-    string EntryNumber,
-    string PostingType,
-    string Status,
-    DateOnly? PostingDate,
-    bool IsOriginalSuspense,
-    bool IsCorrection);
-
-public sealed record BankReconciliationFollowUpDto(
-    Guid Id,
-    string Status,
-    string Reason,
-    Guid LedgerEntryId,
-    DateTime CreatedUtc,
-    DateTime? ResolvedUtc);
-
-public sealed record BankReconciliationItemDto(
-    Guid BankTransactionId,
-    DateTime BookingDate,
-    decimal Amount,
-    string Currency,
-    string Counterparty,
-    string ReferenceText,
-    string BankAccountDisplayName,
-    string State,
-    decimal AllocatedAmount,
-    decimal RemainingAmount,
-    int LinkedPaymentCount,
-    long SourceVersion,
-    string? ConflictCode,
-    string? ConflictExplanation,
-    Guid? LedgerEntryId);
-
 public sealed record ListBankReconciliationItemsQuery(
     Guid CompanyId,
     string? State = null,
@@ -133,25 +83,7 @@ public sealed record ListBankReconciliationItemsQuery(
     DateTime? ToUtc = null,
     int Limit = 200);
 
-public sealed record BankReconciliationWorkspaceDto(
-    IReadOnlyList<BankReconciliationItemDto> Items,
-    IReadOnlyDictionary<string, int> StateCounts);
-
 public sealed record GetBankReconciliationDetailQuery(Guid CompanyId, Guid BankTransactionId);
-
-public sealed record BankReconciliationDetailDto(
-    BankTransactionDetailDto Transaction,
-    string State,
-    decimal RemainingAmount,
-    long SourceVersion,
-    string? HandlingMode,
-    string? ReviewReason,
-    IReadOnlyList<BankReconciliationCandidatePaymentDto> CandidatePayments,
-    IReadOnlyList<BankReconciliationJournalLinkDto> Journals,
-    BankReconciliationFollowUpDto? FollowUp,
-    bool CanPostToSuspense,
-    bool CanReclassify,
-    string? BlockingReason);
 
 public sealed record AccountingAccountRoleResolutionDto(string RoleKey, Guid FinanceAccountId, string AccountCode, string AccountName);
 

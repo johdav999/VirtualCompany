@@ -25,6 +25,16 @@ internal sealed class FinanceBalanceConfiguration : IEntityTypeConfiguration<Fin
 
         builder.HasIndex(x => new { x.CompanyId, x.AccountId, x.AsOfUtc }).IsUnique();
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+
+        FinanceSourceTrackingMapping.Configure(builder);
+
+        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
+        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
+        builder.HasOne(x => x.SourceSimulationEventRecord)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

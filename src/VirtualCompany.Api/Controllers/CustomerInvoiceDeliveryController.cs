@@ -81,14 +81,6 @@ public sealed class CustomerInvoiceDeliveryController(ICustomerInvoiceDeliverySe
     private string? Correlation() => HttpContext.TraceIdentifier;
 }
 
-public sealed record InvoiceRenderRequest(string Locale = "en-US", string TemplateVersion = "native-invoice-pdf-2026.1");
-public sealed record InvoiceEmailDeliveryRequest(Guid ArtifactId, string? RecipientEmail, string Reason, string IdempotencyKey);
-public sealed record InvoicePreferredDeliveryRequest(Guid ArtifactId, string? RecipientEmail, bool AllowEmailFallback, string Reason, string IdempotencyKey);
-public sealed record InvoiceResendRequest(string Reason, string IdempotencyKey);
-public sealed record InvoiceElectronicDeliveryRequest(Guid ArtifactId, bool AllowEmailFallback, string? RecipientEmail,
-    string Reason, string IdempotencyKey);
-public sealed record InvoiceElectronicOperatorRequest(string Reason);
-
 [ApiController]
 [Route("api/integrations/b2brouter/webhooks")]
 [AllowAnonymous]

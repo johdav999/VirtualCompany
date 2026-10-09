@@ -144,13 +144,3 @@ public sealed class InternalPaymentBatchesController : ControllerBase
     private Guid Actor() => _currentUser.UserId ?? throw new UnauthorizedAccessException("A resolved company user is required.");
     private ProblemDetails Problem(string detail, int status) => new() { Title = "Payment batch request failed", Detail = detail, Status = status, Instance = HttpContext.Request.Path };
 }
-
-public sealed record RegisterPaymentBeneficiaryRequest(string PartyType, Guid PartyId, string DisplayName,
-    string Rail, string Destination, string MaskedDestination, string Currency,
-    string VerificationEvidenceReference, string VerificationEvidenceHash);
-public sealed record CreatePaymentBatchRequest(string Name, DateOnly PlannedExecutionDate, string IdempotencyKey);
-public sealed record AddPaymentBatchObligationRequest(string ObligationType, Guid SourceId,
-    long ExpectedVersion, string IdempotencyKey);
-public sealed record PaymentBatchVersionedRequest(long ExpectedVersion, string IdempotencyKey);
-public sealed record DecidePaymentBatchRequest(long ExpectedVersion, string Comment, string IdempotencyKey);
-public sealed record CancelPaymentBatchRequest(long ExpectedVersion, string Reason, string IdempotencyKey);

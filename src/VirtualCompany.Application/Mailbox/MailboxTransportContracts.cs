@@ -27,15 +27,6 @@ public sealed record MailboxTransportContext(
     MailboxTransportSettings Settings,
     MailboxCredentialLease Credential);
 
-public sealed record MailboxTransportFolder(
-    string FolderId,
-    string DisplayName,
-    bool CanRead,
-    bool CanAppend,
-    bool IsInbox,
-    bool IsDrafts,
-    bool IsSent);
-
 public sealed record MailboxTransportHealthResult(
     bool ImapSucceeded,
     bool SmtpSucceeded,
@@ -211,17 +202,6 @@ public sealed record SaveStandardMailboxConnectionCommand(
     MailboxPurpose Purpose,
     StandardMailboxConnectionInput Connection,
     IReadOnlyCollection<string>? SelectedFolderIds = null);
-
-public sealed record StandardMailboxConnectionResult(
-    Guid? ConnectionId,
-    bool IncomingSucceeded,
-    bool SendingSucceeded,
-    string EmailAddress,
-    MailboxCapability Capabilities,
-    IReadOnlyList<MailboxTransportFolder> Folders,
-    string? FailureCode,
-    string? FailureMessage,
-    DateTime CheckedUtc);
 
 public interface IStandardMailboxConnectionService
 {

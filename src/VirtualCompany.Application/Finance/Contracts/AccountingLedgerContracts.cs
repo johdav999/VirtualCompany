@@ -87,21 +87,6 @@ public sealed record ProposedAccountingEntry(
     string ActorType = AuditActorTypes.User,
     DateTime? EffectivePostedAtUtc = null);
 
-public sealed record AccountingPostingIssue(string ReasonCode, string Explanation, Guid? SubjectId = null);
-
-public sealed record AccountingPostingPreview(
-    bool IsValid,
-    decimal DebitTotal,
-    decimal CreditTotal,
-    decimal Difference,
-    string BaseCurrency,
-    int RoundingPrecision,
-    IReadOnlyList<AccountingPostingIssue> Issues,
-    string? DocumentCurrency = null,
-    decimal? DocumentDebitTotal = null,
-    decimal? DocumentCreditTotal = null,
-    decimal? DocumentDifference = null);
-
 public sealed record PreviewAccountingEntryCommand(ProposedAccountingEntry Entry);
 public sealed record PreviewNonAuthoritativeAccountingCandidateCommand(ProposedAccountingEntry Entry);
 public sealed record PostAccountingEntryCommand(ProposedAccountingEntry Entry, string? CorrelationId = null);
@@ -122,83 +107,8 @@ public sealed record ReverseAccountingEntryCommand(
     string? CorrelationId = null,
     string ActorType = AuditActorTypes.User);
 
-public sealed record AccountingJournalLineDto(
-    Guid Id,
-    Guid FinanceAccountId,
-    string AccountCode,
-    string AccountName,
-    decimal DebitAmount,
-    decimal CreditAmount,
-    string Currency,
-    Guid? CostCenterId,
-    string? Description,
-    IReadOnlyDictionary<string, string> TaxFacts,
-    IReadOnlyDictionary<string, string> DimensionFacts,
-    decimal? DocumentDebitAmount = null,
-    decimal? DocumentCreditAmount = null,
-    string? DocumentCurrency = null,
-    decimal? ExchangeRate = null,
-    DateOnly? ExchangeRateDate = null,
-    Guid? ExchangeRateConversionId = null,
-    string? ExchangeRateIdentity = null,
-    decimal? ConversionRoundingResidual = null,
-    IReadOnlyList<ResolvedAccountingDimensionAssignment>? DimensionAssignments = null);
-
-public sealed record AccountingJournalEvidenceDto(Guid DocumentId, string Title, string ContentHash, string OriginalFileName);
-public sealed record AccountingJournalApprovalDto(Guid Id, string Status, string ApprovalType, string? DecisionSummary,
-    DateTime CreatedUtc, DateTime? DecidedUtc);
-public sealed record AccountingJournalAuditEventDto(Guid Id, string ActorType, Guid? ActorId, string Action, string Outcome,
-    string? Summary, DateTime OccurredUtc);
-public sealed record AccountingJournalCorrectionDto(Guid Id, string EntryNumber, string PostingType, DateOnly? PostingDate,
-    string? Reason, string Status);
-
-public sealed record AccountingJournalDto(
-    Guid Id,
-    Guid CompanyId,
-    Guid FiscalPeriodId,
-    string EntryNumber,
-    string Status,
-    string VoucherSeriesCode,
-    long? VoucherSequenceNumber,
-    int? VoucherFiscalYear,
-    DateOnly? DocumentDate,
-    DateOnly? PostingDate,
-    string BaseCurrency,
-    string? PostingType,
-    string? Description,
-    string? SourceType,
-    string? SourceId,
-    string? SourceVersion,
-    string? PolicyPackKey,
-    string? PolicyPackVersion,
-    Guid? PostedByUserId,
-    Guid? ApprovalRequestId,
-    Guid? OriginalLedgerEntryId,
-    string? CorrectionReason,
-    DateTime? PostedAtUtc,
-    decimal DebitTotal,
-    decimal CreditTotal,
-    IReadOnlyList<AccountingJournalLineDto> Lines,
-    IReadOnlyList<AccountingJournalEvidenceDto>? Evidence = null,
-    AccountingJournalApprovalDto? Approval = null,
-    IReadOnlyList<AccountingJournalCorrectionDto>? Corrections = null,
-    IReadOnlyList<AccountingJournalAuditEventDto>? AuditTimeline = null);
-
-public sealed record PostedAccountingJournal(AccountingJournalDto Journal, bool IsIdempotentReplay);
-
-public sealed record DocumentCurrencyOpenItemControlDto(
-    string DocumentCurrency,
-    decimal PostedDocumentAmount,
-    decimal AllocatedDocumentAmount,
-    decimal OutstandingDocumentAmount,
-    decimal PostedFunctionalAmount,
-    decimal AllocatedFunctionalAmount,
-    decimal OutstandingFunctionalAmount,
-    string FunctionalCurrency);
-
 public sealed record ListAccountingJournalsQuery(Guid CompanyId, DateOnly? From = null, DateOnly? To = null, int Skip = 0, int Take = 100,
     string? Search = null, string? SourceType = null, string? PostingType = null, string? VoucherSeriesCode = null);
-public sealed record AccountingJournalListResult(IReadOnlyList<AccountingJournalDto> Items, int TotalCount, int Skip, int Take);
 public sealed record GetAccountingJournalQuery(Guid CompanyId, Guid LedgerEntryId);
 public sealed record GetAccountingJournalBySourceQuery(Guid CompanyId, string SourceType, string SourceId, string? SourceVersion = null);
 

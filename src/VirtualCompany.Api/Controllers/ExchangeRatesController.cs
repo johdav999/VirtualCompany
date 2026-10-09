@@ -160,7 +160,5 @@ public sealed record ImportManualExchangeRateSetRequest(string SourceKey, string
     string ImportIdentity, DateTime PublishedUtc, IReadOnlyList<ManualExchangeRateObservationInput> Observations,
     string EvidenceDescription, Guid? CorrectsRateSetId);
 public sealed record ReviewExchangeRateSetRequest(long ExpectedVersion, bool Approve, string ReviewNote);
-public sealed record QueueExchangeRateRefreshRequest(string ProviderKey, DateOnly RequestedDate,
-    IReadOnlyCollection<string>? Currencies, string IdempotencyKey);
 public sealed record ConvertCurrencyRequest(decimal Amount, string FromCurrency, string ToCurrency,
     DateOnly Date, string Purpose, string IdempotencyKey);

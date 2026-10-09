@@ -305,7 +305,7 @@
                         }
                     </section>
 
-                    <NativeInvoiceLifecyclePanel CompanyId="@AccessState.CompanyId!.Value" Invoice="@SelectedInvoice" MembershipRole="@AccessState.MembershipRole" />
+                    <NativeInvoiceLifecyclePanel CompanyId="@AccessState.CompanyId!.Value" Invoice="@SelectedInvoice" RemainingAmount="@(Invoices.FirstOrDefault(invoice => invoice.Id == SelectedInvoice.Id)?.PaymentContext?.RemainingAmount)" MembershipRole="@AccessState.MembershipRole" />
 
                     <section class="invoice-detail-section">
                         <h3>@FinanceText["ReviewNotes"]</h3>
@@ -359,12 +359,12 @@
                     <section class="invoice-detail-section">
                         <h3>@FinanceText["LinkedDocument"]</h3>
                     <FinanceLinkedResourceState
-                        Availability="@SelectedInvoice.LinkedDocument.Availability"
+                        Availability="@SelectedInvoice.LinkedDocument.AccessState"
                         Message="@SelectedInvoice.LinkedDocument.Message"
                         ResourceTitle="@SelectedInvoice.LinkedDocument.Document?.Title"
                         SecondaryText="@SelectedInvoice.LinkedDocument.Document?.OriginalFileName"
                         TypeText="@SelectedInvoice.LinkedDocument.Document?.ContentType"
-                        CanNavigate="@SelectedInvoice.LinkedDocument.CanNavigate"
+                        CanNavigate="@SelectedInvoice.LinkedDocument.CanOpen"
                         NavigateHref="@(SelectedInvoice.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id))"
                         ActionText="@FinanceText["OpenLinkedDocument"]" />
                     </section>

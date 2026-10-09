@@ -514,8 +514,8 @@
         }
 
         standardModel.ProfileKey = profile.ProfileKey;
-        standardModel.Imap = new MailboxEndpointResponse { Host = profile.Imap.Host, Port = profile.Imap.Port, TlsMode = profile.Imap.TlsMode };
-        standardModel.Smtp = new MailboxEndpointResponse { Host = profile.Smtp.Host, Port = profile.Smtp.Port, TlsMode = profile.Smtp.TlsMode };
+        standardModel.Imap = new VirtualCompany.Shared.Contracts.MailboxConnections.MailboxEndpointRequest(profile.Imap.Host, profile.Imap.Port, profile.Imap.TlsMode);
+        standardModel.Smtp = new VirtualCompany.Shared.Contracts.MailboxConnections.MailboxEndpointRequest(profile.Smtp.Host, profile.Smtp.Port, profile.Smtp.TlsMode);
         standardModel.AuthenticationType = profile.AuthenticationTypes.Contains("oauth2", StringComparer.OrdinalIgnoreCase)
             ? "oauth2"
             : "application_password";
@@ -766,5 +766,5 @@
     private sealed record ProviderOption(string Key, string DisplayName, string Mark);
     private sealed record CapabilityRow(string LabelKey, bool Available);
 
-    private bool HasCapability(int capability) => standardTestResult is not null && (standardTestResult.Capabilities & capability) == capability;
+    private bool HasCapability(int capability) => standardTestResult is not null && ((int)standardTestResult.Capabilities & capability) == capability;
 }

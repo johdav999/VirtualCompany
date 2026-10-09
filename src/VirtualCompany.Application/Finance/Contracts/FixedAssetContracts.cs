@@ -55,42 +55,6 @@ public sealed record RunFixedAssetDepreciationCommand(Guid CompanyId, Guid Fisca
 public sealed record GetFixedAssetQuery(Guid CompanyId, Guid AssetId);
 public sealed record ListFixedAssetsQuery(Guid CompanyId, string? Status = null, Guid? AssetClassId = null,
     string? Search = null, int Skip = 0, int Take = 100);
-
-public sealed record FixedAssetClassDto(Guid Id, string Code, string Name, string BookMethod,
-    int UsefulLifeMonths, decimal DefaultResidualPercent, Guid CostAccountId,
-    Guid AccumulatedDepreciationAccountId, Guid DepreciationExpenseAccountId,
-    Guid AccumulatedImpairmentAccountId, Guid ImpairmentExpenseAccountId,
-    Guid DisposalGainAccountId, Guid DisposalLossAccountId, string VoucherSeriesCode,
-    bool RequiresApproval, bool IsActive, string DefinitionHash, long Version);
-public sealed record FixedAssetEventDto(Guid Id, string EventType, DateOnly EffectiveDate, decimal Amount,
-    decimal CostMovement, decimal DepreciationMovement, decimal ImpairmentMovement, decimal Proceeds,
-    decimal GainLoss, string Status, Guid? LedgerEntryId, Guid? DepreciationRunId, Guid? OriginalEventId,
-    string SourceType, string SourceId, string SourceVersion,
-    IReadOnlyList<FixedAssetComponentAllocationDto> ComponentAllocations, DateTime CreatedUtc);
-public sealed record FixedAssetComponentAllocationDto(Guid? ComponentId, decimal Amount,
-    decimal DepreciableBasis, decimal RemainingDepreciableAmount, int EligibleDays, int DaysInPeriod,
-    string Explanation);
-public sealed record FixedAssetComponentDto(Guid Id, string Code, string Name, decimal Cost,
-    decimal ResidualValue, decimal AccumulatedDepreciation, int UsefulLifeMonths,
-    DateOnly PlacedInServiceDate);
-public sealed record FixedAssetDto(Guid Id, Guid AssetClassId, string AssetClassCode, string AssetClassName,
-    string AssetNumber, string Name, string Currency, decimal AcquisitionCost, decimal ImprovementCost,
-    decimal GrossBookValue, decimal ResidualValue, decimal AccumulatedDepreciation,
-    decimal AccumulatedImpairment, decimal NetBookValue, decimal DisposalProceeds, decimal DisposalGainLoss,
-    int UsefulLifeMonths, string BookMethod, DateOnly AcquisitionDate, DateOnly? CapitalizationDate,
-    DateOnly? PlacedInServiceDate, DateOnly? LastDepreciationThrough, DateOnly? DisposalDate, string Status,
-    string SourceType, string SourceId, string SourceVersion, Guid? SourceDocumentId, Guid? LegacyFinanceAssetId,
-    string? Custodian, string? Location, IReadOnlyDictionary<string, string> DimensionFacts,
-    long Version, IReadOnlyList<FixedAssetComponentDto> Components, IReadOnlyList<FixedAssetEventDto> Events);
-public sealed record FixedAssetListDto(IReadOnlyList<FixedAssetDto> Items, int TotalCount, int Skip, int Take,
-    decimal AcquisitionCost, decimal AccumulatedDepreciation, decimal AccumulatedImpairment,
-    decimal NetBookValue, int OpenMigrationConflictCount);
-public sealed record FixedAssetDepreciationItemDto(Guid AssetId, string AssetNumber, string AssetName,
-    long AssetVersion, decimal Amount, decimal DepreciableBasis, decimal RemainingDepreciableAmount,
-    int EligibleDays, int DaysInPeriod, string Method, string Explanation, string Status,
-    Guid? LedgerEntryId = null, string? FailureCode = null, string? FailureSummary = null);
-public sealed record FixedAssetDepreciationPreviewDto(DateOnly PeriodStart, DateOnly PeriodEnd,
-    decimal TotalAmount, string PopulationHash, IReadOnlyList<FixedAssetDepreciationItemDto> Items);
 public sealed record FixedAssetRegistrationPreviewDto(RegisterFixedAssetInput Asset,
     FixedAssetClassDto AssetClass, decimal ResidualValue, int UsefulLifeMonths,
     string BookMethod, string ProposalChecksum, bool IsRegistered, bool RequiresApproval,
@@ -98,14 +62,6 @@ public sealed record FixedAssetRegistrationPreviewDto(RegisterFixedAssetInput As
 public sealed record FixedAssetDisposalPreviewDto(FixedAssetDto Asset, DateOnly DisposalDate,
     Guid FiscalPeriodId, decimal NetBookValue, decimal Proceeds, decimal GainLoss,
     AccountingPostingPreview PostingPreview, string ProposalChecksum, bool IsPosted);
-public sealed record FixedAssetDepreciationRunDto(Guid Id, Guid FiscalPeriodId, DateOnly PeriodStart,
-    DateOnly PeriodEnd, string Status, decimal TotalAmount, int PostedItemCount, int ExceptionCount,
-    string PopulationHash, long Version, IReadOnlyList<FixedAssetDepreciationItemDto> Items);
-public sealed record FixedAssetReconciliationDto(decimal RegisterCost, decimal LedgerCost,
-    decimal CostDifference, decimal RegisterAccumulatedDepreciation, decimal LedgerAccumulatedDepreciation,
-    decimal DepreciationDifference, decimal RegisterAccumulatedImpairment, decimal LedgerAccumulatedImpairment,
-    decimal ImpairmentDifference, decimal RegisterNetBookValue, bool IsReconciled,
-    IReadOnlyList<string> Issues, int OpenMigrationConflictCount);
 
 public interface IFixedAssetService
 {

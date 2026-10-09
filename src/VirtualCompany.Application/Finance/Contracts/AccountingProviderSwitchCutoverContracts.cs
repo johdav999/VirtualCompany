@@ -37,27 +37,6 @@ public sealed record ResumeAccountingProviderSwitchCutoverCommand(Guid CompanyId
     Guid ExecutionId, long ExpectedExecutionVersion, Guid ActorUserId, string CorrelationId);
 public sealed record GetAccountingProviderSwitchCutoverQuery(Guid CompanyId, Guid SwitchId, Guid? ExecutionId = null);
 
-public sealed record AccountingProviderSwitchFinalSnapshotDto(Guid Id, string ApprovedSourceSnapshotHash,
-    string FinalSourceSnapshotHash, long RecordCount, decimal FinancialTotal, long DeltaRecordCount,
-    decimal DeltaFinancialTotal, DateTime ExtractionStartedUtc, DateTime ExtractionCompletedUtc);
-public sealed record AccountingProviderSwitchFinalCheckDto(Guid Id, string CheckKey, string Result,
-    string ReasonCode, string Explanation, string EvidenceJson, DateTime CalculatedUtc);
-public sealed record AccountingProviderSwitchActivationApprovalDto(Guid ApprovalRequestId, string Status,
-    string FinalSnapshotHash, string ReconciliationHash, long SwitchVersion, DateTime RequestedUtc);
-public sealed record AccountingProviderSwitchCutoverAllowedActionsDto(bool CanStartFreeze,
-    bool CanRequestActivationApproval, bool CanActivate, bool CanCancel, bool CanRetry,
-    bool CanRecoverSource, bool RequiresProviderReconciliation, bool RequiresCorrectiveCutover);
-public sealed record AccountingProviderSwitchCutoverDto(Guid Id, Guid CompanyId, Guid SwitchId, Guid PlanId,
-    int PlanVersion, string PlanHash, Guid? PreparationId, Guid? TargetTransferBatchId,
-    Guid? AuthorityPeriodId, string Status, string CurrentStep, bool TargetActivityRecorded,
-    bool RetryIsSafe, bool ProviderReconciliationRequired, string? FailureCode, string? FailureSummary,
-    string? NextAction, int AttemptCount, DateTime? NextAttemptUtc, DateTime ScheduledUtc,
-    DateTime RequestedUtc, DateTime? FreezeStartedUtc, DateTime? ReconciledUtc, DateTime? ActivatedUtc,
-    DateTime? CompletedUtc, long Version, AccountingProviderSwitchFinalSnapshotDto? FinalSnapshot,
-    IReadOnlyList<AccountingProviderSwitchFinalCheckDto> Checks,
-    AccountingProviderSwitchActivationApprovalDto? ActivationApproval,
-    AccountingProviderSwitchCutoverAllowedActionsDto AllowedActions);
-
 public sealed record AccountingProviderSwitchFinalTransferExecutionResult(bool Succeeded, bool IsAmbiguous,
     bool IsRetryable, string? ProviderExternalId, string SafeSummary);
 

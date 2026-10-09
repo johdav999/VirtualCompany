@@ -40,7 +40,7 @@ public sealed class AdvancedAccountingWorkspaceSurfaceTests
         Assert.Contains("QueueExchangeRateRefreshAsync", workspace, StringComparison.Ordinal);
         Assert.Contains("LastFailureSummary", workspace, StringComparison.Ordinal);
         Assert.Contains("RequestControlledRefresh", workspace, StringComparison.Ordinal);
-        Assert.Contains("IdempotencyKey", client, StringComparison.Ordinal);
+        Assert.NotNull(typeof(QueueExchangeRateRefreshApiRequest).GetProperty("IdempotencyKey"));
         Assert.Contains("EnsureOnlineMutation", client, StringComparison.Ordinal);
         Assert.Contains("allowNotFound", client, StringComparison.Ordinal);
         Assert.Contains("role=\"alert\"", workspace, StringComparison.Ordinal);

@@ -54,8 +54,8 @@ public partial class AccountingReportsPage : FinancePageBase
     private bool CanApproveSchedules => FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
     private bool CanReopen => AccessState.MembershipRole is "owner" or "admin";
     private string? Currency => TrialBalance?.Accounts.Select(x => x.Currency).Distinct().Count() == 1 ? TrialBalance.Accounts.FirstOrDefault()?.Currency : null;
-    private string CloseSummary => CloseValidation is null ? FinanceText["NotReviewedYet"] : CloseValidation.IsReadyToClose ? FinanceText["ReadyToClose"] : FinanceText["CloseIssueTypes", CloseValidation.BlockingIssues.Count];
-    private string LauraAdvice => CloseValidation?.IsReadyToClose == true ? FinanceText["LauraCloseReadyAdvice"] : CloseValidation is null ? FinanceText["LauraCloseReviewAdvice"] : FinanceText["LauraCloseBlockedAdvice", CloseValidation.BlockingIssues.Count];
+    private string CloseSummary => CloseValidation is null ? FinanceText["NotReviewedYet"] : CloseValidation.IsReadyToClose ? FinanceText["ReadyToClose"] : FinanceText["CloseIssueTypes", CloseValidation.Issues.Count];
+    private string LauraAdvice => CloseValidation?.IsReadyToClose == true ? FinanceText["LauraCloseReadyAdvice"] : CloseValidation is null ? FinanceText["LauraCloseReviewAdvice"] : FinanceText["LauraCloseBlockedAdvice", CloseValidation.Issues.Count];
 
     protected override async Task OnParametersSetAsync()
     {

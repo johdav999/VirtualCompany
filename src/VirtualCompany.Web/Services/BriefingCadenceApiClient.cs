@@ -2,27 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 namespace VirtualCompany.Web.Services;
-
-public sealed class BriefingCadenceRow
-{
-    public string Kind { get; set; } = ""; public bool Enabled { get; set; } public TimeOnly LocalTime { get; set; }
-    public int Weekday { get; set; } = 1; public int Day { get; set; } = 1; public int Month { get; set; } = 1;
-}
-public sealed class BriefingCadenceSettings
-{
-    public string Role { get; set; } = "ceo"; public string Timezone { get; set; } = "UTC";
-    public bool DeliveryEnabled { get; set; } = true;
-    public TimeOnly WorkStart { get; set; } public TimeOnly WorkEnd { get; set; } public int[] Workdays { get; set; } = [];
-    public TimeOnly QuietStart { get; set; } public TimeOnly QuietEnd { get; set; }
-    public bool GroupUpdates { get; set; } public bool SuppressUnchanged { get; set; } public bool UrgentEnabled { get; set; } public bool UrgentOutsideHours { get; set; }
-    public string[] FocusAreas { get; set; } = []; public BriefingCadenceRow[] Schedules { get; set; } = [];
-    public DateTime? AbsenceStartUtc { get; set; } public DateTime? AbsenceEndUtc { get; set; } public Guid? DelegateUserId { get; set; } public Guid? FallbackUserId { get; set; }
-}
-public sealed record BriefingCadencePerson(Guid Id, string Name, string[] Areas);
-public sealed record BriefingCadenceContext(Guid CompanyId, Guid UserId, bool Configured, BriefingCadenceSettings Settings, BriefingCadencePerson[] EligiblePeople, string[] AllowedAreas, string[] Channels);
-public sealed record BriefingCadenceItem(Guid Id, string Title, string Status, string Area, string Priority, DateTime? DueUtc, DateTime UpdatedUtc, string WorkPath, string? RetainedSourcePath, string? SourceKind, int? SourceVersion);
-public sealed record BriefingCadenceAudit(Guid Id, string Cadence, DateTime ScheduledUtc, Guid? RecipientUserId, string Routing, string Status, int Attempts, string? Reason, DateTime UpdatedUtc, string Path);
-public sealed record BriefingCadencePreview(Guid CompanyId, Guid UserId, Guid? RecipientUserId, string Routing, string Timezone, DateTime? NextDeliveryUtc, string? NextDeliveryLocal, DateTime FreshnessUtc, string[] Cadences, BriefingCadenceItem[] Items, BriefingCadenceAudit[] Audit);
 public sealed class BriefingCadenceApiClient(ICompanyApiTransport transport, bool offline = false)
 {
     public Task<BriefingCadenceContext> Get(Guid company, CancellationToken ct) => Send<BriefingCadenceContext>(company, HttpMethod.Get, "", null, ct);

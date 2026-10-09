@@ -241,25 +241,3 @@ public sealed partial class FinanceApiClient
     }
 
 }
-
-public sealed record SetSupplierApprovalAutomationRequest(bool Enabled);
-
-public sealed class SupplierApprovalAutomationResponse
-{
-    public Guid BillId { get; set; }
-    public string SupplierName { get; set; } = string.Empty;
-    public string? SupplierOrgNumber { get; set; }
-    public List<SupplierApprovalAutomationStageResponse> Stages { get; set; } = [];
-}
-
-public sealed class SupplierApprovalAutomationStageResponse
-{
-    public string Stage { get; set; } = string.Empty;
-    public string StepName { get; set; } = string.Empty;
-    public bool IsEnabled { get; set; }
-    public Guid? RuleId { get; set; }
-    public Guid AgentId { get; set; }
-    public string AgentDisplayName { get; set; } = string.Empty;
-    public bool CanConfigure { get; set; }
-    public string? BlockedReason { get; set; }
-}

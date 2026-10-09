@@ -401,12 +401,13 @@ public partial class AccountingConnectionsPage : FinancePageBase, IDisposable
         }
     }
 
-    private async Task AcceptMonitoringExceptionAsync(AcceptAccountingProviderSwitchMonitoringExceptionApiRequest request)
+    private async Task AcceptMonitoringExceptionAsync((Guid IncidentId, AcceptAccountingProviderSwitchMonitoringExceptionApiRequest Request) submission)
     {
         if (AccessState.CompanyId is not Guid companyId || SelectedSwitch is null || SwitchMonitoring is null) return;
+        var request = submission.Request;
         await ActAsync(async () =>
         {
-            var incident = SwitchMonitoring.Incidents.Single(x => x.Id == request.IncidentId);
+            var incident = SwitchMonitoring.Incidents.Single(x => x.Id == submission.IncidentId);
             request.ExpectedVersion = incident.Version;
             await FinanceApiClient.AcceptAccountingProviderSwitchMonitoringExceptionAsync(companyId,
                 SelectedSwitch.Id, incident.Id, request);

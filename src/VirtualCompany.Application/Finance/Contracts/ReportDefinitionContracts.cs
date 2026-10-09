@@ -1,50 +1,7 @@
 namespace VirtualCompany.Application.Finance;
 
-public sealed record ReportSystemTemplateDto(string Key, string Name, string ReportKind, string Description, bool IsStatutoryCandidate);
-
-public sealed record ReportDefinitionSummaryDto(Guid Id, string Code, string Name, string ReportKind,
-    string SourceTemplateKey, int LatestVersionNumber, string LatestStatus, Guid LatestVersionId,
-    DateOnly? EffectiveFrom, DateOnly? EffectiveTo, int Revision);
-
-public sealed record ReportDefinitionAccountGroupDto(Guid Id, string Code, string Name,
-    IReadOnlyList<Guid> FinanceAccountIds);
-
-public sealed record ReportDefinitionLineDto(Guid Id, string Code, string Label, string LineType, int DisplayOrder,
-    string? Formula, string SignRule, int Scale, int Decimals, bool SuppressZero, string CurrencyMode,
-    Guid? DimensionTypeId, Guid? DimensionMemberId, IReadOnlyList<ReportDefinitionAccountGroupDto> AccountGroups);
-
-public sealed record ReportDefinitionSectionDto(Guid Id, string Code, string Label, int DisplayOrder,
-    IReadOnlyList<ReportDefinitionLineDto> Lines);
-
-public sealed record ReportDefinitionComparisonDto(string Mode, int PeriodCount, bool ShowVariance, bool ShowVariancePercent);
-
-public sealed record ReportDefinitionValidationIssueDto(string Code, string Severity, string Explanation,
-    Guid? LineId = null, Guid? AccountId = null);
-
-public sealed record ReportDefinitionValidationDto(Guid Id, bool IsValid, string DefinitionHash,
-    Guid ValidatedByUserId, DateTime ValidatedUtc, IReadOnlyList<ReportDefinitionValidationIssueDto> Issues);
-
-public sealed record ReportDefinitionApprovalDto(Guid Id, string Status, Guid SubmittedByUserId,
-    DateTime SubmittedUtc, Guid? DecidedByUserId, DateTime? DecidedUtc, string? DecisionNote);
-
-public sealed record ReportDefinitionVersionDto(Guid DefinitionId, Guid VersionId, string Code, string Name,
-    string ReportKind, string SourceTemplateKey, int VersionNumber, string Status, DateOnly? EffectiveFrom,
-    DateOnly? EffectiveTo, string? DefinitionHash, int Revision, DateTime CreatedUtc, DateTime UpdatedUtc,
-    IReadOnlyList<ReportDefinitionSectionDto> Sections, ReportDefinitionComparisonDto Comparison,
-    ReportDefinitionValidationDto? LatestValidation, ReportDefinitionApprovalDto? LatestApproval,
-    bool CanEdit, bool CanSubmit, bool CanApprove, bool CanActivate, bool CanRetire);
-
 public sealed record CopyReportSystemTemplateCommand(Guid CompanyId, string TemplateKey, string Code, string Name,
     Guid ActorUserId, string IdempotencyKey);
-
-public sealed record ReportDefinitionAccountGroupInput(string Code, string Name, IReadOnlyList<Guid> FinanceAccountIds);
-
-public sealed record ReportDefinitionLineInput(string Code, string Label, string LineType, int DisplayOrder,
-    string? Formula, string SignRule, int Scale, int Decimals, bool SuppressZero, string CurrencyMode,
-    Guid? DimensionTypeId, Guid? DimensionMemberId, IReadOnlyList<ReportDefinitionAccountGroupInput> AccountGroups);
-
-public sealed record ReportDefinitionSectionInput(string Code, string Label, int DisplayOrder,
-    IReadOnlyList<ReportDefinitionLineInput> Lines);
 
 public sealed record UpdateReportDefinitionVersionCommand(Guid CompanyId, Guid VersionId, string Name,
     int ExpectedRevision, Guid ActorUserId, string IdempotencyKey, IReadOnlyList<ReportDefinitionSectionInput> Sections,

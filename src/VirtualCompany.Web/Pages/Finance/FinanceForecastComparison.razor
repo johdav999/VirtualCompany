@@ -13,7 +13,7 @@
 </main>
 @code{
     [SupplyParameterFromQuery]public Guid? Earlier{get;set;}[SupplyParameterFromQuery]public Guid? Later{get;set;}
-    private IReadOnlyList<FinanceForecastRevisionSummary> history=[];private IReadOnlyList<FinancePlanningChoice> dimensions=[];private VirtualCompany.Web.Services.FinanceForecastComparison? comparison;private string earlier="",later="",currency="",dimension="";private int skip;
+    private IReadOnlyList<FinanceForecastRevisionSummary> history=[];private IReadOnlyList<FinancePlanningChoice> dimensions=[];private VirtualCompany.Application.Finance.FinanceForecastComparison? comparison;private string earlier="",later="",currency="",dimension="";private int skip;
     private string Account(Guid id)=>comparison!.Earlier.Preview.Report.Accounts.Concat(comparison.Later.Preview.Report.Accounts).FirstOrDefault(a=>a.Id==id)?.Name??"Retained account";
     protected override void Restricted(){base.Restricted();comparison=null;history=[];dimensions=[];}
     private string VersionPath(Guid id)=>Link($"/finance/reports/rolling-forecast?version={id:D}");

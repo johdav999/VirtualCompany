@@ -25,27 +25,3 @@ public sealed partial class FinanceApiClient
                 ("snapshotId", snapshotId?.ToString("D")), ("comparisonSnapshotId", comparisonSnapshotId?.ToString("D"))), false, cancellationToken);
     }
 }
-
-public sealed class StatementEvidenceResponse
-{
-    public StatementEvidenceLine? Line { get; set; }
-    public decimal OpeningBalanceAdjustment { get; set; }
-    public decimal JournalLineTotal { get; set; }
-    public decimal ReconciliationTotal { get; set; }
-    public decimal ReconciliationDelta { get; set; }
-    [System.Text.Json.Serialization.JsonPropertyName("journalEntries")]
-    public List<StatementEvidenceEntry> Entries { get; set; } = [];
-}
-public sealed class StatementEvidenceLine
-{
-    public string ReportSection { get; set; } = "";
-    public string LineClassification { get; set; } = "";
-    public decimal Amount { get; set; }
-}
-public sealed class StatementEvidenceEntry
-{
-    public Guid LedgerEntryId { get; set; }
-    public string EntryNumber { get; set; } = "";
-    public DateTime EntryUtc { get; set; }
-    public decimal TotalContributionAmount { get; set; }
-}

@@ -1,3 +1,5 @@
+using VirtualCompany.Application.Approvals;
+using VirtualCompany.Domain.Enums;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -18,6 +20,10 @@ public static class SalesModuleRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.AddKeyedScoped<IApprovalTargetHandler, MarketingChannelActionApprovalTargetHandler>(ApprovalTargetEntityType.MarketingChannelAction);
+        services.AddKeyedScoped<IApprovalTargetHandler, SalesMeetingInvitationApprovalTargetHandler>(ApprovalTargetEntityType.SalesMeetingInvitation);
+        services.AddKeyedScoped<IApprovalTargetHandler, SalesMeetingChangeRequestApprovalTargetHandler>(ApprovalTargetEntityType.SalesMeetingChangeRequest);
+        services.AddKeyedScoped<IApprovalTargetHandler, SalesMeetingChangeProposalApprovalTargetHandler>(ApprovalTargetEntityType.SalesMeetingChangeProposal);
         services.AddSalesRoomMedia(configuration);
         services.AddOptions<SalesNarrationOptions>().Bind(configuration.GetSection("SalesNarration"));
         services.AddScoped<SalesNarrationService>();

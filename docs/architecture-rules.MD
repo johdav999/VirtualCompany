@@ -60,15 +60,25 @@ Provider collections intentionally resolved through `IEnumerable<T>` may have mu
 
 The refactor removed broad catch-all source files. Preserve that organization:
 
-- Finance application contracts belong under `Application/Finance/Contracts` and are grouped by bills, invoices, payments, reporting, integrations, simulation, insights/policy, counterparties, or core concerns.
+- Finance use-case commands, queries, policies, and service interfaces belong under `Application/Finance/Contracts`, grouped by their capability. Shared HTTP data definitions belong under `Shared/Contracts/Finance` or `Shared/Contracts/Http`.
 - Domain entities belong in one file per entity or closely related aggregate. Do not recreate `FinanceEntities.cs`, `SalesEntities.cs`, or `SupportEntities.cs`.
 - EF configurations belong under `VirtualCompany.Persistence/Persistence/Configurations`, normally one configuration per entity. Register configurations through the DbContext assembly convention. Do not recreate `EntityConfigurations.cs`.
 - Support services belong in capability-specific files such as cases, mailbox, triage, knowledge, drafting, safety, refunds, SLA, memory, analytics, and delivery. Do not recreate `SupportServices.cs`.
 - Large Finance facades use capability-owned partial files where compatibility requires the existing interface or route facade. New behavior must go into the relevant capability file, not the base file.
-- Internal Finance endpoints belong in the matching `InternalFinanceController.<Capability>.cs` file. Keep controller actions transport-only.
+- Internal Finance endpoints belong in independently activated `InternalFinance<Capability>Controller` classes. Preserve the existing company-scoped route prefix and endpoint policies. Constructors resolve only their owning capability dependencies; shared HTTP execution, actor context, and problem mappings belong in `InternalFinanceControllerBase`. Initialization failure responses use `FinanceInitializationProblemHandler`, preserving the explicit fallback and audit behavior. Do not rebuild a single Finance controller with all capability dependencies. Keep controller actions transport-only.
 - Finance Web API endpoints belong in the matching `FinanceApiClient.<Capability>.cs` file. Shared HTTP behavior belongs in `CompanyApiTransport`.
 
 Do not create a new catch-all file, generic manager, or utility class merely to avoid choosing an owner. Add an abstraction only when it removes meaningful duplication or defines a real boundary.
+
+## Wire Contract Authority
+
+- A wire shape consumed by both API and a client has one definition in `VirtualCompany.Shared/Contracts`, grouped by capability. API, Application, and Web reference that definition; do not maintain a second client response or request class with the same JSON fields.
+- Existing Application, API, and primitive Domain namespaces are retained on relocated definitions for source compatibility. Former controller-nested JSON models use Shared capability namespaces. Assembly ownership is authoritative: these types compile in Shared. Web compatibility aliases name those types without declaring another shape or introducing a Web dependency on API or Application.
+- Shared remains independent of other solution projects and external packages. It contains transport data, wire primitives, and their JSON converters, without use-case services, commands, authorization, EF entities, or HTTP execution. Domain may reference Shared for the existing scenario value records, connection enums, and document access-scope data base. Document tenant validation stays in Domain; its JSON adapter delegates to the shared converter. Shared must never reference Domain.
+- Keep controller-to-command/input mappings in API extension methods. Keep UI state, routing context, and presentation models in Web, with explicit projections where they differ from the HTTP payload.
+- Preserve JSON property names, required attributes, enum values, defaults, and constructor binding during consolidation. A convenience constructor for an editor must not change server request deserialization; positional request records explicitly retain their original JSON constructor.
+- Connection enums carry their snake-case wire converter with the shared definition. Accept existing numeric payloads. Specialized converters, such as the Support quality calendar's numeric weekday representation, retain their own format.
+- `WireContractAuthorityTests` checks assembly ownership, client aliases, and the pre-consolidation property/constructor schemas. Treat intentional schema baseline changes as wire compatibility changes requiring review; do not update a baseline just to make a refactor pass.
 
 ## Controllers and Application Services
 
@@ -139,6 +149,10 @@ Paid supplier bill expense posting uses `PaidSupplierBillExpensePostingEligibili
 - Human approval requirements are enforced in backend policy/application logic, never only in prompts or UI.
 - Approval-backed execution must recheck approval immediately before the external action.
 - Support threshold checks, required roles/users, chains, rejection, cancellation, and expiration where the business action requires them.
+- `CompanyApprovalRequestService` owns approval-chain ordering, reviewer authorization, locking, transactions, common audit/notifications, and review bindings. Target creation rules, retained review material, and decision outcomes belong to `IApprovalTargetHandler` implementations in the owning Operations, Sales, or Finance module.
+- Register target handlers as scoped keyed services using `ApprovalTargetEntityType` in the owning module registration. Resolve only the selected target to preserve lazy composition of approval-backed services; do not eagerly construct every handler or add sibling infrastructure project references.
+- Handlers use the coordinator's scoped database context and leave the final commit to it. Preserve existing source/version checks, provider execution boundaries, outbox idempotency, and post-persistence ordering.
+- Persisted review fingerprints are a compatibility contract. Retain canonical envelope/property names, array ordering, and hash semantics when moving review-material queries. Targets managed exclusively by their own module workflows must not become supported by generic approval creation merely through a refactor.
 
 ## External Side Effects and Outbox
 
@@ -229,17 +243,21 @@ Technical logs must support diagnosis without exposing secrets. Background failu
 
 Tests are partitioned by ownership and dependency:
 
+- `VirtualCompany.Domain.Tests`: entity state, value semantics, and deterministic domain rules; references Domain only.
 - `VirtualCompany.Api.Tests`: backend unit and API/integration tests that require API/Infrastructure composition.
 - `VirtualCompany.Finance.Tests`: focused Finance policy and module tests.
 - `VirtualCompany.SupportGrounding.Tests`: Support grounding/safety tests without unrelated Finance/Web dependencies.
 - `VirtualCompany.SalesSource.Tests`: focused Sales source/provider tests.
 - `VirtualCompany.Web.Tests`: Blazor components, presentation, routes, and Web client transport tests.
 - `VirtualCompany.Web.Contract.Tests`: Web/API contract integration tests.
+- `VirtualCompany.TestSupport`: shared composed API host, integration fixtures, and test doubles; a library without executable tests, consumed only by API/contract tests and the disposable UAT host.
 
 Rules:
 
 - Add a test to the narrowest project that can execute it.
 - Pure domain or policy tests must not gain Web/API references.
+- Web component/presentation/client tests reference Web and Application, without API or Infrastructure dependencies. Tests that compose backend implementations with Web belong in Web.Contract.Tests.
+- Test suites live in their owning project and use default SDK source inclusion. Do not link executable tests across projects or maintain filename-based exclusions to assign ownership.
 - Non-Web test projects must not require Web output binaries or a running Web process.
 - Tests do not depend on an already running API, Docker, SQL Server, or external provider unless explicitly categorized as external integration tests.
 - Use SQLite only for provider-compatible behavior. SQL Server-specific migrations, metadata, SQL, and concurrency need SQL Server validation.

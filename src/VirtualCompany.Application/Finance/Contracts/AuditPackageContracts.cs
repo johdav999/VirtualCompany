@@ -1,43 +1,5 @@
 namespace VirtualCompany.Application.Finance;
 
-public static class AuditPackageScopeValues
-{
-    public const string PeriodClose = "period_close";
-    public const string CurrentVersion = "audit-package-v1";
-}
-
-public sealed record AuditPackageArtifactDto(
-    Guid Id, int Sequence, string ArtifactType, string Path, string Status, bool IsRequired,
-    string SourceType, string SourceReference, string? SourceVersion, string? DefinitionVersion,
-    string? Checksum, long? ContentLength, string? SafeDetail);
-
-public sealed record AuditPackageAttemptDto(Guid Id, int AttemptNumber, string Outcome,
-    string? FailureCode, string? SafeSummary, DateTime StartedUtc, DateTime CompletedUtc);
-
-public sealed record AuditPackageApprovalDto(Guid Id, Guid DecidedByUserId, string Decision,
-    string? Reason, DateTime DecidedUtc);
-
-public sealed record AuditPackageVerificationDto(Guid Id, Guid VerifiedByUserId, bool IsValid,
-    string PackageChecksum, string ManifestChecksum, int CheckedItemCount, int MissingItemCount,
-    int CorruptItemCount, string ResultCode, string SafeSummary, DateTime VerifiedUtc);
-
-public sealed record AuditPackageDto(
-    Guid Id, Guid CompanyId, Guid FiscalPeriodId, string FiscalPeriodName,
-    string ScopeKey, string ScopeVersion, string ScopeHash, string SnapshotVersionsJson,
-    string Status, bool IsFinal, string? ManifestChecksum, string? PackageChecksum,
-    string? FileName, string? MediaType, long? ContentLength,
-    Guid RequestedByUserId, Guid? ApprovedByUserId, DateTime RequestedUtc, DateTime UpdatedUtc,
-    DateTime RetainUntilUtc, DateTime? FinalizedUtc, int AttemptCount, int MaxAttempts,
-    bool CancellationRequested, string? FailureCode, string? SafeFailureSummary, long Version,
-    IReadOnlyList<AuditPackageArtifactDto> Artifacts,
-    IReadOnlyList<AuditPackageAttemptDto> Attempts,
-    IReadOnlyList<AuditPackageApprovalDto> Approvals,
-    IReadOnlyList<AuditPackageVerificationDto> Verifications,
-    string IntegrityNotice = "A final label means the required package evidence was accessible and checksum-verifiable at generation time; it is not statutory approval.");
-
-public sealed record AuditPackageWorkspaceDto(Guid CompanyId, int TotalCount, int FinalCount,
-    int IncompleteCount, int PendingCount, IReadOnlyList<AuditPackageDto> Packages);
-
 public sealed record RequestAuditPackageCommand(Guid CompanyId, Guid FiscalPeriodId,
     Guid ActorUserId, string ActorRole, string IdempotencyKey,
     string ScopeKey = AuditPackageScopeValues.PeriodClose,
@@ -54,9 +16,6 @@ public sealed record ListAuditPackagesQuery(Guid CompanyId, Guid? FiscalPeriodId
 
 public sealed record CreateAuditPackageDownloadAuthorizationCommand(Guid CompanyId,
     Guid PackageId, Guid ActorUserId);
-
-public sealed record AuditPackageDownloadAuthorizationDto(Guid AuthorizationId, Guid PackageId,
-    string Token, DateTime ExpiresUtc, string DownloadPath);
 
 public sealed record DownloadAuditPackageQuery(Guid CompanyId, Guid PackageId,
     Guid ActorUserId, string Token);

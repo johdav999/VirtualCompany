@@ -58,104 +58,6 @@ public sealed record CustomerInvoiceAccountingInput(
     decimal? ExchangeRate,
     IReadOnlyList<CustomerInvoiceAccountingLineInput> Lines);
 
-public sealed record CustomerInvoiceAccountingIssueDto(
-    string ReasonCode,
-    string Explanation,
-    bool IsBlocking = true,
-    string? PolicyReasonCode = null);
-
-public sealed record CustomerInvoiceAccountingJournalLineDto(
-    Guid FinanceAccountId,
-    string AccountRole,
-    string AccountCode,
-    string AccountName,
-    decimal DebitAmount,
-    decimal CreditAmount,
-    string Currency,
-    string Description,
-    string? TaxRuleKey = null,
-    string? TaxRuleVersion = null,
-    IReadOnlyList<string>? VatBoxMappings = null,
-    string? EvidenceClassification = null,
-    decimal? DocumentDebitAmount = null,
-    decimal? DocumentCreditAmount = null,
-    string? DocumentCurrency = null);
-
-public sealed record CustomerInvoiceAccountingPreviewDto(
-    Guid InvoiceId,
-    bool IsReady,
-    string AccountingStatus,
-    string DocumentKind,
-    decimal NetAmount,
-    decimal TaxAmount,
-    decimal GrossAmount,
-    string DocumentCurrency,
-    decimal ExchangeRate,
-    decimal NetBaseAmount,
-    decimal TaxBaseAmount,
-    decimal GrossBaseAmount,
-    decimal RoundingBaseAmount,
-    string BaseCurrency,
-    string PolicyPackKey,
-    string PolicyPackVersion,
-    long SourceVersion,
-    string PayloadHash,
-    IReadOnlyList<CustomerInvoiceAccountingJournalLineDto> JournalLines,
-    IReadOnlyList<CustomerInvoiceAccountingIssueDto> Issues,
-    DateOnly? ExchangeRateDate = null,
-    string? ExchangeRateIdentity = null,
-    IReadOnlyList<ExchangeRateLookupLeg>? ExchangeRateLegs = null);
-
-public sealed record CustomerInvoiceAccountingApprovalDto(
-    Guid Id, string Status, long SourceVersion, string PayloadHash, DateTime CreatedUtc, DateTime? DecidedUtc);
-
-public sealed record CustomerInvoiceAccountingStateDto(
-    Guid InvoiceId,
-    Guid? ProfileId,
-    string Status,
-    string StatusLabel,
-    bool CanPreview,
-    bool CanSubmit,
-    bool CanPost,
-    bool CanCreateCreditNote,
-    long? SourceVersion,
-    decimal? NetAmount,
-    decimal? TaxAmount,
-    decimal? GrossAmount,
-    string? DocumentCurrency,
-    decimal? ExchangeRate,
-    decimal? GrossBaseAmount,
-    string? BaseCurrency,
-    string? TaxMethod,
-    string? PolicyPackKey,
-    string? PolicyPackVersion,
-    Guid? LedgerEntryId,
-    string? VoucherNumber,
-    Guid? OriginalInvoiceId,
-    string? BlockingReasonCode,
-    string? BlockingReason,
-    CustomerInvoiceAccountingApprovalDto? Approval,
-    IReadOnlyList<CustomerInvoiceAccountingJournalLineDto> JournalLines,
-    IReadOnlyList<CustomerInvoiceAccountingIssueDto> Issues,
-    DateOnly? ExchangeRateDate = null,
-    Guid? ExchangeRateConversionId = null,
-    string? ExchangeRateIdentity = null,
-    decimal? ConversionRoundingResidual = null,
-    string? CurrencyProvenance = null);
-
-public sealed record CustomerInvoiceAccountingTaxRuleOptionDto(string Key, string DisplayName, decimal? Rate, string AmountMethod, DateOnly EffectiveFrom);
-public sealed record CustomerInvoiceAccountingPeriodOptionDto(Guid Id, string Name, DateOnly StartDate, DateOnly EndDate);
-public sealed record CustomerInvoiceAccountingVoucherSeriesOptionDto(string Code, string DisplayName);
-public sealed record CustomerInvoiceAccountingReferenceDataDto(
-    Guid InvoiceId, string DocumentCurrency, string BaseCurrency, decimal GrossAmount,
-    IReadOnlyList<CustomerInvoiceAccountingTaxRuleOptionDto> TaxRules,
-    IReadOnlyList<CustomerInvoiceAccountingPeriodOptionDto> OpenPeriods,
-    IReadOnlyList<CustomerInvoiceAccountingVoucherSeriesOptionDto> VoucherSeries,
-    string? DefaultTaxRuleKey, Guid? DefaultPeriodId, string? DefaultVoucherSeriesCode);
-
-public sealed record CustomerInvoiceAccountingSubmissionResult(CustomerInvoiceAccountingStateDto State, Guid ApprovalRequestId, bool IsIdempotentReplay);
-public sealed record CustomerInvoiceAccountingPostingResult(CustomerInvoiceAccountingStateDto State, AccountingJournalDto Journal, bool IsIdempotentReplay);
-
 public sealed record PreviewCustomerInvoiceAccountingQuery(Guid CompanyId, Guid InvoiceId, CustomerInvoiceAccountingInput Input, Guid ActorUserId);
 public sealed record SubmitCustomerInvoiceAccountingCommand(Guid CompanyId, Guid InvoiceId, CustomerInvoiceAccountingInput Input,
     long? ExpectedVersion, string IdempotencyKey, Guid ActorUserId, string? CorrelationId = null);
@@ -165,18 +67,6 @@ public sealed record GetCustomerInvoiceAccountingQuery(Guid CompanyId, Guid Invo
 public sealed record CreateCustomerCreditNoteCommand(Guid CompanyId, Guid OriginalInvoiceId, string CreditNoteNumber,
     DateOnly IssueDate, DateOnly DueDate, string Reason, CustomerInvoiceAccountingInput Accounting,
     Guid ActorUserId, string IdempotencyKey, string? CorrelationId = null);
-
-public sealed record CustomerInvoiceReceivableReconciliationDto(
-    Guid CompanyId,
-    string BaseCurrency,
-    decimal PostedDocumentReceivable,
-    decimal PostedJournalReceivable,
-    decimal AllocatedAmount,
-    decimal OutstandingAmount,
-    decimal Difference,
-    bool IsReconciled,
-    DateTime AsOfUtc,
-    IReadOnlyList<DocumentCurrencyOpenItemControlDto>? DocumentCurrencyBreakdown = null);
 
 public sealed record GetCustomerInvoiceReceivableReconciliationQuery(Guid CompanyId, DateOnly? ThroughDate = null);
 

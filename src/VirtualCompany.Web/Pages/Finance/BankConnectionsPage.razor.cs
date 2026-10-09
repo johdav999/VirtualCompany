@@ -64,14 +64,14 @@ public partial class BankConnectionsPage
         {
             var result = await FinanceClient.StartBankConnectionAsync(companyId, new(SelectedProviderKey, SelectedInstitutionId,
                 Navigation.Uri, ["accounts", "account_ownership", "transactions"]));
-            Navigation.NavigateTo(result.AuthorizationUri, forceLoad: true);
+            Navigation.NavigateTo(result.AuthorizationUri.ToString(), forceLoad: true);
         });
     }
     private async Task RenewAsync(BankConnectionResponse connection) => await MutateAsync(async () =>
     {
         if (AccessState.CompanyId is not Guid companyId) return;
         var result = await FinanceClient.RenewBankConnectionAsync(companyId, connection.Id, new(connection.ProviderKey, connection.Version, Navigation.Uri));
-        Navigation.NavigateTo(result.AuthorizationUri, forceLoad: true);
+        Navigation.NavigateTo(result.AuthorizationUri.ToString(), forceLoad: true);
     });
     private async Task RefreshAsync(BankConnectionResponse connection) => await MutateAsync(async () =>
     { if (AccessState.CompanyId is not Guid companyId) return; Status = await FinanceClient.RefreshBankConnectionAsync(companyId, connection.Id, connection.Version); ActionMessage = FinanceText["BankConnectionRefreshed"]; });

@@ -39,44 +39,8 @@ public sealed record ConfigureCurrencyRevaluationAccountCommand(Guid CompanyId, 
 public sealed record ConfigureCurrencyRevaluationScheduleCommand(Guid CompanyId, bool IsEnabled,
     int DaysBeforePeriodEnd, bool AutomaticReversal, string VoucherSeriesCode, long? ExpectedVersion,
     Guid ActorUserId, string? CorrelationId = null);
-
-public sealed record CurrencyRevaluationPopulationItemDto(Guid Id, string PopulationKey, string MonetaryClass,
-    Guid FinanceAccountId, string AccountCode, string AccountName, string NormalBalance, string DocumentCurrency,
-    string FunctionalCurrency, decimal DocumentBalance, decimal CarryingFunctionalAmount,
-    decimal RevaluedFunctionalAmount, decimal AdjustmentAmount, Guid? ExchangeRateConversionId,
-    decimal? PeriodEndRate, DateOnly? RateDate, string SourceChecksum, string Status, string? ReviewReason);
-public sealed record CurrencyRevaluationRateBindingDto(Guid Id, Guid PopulationItemId, Guid ExchangeRateConversionId,
-    string DocumentCurrency, string FunctionalCurrency, decimal EffectiveRate, DateOnly RateDate,
-    string RateSetIdentity, string ObservationIdentity, string EvidenceChecksum);
-public sealed record CurrencyRevaluationProposalLineDto(Guid Id, int Sequence, Guid FinanceAccountId,
-    Guid? PopulationItemId, string AccountCode, string AccountName, string LineType, decimal DebitAmount,
-    decimal CreditAmount, string Currency, string Description);
-public sealed record CurrencyRevaluationReviewDto(Guid Id, Guid? PopulationItemId, string Action, string Reason,
-    Guid ActorUserId, Guid? ApprovalRequestId, string EvidenceChecksum, DateTime OccurredUtc);
-public sealed record CurrencyRevaluationReconciliationDto(Guid Id, string ReconciliationType, int PopulationCount,
-    decimal CarryingAmount, decimal RevaluedAmount, decimal ProposedAdjustment, decimal ProposalLineAdjustment,
-    decimal Difference, string Currency, string Checksum, bool IsReconciled);
-public sealed record CurrencyRevaluationApprovalDto(Guid Id, string Status, string? DecisionSummary,
-    DateTime CreatedUtc, DateTime? DecidedUtc);
-public sealed record CurrencyRevaluationRunDto(Guid Id, Guid CompanyId, Guid FiscalPeriodId, string FiscalPeriodName,
-    int RunNumber, DateOnly AsOfDate, string FunctionalCurrency, string VoucherSeriesCode, string Status,
-    string? FailureReasonCode, string? FailureSummary, string? PopulationChecksum, string? RateSetChecksum,
-    string? ProposalChecksum, int PopulationCount, int IncludedCount, int ExcludedCount, int ReviewCount,
-    decimal DocumentBalanceTotal, decimal CarryingFunctionalTotal, decimal RevaluedFunctionalTotal,
-    decimal ProposedAdjustmentTotal, Guid? ApprovalRequestId, Guid? LedgerEntryId, Guid? ReversalLedgerEntryId,
-    Guid? SupersededByRunId, bool IsScheduled, long Version, DateTime CreatedUtc, DateTime UpdatedUtc,
-    DateTime? SubmittedUtc, DateTime? PostedUtc, DateTime? ReversedUtc,
-    IReadOnlyList<CurrencyRevaluationPopulationItemDto> Population,
-    IReadOnlyList<CurrencyRevaluationRateBindingDto> RateBindings,
-    IReadOnlyList<CurrencyRevaluationProposalLineDto> ProposalLines,
-    IReadOnlyList<CurrencyRevaluationReviewDto> Reviews,
-    IReadOnlyList<CurrencyRevaluationReconciliationDto> Reconciliations,
-    CurrencyRevaluationApprovalDto? Approval);
-public sealed record CurrencyRevaluationRunListDto(IReadOnlyList<CurrencyRevaluationRunDto> Items, int TotalCount, int Skip, int Take);
 public sealed record CurrencyRevaluationAccountPolicyDto(Guid Id, Guid FinanceAccountId, string AccountCode,
     string AccountName, string MonetaryClass, bool IsEnabled, long Version, DateTime UpdatedUtc);
-public sealed record CurrencyRevaluationScheduleDto(Guid Id, Guid CompanyId, bool IsEnabled, int DaysBeforePeriodEnd,
-    bool AutomaticReversal, string VoucherSeriesCode, long Version, DateTime UpdatedUtc, DateTime? LastEvaluatedUtc);
 
 public interface ICurrencyRevaluationService
 {

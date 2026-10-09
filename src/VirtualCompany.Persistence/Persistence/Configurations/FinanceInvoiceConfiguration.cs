@@ -57,6 +57,24 @@ internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<Fin
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Invoices).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Invoice).HasForeignKey(x => new { x.CompanyId, x.InvoiceId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+
+        FinanceSourceTrackingMapping.Configure(builder);
+
+        builder.Property(x => x.DocumentId).HasColumnName("document_id");
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentId });
+        builder.HasOne(x => x.Document)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.DocumentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.Property(x => x.SourceSimulationEventRecordId).HasColumnName("source_simulation_event_record_id");
+        builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
+        builder.HasOne(x => x.SourceSimulationEventRecord)
+            .WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.SourceSimulationEventRecordId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

@@ -110,36 +110,6 @@ public sealed record AccountingProviderSwitchStagedRecordDto(
     DateTime UpdatedUtc,
     long Version);
 
-public sealed record AccountingProviderSwitchMappingDecisionDto(
-    Guid Id,
-    Guid MappingSetId,
-    int MappingVersion,
-    string MappingType,
-    string SourceKey,
-    string? TargetKey,
-    string SuggestionMethod,
-    decimal Confidence,
-    string EvidenceJson,
-    bool IsMaterial,
-    long AffectedRecordCount,
-    decimal AffectedFinancialTotal,
-    string Status,
-    Guid? ApprovalRequestId,
-    bool IsApprovalCurrent,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    long Version);
-
-public sealed record AccountingProviderSwitchDispositionCountDto(string Disposition, long Count,
-    decimal FinancialTotal);
-public sealed record AccountingProviderSwitchDatasetCompletenessDto(string Dataset, long ExpectedCount,
-    long StagedCount, long ValidDispositionCount, bool IsComplete, string Explanation);
-public sealed record AccountingProviderSwitchCompletenessDto(Guid SwitchId, bool IsComplete, long ExpectedCount,
-    long StagedCount, long ValidDispositionCount, long BlockingCount,
-    IReadOnlyList<AccountingProviderSwitchDispositionCountDto> Dispositions,
-    IReadOnlyList<AccountingProviderSwitchDatasetCompletenessDto> Datasets,
-    string Explanation);
-
 public interface IAccountingProviderSwitchStagingService
 {
     Task<AccountingProviderSwitchStagedRecordDto> StageAsync(StageAccountingProviderSwitchRecordCommand command,

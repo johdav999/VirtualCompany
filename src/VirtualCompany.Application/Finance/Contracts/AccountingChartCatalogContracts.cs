@@ -1,11 +1,5 @@
 namespace VirtualCompany.Application.Finance;
 
-public static class AccountingChartCatalogDefaults
-{
-    public const string Bas2026CatalogKey = "bas-2026";
-    public const string Bas2026CatalogVersion = "1.1";
-}
-
 public sealed record AccountingChartCatalogAccountDefinition(
     string Code,
     string NameSv,
@@ -36,39 +30,6 @@ public interface IAccountingChartCatalogResolver
     IAccountingChartCatalog Resolve(string catalogKey, string catalogVersion);
     IReadOnlyList<IAccountingChartCatalog> GetAll();
 }
-
-public sealed record AccountingChartCatalogAccountDto(
-    string Code,
-    string NameSv,
-    IReadOnlyList<string> NameVariantsSv,
-    bool RequiresNameSelection,
-    bool IsK2Allowed,
-    bool IsSubAccount,
-    string? ParentAccountCode,
-    string GroupCode,
-    string GroupNameSv,
-    string? SuggestedAccountClass,
-    string? SuggestedNormalBalance,
-    bool RequiresSemanticsConfirmation,
-    bool RequiresCompanySuitabilityConfirmation,
-    bool IsAlreadyAdded);
-
-public sealed record AccountingChartCatalogGroupDto(string Code, string NameSv);
-
-public sealed record AccountingChartCatalogPageDto(
-    string CatalogKey,
-    string CatalogVersion,
-    string DisplayName,
-    string Locale,
-    string SourceFileName,
-    string SourceSha256,
-    int TotalAccountCount,
-    int MatchedAccountCount,
-    int Skip,
-    int Take,
-    IReadOnlyList<string> Limitations,
-    IReadOnlyList<AccountingChartCatalogGroupDto> Groups,
-    IReadOnlyList<AccountingChartCatalogAccountDto> Accounts);
 
 public sealed record GetAccountingChartCatalogQuery(
     Guid CompanyId,

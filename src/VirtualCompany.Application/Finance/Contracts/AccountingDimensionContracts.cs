@@ -41,15 +41,6 @@ public static class AccountingDimensionReasonCodes
     public const string AllocationApprovalRequired = "accounting_allocation_approval_required";
 }
 
-public sealed record ResolvedAccountingDimensionAssignment(
-    Guid DimensionTypeId,
-    string DimensionTypeCode,
-    string DimensionTypeName,
-    Guid DimensionMemberId,
-    string MemberCode,
-    string MemberName,
-    string HierarchyPath);
-
 public sealed record AccountingDimensionPostingDecision(
     IReadOnlyList<AccountingPostingIssue> Issues,
     IReadOnlyDictionary<int, IReadOnlyList<ResolvedAccountingDimensionAssignment>> AssignmentsByLine);
@@ -60,112 +51,6 @@ public interface IAccountingDimensionPostingPolicy
         ProposedAccountingEntry entry,
         CancellationToken cancellationToken);
 }
-
-public sealed record AccountingDimensionMemberDto(
-    Guid Id,
-    Guid DimensionTypeId,
-    Guid? ParentMemberId,
-    string Code,
-    string Name,
-    string Status,
-    DateOnly EffectiveFrom,
-    DateOnly? EffectiveTo,
-    string HierarchyPath,
-    long Version);
-
-public sealed record AccountingDimensionTypeDto(
-    Guid Id,
-    string Code,
-    string Name,
-    string? Description,
-    bool AllowsHierarchy,
-    string Status,
-    DateOnly EffectiveFrom,
-    DateOnly? EffectiveTo,
-    long Version,
-    IReadOnlyList<AccountingDimensionMemberDto> Members);
-
-public sealed record AccountingDimensionAccountPolicyDto(
-    Guid Id,
-    Guid FinanceAccountId,
-    string AccountCode,
-    string AccountName,
-    Guid DimensionTypeId,
-    string DimensionTypeCode,
-    string Requirement,
-    DateOnly EffectiveFrom,
-    DateOnly? EffectiveTo,
-    long Version);
-
-public sealed record AccountingDimensionCombinationRuleDto(
-    Guid Id,
-    Guid LeftMemberId,
-    string LeftDisplay,
-    Guid RightMemberId,
-    string RightDisplay,
-    bool IsAllowed,
-    DateOnly EffectiveFrom,
-    DateOnly? EffectiveTo,
-    long Version);
-
-public sealed record AccountingDimensionExternalMappingDto(
-    Guid Id,
-    string ProviderKey,
-    string ExternalDimensionType,
-    string ExternalValue,
-    Guid DimensionTypeId,
-    Guid DimensionMemberId,
-    string MemberDisplay,
-    DateOnly EffectiveFrom,
-    DateOnly? EffectiveTo,
-    long Version);
-
-public sealed record AccountingDimensionMappingConflictDto(
-    Guid Id,
-    string ProviderKey,
-    string ExternalDimensionType,
-    string ExternalValue,
-    string ReasonCode,
-    string Explanation,
-    string Status,
-    Guid? ResolvedDimensionMemberId,
-    DateTime CreatedUtc,
-    DateTime? ResolvedUtc);
-
-public sealed record AccountingAllocationTemplateLineDto(
-    Guid Id,
-    int Sequence,
-    Guid DimensionMemberId,
-    string DimensionDisplay,
-    string AllocationKind,
-    decimal Value,
-    string? Basis);
-
-public sealed record AccountingAllocationTemplateDto(
-    Guid Id,
-    string Code,
-    string Name,
-    string Status,
-    decimal? ApprovalThreshold,
-    long Version,
-    Guid? CurrentVersionId,
-    int? CurrentVersionNumber,
-    DateOnly? EffectiveFrom,
-    DateOnly? EffectiveTo,
-    int RoundingPrecision,
-    IReadOnlyList<AccountingAllocationTemplateLineDto> Lines);
-
-public sealed record AccountingDimensionWorkspaceDto(
-    IReadOnlyList<AccountingDimensionTypeDto> DimensionTypes,
-    IReadOnlyList<AccountingDimensionAccountPolicyDto> AccountPolicies,
-    IReadOnlyList<AccountingDimensionCombinationRuleDto> CombinationRules,
-    IReadOnlyList<AccountingDimensionExternalMappingDto> ExternalMappings,
-    IReadOnlyList<AccountingDimensionMappingConflictDto> MappingConflicts,
-    IReadOnlyList<AccountingAllocationTemplateDto> AllocationTemplates,
-    int ActiveDimensionCount,
-    int ActiveMemberCount,
-    int RequiredAccountRuleCount,
-    int OpenMappingConflictCount);
 
 public sealed record SaveAccountingDimensionTypeCommand(
     Guid CompanyId,
@@ -261,29 +146,6 @@ public sealed record PreviewAccountingAllocationQuery(
     string Currency,
     DateOnly EffectiveDate);
 
-public sealed record AccountingAllocationPreviewLineDto(
-    int Sequence,
-    Guid DimensionMemberId,
-    string DimensionDisplay,
-    string AllocationKind,
-    decimal DriverValue,
-    decimal RawAmount,
-    decimal RoundedAmount,
-    decimal RoundingResidual);
-
-public sealed record AccountingAllocationPreviewDto(
-    Guid TemplateId,
-    Guid TemplateVersionId,
-    int TemplateVersionNumber,
-    decimal SourceAmount,
-    decimal AllocatedAmount,
-    decimal Difference,
-    string Currency,
-    int RoundingPrecision,
-    bool RequiresApproval,
-    IReadOnlyList<AccountingAllocationPreviewLineDto> Lines,
-    IReadOnlyList<AccountingPostingIssue> Issues);
-
 public sealed record ApplyAccountingAllocationCommand(
     Guid CompanyId,
     Guid TemplateId,
@@ -299,23 +161,6 @@ public sealed record ApplyAccountingAllocationCommand(
     IReadOnlyList<ProposedAccountingEvidence>? Evidence = null,
     string? CorrelationId = null);
 
-public sealed record AccountingAllocationApplicationDto(
-    Guid Id,
-    Guid TemplateId,
-    Guid TemplateVersionId,
-    string SourceType,
-    string SourceId,
-    string SourceVersion,
-    string IdempotencyKey,
-    string PayloadHash,
-    decimal SourceAmount,
-    decimal AllocatedAmount,
-    string Currency,
-    Guid? ApprovalRequestId,
-    bool IsIdempotentReplay,
-    DateTime CreatedUtc,
-    IReadOnlyList<AccountingAllocationPreviewLineDto> Lines);
-
 public sealed record GetAccountingDimensionReportQuery(
     Guid CompanyId,
     Guid DimensionMemberId,
@@ -323,36 +168,6 @@ public sealed record GetAccountingDimensionReportQuery(
     DateOnly? To = null,
     int Skip = 0,
     int Take = 250);
-
-public sealed record AccountingDimensionReportLineDto(
-    Guid LedgerEntryId,
-    Guid LedgerEntryLineId,
-    string EntryNumber,
-    DateOnly PostingDate,
-    string AccountCode,
-    string AccountName,
-    decimal DebitAmount,
-    decimal CreditAmount,
-    string Currency,
-    string? Description,
-    string DimensionTypeCodeSnapshot,
-    string DimensionMemberCodeSnapshot,
-    string DimensionMemberNameSnapshot,
-    string HierarchyPathSnapshot);
-
-public sealed record AccountingDimensionReportDto(
-    Guid DimensionTypeId,
-    Guid DimensionMemberId,
-    string DimensionTypeCode,
-    string DimensionMemberCode,
-    string DimensionMemberName,
-    decimal TotalDebit,
-    decimal TotalCredit,
-    decimal NetAmount,
-    int TotalLineCount,
-    int Skip,
-    int Take,
-    IReadOnlyList<AccountingDimensionReportLineDto> Lines);
 
 public interface IAccountingDimensionService
 {

@@ -173,9 +173,10 @@
         finally { isBusy = false; }
     }
 
-    private static string ProviderIcon(string provider) => provider == "google" ? "bi-google" : "bi-microsoft";
-    private static string ProviderClass(string provider) => provider == "google" ? "is-google" : "is-microsoft";
+    private Task ConnectAsync(VirtualCompany.Domain.Enums.ExternalAccountProvider provider) => ConnectAsync(provider == VirtualCompany.Domain.Enums.ExternalAccountProvider.Google ? "google" : "microsoft365");
+    private static string ProviderIcon(VirtualCompany.Domain.Enums.ExternalAccountProvider provider) => provider == VirtualCompany.Domain.Enums.ExternalAccountProvider.Google ? "bi-google" : "bi-microsoft";
+    private static string ProviderClass(VirtualCompany.Domain.Enums.ExternalAccountProvider provider) => provider == VirtualCompany.Domain.Enums.ExternalAccountProvider.Google ? "is-google" : "is-microsoft";
     private static string CalendarLabel(string calendarId) => calendarId == "primary" ? "Primary calendar" : calendarId;
-    private static string StatusLabel(CalendarConnectionSummaryResponse connection) => connection.RequiresReconnect ? "Reconnect required" : connection.Status == "active" ? "Connected" : connection.Status.Replace('_', ' ');
-    private static string StatusClass(CalendarConnectionSummaryResponse connection) => connection.RequiresReconnect ? "needs-attention" : connection.Status == "active" ? "is-active" : "is-muted";
+    private static string StatusLabel(CalendarConnectionSummaryResponse connection) => connection.RequiresReconnect ? "Reconnect required" : connection.Status == VirtualCompany.Domain.Enums.ExternalConnectionStatus.Active ? "Connected" : System.Text.Json.JsonNamingPolicy.SnakeCaseLower.ConvertName(connection.Status.ToString()).Replace('_', ' ');
+    private static string StatusClass(CalendarConnectionSummaryResponse connection) => connection.RequiresReconnect ? "needs-attention" : connection.Status == VirtualCompany.Domain.Enums.ExternalConnectionStatus.Active ? "is-active" : "is-muted";
 }

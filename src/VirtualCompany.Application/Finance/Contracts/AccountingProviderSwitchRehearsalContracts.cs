@@ -43,41 +43,10 @@ public sealed record GenerateAccountingProviderSwitchCutoverPlanCommand(Guid Com
 public sealed record RequestAccountingProviderSwitchPlanApprovalCommand(Guid CompanyId, Guid SwitchId,
     Guid PlanId, long ExpectedSwitchVersion, Guid ActorUserId, string CorrelationId);
 public sealed record GetAccountingProviderSwitchPlanReadinessQuery(Guid CompanyId, Guid SwitchId, Guid? PlanId = null);
-
-public sealed record AccountingProviderSwitchRehearsalInputDto(Guid Id, long SwitchVersion, string Strategy,
-    string SourceSnapshotHash, string StagingHash, string MappingHash, string GapHash, long StagedRecordCount,
-    decimal FinancialTotal, string DatasetSummaryJson, DateTime CreatedUtc);
-public sealed record AccountingProviderSwitchRehearsalDatasetResultDto(Guid Id, string Dataset,
-    long ExpectedCount, long ObservedCount, decimal ExpectedTotal, decimal ObservedTotal, string? Currency,
-    string Result, string ReasonCode, string EvidenceJson, DateTime CalculatedUtc);
-public sealed record AccountingProviderSwitchReconciliationCheckDto(Guid Id, string CheckKey,
-    string ExpectedValue, string ObservedValue, decimal Tolerance, string? Currency, string Result,
-    string ReasonCode, string DataSourcesJson, string CalculationVersion, bool ManualEvidenceAllowed,
-    bool HasCurrentManualEvidence, DateTime CalculatedUtc);
-public sealed record AccountingProviderSwitchManualEvidenceDto(Guid Id, Guid CheckId, string Explanation,
-    string EvidenceReference, Guid RecordedByUserId, DateTime RecordedUtc, DateTime? ExpiresUtc);
-public sealed record AccountingProviderSwitchRehearsalDto(Guid Id, Guid CompanyId, Guid SwitchId, string Status,
-    string? SimulationKind, bool ProviderAcceptanceProven, string? Disclosure, int CompletedWorkItems,
-    int TotalWorkItems, int ProgressPercent, int AttemptCount, DateTime? NextAttemptUtc, string? FailureCode,
-    string? FailureSummary, DateTime RequestedUtc, DateTime? StartedUtc, DateTime? CompletedUtc, long Version,
-    AccountingProviderSwitchRehearsalInputDto? Input,
-    IReadOnlyList<AccountingProviderSwitchRehearsalDatasetResultDto> Datasets,
-    IReadOnlyList<AccountingProviderSwitchReconciliationCheckDto> Checks,
-    IReadOnlyList<AccountingProviderSwitchManualEvidenceDto> ManualEvidence,
-    bool IsReadyForPlan, string ReadinessExplanation);
 public sealed record AccountingProviderSwitchRehearsalProgressDto(Guid RehearsalId, string Status,
     int CompletedWorkItems, int TotalWorkItems, int ProgressPercent, int AttemptCount,
     DateTime? NextAttemptUtc, string? FailureCode, string? FailureSummary, bool IsReadyForPlan,
     string ReadinessExplanation);
-
-public sealed record AccountingProviderSwitchCutoverPlanDto(Guid Id, Guid CompanyId, Guid SwitchId,
-    Guid RehearsalId, int PlanVersion, string PlanHash, string SourceSnapshotHash, string Strategy,
-    DateTime FreezeStartsUtc, DateTime FreezeEndsUtc, string RecoveryBoundary, string ParticipantsJson,
-    string SnapshotJson, Guid GeneratedByUserId, DateTime GeneratedUtc, Guid? ApprovalRequestId,
-    string? ApprovalStatus, bool IsCurrent, bool IsApprovedAndCurrent);
-public sealed record AccountingProviderSwitchPlanReadinessDto(Guid SwitchId,
-    AccountingProviderSwitchCutoverPlanDto? Plan, bool IsReady, string? BlockingReasonCode,
-    string Explanation);
 
 public sealed record AccountingProviderSwitchRehearsalTargetRequest(Guid CompanyId, Guid SwitchId,
     string TargetKind, string? TargetProviderKey, string InputHash, IReadOnlyList<RehearsalStagedRecord> Records,

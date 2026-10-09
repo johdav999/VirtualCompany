@@ -16,8 +16,6 @@ public static class TreasuryMovementReasonCodes
     public const string BankTransactionAlreadyLinked = "treasury_bank_transaction_already_linked";
 }
 
-public sealed record TreasuryEvidenceInputDto(string EvidenceType, string Reference, string ContentHash, string Description);
-
 public sealed record CreateTreasuryTransferCommand(Guid CompanyId, string SourceIdentity,
     Guid FromBankAccountId, Guid ToBankAccountId, decimal Amount, decimal FeeAmount, string Currency,
     Guid? FeeFinanceAccountId, decimal MaterialityThreshold, Guid? CorrectionOfTransferId,
@@ -62,35 +60,6 @@ public sealed record ReverseTreasurySourceCommand(Guid CompanyId, string SourceT
 public sealed record ListTreasurySourcesQuery(Guid CompanyId, string? Status = null,
     Guid? BankTransactionId = null, int Limit = 100);
 public sealed record GetTreasurySourceQuery(Guid CompanyId, string SourceType, Guid SourceId);
-
-public sealed record TreasuryBankEvidenceDto(Guid BankTransactionId, string LegRole, DateTime BookingDate,
-    decimal Amount, string Currency, string Reference, string Counterparty);
-public sealed record TreasuryEvidenceDto(Guid Id, string EvidenceType, string Reference, string ContentHash,
-    string Description, DateTime CreatedUtc);
-public sealed record TreasuryLedgerLinkDto(Guid LedgerEntryId, string EntryNumber, string LinkRole, DateTime CreatedUtc);
-public sealed record TreasurySourceEventDto(Guid Id, string Action, Guid ActorUserId, string? ReasonCode,
-    string BeforeJson, string AfterJson, DateTime CreatedUtc);
-public sealed record TreasuryPostingLineDto(Guid FinanceAccountId, string AccountCode, string AccountName,
-    decimal DebitAmount, decimal CreditAmount, string Currency, string Description);
-public sealed record TreasuryPostingPreviewDto(bool CanPost, string? BlockingReasonCode, string? BlockingReason,
-    AccountingPostingPreview? Accounting, IReadOnlyList<TreasuryPostingLineDto> Lines);
-public sealed record TreasuryAllowedActionsDto(bool CanLinkBankEvidence, bool CanBindApproval, bool CanPreview,
-    bool CanPost, bool CanReverse, string? BlockingReasonCode, string? Explanation);
-
-public sealed record TreasurySourceSummaryDto(Guid Id, string SourceType, string SourceIdentity, string DisplayName,
-    string Status, string? ReasonCode, string Currency, decimal GrossAmount, decimal FeeAmount,
-    decimal NetAmount, bool RequiresApproval, Guid? ApprovalRequestId, long Version,
-    DateTime UpdatedUtc);
-
-public sealed record TreasurySourceDetailDto(TreasurySourceSummaryDto Summary,
-    Guid? FromBankAccountId, Guid? ToBankAccountId, Guid? BankAccountId, Guid? CounterpartFinanceAccountId,
-    Guid? CorrectionOfSourceId, IReadOnlyList<TreasuryBankEvidenceDto> BankEvidence,
-    IReadOnlyList<TreasuryEvidenceDto> Evidence, IReadOnlyList<TreasuryLedgerLinkDto> Journals,
-    IReadOnlyList<TreasurySourceEventDto> History, TreasuryAllowedActionsDto AllowedActions,
-    TreasuryPostingPreviewDto? PostingPreview = null);
-
-public sealed record TreasurySourceListDto(IReadOnlyList<TreasurySourceSummaryDto> Items, int AttentionCount,
-    int InTransitCount, int ReadyCount, int PostedCount);
 
 public interface ITreasuryMovementReadService
 {

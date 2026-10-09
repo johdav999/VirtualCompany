@@ -11,17 +11,17 @@ public sealed class AccountingProviderSwitchTargetTransferApiSurfaceTests
     [Fact]
     public void Target_transfer_mutations_require_accounting_admin_and_reads_require_accounting_view()
     {
-        AssertPolicy(nameof(InternalFinanceController.StartAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.ReplayAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.ReconcileAccountingProviderSwitchTargetTransferItemAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.GetLatestAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingView);
-        AssertPolicy(nameof(InternalFinanceController.GetAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingView);
+        AssertPolicy(nameof(InternalFinanceAccountingAuthorityController.StartAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingAuthorityController.ReplayAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingAuthorityController.ReconcileAccountingProviderSwitchTargetTransferItemAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingAuthorityController.GetLatestAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingView);
+        AssertPolicy(nameof(InternalFinanceAccountingAuthorityController.GetAccountingProviderSwitchTargetTransferAsync), CompanyPolicies.AccountingView);
     }
 
     [Fact]
     public void Target_transfer_routes_are_company_and_switch_scoped()
     {
-        var methods = typeof(InternalFinanceController).GetMethods()
+        var methods = typeof(InternalFinanceAccountingAuthorityController).GetMethods()
             .Where(x => x.Name.Contains("AccountingProviderSwitchTargetTransfer", StringComparison.Ordinal))
             .ToArray();
 
@@ -37,7 +37,7 @@ public sealed class AccountingProviderSwitchTargetTransferApiSurfaceTests
 
     private static void AssertPolicy(string methodName, string expectedPolicy)
     {
-        var method = typeof(InternalFinanceController).GetMethod(methodName)
+        var method = typeof(InternalFinanceAccountingAuthorityController).GetMethod(methodName)
             ?? throw new InvalidOperationException($"{methodName} was not found.");
         Assert.Equal(expectedPolicy, method.GetCustomAttribute<AuthorizeAttribute>()?.Policy);
     }

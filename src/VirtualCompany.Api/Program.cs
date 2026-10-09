@@ -81,6 +81,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddScoped<VirtualCompany.Api.ProblemHandling.FinanceInitializationProblemHandler>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<IActivityEventPublisher, SignalRActivityEventPublisher>();
 builder.Services.AddVirtualCompanyInfrastructure(builder.Configuration);

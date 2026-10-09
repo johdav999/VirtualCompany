@@ -88,6 +88,7 @@
     [Parameter, EditorRequired] public Guid CompanyId { get; set; }
     [Parameter, EditorRequired] public FinanceInvoiceDetailResponse Invoice { get; set; } = default!;
     [Parameter] public string? MembershipRole { get; set; }
+    [Parameter] public decimal? RemainingAmount { get; set; }
 
     private CustomerInvoiceArtifactResponse? Artifact { get; set; }
     private CustomerInvoicePreferredDeliveryResponse? PreferredDelivery { get; set; }
@@ -135,7 +136,7 @@
     protected override async Task OnParametersSetAsync()
     {
         if (!IsNativeCandidate || _loadedInvoice == Invoice.Id) return;
-        _loadedInvoice = Invoice.Id; CorrectionAmount = Invoice.PaymentContext?.RemainingAmount ?? Invoice.Amount;
+        _loadedInvoice = Invoice.Id; CorrectionAmount = RemainingAmount ?? Invoice.Amount;
         try
         {
             var capabilityTask = FinanceApiClient.GetCustomerInvoiceElectronicProviderAsync(CompanyId);

@@ -17,7 +17,7 @@ public sealed class AccountingScheduleApiSurfaceTests
     [InlineData("DecideAccountingScheduleApprovalAsync", CompanyPolicies.FinanceApproval)]
     public void Schedule_endpoints_require_the_expected_company_policy(string methodName, string policy)
     {
-        var method = typeof(InternalFinanceController).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
+        var method = typeof(InternalFinanceAccountingSchedulesController).GetMethod(methodName, BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(method);
         Assert.Contains(method!.GetCustomAttributes<AuthorizeAttribute>(), attribute => attribute.Policy == policy);
     }

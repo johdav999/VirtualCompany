@@ -1,7 +1,5 @@
 using VirtualCompany.Api.Tests;
 using VirtualCompany.Web.Services;
-using FinancePlanningQuery=VirtualCompany.Web.Services.FinancePlanningQuery;
-using PreviewFinanceForecast=VirtualCompany.Web.Services.PreviewFinanceForecast;
 namespace VirtualCompany.Web.Contract.Tests;
 
 public sealed class FinanceRollingPlanningWireTests

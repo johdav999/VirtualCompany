@@ -55,46 +55,6 @@ public sealed record RegenerateStoredReportingStatementsCommand(
     Guid FiscalPeriodId,
     bool RunInBackground = false);
 
-public sealed record ReportingPeriodBlockingIssueDto(
-    string Code,
-    string Message,
-    int Count,
-    IReadOnlyList<string> SampleReferences,
-    decimal? Amount = null,
-    string? Currency = null,
-    IReadOnlyList<string>? RecordLinks = null,
-    string? Remediation = null,
-    IReadOnlyDictionary<string, string>? Evidence = null);
-
-public sealed record ReportingPeriodCloseValidationResultDto(
-    Guid CompanyId,
-    Guid FiscalPeriodId,
-    string FiscalPeriodName,
-    DateTime ExecutedAtUtc,
-    string ActorType,
-    Guid? ActorId,
-    Guid MembershipId,
-    string MembershipRole,
-    bool IsReadyToClose,
-    bool IsClosed,
-    bool IsReportingLocked,
-    [property: System.Text.Json.Serialization.JsonPropertyName("blockingIssues")]
-    IReadOnlyList<ReportingPeriodBlockingIssueDto> Issues);
-
-public sealed record ReportingPeriodLockStateDto(
-    Guid CompanyId,
-    Guid FiscalPeriodId,
-    string FiscalPeriodName,
-    bool IsClosed,
-    bool IsReportingLocked,
-    DateTime? ReportingLockedAtUtc,
-    Guid? ReportingLockedByUserId,
-    DateTime? ReportingUnlockedAtUtc,
-    Guid? ReportingUnlockedByUserId,
-    DateTime? LastCloseValidatedAtUtc,
-    Guid? LastCloseValidatedByUserId,
-    DateTime UpdatedAtUtc);
-
 public static class ReportingPeriodErrorCodes
 {
     public const string ReportingPeriodNotClosed = "reporting_period_not_closed";
@@ -216,15 +176,6 @@ public sealed record FinanceCashBalanceDto(
     string Currency,
     IReadOnlyList<FinanceAccountBalanceDto> Accounts);
 
-public sealed record FinanceAccountBalanceDto(
-    Guid AccountId,
-    string AccountCode,
-    string AccountName,
-    string AccountType,
-    decimal Amount,
-    string Currency,
-    DateTime AsOfUtc);
-
 public sealed record FinanceSummaryAssetPurchaseDto(
     Guid AssetId,
     Guid CompanyId,
@@ -280,49 +231,6 @@ public sealed record FinanceCashProjectionDto(
     decimal RecurringOutflows,
     string ProjectionRule = "Includes open invoices, due bills, and recurring outflows with due dates inside the projection horizon.");
 
-public sealed record FinanceMonthlyProfitAndLossDto(
-    Guid CompanyId,
-    int Year,
-    int Month,
-    DateTime StartUtc,
-    DateTime EndUtc,
-    decimal Revenue,
-    decimal Expenses,
-    decimal NetResult,
-    string Currency);
-
-public sealed record FinanceExpenseBreakdownDto(
-    Guid CompanyId,
-    DateTime StartUtc,
-    DateTime EndUtc,
-    decimal TotalExpenses,
-    string Currency,
-    IReadOnlyList<FinanceExpenseCategoryDto> Categories);
-
-public sealed record FinanceExpenseCategoryDto(
-    string Category,
-    decimal Amount,
-    string Currency);
-
-public sealed record FinanceCashPositionDto(
-    Guid CompanyId,
-    DateTime AsOfUtc,
-    decimal AvailableBalance,
-    string Currency,
-    decimal AverageMonthlyBurn,
-    int? EstimatedRunwayDays,
-    FinanceCashPositionThresholdsDto Thresholds,
-    FinanceCashPositionAlertStateDto AlertState,
-    FinanceWorkflowOutputSchemaDto WorkflowOutput)
-{
-    public string Classification => WorkflowOutput.Classification;
-    public string RiskLevel => WorkflowOutput.RiskLevel;
-    public string RecommendedAction => WorkflowOutput.RecommendedAction;
-    public string Rationale => WorkflowOutput.Rationale;
-    public decimal Confidence => WorkflowOutput.Confidence;
-    public string SourceWorkflow => WorkflowOutput.SourceWorkflow;
-}
-
 public sealed record FinanceAgentQueryPeriodDto(
     DateTime AsOfUtc,
     DateTime? WindowStartUtc,
@@ -339,58 +247,6 @@ public sealed record FinanceAgentMetricComponentDto(
     decimal Delta,
     string Currency,
     IReadOnlyList<Guid> SourceRecordIds);
-
-public sealed record FinanceStatementLineDto(
-    Guid? FinanceAccountId,
-    string AccountCode,
-    string AccountName,
-    string ReportSection,
-    string LineClassification,
-    decimal Amount,
-    string Currency);
-
-public sealed record FinancialStatementSnapshotMetadataDto(
-    Guid SnapshotId,
-    int VersionNumber,
-    string BalancesChecksum,
-    DateTime GeneratedAtUtc,
-    DateTime SourcePeriodStartUtc,
-    DateTime SourcePeriodEndUtc,
-    string Currency);
-
-public sealed record ProfitAndLossReportDto(
-    Guid CompanyId,
-    Guid FiscalPeriodId,
-    string FiscalPeriodName,
-    DateTime PeriodStartUtc,
-    DateTime PeriodEndUtc,
-    bool IsClosed,
-    bool UsedSnapshot,
-    string Currency,
-    IReadOnlyList<FinanceStatementLineDto> RevenueLines,
-    IReadOnlyList<FinanceStatementLineDto> ExpenseLines,
-    decimal TotalRevenue,
-    decimal TotalExpenses,
-    decimal NetIncome,
-    FinancialStatementSnapshotMetadataDto? Snapshot);
-
-public sealed record BalanceSheetReportDto(
-    Guid CompanyId,
-    Guid FiscalPeriodId,
-    string FiscalPeriodName,
-    DateTime PeriodStartUtc,
-    DateTime PeriodEndUtc,
-    bool IsClosed,
-    bool UsedSnapshot,
-    string Currency,
-    IReadOnlyList<FinanceStatementLineDto> AssetLines,
-    IReadOnlyList<FinanceStatementLineDto> LiabilityLines,
-    IReadOnlyList<FinanceStatementLineDto> EquityLines,
-    decimal TotalAssets,
-    decimal TotalLiabilities,
-    decimal TotalEquity,
-    bool IsBalanced,
-    FinancialStatementSnapshotMetadataDto? Snapshot);
 
 public sealed record FinancialStatementSnapshotSummaryDto(
     Guid SnapshotId,
@@ -410,47 +266,6 @@ public sealed record FinancialStatementSnapshotDetailDto(
     Guid SnapshotId,
     FinancialStatementSnapshotSummaryDto Summary,
     IReadOnlyList<FinanceStatementLineDto> Lines);
-
-public sealed record FinancialStatementDrilldownLineDto(
-    string LineCode,
-    string LineName,
-    string ReportSection,
-    string LineClassification,
-    decimal Amount,
-    string Currency);
-
-public sealed record FinancialStatementDrilldownJournalLineDto(
-    Guid LedgerEntryLineId,
-    Guid FinanceAccountId,
-    string AccountCode,
-    string AccountName,
-    decimal DebitAmount,
-    decimal CreditAmount,
-    decimal ContributionAmount,
-    string Currency,
-    string? Description);
-
-public sealed record FinancialStatementDrilldownJournalEntryDto(
-    Guid LedgerEntryId,
-    string EntryNumber,
-    DateTime EntryUtc,
-    string? Description,
-    decimal TotalContributionAmount,
-    IReadOnlyList<FinancialStatementDrilldownJournalLineDto> Lines);
-
-public sealed record FinancialStatementDrilldownDto(
-    Guid CompanyId,
-    Guid FiscalPeriodId,
-    string FiscalPeriodName,
-    string StatementType,
-    string SourceMode,
-    FinancialStatementSnapshotMetadataDto? Snapshot,
-    FinancialStatementDrilldownLineDto SelectedLine,
-    decimal OpeningBalanceAdjustment,
-    decimal JournalLineTotal,
-    decimal ReconciliationTotal,
-    decimal ReconciliationDelta,
-    IReadOnlyList<FinancialStatementDrilldownJournalEntryDto> JournalEntries);
 
 public sealed record FinanceForecastDto(
     Guid Id,

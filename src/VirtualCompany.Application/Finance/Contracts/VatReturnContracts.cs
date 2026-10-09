@@ -60,47 +60,6 @@ public sealed record GetVatReturnQuery(Guid CompanyId, Guid VatReturnId);
 public sealed record ListVatReturnsQuery(Guid CompanyId, Guid? FilingPeriodId = null);
 public sealed record GetVatReturnPackageQuery(Guid CompanyId, Guid VatReturnId);
 
-public sealed record VatFilingPeriodDto(
-    Guid Id, Guid CompanyId, string PeriodCode, DateOnly StartDate, DateOnly EndDate,
-    string Currency, Guid? FiscalPeriodId, DateTime CreatedUtc, DateOnly? DueDate = null);
-
-public sealed record VatReturnBoxResultDto(
-    string BoxCode, string FactType, decimal ExactAmount, long FilingAmount,
-    string Currency, int SourceCount);
-
-public sealed record VatReturnSourceContributionDto(
-    Guid Id, Guid LedgerEntryId, string VoucherNumber, DateOnly PostingDate,
-    string SourceType, string SourceId, string SourceVersion,
-    string PolicyPackKey, string PolicyPackVersion, string TaxRuleKey,
-    string TaxRuleVersion, string BoxCode, string FactType, decimal ExactAmount,
-    string Currency, string SourceChecksum);
-
-public sealed record VatReturnValidationIssueDto(
-    Guid Id, string Code, string Explanation, bool IsBlocking,
-    Guid? LedgerEntryId, string? SourceReference, decimal? Difference = null);
-
-public sealed record VatReturnReviewDto(
-    Guid Id, string Action, Guid ActorUserId, Guid? ApprovalRequestId,
-    string EvidenceHash, DateTime OccurredUtc);
-
-public sealed record VatReturnDto(
-    Guid Id, Guid CompanyId, Guid FilingPeriodId, string PeriodCode,
-    DateOnly StartDate, DateOnly EndDate, string Currency, int Version,
-    string Status, bool IsStale, bool IsSuperseded, Guid? CorrectionOfVatReturnId,
-    string? CorrectionReason, string? CorrectionEvidenceReference,
-    DateTime? CutoffUtc, string? InputHash, string? CalculationChecksum,
-    int IncludedSourceCount, int ExcludedSourceCount,
-    decimal OutputVatExact, decimal InputVatExact, decimal SettlementExact,
-    long SettlementFilingAmount, Guid? ApprovalRequestId, string? ApprovalStatus,
-    Guid? FinalizedByUserId, DateTime? FinalizedUtc,
-    string? PackageChecksum, string? PackageFileName, string? PackageMediaType,
-    long? PackageContentLength, bool CanDownloadPackage,
-    IReadOnlyList<VatReturnBoxResultDto> Boxes,
-    IReadOnlyList<VatReturnSourceContributionDto> Contributions,
-    IReadOnlyList<VatReturnValidationIssueDto> Issues,
-    IReadOnlyList<VatReturnReviewDto> Reviews,
-    IReadOnlyList<string> AllowedActions);
-
 public sealed record VatReturnPackageDownloadDto(
     string FileName, string MediaType, byte[] Content, string Checksum);
 

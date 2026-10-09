@@ -49,6 +49,10 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
             .HasForeignKey(x => new { x.CompanyId, x.ReplacementAccountId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
             .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasMany(x => x.Balances).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+
+        FinanceSourceTrackingMapping.Configure(builder);
     }
 }
 

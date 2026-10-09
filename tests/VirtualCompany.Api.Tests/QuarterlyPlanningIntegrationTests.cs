@@ -1,10 +1,3 @@
-using PreviewQuarterReview = VirtualCompany.Application.Orchestration.PreviewQuarterReview;
-using QuarterObjectiveInput = VirtualCompany.Application.Orchestration.QuarterObjectiveInput;
-using QuarterMeasureLink = VirtualCompany.Application.Orchestration.QuarterMeasureLink;
-using QuarterMilestone = VirtualCompany.Application.Orchestration.QuarterMilestone;
-using QuarterReviewDocument = VirtualCompany.Application.Orchestration.QuarterReviewDocument;
-using QuarterReviewPreview = VirtualCompany.Application.Orchestration.QuarterReviewPreview;
-using SaveQuarterReview = VirtualCompany.Application.Orchestration.SaveQuarterReview;
 using System.Net;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
@@ -16,9 +9,9 @@ namespace VirtualCompany.Api.Tests;
 public sealed class QuarterlyPlanningIntegrationTests
 {
     public static async Task<T> Read<T>(HttpResponseMessage response)
-    { Assert.True(response.IsSuccessStatusCode, response.StatusCode + ": " + await response.Content.ReadAsStringAsync()); return (await response.Content.ReadFromJsonAsync<T>())!; }
+    { return await QuarterlyPlanningFixture.Read<T>(response); }
     public static async Task<QuarterReviewDocument> Save(HttpClient h, QuarterlyPlanningFixture s, PreviewQuarterReview? input = null, QuarterReviewDocument? prior = null)
-    { var p = await Read<QuarterReviewPreview>(await h.PostAsJsonAsync(s.Root + "/preview", input ?? s.Proposal)); return await Read<QuarterReviewDocument>(await h.PostAsJsonAsync(s.Root + "/reviews", new SaveQuarterReview(p.Proposal, prior?.Summary.Id, prior?.Summary.Revision ?? 0, Guid.NewGuid(), p.Fingerprint))); }
+    { return await QuarterlyPlanningFixture.Save(h, s, input, prior); }
     [Fact] public async Task Reconciled_actual_dependencies_conflicts_and_owner_milestone_revision_survive_reload()
     {
         using var f = new TestWebApplicationFactory(new SupportQualityFixture.Clock()); var s = await QuarterlyPlanningFixture.Seed(f); using var h = s.Client(f);

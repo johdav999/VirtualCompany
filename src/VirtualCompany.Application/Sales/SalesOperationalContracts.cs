@@ -12,10 +12,6 @@ public sealed record SalesOpportunityReport(Guid CompanyId, DateTime AsOfUtc, bo
     string? Currency, Guid? StageId, string CalculationVersion, IReadOnlyList<SalesOpportunityEvidence> Rows,
     IReadOnlyList<SalesCurrencyTotal> Totals, IReadOnlyList<string> AvailableCurrencies,
     IReadOnlyList<SalesForecastCurrencyWindow>? Windows = null);
-public sealed record SalesForecastCurrencyWindow(int Days, string Currency, int DealCount, decimal GrossAmount, decimal ExpectedAmount);
-public sealed record SalesOpportunityEvidence(Guid DealId, string Title, Guid StageId, string Stage, string Currency,
-    decimal Amount, DateTime? ExpectedCloseUtc, DateTime UpdatedUtc, decimal StageProbability, decimal Risk,
-    DateTime? RiskCalculatedUtc, decimal ExpectedAmount);
 public sealed record SalesCurrencyTotal(string Currency, int DealCount, decimal GrossAmount, decimal ExpectedAmount);
 public sealed record SalesActivityReport(Guid CompanyId, DateTime AsOfUtc, string Status, Guid? DealId,
     IReadOnlyList<SalesCommitmentDto> Commitments, IReadOnlyList<SalesMeetingCommitmentDto> Meetings);

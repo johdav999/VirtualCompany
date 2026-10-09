@@ -99,46 +99,6 @@ public sealed record RecommendAccountingProviderSwitchActionQuery(
     string? RequestedStrategy = null,
     int MaxItems = 20);
 
-public sealed record AccountingProviderSwitchAgentBriefingDto(
-    Guid SwitchId,
-    long SwitchVersion,
-    string CurrentStep,
-    string WhyItMatters,
-    IReadOnlyList<string> Blockers,
-    IReadOnlyList<string> Evidence,
-    IReadOnlyList<string> AllowedActions,
-    string ResponsibleParty,
-    string NextCheckpoint,
-    IReadOnlyList<string> DataSources,
-    DateTime GeneratedUtc);
-
-public sealed record AccountingProviderSwitchAgentEvidenceDto(
-    Guid SwitchId,
-    long SwitchVersion,
-    string View,
-    string Summary,
-    IReadOnlyList<AccountingProviderSwitchAgentEvidenceItemDto> Items,
-    IReadOnlyList<string> DataSources,
-    DateTime AsOfUtc);
-
-public sealed record AccountingProviderSwitchAgentEvidenceItemDto(
-    string Label,
-    string Status,
-    string Explanation,
-    string? Reference = null,
-    bool NeedsAttention = false);
-
-public sealed record AccountingProviderSwitchAgentRecommendationDto(
-    Guid? SwitchId,
-    long? SwitchVersion,
-    string RecommendationType,
-    string Recommendation,
-    string Rationale,
-    IReadOnlyList<string> Preconditions,
-    IReadOnlyList<string> DataSources,
-    decimal Confidence,
-    DateTime GeneratedUtc);
-
 public sealed record AccountingProviderSwitchAgentCommandContext(
     Guid CompanyId,
     Guid SwitchId,

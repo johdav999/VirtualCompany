@@ -113,12 +113,3 @@ public sealed class InternalPaymentExecutionsController(
         Instance = HttpContext.Request.Path
     };
 }
-
-public sealed record QueuePaymentExecutionRequest(long ExpectedBatchVersion, Guid BankConnectionId,
-    Guid CompanyBankAccountId, string IdempotencyKey);
-public sealed record CancelPaymentExecutionRequest(long ExpectedVersion, string Reason, string IdempotencyKey);
-public sealed record ReconcilePaymentExecutionRequest(long ExpectedVersion, string? ProviderPaymentId,
-    string Reason, string IdempotencyKey);
-public sealed record SettlePaymentExecutionRequest(long ExpectedVersion, Guid BankTransactionId,
-    long ExpectedBankTransactionSourceVersion, string IdempotencyKey);
-public sealed record RetryPaymentRemittanceRequest(long ExpectedExecutionVersion, string IdempotencyKey);

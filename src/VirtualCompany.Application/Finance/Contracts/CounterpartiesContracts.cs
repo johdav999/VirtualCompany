@@ -44,20 +44,6 @@ public sealed record FinanceOverdueCustomerRiskItemDto(
     string RiskLabel,
     string Summary);
 
-public sealed record FinanceCounterpartyDto(
-    Guid Id,
-    Guid CompanyId,
-    string CounterpartyType,
-    string Name,
-    string? Email,
-    string? PaymentTerms,
-    string? TaxId,
-    decimal? CreditLimit,
-    string? PreferredPaymentMethod,
-    string? DefaultAccountMapping,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
-
 public sealed record FinanceCounterpartyUpsertDto(
     string Name,
     string? Email,

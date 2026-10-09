@@ -158,7 +158,7 @@ public partial class ReportDefinitionsPage : FinancePageBase
     {
         if (Selected is null || !Selected.CanEdit) return;
         var order = Selected.Sections.Count + 1;
-        Selected.Sections.Add(new() { Code = $"SECTION_{order}", Label = $"New section {order}", DisplayOrder = order });
+        Selected.Sections = [.. Selected.Sections, new() { Code = $"SECTION_{order}", Label = $"New section {order}", DisplayOrder = order }];
     }
 
     private void AddLine(ReportDefinitionSectionResponse section)
@@ -167,20 +167,20 @@ public partial class ReportDefinitionsPage : FinancePageBase
         var order = section.Lines.Count + 1;
         var line = new ReportDefinitionLineResponse { Code = $"LINE_{section.DisplayOrder}_{order}", Label = "New line", DisplayOrder = order,
             AccountGroups = [new() { Code = $"GROUP_{section.DisplayOrder}_{order}", Name = "Mapped accounts" }] };
-        section.Lines.Add(line); SelectedLine = line;
+        section.Lines = [.. section.Lines, line]; SelectedLine = line;
     }
 
     private void RemoveLine(ReportDefinitionSectionResponse section, ReportDefinitionLineResponse line)
     {
         if (Selected is null || !Selected.CanEdit) return;
-        section.Lines.Remove(line); SelectedLine = Selected.Sections.SelectMany(x => x.Lines).FirstOrDefault();
+        section.Lines = section.Lines.Where(item => !ReferenceEquals(item, line)).ToArray(); SelectedLine = Selected.Sections.SelectMany(x => x.Lines).FirstOrDefault();
     }
 
     private void ToggleAccount(Guid accountId, bool selected)
     {
         if (SelectedGroup is null) return;
-        if (selected && !SelectedGroup.FinanceAccountIds.Contains(accountId)) SelectedGroup.FinanceAccountIds.Add(accountId);
-        else if (!selected) SelectedGroup.FinanceAccountIds.Remove(accountId);
+        if (selected && !SelectedGroup.FinanceAccountIds.Contains(accountId)) SelectedGroup.FinanceAccountIds = [.. SelectedGroup.FinanceAccountIds, accountId];
+        else if (!selected) SelectedGroup.FinanceAccountIds = SelectedGroup.FinanceAccountIds.Where(id => id != accountId).ToArray();
     }
 
     private static string StatusClass(string status) => status switch

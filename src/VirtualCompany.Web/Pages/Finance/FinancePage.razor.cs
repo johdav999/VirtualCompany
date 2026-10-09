@@ -55,7 +55,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
                 (FinanceCashPositionResponse?)null);
             var monthlyTask = UseFallbackWhenFinanceIsNotInitializedAsync(
                 FinanceApiClient.GetMonthlySummaryAsync(companyId, cancellationToken: cancellationToken),
-                (FinanceMonthlySummaryResponse?)null);
+                (FinanceMonthlySummaryViewModel?)null);
             var billsTask = UseFallbackWhenFinanceIsNotInitializedAsync(
                 FinanceApiClient.GetBillsAsync(companyId, 50, cancellationToken),
                 (IReadOnlyList<FinanceBillResponse>)[]);
@@ -132,7 +132,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
     private FinanceOverviewViewModel BuildOverview(
         Guid companyId,
         FinanceCashPositionResponse? cash,
-        FinanceMonthlySummaryResponse? monthly,
+        FinanceMonthlySummaryViewModel? monthly,
         IReadOnlyList<FinanceBillResponse> bills,
         IReadOnlyList<FinanceBillInboxRowResponse> billInbox,
         IReadOnlyList<FinanceInvoiceResponse> invoices,
@@ -286,7 +286,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
         };
     }
 
-    private string FormatMonthlyPeriod(FinanceMonthlySummaryResponse? monthly)
+    private string FormatMonthlyPeriod(FinanceMonthlySummaryViewModel? monthly)
     {
         if (monthly is null)
         {
@@ -447,7 +447,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
     private IReadOnlyList<FinanceKpiViewModel> BuildOverviewKpis(
         Guid companyId,
         FinanceCashPositionResponse? cash,
-        FinanceMonthlySummaryResponse? monthly,
+        FinanceMonthlySummaryViewModel? monthly,
         bool hasValidMonthlySummary,
         string currency,
         ReceivablesSnapshot receivables,
@@ -550,7 +550,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
             : FormatCurrency(receivables.OutstandingAmount, receivables.Currency);
 
     private string BuildCashPlanContext(
-        FinanceMonthlySummaryResponse? monthly,
+        FinanceMonthlySummaryViewModel? monthly,
         IReadOnlyList<FinanceBillResponse> supplierBillsDue,
         IReadOnlyList<FinanceBillResponse> paymentProposalsNeedingDecision,
         IReadOnlyList<FinancePaymentResponse> paymentsNeedingAttention,
@@ -686,7 +686,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
     private bool IsValidReportingDate(DateTime value) =>
         value.Year >= 1900;
 
-    private bool HasValidMonthlySummary(FinanceMonthlySummaryResponse? monthly) =>
+    private bool HasValidMonthlySummary(FinanceMonthlySummaryViewModel? monthly) =>
         monthly is not null &&
         IsValidReportingDate(monthly.StartUtc) &&
         IsValidReportingDate(monthly.EndUtc) &&
@@ -974,7 +974,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
     private IReadOnlyList<FinanceInsightItemViewModel> BuildLauraInsights(
         Guid companyId,
         FinanceCashPositionResponse? cash,
-        FinanceMonthlySummaryResponse? monthly,
+        FinanceMonthlySummaryViewModel? monthly,
         bool cashRiskAlertVisible,
         IReadOnlyList<FinanceInvoiceResponse> overdueInvoices,
         IReadOnlyList<FinanceBillResponse> supplierBillsDue,
@@ -1056,7 +1056,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
 
     private bool HasAnyFinanceActivity(
         FinanceCashPositionResponse? cash,
-        FinanceMonthlySummaryResponse? monthly,
+        FinanceMonthlySummaryViewModel? monthly,
         IReadOnlyList<FinanceBillResponse> bills,
         IReadOnlyList<FinanceBillInboxRowResponse> billInbox,
         IReadOnlyList<FinanceInvoiceResponse> invoices,
@@ -1120,7 +1120,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
 
     private string ResolveCurrency(
         FinanceCashPositionResponse? cash,
-        FinanceMonthlySummaryResponse? monthly,
+        FinanceMonthlySummaryViewModel? monthly,
         IReadOnlyList<FinanceInvoiceResponse> invoices,
         IReadOnlyList<FinanceBillResponse> bills,
         IReadOnlyList<FinancePaymentResponse> payments,

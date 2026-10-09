@@ -1129,11 +1129,6 @@ public sealed class CurrentUserContextViewModel
     public bool CompanySelectionRequired { get; set; }
 }
 
-public sealed class SelectCompanyRequest
-{
-    public Guid CompanyId { get; set; }
-}
-
 public sealed class CompanySelectionViewModel
 {
     public Guid CompanyId { get; set; }

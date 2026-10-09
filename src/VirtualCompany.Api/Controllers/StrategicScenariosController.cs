@@ -1,3 +1,4 @@
+using CompareScenarios = VirtualCompany.Shared.Contracts.StrategicScenarios.CompareScenarios;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
@@ -14,6 +15,5 @@ public sealed class StrategicScenariosController(IStrategicScenarioService servi
     [HttpPost("versions/{id:guid}/open")]public Task<ActionResult<StrategicScenarioDocument>> Open(Guid companyId,Guid id,CancellationToken ct)=>Run(()=>service.OpenAsync(companyId,id,ct));
     [HttpPost("versions/{id:guid}/duplicate")]public Task<ActionResult<StrategicScenarioDocument>> Duplicate(Guid companyId,Guid id,DuplicateStrategicScenario command,CancellationToken ct)=>Run(()=>service.DuplicateAsync(companyId,id,command,ct));
     [HttpPost("compare")]public Task<ActionResult<StrategicScenarioComparison>> Compare(Guid companyId,CompareScenarios command,CancellationToken ct)=>Run(()=>service.CompareAsync(companyId,command.Baseline,command.Alternative,ct));
-    public sealed record CompareScenarios(Guid Baseline,Guid Alternative);
     private async Task<ActionResult<T>> Run<T>(Func<Task<T>> action){Response.Headers.CacheControl="no-store";try{return Ok(await action());}catch(UnauthorizedAccessException){return Forbid();}catch(KeyNotFoundException){return NotFound();}catch(ArgumentException e){return Problem(statusCode:400,detail:e.Message);}catch(InvalidOperationException e){return Problem(statusCode:409,detail:e.Message);}catch(InvalidDataException e){return Problem(statusCode:422,detail:e.Message);}}
 }

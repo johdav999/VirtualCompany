@@ -68,27 +68,3 @@ public sealed record CreateStatementCsvProfileVersionApiRequest(int ExpectedCurr
     string? AmountColumn, string? DebitColumn, string? CreditColumn, string? CurrencyColumn,
     string ReferenceColumn, string? CounterpartyColumn, string? ExternalReferenceColumn,
     string? AccountIdentifierColumn, string? DefaultCurrency);
-public sealed record StatementImportAccountResponse(Guid Id, string DisplayName, string BankName,
-    string MaskedAccountNumber, string Currency);
-public sealed record StatementCsvProfileResponse(Guid Id, string Name, int Version, char Delimiter,
-    string CultureName, string DateFormat, bool HasHeader, string BookingDateColumn, string? ValueDateColumn,
-    string? AmountColumn, string? DebitColumn, string? CreditColumn, string? CurrencyColumn,
-    string ReferenceColumn, string? CounterpartyColumn, string? ExternalReferenceColumn,
-    string? AccountIdentifierColumn, string? DefaultCurrency, DateTime CreatedUtc);
-public sealed record StatementImportIssueResponse(string Code, string Severity, string Message, int? RowNumber);
-public sealed record StatementImportRowResponse(Guid Id, int RowNumber, string RowIdentity, string Outcome,
-    DateTime? BookingDateUtc, DateTime? ValueDateUtc, decimal? Amount, string? Currency,
-    string? ReferenceText, string? Counterparty, string? ExternalReference, string? IssueCode,
-    string? IssueSeverity, string? IssueMessage, string? PaymentStatus, string? ConflictDecision,
-    Guid? ImportedBankTransactionId);
-public sealed record StatementImportJobResponse(Guid Id, Guid BankAccountId, string BankAccountName,
-    string OriginalFileName, long ContentLength, string Checksum, string Status, string? Format,
-    string? MessageVersion, string? ParserVersion, string? StatementIdentity, string? SourceAccountIdentifier,
-    string? Currency, decimal? OpeningBalance, decimal? ClosingBalance, decimal DebitTotal,
-    decimal CreditTotal, decimal? CalculatedClosingBalance, int TotalRowCount, int AcceptedRowCount,
-    int DuplicateRowCount, int ErrorRowCount, int ImportedRowCount, int LastCommittedRowNumber,
-    string? FailureCode, string? FailureSummary, long Version, DateTime CreatedUtc, DateTime UpdatedUtc,
-    DateTime? CompletedUtc, IReadOnlyList<StatementImportIssueResponse> Issues,
-    IReadOnlyList<StatementImportRowResponse> Rows);
-public sealed record StatementImportWorkspaceResponse(IReadOnlyList<StatementImportAccountResponse> Accounts,
-    IReadOnlyList<StatementCsvProfileResponse> CsvProfiles, IReadOnlyList<StatementImportJobResponse> Jobs);

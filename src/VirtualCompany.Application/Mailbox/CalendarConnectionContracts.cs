@@ -23,13 +23,6 @@ public sealed record CalendarOAuthCompletionResult(
     ExternalAccountProvider Provider, string AccountEmail,
     string Status, Uri? ReturnUri = null);
 
-public sealed record CalendarConnectionSummary(
-    Guid Id, ExternalAccountProvider Provider, string AccountEmail,
-    string? DisplayName, string CalendarId, string? TimeZoneId,
-    CalendarCapability Capabilities, ExternalConnectionStatus Status,
-    bool HasRequiredPermissions, bool RequiresReconnect,
-    DateTime? LastHealthCheckUtc, string? LastErrorSummary);
-
 public interface ICalendarConnectionService
 {
     Task<CalendarOAuthStartResult> StartOAuthConnectionAsync(

@@ -82,85 +82,6 @@ public sealed record FinanceOpenPayableItemDto(
     DateOnly? ExchangeRateDate = null,
     string? ExchangeRateIdentity = null);
 
-public sealed record FinanceBillDto(
-    Guid Id,
-    Guid CounterpartyId,
-    string CounterpartyName,
-    string BillNumber,
-    DateTime ReceivedUtc,
-    DateTime DueUtc,
-    decimal Amount,
-    string Currency,
-    string Status,
-    FinanceLinkedDocumentDto? LinkedDocument,
-    string Source = FinanceDataSources.Simulation,
-    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
-    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
-    string DueStatus = FinanceDocumentDueStatuses.NotDue,
-    string DocumentKind = FinanceDocumentKinds.SupplierInvoice,
-    string? ProviderStatus = null,
-    string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
-    FinanceTransactionPaymentContextDto? PaymentContext = null,
-    SupplierInvoicePaymentProposalDto? PaymentProposal = null,
-    SupplierInvoiceSourceDocumentAttachmentDto? SourceDocumentAttachment = null,
-    SupplierInvoiceDraftActionDto? DraftAction = null,
-    IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
-    SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null);
-
-public sealed record FinanceBillDetailDto(
-    Guid Id,
-    Guid CounterpartyId,
-    string CounterpartyName,
-    string BillNumber,
-    DateTime ReceivedUtc,
-    DateTime DueUtc,
-    decimal Amount,
-    string Currency,
-    string Status,
-    FinanceActionPermissionsDto Permissions,
-    FinanceLinkedDocumentAccessDto LinkedDocument,
-    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights,
-    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
-    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
-    string DueStatus = FinanceDocumentDueStatuses.NotDue,
-    string DocumentKind = FinanceDocumentKinds.SupplierInvoice,
-    string? ProviderStatus = null,
-    string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
-    FinanceTransactionPaymentContextDto? PaymentContext = null,
-    IReadOnlyList<FinanceInvoiceRelatedTransactionDto>? RelatedTransactions = null,
-    SupplierInvoicePaymentProposalDto? PaymentProposal = null,
-    SupplierInvoiceSourceDocumentAttachmentDto? SourceDocumentAttachment = null,
-    SupplierInvoiceDraftActionDto? DraftAction = null,
-    IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
-    SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null,
-    PaidSupplierBillExpenseAvailabilityDto? PaidExpensePostingAvailability = null,
-    SupplierBillAccountingStateDto? Accounting = null,
-    string Source = FinanceDataSources.Manual);
-
-public sealed record PaidSupplierBillExpenseAvailabilityDto(
-    bool CanPost,
-    string StatusLabel,
-    string StatusTone,
-    string Message,
-    string? AccountCode = null,
-    IReadOnlyList<string>? BlockingReasons = null,
-    IReadOnlyList<string>? ReasonCodes = null,
-    bool RequiresApproval = false);
-
-public sealed record SupplierInvoiceSourceDocumentAttachmentDto(
-    Guid Id,
-    Guid BillId,
-    Guid? DocumentId,
-    string Status,
-    string? ProviderKey,
-    Guid? ConnectionId,
-    Guid? RequestedByUserId,
-    DateTime? RequestedUtc,
-    DateTime? AttachedUtc,
-    string? ResponseSummary,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
-
 public sealed record RequestSupplierInvoiceSourceDocumentAttachmentCommand(
     Guid CompanyId,
     Guid BillId,
@@ -174,20 +95,6 @@ public interface IFinanceSupplierInvoiceSourceDocumentAttachmentService
         RequestSupplierInvoiceSourceDocumentAttachmentCommand command,
         CancellationToken cancellationToken);
 }
-
-public sealed record SupplierInvoiceDraftActionDto(
-    Guid Id,
-    Guid BillId,
-    string Status,
-    string? ProviderKey,
-    Guid? ConnectionId,
-    Guid? RequestedByUserId,
-    DateTime? RequestedUtc,
-    DateTime? UpdatedInProviderUtc,
-    DateTime? BookedUtc,
-    string? ResponseSummary,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
 
 public sealed record UpdateSupplierInvoiceDraftCommand(
     Guid CompanyId,
@@ -211,18 +118,6 @@ public sealed record PostPaidSupplierBillExpenseCommand(
     string ActorDisplayName,
     string? ProviderKey = null);
 
-public sealed record PaidSupplierBillExpensePostingDto(
-    Guid BillId,
-    Guid DraftActionId,
-    string Status,
-    bool Posted,
-    string ProviderKey,
-    Guid? ConnectionId,
-    string Summary,
-    DateTime? RequestedUtc,
-    DateTime? BookedUtc,
-    SupplierInvoiceDraftActionDto DraftAction);
-
 public interface IFinanceSupplierInvoiceDraftActionService
 {
     Task<SupplierInvoiceDraftActionDto> UpdateDraftAsync(
@@ -240,25 +135,6 @@ public interface IPaidSupplierBillExpensePostingService
         PostPaidSupplierBillExpenseCommand command,
         CancellationToken cancellationToken);
 }
-
-public sealed record SupplierInvoiceEnrichmentActionDto(
-    Guid Id,
-    Guid BillId,
-    string Status,
-    string? ProviderKey,
-    Guid? ConnectionId,
-    Guid? RequestedByUserId,
-    Guid? ApprovedByUserId,
-    Guid? TaskId,
-    Guid? ApprovalRequestId,
-    DateTime? RequestedUtc,
-    DateTime? ApprovedUtc,
-    DateTime? SyncedUtc,
-    string? ResponseSummary,
-    JsonObject SuggestionPayload,
-    JsonArray ReconciliationWarnings,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
 
 public sealed record SuggestSupplierInvoiceEnrichmentCommand(
     Guid CompanyId,
@@ -287,26 +163,6 @@ public interface IFinanceSupplierInvoiceEnrichmentService
         ReconcileSupplierInvoiceCommand command,
         CancellationToken cancellationToken);
 }
-
-public sealed record SupplierInvoiceCorrectionActionDto(
-    Guid Id,
-    Guid BillId,
-    string ActionType,
-    string Status,
-    string? ProviderKey,
-    Guid? ConnectionId,
-    Guid? RequestedByUserId,
-    Guid? ApprovedByUserId,
-    Guid? TaskId,
-    Guid? ApprovalRequestId,
-    DateTime? RequestedUtc,
-    DateTime? ApprovedUtc,
-    DateTime? CompletedUtc,
-    Guid? CreditNoteBillId,
-    string? ProviderCreditNoteNumber,
-    string? ResponseSummary,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
 
 public sealed record RequestSupplierInvoiceCancellationCommand(
     Guid CompanyId,

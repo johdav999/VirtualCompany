@@ -1,68 +1,5 @@
 namespace VirtualCompany.Application.Finance;
 
-public sealed record AccountingPolicyPackOptionDto(
-    string PackKey,
-    string PackVersion,
-    string DisplayName,
-    string? CountryOrRegion,
-    bool IsCountryNeutral,
-    bool IsStatutoryComplianceValidated,
-    string ComplianceNotice,
-    IReadOnlyList<AccountingChartTemplateOptionDto> ChartTemplates);
-
-public sealed record AccountingChartTemplateOptionDto(
-    string TemplateKey,
-    string DisplayName,
-    int AccountCount);
-
-public sealed record AccountingSetupAccountPreviewDto(
-    string Code,
-    string Name,
-    string AccountClass,
-    string NormalBalance,
-    string? RoleName,
-    bool IsControlAccount,
-    string ReportingPlacement);
-
-public sealed record AccountingSetupTaxPreviewDto(
-    string Name,
-    decimal? Rate,
-    DateOnly EffectiveFrom);
-
-public sealed record AccountingSetupPeriodPreviewDto(
-    string Name,
-    DateOnly StartDate,
-    DateOnly EndDate);
-
-public sealed record AccountingVoucherSeriesPreviewDto(
-    string Code,
-    string DisplayName,
-    string NumberPrefix);
-
-public sealed record AccountingSetupPreviewDto(
-    Guid CompanyId,
-    string BaseCurrency,
-    DateOnly FiscalYearStart,
-    DateOnly FiscalYearEnd,
-    string PolicyPackName,
-    string ChartTemplateName,
-    bool IsCountryNeutral,
-    bool IsStatutoryComplianceValidated,
-    string ComplianceNotice,
-    string TaxBehavior,
-    bool IsValid,
-    bool IsAlreadyConfigured,
-    IReadOnlyList<AccountingSetupAccountPreviewDto> Accounts,
-    IReadOnlyList<AccountingSetupTaxPreviewDto> TaxRules,
-    IReadOnlyList<AccountingSetupPeriodPreviewDto> Periods,
-    IReadOnlyList<AccountingVoucherSeriesPreviewDto> VoucherSeries,
-    IReadOnlyList<AccountingConfigurationIssueDto> Issues,
-    IReadOnlyList<AccountingConfigurationIssueDto> Warnings,
-    CompanyStatutoryProfileStatusDto? StatutoryProfile = null,
-    string PolicyPackValidationState = "unvalidated",
-    IReadOnlyList<string>? MissingLegalFacts = null,
-    IReadOnlyList<string>? NextActions = null);
-
 public sealed record PreviewAccountingSetupQuery(
     Guid CompanyId,
     string BaseCurrency,
@@ -84,62 +21,6 @@ public sealed record CompleteAccountingSetupCommand(
     string? IdempotencyKey = null,
     string? CorrelationId = null);
 
-public sealed record AccountingSetupCompletionDto(
-    AccountingSetupStatusDto SetupStatus,
-    int AccountCount,
-    int PeriodCount,
-    int VoucherSeriesCount,
-    bool WasAlreadyApplied);
-
-public sealed record AccountingAccountListItemDto(
-    Guid Id,
-    string Code,
-    string Name,
-    string AccountClass,
-    string NormalBalance,
-    string Currency,
-    DateOnly? EffectiveFrom,
-    DateOnly? EffectiveTo,
-    bool IsPostingEnabled,
-    bool HasPostedHistory,
-    bool IsProtected,
-    string? ProtectedReason,
-    string? RoleName,
-    string? ReportingPlacement,
-    DateTime UpdatedUtc,
-    bool IsReportable = true,
-    string PostingRestriction = "none",
-    Guid? ReplacementAccountId = null,
-    string LifecycleStatus = "active",
-    long LifecycleVersion = 1,
-    int DependencyCount = 0);
-
-public sealed record AccountingAccountDetailDto(
-    Guid Id,
-    string Code,
-    string Name,
-    string AccountClass,
-    string NormalBalance,
-    string Currency,
-    DateOnly? EffectiveFrom,
-    DateOnly? EffectiveTo,
-    bool IsPostingEnabled,
-    bool RestrictsManualPosting,
-    bool HasPostedHistory,
-    bool IsProtected,
-    string? ProtectedReason,
-    string? RoleName,
-    string? ReportingPlacement,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc,
-    bool IsReportable = true,
-    string PostingRestriction = "none",
-    Guid? ReplacementAccountId = null,
-    string? ReplacementAccountCode = null,
-    string LifecycleStatus = "active",
-    long LifecycleVersion = 1,
-    IReadOnlyList<AccountingAccountLifecycleHistoryDto>? LifecycleHistory = null);
-
 public static class AccountingGovernanceReasonCodes
 {
     public const string ReplacementRequired = "accounting_account_replacement_required";
@@ -151,15 +32,6 @@ public static class AccountingGovernanceReasonCodes
     public const string InventoryUnsupported = "accounting_inventory_unsupported";
     public const string CommerceContractUnsupported = "accounting_commerce_contract_unsupported";
 }
-
-public sealed record AccountingAccountDependencyDto(string DependencyType, string DisplayName, int Count, bool IsBlocking);
-public sealed record AccountingAccountLifecycleHistoryDto(long Version, string ChangeType, string Name,
-    string AccountClass, string NormalBalance, bool IsReportable, string PostingRestriction,
-    DateOnly EffectiveFrom, DateOnly? EffectiveTo, Guid? ReplacementAccountId, string Reason,
-    Guid? ActorUserId, DateTime RecordedUtc);
-public sealed record AccountingAccountLifecyclePreviewDto(Guid AccountId, string AccountCode,
-    bool HasPostedHistory, bool ReplacementRequired, bool CanApply, IReadOnlyList<AccountingAccountDependencyDto> Dependencies,
-    IReadOnlyList<AccountingConfigurationIssueDto> Issues);
 public sealed record PreviewAccountingAccountLifecycleQuery(Guid CompanyId, Guid AccountId, DateOnly EffectiveFrom,
     DateOnly? EffectiveTo, Guid? ReplacementAccountId, string AccountClass, string NormalBalance,
     bool IsReportable, string PostingRestriction);
@@ -167,21 +39,12 @@ public sealed record ApplyAccountingAccountLifecycleCommand(Guid CompanyId, Guid
     string AccountClass, string NormalBalance, bool IsReportable, string PostingRestriction,
     DateOnly EffectiveFrom, DateOnly? EffectiveTo, Guid? ReplacementAccountId, string Reason,
     long ExpectedLifecycleVersion, Guid ActorUserId, string? CorrelationId = null);
-
-public sealed record AccountingSeriesPolicyDto(Guid Id, string SeriesKind, Guid SeriesId, string SeriesCode,
-    string SeriesName, string SourceType, string TransactionType, int? FiscalYear,
-    Guid? LocationDimensionMemberId, string? Jurisdiction, string PolicyPackKey, string PolicyPackVersion,
-    string? ProviderKey, string? ProviderSeriesCode, bool IsActive, long Version, int UnexplainedGapCount);
 public sealed record SaveAccountingSeriesPolicyCommand(Guid CompanyId, Guid? PolicyId, string SeriesKind,
     Guid SeriesId, string SourceType, string TransactionType, int? FiscalYear, Guid? LocationDimensionMemberId,
     string? Jurisdiction, string? ProviderKey, string? ProviderSeriesCode, bool IsActive,
     long? ExpectedVersion, Guid ActorUserId, string? CorrelationId = null);
 public sealed record RecordVoucherGapEvidenceCommand(Guid CompanyId, Guid VoucherSeriesId, int FiscalYear,
     long MissingNumber, string Reason, Guid ActorUserId, string? CorrelationId = null);
-
-public sealed record CommerceAccountingCapabilityDto(string CapabilityState, string ContractVersion,
-    bool SupportsInventoryQuantity, bool SupportsInventoryValuation, bool SupportsCogs,
-    IReadOnlyList<string> AcceptedEventTypes, string Explanation);
 public sealed record SubmitCommerceAccountingEventCommand(Guid CompanyId, Guid EventId, long EventVersion,
     string ContractVersion, string EventType, string SourceSystem, DateTime OccurredUtc,
     bool RequiresInventoryAccounting, Guid ActorUserId, string? CorrelationId = null);
@@ -226,39 +89,10 @@ public sealed record DeactivateAccountingAccountCommand(
     Guid ActorUserId,
     string? CorrelationId = null);
 
-public sealed record AccountingPeriodDto(
-    Guid Id,
-    string Name,
-    DateOnly StartDate,
-    DateOnly EndDate,
-    bool IsClosed,
-    bool IsReportingLocked,
-    DateTime? ClosedUtc,
-    DateTime? ReportingLockedUtc,
-    DateTime? LastCloseValidatedUtc,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
-
-public sealed record AccountingFiscalYearDto(
-    DateOnly StartDate,
-    DateOnly EndDate,
-    int OpenPeriodCount,
-    int ClosedPeriodCount,
-    int ReportingLockedPeriodCount,
-    IReadOnlyList<AccountingPeriodDto> Periods);
-
 public sealed record GetAccountingPeriodsQuery(Guid CompanyId);
 public sealed record GetAccountingPeriodQuery(Guid CompanyId, Guid PeriodId);
 
 public sealed record PreviewAccountingFiscalYearQuery(Guid CompanyId, DateOnly FiscalYearStart);
-
-public sealed record AccountingFiscalYearPreviewDto(
-    Guid CompanyId,
-    DateOnly StartDate,
-    DateOnly EndDate,
-    bool IsValid,
-    IReadOnlyList<AccountingSetupPeriodPreviewDto> Periods,
-    IReadOnlyList<AccountingConfigurationIssueDto> Issues);
 
 public sealed record CreateAccountingFiscalYearCommand(
     Guid CompanyId,
@@ -266,10 +100,6 @@ public sealed record CreateAccountingFiscalYearCommand(
     Guid ActorUserId,
     string? IdempotencyKey = null,
     string? CorrelationId = null);
-
-public sealed record AccountingFiscalYearCreationDto(
-    AccountingFiscalYearDto FiscalYear,
-    bool WasAlreadyPresent);
 
 public interface IAccountingAdministrationService
 {

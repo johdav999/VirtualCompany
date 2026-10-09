@@ -264,14 +264,6 @@ public sealed record FinanceRecurringOutflowItemDto(
     string Cadence = "scheduled",
     string? Reference = null);
 
-public sealed record FinanceWorkflowOutputSchemaDto(
-    string Classification,
-    string RiskLevel,
-    string RecommendedAction,
-    string Rationale,
-    decimal Confidence,
-    string SourceWorkflow);
-
 public static class FinanceWorkflowOutputSchemas
 {
     public static FinanceWorkflowOutputSchemaDto Create(
@@ -398,68 +390,6 @@ public sealed record FinanceAgentQueryResultDto(
     IReadOnlyList<FinanceAgentMetricComponentDto> MetricComponents,
     IReadOnlyList<Guid> SourceRecordIds,
     string Source = FinanceDataSources.Operational);
-
-public sealed record FinanceTransactionDto(
-    Guid Id,
-    Guid AccountId,
-    string AccountName,
-    Guid? CounterpartyId,
-    string? CounterpartyName,
-    Guid? InvoiceId,
-    Guid? BillId,
-    DateTime TransactionUtc,
-    string TransactionType,
-    decimal Amount,
-    string Currency,
-    string Description,
-    string ExternalReference,
-    FinanceLinkedDocumentDto? LinkedDocument,
-    bool IsFlagged = false,
-    string AnomalyState = "clear",
-    string Source = FinanceDataSources.Simulation);
-
-public sealed record FinanceLinkedDocumentDto(
-    Guid Id,
-    string Title,
-    string? OriginalFileName,
-    string ContentType);
-
-public sealed record FinanceTransactionDetailDto(
-    Guid Id,
-    Guid AccountId,
-    string AccountName,
-    Guid? CounterpartyId,
-    string? CounterpartyName,
-    Guid? InvoiceId,
-    Guid? BillId,
-    DateTime TransactionUtc,
-    string Category,
-    decimal Amount,
-    string Currency,
-    string Description,
-    string ExternalReference,
-    bool IsFlagged,
-    string AnomalyState,
-    IReadOnlyList<string> Flags,
-    FinanceActionPermissionsDto Permissions,
-    FinanceLinkedDocumentAccessDto LinkedDocument,
-    FinanceTransactionPaymentContextDto? PaymentContext = null,
-    string Source = FinanceDataSources.Manual);
-
-public sealed record FinanceActionPermissionsDto(
-    [property: JsonPropertyName("canEditTransactionCategory")]
-    bool CanChangeTransactionCategory,
-    bool CanChangeInvoiceApprovalStatus,
-    [property: JsonPropertyName("canManagePolicyConfiguration")]
-    bool CanManagePolicies);
-
-public sealed record FinanceLinkedDocumentAccessDto(
-    [property: JsonPropertyName("availability")]
-    string AccessState,
-    string Message,
-    [property: JsonPropertyName("canNavigate")]
-    bool CanOpen,
-    FinanceLinkedDocumentDto? Document);
 
 public sealed record FinanceTransactionCategoryRecommendationDto(
     Guid TransactionId,
@@ -737,14 +667,6 @@ public interface IFinanceReadService
         GetFinanceInsightsQuery query,
         CancellationToken cancellationToken);
 
-    Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
-        RefreshFinanceInsightsSnapshotCommand command,
-        CancellationToken cancellationToken);
-
-    Task<FinanceInsightsSnapshotRefreshResultDto> QueueInsightsSnapshotRefreshAsync(
-        QueueFinanceInsightsSnapshotRefreshCommand command,
-        CancellationToken cancellationToken);
-
     Task<FinanceAgentQueryResultDto> ResolveAgentQueryAsync(
         GetFinanceAgentQueryQuery query,
         CancellationToken cancellationToken);
@@ -773,11 +695,6 @@ public interface IFinanceApprovalTaskService
     Task<FinanceApprovalTaskBackfillResultDto> BackfillApprovalTasksAsync(BackfillFinanceApprovalTasksCommand command, CancellationToken cancellationToken);
     Task<FinancePendingApprovalTaskDto> ActOnTaskAsync(ActOnFinanceApprovalTaskCommand command, CancellationToken cancellationToken);
 }
-
-public sealed record FinanceDataResetResultDto(
-    Guid CompanyId,
-    int TotalDeleted,
-    IReadOnlyDictionary<string, int> DeletedCounts);
 
 public interface IFinanceMaintenanceService
 {

@@ -81,5 +81,3 @@ public sealed class FinanceWorkerOperationsController(IFinanceWorkerOperationsSe
             : throw new UnauthorizedAccessException("An authenticated user id is required for Finance worker actions.");
     }
 }
-
-public sealed record FinanceWorkerOperatorActionRequest(long ExpectedVersion, string Reason, string? CorrelationId = null);

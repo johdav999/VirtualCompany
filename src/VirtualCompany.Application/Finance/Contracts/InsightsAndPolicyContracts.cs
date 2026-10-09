@@ -137,28 +137,6 @@ public sealed record NormalizedFinanceInsightsDto(
     Guid CompanyId,
     IReadOnlyList<NormalizedFinanceInsightDto> Items);
 
-public sealed record NormalizedFinanceInsightDto(
-    Guid Id,
-    string Severity,
-    string Message,
-    string Recommendation,
-    FinanceInsightEntityReferenceDto EntityReference,
-    string Status,
-    DateTime CreatedAt,
-    DateTime UpdatedAt,
-    string CheckCode,
-    string CheckName,
-    string ConditionKey,
-    IReadOnlyList<FinanceInsightEntityReferenceDto> AffectedEntities,
-    DateTime ObservedAt,
-    DateTime? ResolvedAt);
-
-public sealed record FinanceInsightEntityReferenceDto(
-    string EntityType,
-    string EntityId,
-    string? DisplayName = null,
-    bool IsPrimary = false);
-
 public sealed record FinancialCheckContext(
     Guid CompanyId,
     DateTime AsOfUtc,
@@ -314,22 +292,6 @@ public interface IFinanceAnomalyScheduleFactory
     FinanceAnomalySchedule Create(FinanceDeterministicGenerationContext context, int anomalyCount, int transactionCount, int anomalyCadenceDays, int anomalyOffsetDays);
 }
 
-public sealed record FinanceCashPositionAlertStateDto(
-    bool IsLowCash,
-    string RiskLevel,
-    bool AlertCreated,
-    bool AlertDeduplicated,
-    Guid? AlertId,
-    string? AlertStatus,
-    string Rationale);
-
-public sealed record FinanceCashPositionThresholdsDto(
-    int WarningRunwayDays,
-    int CriticalRunwayDays,
-    decimal? WarningCashAmount,
-    decimal? CriticalCashAmount,
-    string Currency);
-
 public sealed record FinancePolicyConfigurationDto(
     Guid CompanyId,
     string ApprovalCurrency,
@@ -361,76 +323,6 @@ public sealed record FinanceTransactionAnomalyDto(
     public FinanceWorkflowOutputSchemaDto WorkflowOutput { get; init; } =
         FinanceWorkflowOutputSchemas.Create(AnomalyType, "medium", RecommendedAction, Explanation, Confidence, "transaction_anomaly_detection");
 }
-
-public sealed record FinanceAnomalyDeduplicationDto(
-    string? Key,
-    DateTime? WindowStartUtc,
-    DateTime? WindowEndUtc);
-
-public sealed record FinanceAnomalyFollowUpTaskDto(
-    Guid Id,
-    string Title,
-    string Status,
-    DateTime CreatedUtc,
-    DateTime? DueUtc,
-    DateTime UpdatedUtc);
-
-public sealed record FinanceAnomalyRelatedRecordDto(
-    Guid Id,
-    string Reference,
-    DateTime OccurredAtUtc,
-    decimal Amount,
-    string Currency,
-    string? SupplierName);
-
-public sealed record FinanceAnomalyRecordLinkDto(
-    Guid? RecordId,
-    string RecordType,
-    string Reference,
-    DateTime? OccurredAtUtc,
-    decimal? Amount,
-    string? Currency);
-
-public sealed record FinanceAnomalyWorkbenchItemDto(
-    Guid Id,
-    string AnomalyType,
-    string Status,
-    decimal Confidence,
-    string? SupplierName,
-    Guid? AffectedRecordId,
-    string AffectedRecordReference,
-    string ExplanationSummary,
-    string RecommendedAction,
-    DateTime DetectedAtUtc,
-    FinanceAnomalyDeduplicationDto? Deduplication,
-    Guid? FollowUpTaskId,
-    string? FollowUpTaskStatus,
-    Guid? RelatedInvoiceId,
-    Guid? RelatedBillId);
-
-public sealed record FinanceAnomalyWorkbenchResultDto(
-    int TotalCount,
-    int Page,
-    int PageSize,
-    IReadOnlyList<FinanceAnomalyWorkbenchItemDto> Items);
-
-public sealed record FinanceAnomalyDetailDto(
-    Guid Id,
-    string AnomalyType,
-    string Status,
-    decimal Confidence,
-    string? SupplierName,
-    string Explanation,
-    string RecommendedAction,
-    DateTime DetectedAtUtc,
-    FinanceAnomalyDeduplicationDto? Deduplication,
-    FinanceAnomalyRelatedRecordDto? AffectedRecord,
-    Guid? RelatedInvoiceId,
-    string? RelatedInvoiceReference,
-    Guid? RelatedBillId,
-    string? RelatedBillReference,
-    IReadOnlyList<FinanceAnomalyRecordLinkDto> RelatedRecordLinks,
-    IReadOnlyList<FinanceAnomalyFollowUpTaskDto> FollowUpTasks);
 
 public interface IFinanceTransactionAnomalyDetectionService
 {
@@ -497,3 +389,14 @@ public interface IFinanceInsightsSnapshotJobRunner
     Task<int> RunDueAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>Explicit commands that reconcile insights and publish or queue snapshots.</summary>
+public interface IFinanceInsightRefreshService
+{
+    Task<FinanceInsightsSnapshotRefreshResultDto> RefreshInsightsSnapshotAsync(
+        RefreshFinanceInsightsSnapshotCommand command,
+        CancellationToken cancellationToken);
+
+    Task<FinanceInsightsSnapshotRefreshResultDto> QueueInsightsSnapshotRefreshAsync(
+        QueueFinanceInsightsSnapshotRefreshCommand command,
+        CancellationToken cancellationToken);
+}

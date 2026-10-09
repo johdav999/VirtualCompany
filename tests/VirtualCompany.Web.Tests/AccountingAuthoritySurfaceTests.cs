@@ -8,7 +8,7 @@ public sealed class AccountingAuthoritySurfaceTests
         var page = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingConnectionsPage.razor");
         var code = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingConnectionsPage.razor.cs");
         var client = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.AccountingAuthority.cs");
-        var controller = Read("src", "VirtualCompany.Api", "Controllers", "InternalFinanceController.AccountingAuthority.cs");
+        var controller = Read("src", "VirtualCompany.Api", "Controllers", "InternalFinanceAccountingAuthorityController.cs");
         var sales = Read("src", "VirtualCompany.Infrastructure.Sales", "Sales", "SalesOperationsService.cs");
         var support = Read("src", "VirtualCompany.Infrastructure.Support", "Support", "SupportRefundFinanceService.cs");
         var agentTools = Read("src", "VirtualCompany.Infrastructure.Operations", "Companies", "InternalCompanyToolContract.cs");

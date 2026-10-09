@@ -11,15 +11,15 @@ public sealed class AccountingProviderSwitchCutoverApiSurfaceTests
     [Fact]
     public void Cutover_mutations_require_accounting_admin_and_reads_require_accounting_view()
     {
-        AssertPolicy(nameof(InternalFinanceController.ScheduleAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.StartAccountingProviderSwitchFreezeAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.RequestAccountingProviderSwitchActivationApprovalAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.ActivateAccountingProviderSwitchAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.CancelAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.ResumeAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.RecoverAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
-        AssertPolicy(nameof(InternalFinanceController.GetLatestAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingView);
-        AssertPolicy(nameof(InternalFinanceController.GetAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingView);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.ScheduleAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.StartAccountingProviderSwitchFreezeAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.RequestAccountingProviderSwitchActivationApprovalAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.ActivateAccountingProviderSwitchAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.CancelAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.ResumeAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.RecoverAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingAdmin);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.GetLatestAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingView);
+        AssertPolicy(nameof(InternalFinanceAccountingProviderSwitchCutoverController.GetAccountingProviderSwitchCutoverAsync), CompanyPolicies.AccountingView);
     }
 
     [Fact]
@@ -27,17 +27,17 @@ public sealed class AccountingProviderSwitchCutoverApiSurfaceTests
     {
         var methodNames = new[]
         {
-            nameof(InternalFinanceController.ScheduleAccountingProviderSwitchCutoverAsync),
-            nameof(InternalFinanceController.StartAccountingProviderSwitchFreezeAsync),
-            nameof(InternalFinanceController.RequestAccountingProviderSwitchActivationApprovalAsync),
-            nameof(InternalFinanceController.ActivateAccountingProviderSwitchAsync),
-            nameof(InternalFinanceController.CancelAccountingProviderSwitchCutoverAsync),
-            nameof(InternalFinanceController.ResumeAccountingProviderSwitchCutoverAsync),
-            nameof(InternalFinanceController.RecoverAccountingProviderSwitchCutoverAsync),
-            nameof(InternalFinanceController.GetLatestAccountingProviderSwitchCutoverAsync),
-            nameof(InternalFinanceController.GetAccountingProviderSwitchCutoverAsync)
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.ScheduleAccountingProviderSwitchCutoverAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.StartAccountingProviderSwitchFreezeAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.RequestAccountingProviderSwitchActivationApprovalAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.ActivateAccountingProviderSwitchAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.CancelAccountingProviderSwitchCutoverAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.ResumeAccountingProviderSwitchCutoverAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.RecoverAccountingProviderSwitchCutoverAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.GetLatestAccountingProviderSwitchCutoverAsync),
+            nameof(InternalFinanceAccountingProviderSwitchCutoverController.GetAccountingProviderSwitchCutoverAsync)
         };
-        var methods = methodNames.Select(name => typeof(InternalFinanceController).GetMethod(name)
+        var methods = methodNames.Select(name => typeof(InternalFinanceAccountingProviderSwitchCutoverController).GetMethod(name)
             ?? throw new InvalidOperationException($"{name} was not found.")).ToArray();
         Assert.NotEmpty(methods);
         Assert.All(methods, method =>
@@ -51,7 +51,7 @@ public sealed class AccountingProviderSwitchCutoverApiSurfaceTests
 
     private static void AssertPolicy(string methodName, string expectedPolicy)
     {
-        var method = typeof(InternalFinanceController).GetMethod(methodName)
+        var method = typeof(InternalFinanceAccountingProviderSwitchCutoverController).GetMethod(methodName)
             ?? throw new InvalidOperationException($"{methodName} was not found.");
         Assert.Equal(expectedPolicy, method.GetCustomAttribute<AuthorizeAttribute>()?.Policy);
     }

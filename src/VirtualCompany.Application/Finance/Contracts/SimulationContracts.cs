@@ -75,15 +75,6 @@ public sealed record AdvanceCompanySimulationTimeCommand(
 public sealed record RunScheduledCompanySimulationCommand(
     Guid CompanyId);
 
-public sealed record CompanySimulationClockDto(
-    Guid CompanyId,
-    DateTime CurrentUtc,
-    bool Enabled,
-    bool AutoAdvanceEnabled,
-    int DefaultStepHours,
-    int AutoAdvanceIntervalSeconds,
-    DateTime? LastAdvancedUtc);
-
 public sealed record GenerateCompanySimulationFinanceCommand(
     Guid CompanyId,
     Guid ActiveSessionId,
@@ -240,13 +231,6 @@ public sealed record FinanceSeedBootstrapResultDto(
     IReadOnlyList<FinanceSeedRecurringExpenseDto> RecurringExpenses,
     IReadOnlyList<FinanceSeedValidationErrorDto> ValidationErrors,
     IReadOnlyList<FinanceSeedAnomalyDto> Anomalies);
-
-public sealed record FinanceSeedAnomalyDto(
-    Guid Id,
-    string AnomalyType,
-    string ScenarioProfile,
-    IReadOnlyList<Guid> AffectedRecordIds,
-    string ExpectedDetectionMetadataJson);
 
 public sealed record FinanceSeedRecurringExpenseDto(
     Guid Id,

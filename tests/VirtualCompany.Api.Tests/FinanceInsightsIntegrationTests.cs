@@ -3,6 +3,8 @@ using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Application.Finance;
+using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.Persistence;
@@ -15,6 +17,49 @@ public sealed class FinanceInsightsIntegrationTests : IDisposable
     private readonly TestWebApplicationFactory _factory = new();
 
     public void Dispose() => _factory.Dispose();
+
+    [Fact]
+    public async Task Insight_and_analytics_gets_do_not_reconcile_even_with_legacy_refresh_flags()
+    {
+        var seed = await SeedCompanyAsync(includeOtherCompanyMembership: false);
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var before = await _factory.ExecuteDbContextAsync(async db => await db.FinanceAgentInsights
+            .IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == seed.CompanyId)
+            .Select(x => new { x.Id, x.Status, x.UpdatedUtc, x.ResolvedUtc }).ToListAsync());
+        foreach (var suffix in new[] { "insights", "insights?refreshSnapshot=true", "insights?includeResolved=false", "analytics?refreshInsightsSnapshot=true" })
+        {
+            var response = await client.GetAsync($"/api/companies/{seed.CompanyId}/finance/{suffix}");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+        var after = await _factory.ExecuteDbContextAsync(async db => await db.FinanceAgentInsights
+            .IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == seed.CompanyId)
+            .Select(x => new { x.Id, x.Status, x.UpdatedUtc, x.ResolvedUtc }).ToListAsync());
+        Assert.Equal(before.OrderBy(x => x.Id), after.OrderBy(x => x.Id));
+        Assert.Equal(0, await _factory.ExecuteDbContextAsync(db => db.BackgroundExecutions.IgnoreQueryFilters()
+            .CountAsync(x => x.CompanyId == seed.CompanyId && x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh)));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Insight_refresh_commands_require_owner_or_admin(bool runInBackground)
+    {
+        var seed = await SeedCompanyAsync(false, CompanyMembershipRole.Employee);
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var response = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId}/finance/insights/refresh", new { runInBackground });
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Insight_refresh_commands_reject_other_company(bool runInBackground)
+    {
+        var seed = await SeedCompanyAsync(false);
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var response = await client.PostAsJsonAsync($"/internal/companies/{seed.OtherCompanyId}/finance/insights/refresh", new { runInBackground });
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
 
     [Fact]
     public async Task Finance_insights_endpoint_returns_normalized_company_scoped_payload()
@@ -264,7 +309,10 @@ public sealed class FinanceInsightsIntegrationTests : IDisposable
                 otherPolicy.CashRunwayWarningThresholdDays,
                 otherPolicy.CashRunwayCriticalThresholdDays);
 
-            await Task.CompletedTask;
+            await dbContext.SaveChangesAsync();
+            var reader = new CompanyFinanceReadService(dbContext);
+            var refresh = new FinanceInsightRefreshService(dbContext, reader, new FinanceInsightPersistenceService(new FinanceAgentInsightRepository(dbContext)));
+            await refresh.RefreshInsightsSnapshotAsync(new RefreshFinanceInsightsSnapshotCommand(companyId), CancellationToken.None);
         });
 
         return new SeedContext(companyId, otherCompanyId, subject, email, displayName);

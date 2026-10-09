@@ -23,57 +23,6 @@ public static class StatutoryProfileFactKeys
     public const string UserAttestation = "user_attestation";
 }
 
-public sealed record StatutoryAddressDto(
-    string? AddressLine1,
-    string? AddressLine2,
-    string? PostalCode,
-    string? City,
-    string? CountryCode);
-
-public sealed record CompanyStatutoryProfileDto(
-    Guid Id,
-    Guid CompanyId,
-    string? LegalName,
-    string? SwedishOrganisationNumber,
-    string? VatRegistrationNumber,
-    string VatRegistrationStatus,
-    StatutoryAddressDto RegisteredAddress,
-    StatutoryAddressDto CorrespondenceAddress,
-    string CountryCode,
-    string AccountingCurrency,
-    string FiscalYearBasis,
-    string BookkeepingMethod,
-    DateOnly? OrganisationRegistrationEffectiveFrom,
-    DateOnly? VatRegistrationEffectiveFrom,
-    DateOnly? VatRegistrationEffectiveTo,
-    bool IsFormatComplete,
-    bool IsUserAttested,
-    Guid? AttestedByUserId,
-    DateTime? AttestedUtc,
-    string VerificationStatus,
-    string SourceKind,
-    string? SourceReference,
-    DateTime SourceCapturedUtc,
-    string? ExternalVerifier,
-    DateTime? ExternallyVerifiedUtc,
-    long Version,
-    Guid CreatedByUserId,
-    Guid UpdatedByUserId,
-    DateTime CreatedUtc,
-    DateTime UpdatedUtc);
-
-public sealed record CompanyStatutoryProfileStatusDto(
-    Guid CompanyId,
-    bool Exists,
-    bool IsFormatComplete,
-    bool IsUserAttested,
-    bool IsExternallyVerified,
-    bool IsCompleteForSelectedPolicyPack,
-    string VerificationExplanation,
-    IReadOnlyList<string> MissingFacts,
-    IReadOnlyList<string> NextActions,
-    CompanyStatutoryProfileDto? Profile);
-
 public sealed record CompanyStatutoryProfileInput(
     string? LegalName,
     string? SwedishOrganisationNumber,

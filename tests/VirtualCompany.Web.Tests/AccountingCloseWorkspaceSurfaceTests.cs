@@ -7,7 +7,7 @@ public sealed class AccountingCloseWorkspaceSurfaceTests
     {
         var page = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingCloseWorkspacePage.razor");
         var code = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingCloseWorkspacePage.razor.cs");
-        var contract = Read("src", "VirtualCompany.Application", "Finance", "Contracts", "AccountingCloseWorkspaceContracts.cs");
+        var contract = Read("src", "VirtualCompany.Shared", "Contracts", "Finance", "AccountingCloseWorkspaceContracts.cs");
         var service = Read("src", "VirtualCompany.Infrastructure.Finance", "Finance", "AccountingCloseWorkspaceService.cs");
 
         Assert.Contains("@page \"/finance/accounting/close-workspace\"", page, StringComparison.Ordinal);

@@ -77,8 +77,8 @@ public sealed class AccountingReportsSurfaceTests
         Assert.Contains("FinanceText[\"MappingConflicts\"]", workspace, StringComparison.Ordinal);
         Assert.Contains("PreviewAccountingAllocationAsync", workspace, StringComparison.Ordinal);
         Assert.Contains("HierarchyPath", workspace, StringComparison.Ordinal);
-        Assert.Contains("LedgerEntryId", client, StringComparison.Ordinal);
-        Assert.Contains("IdempotencyKey", client, StringComparison.Ordinal);
+        Assert.NotNull(typeof(AccountingDimensionReportLineResponse).GetProperty("LedgerEntryId"));
+        Assert.NotNull(typeof(ApplyAccountingAllocationApiRequest).GetProperty("IdempotencyKey"));
         Assert.Contains("@media(max-width:1000px)", css, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references",
             "finance-accounting-dimensions-reference.png")));

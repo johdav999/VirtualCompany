@@ -44,7 +44,7 @@ public sealed class FinanceAnalyticsStartupRefreshBackgroundService : Background
         {
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-            var financeReadService = scope.ServiceProvider.GetRequiredService<IFinanceReadService>();
+            var insightRefreshService = scope.ServiceProvider.GetRequiredService<IFinanceInsightRefreshService>();
             var companyExecutionScopeFactory = scope.ServiceProvider.GetRequiredService<ICompanyExecutionScopeFactory>();
 
             var companyIds = await dbContext.Companies
@@ -60,7 +60,7 @@ public sealed class FinanceAnalyticsStartupRefreshBackgroundService : Background
             foreach (var companyId in companyIds)
             {
                 using var companyScope = companyExecutionScopeFactory.BeginScope(companyId);
-                await financeReadService.QueueInsightsSnapshotRefreshAsync(
+                await insightRefreshService.QueueInsightsSnapshotRefreshAsync(
                     new QueueFinanceInsightsSnapshotRefreshCommand(
                         companyId,
                         CorrelationId: $"finance-analytics-startup:{companyId:N}"),

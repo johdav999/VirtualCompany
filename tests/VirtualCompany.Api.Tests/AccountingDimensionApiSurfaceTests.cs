@@ -13,12 +13,12 @@ public sealed class AccountingDimensionApiSurfaceTests
     [Fact]
     public void Dimension_reads_require_accounting_view_and_mutations_require_accounting_admin()
     {
-        var type = typeof(InternalFinanceController);
+        var type = typeof(InternalFinanceAccountingDimensionsController);
         foreach (var methodName in new[]
                  {
-                     nameof(InternalFinanceController.GetAccountingDimensionWorkspaceAsync),
-                     nameof(InternalFinanceController.PreviewAccountingDimensionAllocationAsync),
-                     nameof(InternalFinanceController.GetAccountingDimensionReportAsync)
+                     nameof(InternalFinanceAccountingDimensionsController.GetAccountingDimensionWorkspaceAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.PreviewAccountingDimensionAllocationAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.GetAccountingDimensionReportAsync)
                  })
         {
             var method = Assert.Single(type.GetMethods(), candidate => candidate.Name == methodName);
@@ -28,13 +28,13 @@ public sealed class AccountingDimensionApiSurfaceTests
 
         foreach (var methodName in new[]
                  {
-                     nameof(InternalFinanceController.SaveAccountingDimensionTypeAsync),
-                     nameof(InternalFinanceController.SaveAccountingDimensionMemberAsync),
-                     nameof(InternalFinanceController.SaveAccountingDimensionAccountPolicyAsync),
-                     nameof(InternalFinanceController.SaveAccountingDimensionCombinationRuleAsync),
-                     nameof(InternalFinanceController.SaveAccountingDimensionExternalMappingAsync),
-                     nameof(InternalFinanceController.SaveAccountingAllocationTemplateAsync),
-                     nameof(InternalFinanceController.ApplyAccountingDimensionAllocationAsync)
+                     nameof(InternalFinanceAccountingDimensionsController.SaveAccountingDimensionTypeAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.SaveAccountingDimensionMemberAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.SaveAccountingDimensionAccountPolicyAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.SaveAccountingDimensionCombinationRuleAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.SaveAccountingDimensionExternalMappingAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.SaveAccountingAllocationTemplateAsync),
+                     nameof(InternalFinanceAccountingDimensionsController.ApplyAccountingDimensionAllocationAsync)
                  })
         {
             var method = Assert.Single(type.GetMethods(), candidate => candidate.Name == methodName);

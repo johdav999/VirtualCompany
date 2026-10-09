@@ -1,3 +1,5 @@
+using VirtualCompany.Application.Approvals;
+using VirtualCompany.Domain.Enums;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -16,6 +18,13 @@ public static class FinanceModuleRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.AddKeyedScoped<IApprovalTargetHandler, FinanceIntegrationWriteApprovalTargetHandler>(ApprovalTargetEntityType.FinanceIntegrationWrite);
+        services.AddKeyedScoped<IApprovalTargetHandler, AccountingProviderSwitchMappingDecisionApprovalTargetHandler>(ApprovalTargetEntityType.AccountingProviderSwitchMappingDecision);
+        services.AddKeyedScoped<IApprovalTargetHandler, AccountingProviderSwitchCutoverPlanApprovalTargetHandler>(ApprovalTargetEntityType.AccountingProviderSwitchCutoverPlan);
+        services.AddKeyedScoped<IApprovalTargetHandler, AccountingProviderSwitchActivationApprovalTargetHandler>(ApprovalTargetEntityType.AccountingProviderSwitchActivation);
+        services.AddKeyedScoped<IApprovalTargetHandler, AccountingProviderSwitchClosureApprovalTargetHandler>(ApprovalTargetEntityType.AccountingProviderSwitchClosure);
+        services.AddKeyedScoped<IApprovalTargetHandler, VatReturnApprovalTargetHandler>(ApprovalTargetEntityType.VatReturn);
+        services.AddKeyedScoped<IApprovalTargetHandler, TreasurySourceApprovalTargetHandler>(ApprovalTargetEntityType.TreasurySource);
         services.AddSingleton<IAccountingPolicyPack, CountryNeutralAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPack, CountryNeutralBankingAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPack, SwedishDomesticVatCandidatePackV1_1>();
@@ -744,7 +753,9 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceSupplierInvoiceCorrectionService, SupplierInvoiceCorrectionService>();
         services.AddScoped<ISupplierInvoiceEnrichmentProvider, FortnoxSupplierInvoiceEnrichmentProvider>();
         services.AddScoped<IFinanceSupplierInvoiceEnrichmentService, SupplierInvoiceEnrichmentService>();
-        services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+        services.AddScoped<CompanyFinanceReadService>();
+        services.AddScoped<IFinanceReadService>(provider => provider.GetRequiredService<CompanyFinanceReadService>());
+        services.AddScoped<IFinanceInsightRefreshService, FinanceInsightRefreshService>();
         services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
         services.AddSingleton<ITreasuryWorkspacePolicy, TreasuryWorkspacePolicy>();
         services.AddScoped<ITreasuryWorkspaceQueryService, TreasuryWorkspaceQueryService>();

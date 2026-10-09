@@ -426,7 +426,7 @@
     [Parameter] public bool CanManage { get; set; }
     [Parameter] public bool IsActing { get; set; }
     [Parameter] public EventCallback<string> OnAction { get; set; }
-    [Parameter] public EventCallback<AcceptAccountingProviderSwitchMonitoringExceptionApiRequest> OnAcceptMonitoringException { get; set; }
+    [Parameter] public EventCallback<(Guid IncidentId, AcceptAccountingProviderSwitchMonitoringExceptionApiRequest Request)> OnAcceptMonitoringException { get; set; }
 
     private AccountingProviderSwitchGapResponse? SelectedGap { get; set; }
     private AccountingProviderSwitchMappingResponse? SelectedMapping { get; set; }
@@ -525,15 +525,14 @@
     private async Task AcceptSelectedExceptionAsync()
     {
         if (SelectedMonitoringIncident is null) return;
-        await OnAcceptMonitoringException.InvokeAsync(new()
+        await OnAcceptMonitoringException.InvokeAsync((SelectedMonitoringIncident.Id, new()
         {
-            IncidentId = SelectedMonitoringIncident.Id,
             ExpectedVersion = SelectedMonitoringIncident.Version,
             Explanation = ExceptionExplanation,
             Scope = ExceptionScope,
             FinancialImpact = ExceptionFinancialImpact,
             EvidenceReference = ExceptionEvidenceReference
-        });
+        }));
         ExceptionExplanation = ExceptionScope = ExceptionEvidenceReference = string.Empty;
         ExceptionFinancialImpact = 0;
     }

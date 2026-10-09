@@ -144,40 +144,6 @@ public sealed record ReplayAccountingProviderSwitchAssessmentCommand(
 
 public sealed record GetAccountingProviderSwitchAssessmentQuery(Guid CompanyId, Guid SwitchId, Guid? AssessmentId = null);
 
-public sealed record AccountingProviderSwitchCapabilityDto(
-    string EndpointRole, string CapabilityKey, string Level, string Explanation, string? RequiredScope, DateTime ObservedUtc);
-
-public sealed record AccountingProviderSwitchDatasetDto(
-    string EndpointRole, string DatasetKey, string Availability, string CapabilityLevel, long RecordCount,
-    decimal FinancialTotal, string? Currency, string? SourceCursor, string? SourceVersion, string IntegrityHash,
-    string EvidenceJson, string? FailureCode, string? FailureSummary, DateTime ExtractedUtc);
-
-public sealed record AccountingProviderSwitchGapDto(
-    Guid Id, string Category, string? DatasetKey, string Severity, bool IsBlocking, string ReasonCode,
-    string Explanation, string EvidenceJson, string OperatorAction, DateTime CreatedUtc);
-
-public sealed record AccountingProviderSwitchAssessmentDto(
-    Guid Id,
-    Guid CompanyId,
-    Guid SwitchId,
-    string Status,
-    int CompletedWorkItems,
-    int TotalWorkItems,
-    int ProgressPercent,
-    int AttemptCount,
-    DateTime? NextAttemptUtc,
-    string? FailureCode,
-    string? FailureSummary,
-    DateTime RequestedUtc,
-    DateTime? StartedUtc,
-    DateTime? CompletedUtc,
-    IReadOnlyList<AccountingProviderSwitchCapabilityDto> Capabilities,
-    IReadOnlyList<AccountingProviderSwitchDatasetDto> Datasets,
-    IReadOnlyList<AccountingProviderSwitchGapDto> Gaps,
-    bool HasBlockingGaps,
-    string AllowedNextAction,
-    string AllowedNextActionExplanation);
-
 public sealed record AccountingProviderSwitchAssessmentProgressDto(
     Guid AssessmentId,
     string Status,

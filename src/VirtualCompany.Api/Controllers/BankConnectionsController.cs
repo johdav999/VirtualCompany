@@ -147,10 +147,3 @@ public sealed class BankConnectionCallbacksController : ControllerBase
     private Guid UserId() => _companyContext.UserId is { } id && id != Guid.Empty ? id : throw new UnauthorizedAccessException("A resolved user is required.");
     private static string Append(string uri, string query) => uri + (uri.Contains('?', StringComparison.Ordinal) ? "&" : "?") + query;
 }
-
-public sealed record StartBankConnectionRequest(string ProviderKey, string InstitutionId, string? ReturnUri,
-    IReadOnlyCollection<string>? RequestedCapabilities);
-public sealed record RenewBankConnectionRequest(string ProviderKey, long ExpectedVersion, string? ReturnUri);
-public sealed record MapBankAccountRequest(Guid CompanyBankAccountId, long ExpectedConnectionVersion, string Reason);
-public sealed record BankConnectionVersionRequest(long ExpectedVersion);
-public sealed record ChangeBankConnectionStateRequest(long ExpectedVersion, string? Reason);

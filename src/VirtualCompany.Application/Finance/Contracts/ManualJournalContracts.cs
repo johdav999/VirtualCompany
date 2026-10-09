@@ -63,35 +63,6 @@ public sealed record GetManualJournalDraftQuery(Guid CompanyId, Guid DraftId);
 public sealed record ListManualJournalDraftsQuery(Guid CompanyId, string? Status = null, int Skip = 0, int Take = 100);
 public sealed record GetManualJournalReferenceDataQuery(Guid CompanyId);
 
-public sealed record ManualJournalEvidenceDto(Guid DocumentId, string Title, string ContentHash, string OriginalFileName);
-public sealed record ManualJournalSourceReferenceDto(string SourceType, Guid RecordId, string SourceVersion);
-public sealed record ManualJournalVoucherSeriesDto(string Code, string DisplayName, string NumberPrefix);
-public sealed record ManualJournalEvidenceOptionDto(Guid DocumentId, string Title, string OriginalFileName, DateTime UploadedUtc);
-public sealed record ManualJournalReferenceDataDto(
-    IReadOnlyList<ManualJournalVoucherSeriesDto> VoucherSeries,
-    IReadOnlyList<ManualJournalEvidenceOptionDto> EvidenceDocuments,
-    IReadOnlyList<AccountingDimensionTypeDto>? DimensionTypes = null);
-public sealed record ManualJournalLineDto(Guid Id, int LineNumber, Guid FinanceAccountId, string AccountCode, string AccountName,
-    decimal DebitAmount, decimal CreditAmount, string Currency, string? Description, Guid? CostCenterId,
-    IReadOnlyDictionary<string, string> TaxFacts, IReadOnlyDictionary<string, string> DimensionFacts,
-    IReadOnlyList<Guid>? DimensionMemberIds = null);
-public sealed record ManualJournalApprovalDto(Guid Id, string Status, string? DecisionSummary, long DraftVersion,
-    string PayloadHash, DateTime CreatedUtc, DateTime? DecidedUtc);
-public sealed record ManualJournalPolicyDecisionDto(bool IsAllowed, bool RequiresApproval, decimal ApprovalThreshold,
-    string ApprovalCurrency, IReadOnlyList<AccountingPostingIssue> Issues, IReadOnlyList<AccountingPostingIssue> Warnings);
-public sealed record ManualJournalDraftDto(Guid Id, Guid CompanyId, Guid FiscalPeriodId, string VoucherSeriesCode,
-    DateOnly DocumentDate, DateOnly PostingDate, string Explanation, string Currency, string Status, long Version,
-    string PayloadHash, Guid CreatedByUserId, Guid UpdatedByUserId, Guid? ApprovalRequestId, Guid? LedgerEntryId,
-    Guid? OriginalLedgerEntryId, string? CorrectionReason, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? PostedUtc,
-    decimal DebitTotal, decimal CreditTotal, decimal Difference, IReadOnlyList<ManualJournalLineDto> Lines,
-    IReadOnlyList<ManualJournalEvidenceDto> Evidence, ManualJournalApprovalDto? Approval,
-    IReadOnlyList<ManualJournalSourceReferenceDto>? SourceRecords = null);
-public sealed record ManualJournalPreviewDto(ManualJournalDraftDto Draft, AccountingPostingPreview PostingPreview,
-    ManualJournalPolicyDecisionDto Policy);
-public sealed record ManualJournalDraftListResult(IReadOnlyList<ManualJournalDraftDto> Items, int TotalCount, int Skip, int Take);
-public sealed record ManualJournalSubmissionResult(ManualJournalDraftDto Draft, Guid ApprovalRequestId, bool IsIdempotentReplay);
-public sealed record ManualJournalPostingResult(ManualJournalDraftDto Draft, AccountingJournalDto Journal, bool IsIdempotentReplay);
-
 public interface IManualJournalPolicy
 {
     Task<ManualJournalPolicyDecisionDto> EvaluateAsync(Guid companyId, ManualJournalDraftInput draft, CancellationToken cancellationToken);

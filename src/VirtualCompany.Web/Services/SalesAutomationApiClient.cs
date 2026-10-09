@@ -89,23 +89,9 @@ public sealed class OutboundAutomationPolicyViewModel
     public DateTime UpdatedUtc { get; set; }
 }
 
-public sealed record UpdateOutboundAutomationPolicyRequest(
-    bool OutboundEnabled,
-    int MaxEmailsPerDay,
-    bool RequireApprovalFirstContact,
-    bool RequireApprovalPricingDiscussion,
-    bool RequireApprovalFollowUps,
-    bool RequireApprovalReEngagement,
-    int WebsiteLeadDeduplicationWindowMinutes,
-    Guid? WebsiteLeadFollowUpSequenceId);
-
 public sealed record OutboundReviewQueueItemViewModel(Guid Id, Guid SequenceExecutionStepId, Guid CampaignId, Guid ContactId, string ContactName, string ContactEmail, string Category, string Status, string Reason, DateTime RequestedUtc);
 
 public sealed record OutboundReviewQueueDetailViewModel(
     Guid Id, Guid SequenceExecutionStepId, Guid CampaignId, Guid ContactId, string ContactName, string ContactEmail,
     string Category, string Status, string ReasonCode, string Reason, string Subject, string Body, string? EditedSubject,
     string? EditedBody, Guid? DecidedByUserId, DateTime? DecidedUtc, string? DecisionComment, DateTime RequestedUtc);
-
-public sealed record OutboundReviewDecisionRequest(string? Comment);
-
-public sealed record OutboundEditAndApproveRequest(string Subject, string Body, string? Comment);

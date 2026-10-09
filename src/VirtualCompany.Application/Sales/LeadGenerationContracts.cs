@@ -70,46 +70,12 @@ public interface ICrmLeadAdapterRegistry
     IReadOnlyList<string> Keys { get; }
     ICrmLeadAdapter Resolve(string key);
 }
-
-public sealed record ProspectProviderCapabilities(bool AccountSearch, bool ContactSearch, bool Enrichment, bool Signals, bool IsPaid);
-public sealed record ProspectProviderDescriptor(string Key, string Label, ProspectProviderCapabilities Capabilities, string Health);
 public sealed record ProspectProviderSearch(Guid ProfileId, int Limit, string? Cursor, string Countries, string Industries);
 public sealed record ProspectProviderPage(IReadOnlyList<ProspectAccountInput> Accounts, string? NextCursor, decimal Cost, bool Complete);
-
-public sealed record SuggestIcpRequest(Guid AgentId, string? Focus = null);
-public sealed record IcpSuggestionEvidenceDto(string SourceId, string Type, string Title);
-public sealed record IcpSuggestionDto(
-    Guid RunId,
-    Guid AgentId,
-    string AgentName,
-    SaveIcpProfileRequest Profile,
-    string Rationale,
-    decimal Confidence,
-    IReadOnlyList<IcpSuggestionEvidenceDto> Evidence,
-    IReadOnlyList<string> MissingEvidence,
-    bool RequiresReview);
-public sealed record SaveIcpProfileRequest(string Name, string Countries, string Industries, int? EmployeeMin, int? EmployeeMax, decimal? RevenueMin, decimal? RevenueMax, string BuyerRoles, string Technologies, string PainHypotheses, string PositiveCriteria, string Disqualifiers);
-public sealed record IcpProfileDto(Guid Id, string Name, int Version, string Status, string Countries, string Industries, int? EmployeeMin, int? EmployeeMax, decimal? RevenueMin, decimal? RevenueMax, string BuyerRoles, string Technologies, string PainHypotheses, string PositiveCriteria, string Disqualifiers, DateTime UpdatedUtc, DateTime? ActivatedUtc);
 public sealed record IcpCriterionDto(string Criterion, string Outcome, string Explanation);
 public sealed record IcpPreviewDto(string Outcome, decimal FitScore, IReadOnlyList<IcpCriterionDto> Criteria);
-public sealed record SaveSourcePolicyRequest(string EnabledSources, string AllowedCountries, string AllowedFields, decimal PerRunBudget, decimal MonthlyBudget, decimal ApprovalThreshold, int RetentionDays, int RefreshDays);
-public sealed record SourcePolicyDto(Guid Id, int Version, string EnabledSources, string AllowedCountries, string AllowedFields, decimal PerRunBudget, decimal MonthlyBudget, decimal ApprovalThreshold, int RetentionDays, int RefreshDays, decimal ReservedThisMonth, decimal ActualThisMonth, IReadOnlyList<ProspectProviderDescriptor> Providers);
-public sealed record CreateProspectingRunRequest(Guid IcpProfileId, string Name, int AccountLimit, int ContactLimit, string Sources, string Geography, int FreshnessDays, decimal EstimatedCost, string? Schedule);
-public sealed record ProspectingRunDto(Guid Id, Guid IcpProfileId, string Name, string Status, string CurrentStep, int AccountLimit, int ContactLimit, int AccountsFound, int ContactsFound, string Sources, string Geography, decimal EstimatedCost, decimal ActualCost, string? FailureSummary, DateTime CreatedUtc, DateTime? StartedUtc, DateTime? CompletedUtc);
 public sealed record ProspectAccountInput(string Name, string? Domain, string? Country, string? Industry, int? Employees, decimal? Revenue, string? Technologies, string SourceKey, string SourceReference, DateTime? ObservedUtc = null);
 public sealed record ProspectQuery(string? Search, string? Status, string? Country, string? Source, int Page = 1, int PageSize = 50, string Sort = "score");
-public sealed record ProspectPageDto(IReadOnlyList<ProspectAccountDto> Items, int Total, int Page, int PageSize);
-public sealed record ProspectAccountDto(Guid Id, Guid RunId, Guid ProfileId, string Name, string? Domain, string? Country, string? Industry, int? Employees, decimal? Revenue, string Technologies, string Source, string Status, string FitOutcome, decimal FitScore, decimal TimingScore, decimal RoleScore, decimal DataConfidenceScore, decimal OverallScore, string ScoreBand, string EvaluationJson, string ResearchBriefJson, string? RejectionReason, Guid? LeadId, DateTime LastObservedUtc, IReadOnlyList<ProspectContactDto> Contacts, IReadOnlyList<ProspectSignalDto> Signals, IReadOnlyList<string> AllowedActions);
-public sealed record ReviewProspectRequest(string Action, string? Reason);
-public sealed record SaveProspectContactRequest(string FullName, string? Title, string BuyingRoles, string? Department, string? Seniority, string? Email, string EmailStatus, string? Phone, string? ProfileUrl, decimal Confidence, string SourceKey, string SourceReference);
-public sealed record ProspectContactDto(Guid Id, Guid AccountId, string FullName, string? Title, string? Department, string? Seniority, string BuyingRoles, string? Email, string EmailStatus, string? Phone, string? ProfileUrl, string EmploymentStatus, decimal Confidence, string Status, string? RejectionReason, Guid? ContactId);
-public sealed record SaveProspectSignalRequest(string Type, string SourceKey, string SourceReference, string Summary, DateTime EventUtc, decimal Confidence, int FreshnessDays);
-public sealed record ProspectSignalDto(Guid Id, string Type, string Source, string Summary, DateTime EventUtc, DateTime FreshUntilUtc, decimal Confidence, decimal Relevance, string Status);
-public sealed record SaveSuppressionRequest(string ScopeType, string ScopeValue, string Reason, string Source, DateTime? ExpiresUtc);
-public sealed record SuppressionDto(Guid Id, string ScopeType, string ScopeValue, string Reason, string Source, DateTime CreatedUtc, DateTime? ExpiresUtc);
-public sealed record ImportResultDto(int Imported, int Duplicates, int Rejected, IReadOnlyList<string> Errors);
-public sealed record LeadConversionDto(Guid AccountId, Guid CustomerCompanyId, Guid? ContactId, Guid LeadId, bool ExistingLead);
-public sealed record LeadGenerationMetricsDto(int Candidates, int Qualified, int Accepted, int Converted, int Rejected, decimal AcceptanceRate, decimal AverageCompleteness, IReadOnlyDictionary<string, int> SourceYield);
 public sealed record MergeProspectRequest(Guid TargetId);
 public sealed record SignalReviewRequest(string Action);
 public sealed record CrmAdapterStatus(string Key, string Label, bool Connected, string Health, DateTime? LastSyncUtc);

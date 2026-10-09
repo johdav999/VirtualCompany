@@ -118,10 +118,3 @@ public sealed class FinanceIntegrationApplicationManagementController : Controll
             ? correlationId.ToString()
             : HttpContext.TraceIdentifier;
 }
-
-public sealed record SaveFinanceIntegrationApplicationConfigurationRequest(
-    bool Enabled,
-    string? ClientId,
-    string? ClientSecret,
-    string? RedirectUri,
-    IReadOnlyCollection<string>? Scopes);

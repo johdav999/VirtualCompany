@@ -126,22 +126,3 @@ public sealed class FinanceEmailSettingsController : ControllerBase
         }
     }
 }
-
-public sealed record FinanceEmailSettingsDto(
-    bool IsWritable,
-    bool RequiresRestart,
-    FinanceEmailProviderSettingsDto Gmail,
-    FinanceEmailProviderSettingsDto Microsoft365);
-
-public sealed record FinanceEmailProviderSettingsDto(
-    string ClientId,
-    bool IsClientIdConfigured,
-    bool IsClientSecretConfigured);
-
-public sealed record UpdateFinanceEmailSettingsRequest(
-    UpdateFinanceEmailProviderSettingsRequest? Gmail,
-    UpdateFinanceEmailProviderSettingsRequest? Microsoft365);
-
-public sealed record UpdateFinanceEmailProviderSettingsRequest(
-    string? ClientId,
-    string? ClientSecret);

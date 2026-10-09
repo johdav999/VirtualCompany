@@ -1,0 +1,4 @@
+using VirtualCompany.Application.Documents;
+namespace VirtualCompany.Shared.Contracts.CompanyDocumentRepositories;
+public sealed record CancelMicrosoftOnboardingRequest(long ExpectedConcurrencyVersion);
+public sealed record DisconnectDocumentRepositoryRequest(long ExpectedConcurrencyVersion);

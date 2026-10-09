@@ -124,7 +124,7 @@ public sealed partial class FinanceApiClient
         }
 
         var clock = await GetSimulationClockAsync(companyId, cancellationToken);
-        return clock?.SimulatedUtc ?? DateTime.UtcNow;
+        return clock?.CurrentUtc ?? DateTime.UtcNow;
     }
 
     public Task<FinanceSimulationClockResponse?> GetSimulationClockAsync(Guid companyId, CancellationToken cancellationToken = default) =>
@@ -132,7 +132,7 @@ public sealed partial class FinanceApiClient
             ? Task.FromResult<FinanceSimulationClockResponse?>(new FinanceSimulationClockResponse
               {
                   CompanyId = companyId,
-                  SimulatedUtc = DateTime.UtcNow,
+                  CurrentUtc = DateTime.UtcNow,
                   Enabled = false
               })
             : GetAsync<FinanceSimulationClockResponse>(companyId, $"internal/companies/{companyId}/finance/simulation/clock", allowNotFound: true, cancellationToken);

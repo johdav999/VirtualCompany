@@ -128,41 +128,6 @@ public sealed record GetPaymentBatchExecutionForBatchQuery(Guid CompanyId, Guid 
 public sealed record PaymentWebhookIngestCommand(string ProviderKey, string AuthorizationHeader,
     ReadOnlyMemory<byte> Payload, string? CorrelationId = null);
 
-public sealed record PaymentExecutionAttemptDto(Guid Id, int AttemptNumber, string Operation,
-    string Outcome, string RequestHash, string? ProviderRequestId, string? ReasonCode,
-    string? SafeSummary, string RetryClassification, DateTime StartedUtc, DateTime? CompletedUtc);
-public sealed record PaymentAcknowledgementDto(Guid Id, string Source, string ProviderStatus,
-    string NormalizedStatus, bool IsFinal, bool UpdatesExpected, string? ReasonCode,
-    string? SafeSummary, string EvidenceHash, DateTime AcknowledgedUtc);
-public sealed record PaymentExecutionInstructionDto(Guid Id, Guid PaymentInstructionId, int Sequence,
-    decimal Amount, string Currency, string BeneficiaryName, string MaskedDestination,
-    string? ProviderTransactionId, string Status, string? ReasonCode, Guid? PaymentId,
-    Guid? PaymentAllocationId);
-public sealed record PaymentRemittanceDto(Guid Id, Guid PaymentInstructionId, string BeneficiaryName,
-    string? RecipientEmail, string Status, string ContentHash, string? ProviderReference,
-    string? ReasonCode, string? SafeSummary, int AttemptCount, DateTime CreatedUtc,
-    DateTime? AcceptedUtc);
-public sealed record PaymentSettlementDto(Guid Id, Guid BankTransactionId, string BankReference,
-    decimal Amount, string Currency, int PaymentCount, int AllocationCount,
-    IReadOnlyList<Guid> LedgerEntryIds, DateTime SettledUtc);
-public sealed record PaymentExecutionAllowedActionsDto(bool CanOpenBankAuthorization,
-    bool CanCancel, bool CanRefreshStatus, bool CanAttachProviderReference,
-    bool CanSettle, bool CanRetryRemittance, string? BlockingReasonCode, string Explanation);
-public sealed record PaymentBatchExecutionDto(Guid Id, Guid BatchId, string BatchReference,
-    int InstructionSetVersion, long Version, string ProviderKey, string ProviderDisplayName,
-    Guid BankConnectionId, string InstitutionName, Guid CompanyBankAccountId,
-    string BankAccountName, string MaskedBankAccount, string Status, string? ProviderPaymentId,
-    Uri? AuthorizationUri, string? ProviderStatus, string RequestHash, string BusinessIdempotencyKey,
-    bool UpdatesExpected, bool CanCancelAtProvider, string? ReasonCode, string? SafeSummary,
-    DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? ProviderAcceptedUtc,
-    DateTime? ProviderCompletedUtc, DateTime? SettledUtc,
-    IReadOnlyList<PaymentExecutionAttemptDto> Attempts,
-    IReadOnlyList<PaymentAcknowledgementDto> Acknowledgements,
-    IReadOnlyList<PaymentExecutionInstructionDto> Instructions,
-    IReadOnlyList<PaymentRemittanceDto> Remittances,
-    PaymentSettlementDto? Settlement, PaymentExecutionAllowedActionsDto AllowedActions,
-    bool IsIdempotentReplay = false);
-
 public interface IPaymentBatchExecutionService
 {
     Task<PaymentBatchExecutionDto?> GetAsync(GetPaymentBatchExecutionQuery query, CancellationToken cancellationToken);

@@ -1,3 +1,5 @@
+using ProcessSalesEmailMessageRequest = VirtualCompany.Shared.Contracts.SalesEmail.ProcessSalesEmailMessageRequest;
+using ProcessSalesEmailThreadRequest = VirtualCompany.Shared.Contracts.SalesEmail.ProcessSalesEmailThreadRequest;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Auth;
@@ -81,12 +83,4 @@ public sealed class SalesEmailController : ControllerBase
         _companyContextAccessor.UserId is { } userId && userId != Guid.Empty
             ? userId
             : throw new UnauthorizedAccessException("A resolved user is required.");
-
-    public sealed record ProcessSalesEmailMessageRequest(
-        Guid MailboxConnectionId,
-        string ProviderMessageId);
-
-    public sealed record ProcessSalesEmailThreadRequest(
-        Guid MailboxConnectionId,
-        string ProviderThreadId);
 }

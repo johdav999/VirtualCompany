@@ -45,42 +45,6 @@ public sealed record LinkYearEndCorrectionCommand(Guid CompanyId, Guid RunId, Gu
 public sealed record GetYearEndRunQuery(Guid CompanyId, Guid RunId);
 public sealed record ListYearEndRunsQuery(Guid CompanyId, int Take = 20);
 
-public sealed record YearEndReadinessCheckDto(string Code, string Label, bool Passed, bool Blocking,
-    int Count, string Explanation, string? TargetType, Guid? TargetId, DateTime ObservedUtc);
-public sealed record YearEndReadinessSnapshotDto(Guid Id, int SnapshotNumber, string Status,
-    string EvidenceHash, string JournalCutoffHash, int BlockerCount, int ClosedPeriodCount,
-    Guid PreparedByUserId, DateTime PreparedUtc, long Version, IReadOnlyList<YearEndReadinessCheckDto> Checks);
-public sealed record YearEndRetainedEarningsProposalDto(Guid Id, Guid RetainedEarningsAccountId,
-    string RetainedEarningsAccountCode, Guid OpeningBalanceClearingAccountId, string OpeningBalanceClearingAccountCode,
-    decimal NetIncome, string Currency, string EvidenceHash, string Status, Guid PreparedByUserId,
-    Guid? ReviewedByUserId, DateTime PreparedUtc, DateTime? ReviewedUtc, long Version);
-public sealed record YearEndOpeningBalanceCandidateDto(Guid Id, Guid FinanceAccountId, string AccountCode,
-    string AccountName, string AccountClass, string SourceCurrency, string DimensionKey,
-    decimal ClosingFunctionalBalance, decimal ClosingDocumentBalance, decimal OpeningFunctionalBalance,
-    decimal OpeningDocumentBalance, decimal Difference, string Status, Guid? OpeningLedgerEntryId);
-public sealed record YearEndSignOffDto(Guid Id, string Action, string Decision, string EvidenceHash,
-    Guid ActorUserId, string ActorRole, string? Reason, DateTime OccurredUtc);
-public sealed record YearEndSubsequentEventDto(Guid Id, DateOnly EventDate, string Title, string Description,
-    decimal? EstimatedAmount, string Currency, string Decision, Guid OwnerUserId, Guid? EvidenceDocumentId,
-    string Status, Guid RecordedByUserId, Guid? ReviewedByUserId, Guid? CorrectionLedgerEntryId,
-    Guid? ReopenRequestId, DateTime RecordedUtc, DateTime UpdatedUtc, DateTime? ResolvedUtc, long Version);
-public sealed record YearEndHistoryDto(Guid Id, string Action, string FromStatus, string ToStatus,
-    Guid ActorUserId, string EvidenceHash, string Summary, DateTime OccurredUtc);
-public sealed record YearEndRunSummaryDto(Guid Id, DateOnly FiscalYearStart, DateOnly FiscalYearEnd,
-    string Status, int BlockerCount, decimal NetIncome, string Currency, DateTime UpdatedUtc, long Version);
-public sealed record YearEndRunDto(Guid Id, Guid CompanyId, string CompanyName, DateOnly FiscalYearStart,
-    DateOnly FiscalYearEnd, Guid TargetFiscalPeriodId, string TargetFiscalPeriodName, string VoucherSeriesCode,
-    string Status, Guid PreparedByUserId, Guid? ApprovedByUserId, Guid? ExecutedByUserId,
-    Guid? ReconciledByUserId, Guid? CompletedByUserId, string? ApprovedEvidenceHash,
-    Guid? RetainedEarningsLedgerEntryId, Guid? OpeningBalanceLedgerEntryId, string? OpeningBalanceChecksum,
-    string? FailureCode, string? FailureSummary, DateTime CreatedUtc, DateTime UpdatedUtc,
-    DateTime? ApprovedUtc, DateTime? ExecutedUtc, DateTime? ReconciledUtc, DateTime? CompletedUtc,
-    long Version, YearEndReadinessSnapshotDto? CurrentReadiness,
-    YearEndRetainedEarningsProposalDto? RetainedEarningsProposal,
-    IReadOnlyList<YearEndOpeningBalanceCandidateDto> OpeningBalances,
-    IReadOnlyList<YearEndSignOffDto> SignOffs, IReadOnlyList<YearEndSubsequentEventDto> SubsequentEvents,
-    IReadOnlyList<YearEndHistoryDto> History, IReadOnlyList<string> AllowedActions);
-
 public interface IYearEndRolloverService
 {
     Task<IReadOnlyList<YearEndRunSummaryDto>> ListAsync(ListYearEndRunsQuery query, CancellationToken cancellationToken);

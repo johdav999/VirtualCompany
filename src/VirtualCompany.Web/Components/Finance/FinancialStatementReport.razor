@@ -90,7 +90,7 @@
                     <dl><div><dt>@T("Ingående saldo", "Opening balance")</dt><dd>@Money(EvidenceSign * Evidence.OpeningBalanceAdjustment, 2) @Unit</dd></div><div><dt>@T("Periodens förändring", "Journal contribution")</dt><dd>@SignedMoney(EvidenceSign * Evidence.JournalLineTotal) @Unit</dd></div><div><dt>@T("Rapportbelopp", "Statement amount")</dt><dd>@Money(SelectedAccount.Amount, 2) @Unit</dd></div></dl>
                     <small>@T("Underlag för", "Evidence for") @Report?.PeriodName</small>
                     <p class="@(EvidenceDifference == 0 ? "positive" : "negative")">@T("Avstämningsdifferens", "Reconciliation difference"): @Money(EvidenceDifference, 2)</p>
-                    @foreach (var entry in Evidence.Entries.Take(3)) { <a class="statement-voucher" href="@Link($"/finance/accounting/journals?journalId={entry.LedgerEntryId:D}")">@entry.EntryNumber <span>@Money(EvidenceSign * entry.TotalContributionAmount, 2)</span></a> }
+                    @foreach (var entry in Evidence.JournalEntries.Take(3)) { <a class="statement-voucher" href="@Link($"/finance/accounting/journals?journalId={entry.LedgerEntryId:D}")">@entry.EntryNumber <span>@Money(EvidenceSign * entry.TotalContributionAmount, 2)</span></a> }
                 }
                 @if (SelectedAccount.AccountId is Guid accountId) { <a class="statement-button secondary" href="@Link($"/finance/accounting/reports?view=ledger&accountId={accountId:D}&periodId={SelectedPeriodId:D}")">@T("Visa huvudbok", "View general ledger") →</a> }
                 @if (Report?.Snapshot is not null) { <small>@T("Huvudboken visar aktuell bokföring. Underlaget ovan avser den sparade rapportversionen.", "The ledger shows current accounting. Evidence above belongs to the saved report version.")</small> }
@@ -148,7 +148,7 @@
     [Parameter] public EventCallback OnExport { get; set; }
     private readonly HashSet<string> Expanded = ["sales", "cash"];
     private bool IsBalance => ReportKind == "balance-sheet";
-    private decimal EvidenceSign => !IsBalance && Evidence?.Line is { } line && line.ReportSection != "profit_and_loss_revenue" && line.LineClassification != "non_operating_income" ? -1m : 1m;
+    private decimal EvidenceSign => !IsBalance && Evidence?.SelectedLine is { } line && line.ReportSection != "profit_and_loss_revenue" && line.LineClassification != "non_operating_income" ? -1m : 1m;
     private decimal EvidenceDifference => SelectedAccount is null || Evidence is null ? 0m : SelectedAccount.Amount - EvidenceSign * Evidence.ReconciliationTotal;
     private bool Swedish => CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "sv";
     private CultureInfo Culture => CultureInfo.GetCultureInfo(Swedish ? "sv-SE" : "en-GB");

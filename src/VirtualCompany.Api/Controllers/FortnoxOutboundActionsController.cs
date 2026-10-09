@@ -1,3 +1,4 @@
+using FortnoxOutboundActionRequest = VirtualCompany.Shared.Contracts.FortnoxOutboundActions.FortnoxOutboundActionRequest;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -113,17 +114,4 @@ public sealed class FortnoxOutboundActionsController : ControllerBase
         _companyContextAccessor.UserId is { } userId && userId != Guid.Empty
             ? userId
             : throw new UnauthorizedAccessException("A resolved user is required.");
-
-    public sealed record FortnoxOutboundActionRequest(
-        string? CommandType,
-        string HttpMethod,
-        string Path,
-        string TargetCompany,
-        JsonNode? Payload,
-        Guid? ConnectionId = null,
-        Guid? WriteRequestId = null,
-        string? PayloadSummary = null,
-        string? PayloadHash = null,
-        string? ProviderPayloadType = null,
-        string? CorrelationId = null);
 }
