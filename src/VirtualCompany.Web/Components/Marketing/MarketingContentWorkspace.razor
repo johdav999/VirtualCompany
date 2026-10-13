@@ -1,0 +1,57 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-two-column">
+    <div class="vc-panel marketing-section">
+        <h2>Content workflow</h2>
+        @if (Dashboard.Content.Count == 0) { <MarketingEmpty Title="No content briefs" Message="Briefs keep audience, claims, tone, channel, sources, and approval state together." /> }
+        <div class="marketing-content-list">
+            @foreach (var item in Dashboard.Content.Where(x => !BriefId.HasValue || x.Id == BriefId))
+            {
+                <article id="marketing-record-@item.Id"><div><a href="@MarketingJourneyRoutes.Review(CompanyId ?? Guid.Empty, item.CampaignId, item.Id, WorkspaceOrigin)">@item.Title</a><span>@item.Channel / @item.Audience / @MarketingJourneyRoutes.State(item.Status)</span><p>@item.Purpose</p>
+                    @if (item.Variants.Count > 0)
+                    {
+                        <div class="marketing-list">@foreach (var variant in item.Variants) { <article><div><strong>@variant.Name</strong><span>v@variant.VersionNumber · @Friendly(variant.ContentFormat) · @Friendly(variant.Status)</span><p>@variant.Body</p><small>Sources: @JsonSummary(variant.SourceReferences, "No sources recorded") · @variant.PromptVersion</small></div></article> }</div>
+                    }
+                </div>
+                @if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <div class="marketing-inline-actions"><button class="btn btn-sm btn-outline-primary" @onclick="() => PreflightContentAsync.InvokeAsync(item.Id)">Check readiness</button><button class="btn btn-sm btn-primary" @onclick="() => SubmitContentAsync.InvokeAsync(item.Id)">Submit for review</button></div> }
+                else if (item.Status.Equals("submitted", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => ReviewContentAsync.InvokeAsync((item.Id, true))">Approve</button><button class="btn btn-sm btn-outline-danger" @onclick="() => ReviewContentAsync.InvokeAsync((item.Id, false))">Reject</button></div> }</article>
+            }
+        </div>
+    </div>
+    <EditForm Model="ContentState.ContentForm" OnValidSubmit="() => CreateContentAsync.InvokeAsync()" class="vc-panel marketing-form">
+        <h2>Create content brief</h2>
+        <label>Title<InputText @bind-Value="ContentState.ContentForm.Title" /></label>
+        <label>Purpose<InputTextArea @bind-Value="ContentState.ContentForm.Purpose" /></label>
+        <label>Audience<InputText @bind-Value="ContentState.ContentForm.Audience" /></label>
+        <div class="marketing-form__row"><label>Channel<InputText @bind-Value="ContentState.ContentForm.Channel" /></label><label>Language<InputText @bind-Value="ContentState.ContentForm.Language" /></label></div>
+        <div class="marketing-form__row"><label>Measurable objective<InputText @bind-Value="ContentState.ContentForm.MeasurableObjective" /></label><label>Funnel stage<InputSelect @bind-Value="ContentState.ContentForm.FunnelStage"><option value="awareness">Awareness</option><option value="consideration">Consideration</option><option value="conversion">Conversion</option><option value="retention">Retention</option></InputSelect></label></div>
+        <label>Key message<InputTextArea @bind-Value="ContentState.ContentForm.KeyMessage" /></label>
+        <label>Offer<InputText @bind-Value="ContentState.ContentForm.Offer" /></label>
+        <label>Call to action<InputText @bind-Value="ContentState.ContentForm.CallToAction" /></label>
+        <button class="btn btn-primary" disabled="@IsSaving">Create brief</button>
+    </EditForm>
+</section>
+@if (ContentState.ContentPreflight is not null)
+{
+    <section class="vc-panel marketing-section" aria-live="polite">
+        <span class="vc-kicker">CONTENT CHECK</span>
+        <h2>@(ContentState.ContentPreflight.ReadyForReview ? "Ready for review" : "Resolve before submission")</h2>
+        @if (ContentState.ContentPreflight.Issues.Count == 0) { <p>No blocking content or evidence issues were found.</p> }
+        <div class="marketing-list">@foreach (var issue in ContentState.ContentPreflight.Issues) { <article><div><strong>@issue.Explanation</strong><span>@issue.Severity</span></div></article> }</div>
+    </section>
+}
+
+@code {
+    [Parameter] public Guid? BriefId { get; set; }
+    [Parameter] public string WorkspaceOrigin { get; set; } = "";
+
+    [Parameter, EditorRequired] public MarketingContentState ContentState { get; set; } = null!;
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public EventCallback CreateContentAsync { get; set; }
+    [Parameter] public EventCallback<Guid> SubmitContentAsync { get; set; }
+    [Parameter] public EventCallback<Guid> PreflightContentAsync { get; set; }
+    [Parameter] public EventCallback<(Guid Id, bool Approved)> ReviewContentAsync { get; set; }
+}

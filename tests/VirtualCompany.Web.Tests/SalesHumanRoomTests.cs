@@ -4,7 +4,6 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Bunit;
 using Microsoft.Extensions.DependencyInjection;
-using VirtualCompany.Application.Sales;
 using VirtualCompany.Web.Components.Sales;
 using VirtualCompany.Web.Services;
 namespace VirtualCompany.Web.Tests;
@@ -12,34 +11,6 @@ public sealed class SalesHumanRoomTests
 {
     private static readonly Guid Room = Guid.NewGuid();
     private static readonly Guid Company = Guid.NewGuid();
-    [Fact]
-    public async Task Host_client_reads_actual_API_contract_and_keeps_company_scope()
-    {
-        var participant = Guid.NewGuid();
-        using var http = new HttpClient(new Handler(request =>
-        {
-            Assert.Equal(Company.ToString(), Assert.Single(request.Headers.GetValues("X-Company-Id")));
-            Assert.False(request.Headers.Contains("X-Sales-Room-Session"));
-            Assert.EndsWith($"/browser-rooms/{Room:D}", request.RequestUri!.AbsolutePath);
-            return Ok(new SalesBrowserRoomView(Room, null, "lobby", "not_started", 2, DateTime.UtcNow.AddHours(1),
-                [new(participant, "Host", "admitted", 1, false, "human-host-1", true)], []));
-        })) { BaseAddress = new("https://api.example.test/") };
-        var client = new SalesBrowserRoomApiClient(new CompanyApiTransport(http), false);
-        var view = await client.StatusAsync(Company, Room, default);
-        Assert.True(Assert.Single(view.Participants).IsOrganizer);
-        await Assert.ThrowsAsync<ArgumentException>(() => client.StatusAsync(Guid.Empty, Room, default));
-    }
-    [Fact]
-    public async Task Guest_client_sends_only_room_credential_and_reads_public_contract()
-    {
-        using var client = new SalesBrowserGuestApiClient(new HttpClient(new Handler(request =>
-        {
-            Assert.Equal("credential", Assert.Single(request.Headers.GetValues("X-Sales-Room-Session")));
-            Assert.False(request.Headers.Contains("X-Company-Id")); Assert.Null(request.Headers.Authorization);
-            return Ok(new SalesRoomGuestView(Room, Guid.NewGuid(), "lobby", "lobby", 1, DateTime.UtcNow.AddHours(1), false, false));
-        })) { BaseAddress = new("https://api.example.test/") });
-        var view = await client.StatusAsync(Room, "credential", default); Assert.Empty(view.Participants);
-    }
     [Fact]
     public async Task Provider_body_is_never_shown_in_failure_message_and_tokens_are_redacted()
     {
@@ -64,7 +35,7 @@ public sealed class SalesHumanRoomTests
     [Fact]
     public void Lobby_and_access_denial_do_not_connect_media()
     {
-        using var context = Context(_ => Ok(new SalesRoomGuestView(Room, Guid.NewGuid(), "lobby", "lobby", 1, DateTime.UtcNow.AddHours(1), false, false)));
+        using var context = Context(_ => Ok(new BrowserGuestSnapshot(Room, Guid.NewGuid(), "lobby", "lobby", 1, DateTime.UtcNow.AddHours(1), false, false, [])));
         var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
         module.Setup<SalesHumanRoom.Entry>("entry", _ => true).SetResult(new("", "credential"));
         var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room));
@@ -80,8 +51,8 @@ public sealed class SalesHumanRoomTests
         using var context = Context(request =>
         {
             if (request.RequestUri!.AbsolutePath.EndsWith("/media-token")) mediaTokenRequested = true;
-            return Ok(new SalesBrowserRoomView(Room, null, "lobby", "not_started", 2, DateTime.UtcNow.AddHours(4),
-                [new(Guid.NewGuid(), "Organizer", "admitted", 1, false, "human-host-1", true)], [])
+            return Ok(new BrowserRoomSnapshot(Room, null, "lobby", "not_started", 2, DateTime.UtcNow.AddHours(4),
+                [new(Guid.NewGuid(), "Organizer", "admitted", 1, false, "human-host-1", true, false, false)], [])
                 { ConnectionAllowed = false, OpensUtc = opensUtc });
         });
         var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
@@ -108,8 +79,8 @@ public sealed class SalesHumanRoomTests
                 var json = JsonDocument.Parse(request.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
                 Assert.Equal(5, json.RootElement.GetProperty("expectedVersion").GetInt64()); admitted = true;
             }
-            return Ok(new SalesBrowserRoomView(Room, null, "lobby", "not_started", admitted ? 6 : 5, DateTime.UtcNow.AddHours(1),
-                [new(Guid.NewGuid(), "Organizer", "admitted", 1, false, "human-host-1", true), new(pending, "Casey Wang", admitted ? "admitted" : "lobby", 1, false, "human-guest-1")], []));
+            return Ok(new BrowserRoomSnapshot(Room, null, "lobby", "not_started", admitted ? 6 : 5, DateTime.UtcNow.AddHours(1),
+                [new(Guid.NewGuid(), "Organizer", "admitted", 1, false, "human-host-1", true, false, false), new(pending, "Casey Wang", admitted ? "admitted" : "lobby", 1, false, "human-guest-1", false, false, false)], []));
         });
         var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
         var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
@@ -147,7 +118,7 @@ public sealed class SalesHumanRoomTests
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/agent")) return Ok(status);
             if (path.EndsWith("/media-token"))
-                return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+                return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(presentation.Host);
             return Ok(room);
@@ -215,7 +186,7 @@ public sealed class SalesHumanRoomTests
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/agent")) return Ok(status);
-            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.EndsWith("/media-token")) return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(fixture.Host);
             return Ok(fixture.Room);
@@ -284,7 +255,7 @@ public sealed class SalesHumanRoomTests
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/agent")) return Ok(status);
-            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.EndsWith("/media-token")) return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(fixture.Host);
             return Ok(fixture.Room);
@@ -321,9 +292,9 @@ public sealed class SalesHumanRoomTests
     public async Task Host_join_uses_authorized_token_and_renders_live_controls()
     {
         using var context = Context(request => request.RequestUri!.AbsolutePath.EndsWith("/media-token")
-            ? Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)))
-            : Ok(new SalesBrowserRoomView(Room, null, "live", "not_started", 5, DateTime.UtcNow.AddHours(1),
-                [new(Guid.NewGuid(), "Organizer", "admitted", 1, true, "human-host-1", true), new(Guid.NewGuid(), "Casey Wang", "admitted", 1, true, "human-guest-1")], [])));
+            ? Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)))
+            : Ok(new BrowserRoomSnapshot(Room, null, "live", "not_started", 5, DateTime.UtcNow.AddHours(1),
+                [new(Guid.NewGuid(), "Organizer", "admitted", 1, true, "human-host-1", true, false, false), new(Guid.NewGuid(), "Casey Wang", "admitted", 1, true, "human-guest-1", false, false, false)], [])));
         var module = context.JSInterop.SetupModule("./js/sales-human-room.mjs"); module.Mode = JSRuntimeMode.Loose;
         var cut = context.RenderComponent<SalesHumanRoom>(p => p.Add(x => x.RoomId, Room).Add(x => x.HostCompanyId, Company));
         cut.WaitForAssertion(() => Assert.False(cut.Find(".room-join").HasAttribute("disabled")));
@@ -340,7 +311,7 @@ public sealed class SalesHumanRoomTests
         {
             var path = request.RequestUri!.AbsolutePath;
             if (path.EndsWith("/media-token"))
-                return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+                return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(fixture.Host);
             return Ok(fixture.Room);
@@ -365,7 +336,7 @@ public sealed class SalesHumanRoomTests
             var path = request.RequestUri!.AbsolutePath;
             Assert.Equal("credential", Assert.Single(request.Headers.GetValues("X-Sales-Room-Session")));
             if (path.EndsWith("/media-token"))
-                return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-guest-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+                return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-guest-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(fixture.GuestPresentation);
             return Ok(fixture.GuestRoom);
@@ -422,7 +393,7 @@ public sealed class SalesHumanRoomTests
                 calls.Add("narration"); return Ok(status);
             }
             if (path.EndsWith("/agent")) return Ok(status);
-            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.EndsWith("/media-token")) return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(host);
             return Ok(f.Room);
@@ -468,7 +439,7 @@ public sealed class SalesHumanRoomTests
                 status = status with { State = "stopped", AutoStartPending = false, LastErrorCode = "host_stopped" };
                 return Ok(status);
             }
-            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.EndsWith("/media-token")) return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(f.Host);
             return Ok(f.Room with { Participants = f.Room.Participants.Select(p => p with { AiProcessingAllowed = consent }).ToArray() });
@@ -512,7 +483,7 @@ public sealed class SalesHumanRoomTests
             }
             if (path.EndsWith("/agent")) return Ok(JoinStatus(true, true));
             if (path.EndsWith("/consent")) return Ok(f.GuestRoom);
-            if (path.EndsWith("/media-token")) return Ok(new SalesRoomMediaToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
+            if (path.EndsWith("/media-token")) return Ok(new BrowserRoomToken("wss://test.example", "synthetic", "human-host-1", DateTimeOffset.UtcNow.AddMinutes(2)));
             if (path.Contains("/presentation/decks/")) return SlideImage();
             if (path.EndsWith("/presentation")) return Ok(f.Host);
             return Ok(f.Room);

@@ -1,0 +1,86 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-kpis" aria-label="Marketing performance">
+    @foreach (var metric in Dashboard.Metrics.Take(4))
+    {
+        <article class="vc-panel">
+            <span>@FriendlyMetric(metric.Name)</span>
+            <strong>@MetricValue(metric)</strong>
+            <small>@metric.Explanation</small>
+        </article>
+    }
+</section>
+
+<div class="marketing-overview-grid">
+    <div class="marketing-main-column">
+        <section class="vc-panel marketing-section">
+            <div class="marketing-section__header">
+                <div><span class="vc-kicker">DIRECTION</span><h2>Objectives and plans</h2></div>
+                <button class="btn btn-sm btn-outline-primary" @onclick="() => ShowObjectives.InvokeAsync()">Manage</button>
+            </div>
+            @if (Dashboard.Objectives.Count == 0)
+            {
+                <MarketingEmpty Title="No marketing objectives yet" Message="Create a measurable objective before campaigns and content are prioritized." ActionText="Create objective" OnAction="() => ShowObjectives.InvokeAsync()" />
+            }
+            else
+            {
+                <div class="marketing-list">
+                    @foreach (var objective in Dashboard.Objectives.Take(4))
+                    {
+                        <article><div><strong>@objective.Name</strong><span>@objective.ObjectiveType / @objective.Status</span></div><strong>@objective.TargetValue.ToString("0.##") @objective.Unit</strong></article>
+                    }
+                </div>
+            }
+        </section>
+
+        <section class="vc-panel marketing-section">
+            <div class="marketing-section__header">
+                <div><span class="vc-kicker">DELIVERY</span><h2>Campaign and content calendar</h2></div>
+                <a class="btn btn-sm btn-outline-primary" href="@WithCompany("/app/sales/campaigns")">Open campaigns</a>
+            </div>
+            @if (Dashboard.Calendar.Count == 0)
+            {
+                <MarketingEmpty Title="No scheduled marketing work" Message="Campaign activities and plan dates will appear here when they are scheduled." />
+            }
+            else
+            {
+                <div class="marketing-calendar">
+                    @foreach (var item in Dashboard.Calendar.OrderBy(x => x.StartsUtc).Take(8))
+                    {
+                        <article><time>@item.StartsUtc.ToLocalTime().ToString("dd MMM")</time><div><strong>@item.Name</strong><span>@item.Kind · @item.Status</span></div></article>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+
+    <aside class="vc-panel marketing-section marketing-attention">
+        <span class="vc-kicker">MAYA'S REVIEW</span>
+        <h2>Priorities and evidence</h2>
+        @if (OverviewState.Analysis is null)
+        {
+            <p>Run a grounded review to rank current work using objectives, campaigns, observations, and approved company knowledge.</p>
+        }
+        else
+        {
+            <div class="marketing-analysis-status">Confidence @OverviewState.Analysis.Confidence.ToString("P0") · @(OverviewState.Analysis.RequiresReview ? "Human review needed" : "Ready to review")</div>
+            <p>@OverviewState.Analysis.Summary</p>
+            @foreach (var priority in OverviewState.Analysis.Priorities.Take(5))
+            {
+                <article class="marketing-priority"><strong>@priority.Title</strong><span>Priority score @priority.Score · @priority.Band</span></article>
+            }
+            @if (OverviewState.Analysis.MissingEvidence.Count > 0)
+            {
+                <div class="marketing-evidence"><strong>Missing information</strong><span>@string.Join(", ", OverviewState.Analysis.MissingEvidence)</span></div>
+            }
+        }
+    </aside>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MarketingOverviewState OverviewState { get; set; } = null!;
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter, EditorRequired] public Func<string, string> WithCompany { get; set; } = null!;
+    [Parameter] public EventCallback ShowObjectives { get; set; }
+}

@@ -1,0 +1,14 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="vc-panel marketing-section">
+    <div class="marketing-section__header"><div><span class="vc-kicker">MARKETING TO SALES</span><h2>Qualified demand handoffs</h2></div><a href="@WithCompany("/app/sales/prospects")">Open Sales prospects</a></div>
+    @if (Dashboard.Handoffs.Count == 0) { <MarketingEmpty Title="No handoffs" Message="Qualified engagement can be transferred to Sales with evidence, urgency, ownership, and an expiry." /> }
+    <div class="marketing-content-list">@foreach (var item in Dashboard.Handoffs) { <article id="marketing-record-@item.Id"><div><strong>@item.Reason</strong><span>@item.Urgency / @item.Status / expires @item.ExpiresUtc.ToLocalTime().ToString("d")</span><p>@item.SuggestedAction</p></div>@if (item.Status.Equals("proposed", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => DecideHandoffAsync.InvokeAsync((item.Id, true))">Accept</button><button class="btn btn-sm btn-outline-danger" @onclick="() => DecideHandoffAsync.InvokeAsync((item.Id, false))">Decline</button></div> }</article> }</div>
+</section>
+
+@code {
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter, EditorRequired] public Func<string, string> WithCompany { get; set; } = null!;
+    [Parameter] public EventCallback<(Guid Id, bool Accepted)> DecideHandoffAsync { get; set; }
+}

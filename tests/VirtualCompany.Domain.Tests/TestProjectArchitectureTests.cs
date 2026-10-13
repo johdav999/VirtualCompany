@@ -8,7 +8,7 @@ public sealed class TestProjectArchitectureTests
 
     [Theory]
     [InlineData("VirtualCompany.Domain.Tests", "VirtualCompany.Domain")]
-    [InlineData("VirtualCompany.Web.Tests", "VirtualCompany.Web", "VirtualCompany.Application")]
+    [InlineData("VirtualCompany.Web.Tests", "VirtualCompany.Web")]
     public void Isolated_test_projects_only_reference_their_own_layers(string project, params string[] allowed)
     {
         var references = Document(project).Descendants("ProjectReference")
@@ -56,6 +56,30 @@ public sealed class TestProjectArchitectureTests
             Visit(Path.Combine(RepositoryRoot, "tests", name, name + ".csproj"), seen);
             Assert.DoesNotContain(seen, path => XDocument.Load(path).Descendants("IsTestProject").SingleOrDefault()?.Value == "true");
         }
+    }
+
+    [Fact]
+    public void Component_tests_have_no_transitive_backend_or_integration_support_dependencies()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Visit(Path.Combine(RepositoryRoot, "tests", "VirtualCompany.Web.Tests", "VirtualCompany.Web.Tests.csproj"), seen);
+        Assert.DoesNotContain(seen, path =>
+        {
+            var name = Path.GetFileNameWithoutExtension(path);
+            return name is "VirtualCompany.Api" or "VirtualCompany.Application" or "VirtualCompany.Domain" or "VirtualCompany.TestSupport"
+                || name.StartsWith("VirtualCompany.Infrastructure", StringComparison.Ordinal)
+                || name.StartsWith("VirtualCompany.Persistence", StringComparison.Ordinal);
+        });
+    }
+
+    [Fact]
+    public void Contract_integration_tests_do_not_depend_on_component_rendering_packages()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Visit(Path.Combine(RepositoryRoot, "tests", "VirtualCompany.Web.Contract.Tests", "VirtualCompany.Web.Contract.Tests.csproj"), seen);
+        foreach (var path in seen)
+            Assert.DoesNotContain(XDocument.Load(path).Descendants("PackageReference"), reference =>
+                reference.Attribute("Include")!.Value.StartsWith("bunit", StringComparison.OrdinalIgnoreCase));
     }
 
     private static void Visit(string path, HashSet<string> seen)

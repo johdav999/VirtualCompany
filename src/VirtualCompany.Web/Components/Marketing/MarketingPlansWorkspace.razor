@@ -1,0 +1,107 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-plan-workspace">
+    <div class="vc-panel marketing-section marketing-plan-list">
+        <div class="marketing-section__header">
+            <div><span class="vc-kicker">PLANS</span><h2>Marketing plans</h2></div>
+            <div class="marketing-inline-actions">
+                @if (CompanyId is Guid workshopCompanyId && MarketingAgentId is Guid workshopAgentId)
+                {
+                    var planWorkshopUrl = PlansState.PlanWorkshopDraft is null
+                        ? $"/agents/{workshopAgentId:D}/workshops/marketing_plan?companyId={workshopCompanyId:D}"
+                        : PlanWorkshopUrl(PlansState.PlanWorkshopDraft);
+                    <a class="btn btn-sm btn-primary" href="@planWorkshopUrl">@(PlansState.PlanWorkshopDraft is null ? "Create plan with Maya" : "Resume workshop")</a>
+                }
+                <button class="btn btn-sm btn-outline-primary" @onclick="() => OpenPlanForm.InvokeAsync()">Create directly</button>
+            </div>
+        </div>
+        @if (PlansState.PlanWorkshopDraft is not null)
+        {
+            <section class="marketing-workshop-draft" aria-labelledby="plan-workshop-draft-title">
+                <header>
+                    <div><span class="vc-kicker">UNSAVED WORKSHOP DRAFT</span><h3 id="plan-workshop-draft-title">@(PlanDraftField("name") is { } name ? DisplayDraftValue(name.Value) : "Marketing plan workshop")</h3><p>The discussion is preserved, but it has not yet been saved as a Marketing plan. Confirm the required fields, then review and save the workshop.</p></div>
+                    <div class="marketing-workshop-draft__actions"><span class="marketing-status warning">@PlansState.PlanWorkshopDraft.ReadyFieldCount of @PlansState.PlanWorkshopDraft.RequiredFieldCount required fields confirmed</span><a class="btn btn-sm btn-primary" href="@PlanWorkshopUrl(PlansState.PlanWorkshopDraft)">Resume and finish</a></div>
+                </header>
+                <progress max="@PlansState.PlanWorkshopDraft.RequiredFieldCount" value="@PlansState.PlanWorkshopDraft.ReadyFieldCount" aria-label="Confirmed required workshop fields"></progress>
+                <div class="marketing-workshop-draft__fields">
+                    @foreach (var field in PlansState.PlanWorkshopDraft.Fields.Where(ShowDraftField))
+                    {
+                        <details>
+                            <summary><span><strong>@field.Label</strong><small>@Friendly(field.Status)</small></span><span>@DraftSummary(field.Value)</span></summary>
+                            <p>@DisplayDraftValue(field.Value)</p>
+                        </details>
+                    }
+                </div>
+            </section>
+        }
+        @if (PlansState.ShowPlanForm)
+        {
+            <EditForm Model="PlansState.PlanForm" OnValidSubmit="() => CreateGroundedPlanAsync.InvokeAsync()" class="marketing-plan-create-form">
+                <h3>Create marketing plan</h3>
+                <label>Name<InputText @bind-Value="PlansState.PlanForm.Name" placeholder="Quarterly growth plan" /></label>
+                <label>Summary<InputTextArea @bind-Value="PlansState.PlanForm.Summary" placeholder="What this plan should achieve" /></label>
+                <label>Approved strategy<InputSelect @bind-Value="PlansState.PlanForm.StrategyId"><option value="@Guid.Empty">Choose a strategy</option>@foreach (var strategy in PlansState.AvailablePlanStrategies) { <option value="@strategy.Id">@strategy.Title · version @strategy.Version</option> }</InputSelect></label>
+                <label>Active objective<InputSelect @bind-Value="PlansState.PlanForm.ObjectiveId"><option value="@Guid.Empty">Choose an objective</option>@foreach (var objective in PlansState.AvailablePlanObjectives) { <option value="@objective.Id">@objective.Name</option> }</InputSelect></label>
+                <label>Primary audience<InputSelect @bind-Value="PlansState.PlanForm.SegmentVersionId"><option value="@Guid.Empty">Choose an audience</option>@foreach (var option in PlansState.AvailablePlanSegments) { <option value="@option.Version.Id">@option.Name · version @option.Version.VersionNumber</option> }</InputSelect></label>
+                <div class="marketing-form__row"><label>Starts<InputDate @bind-Value="PlansState.PlanForm.StartsUtc" /></label><label>Ends<InputDate @bind-Value="PlansState.PlanForm.EndsUtc" /></label></div>
+                <div class="marketing-form__row"><label>Budget<InputNumber @bind-Value="PlansState.PlanForm.Budget" /></label><label>Currency<InputText @bind-Value="PlansState.PlanForm.Currency" maxlength="3" /></label></div>
+                @if (!PlansState.CanCreateGroundedPlan)
+                {
+                    <p class="marketing-plan-guidance">An approved strategy, an active objective, and an approved audience linked to that strategy are required. You can create missing prerequisites in Strategy, Objectives, or Segments.</p>
+                }
+                <div class="marketing-inline-actions"><button type="button" class="btn btn-outline-primary" @onclick="() => ClosePlanForm.InvokeAsync()">Cancel</button><button class="btn btn-primary" disabled="@(IsSaving || !PlansState.CanCreateGroundedPlan)">Create plan</button></div>
+            </EditForm>
+        }
+        @if (PlansState.PlanPortfolio.Count == 0) { <MarketingEmpty Title="No grounded plans" Message="Create a plan from an approved strategy, active objectives, and exact audience segments." /> }
+        @foreach (var item in PlansState.PlanPortfolio)
+        {
+            <button type="button" class="marketing-plan-row @(PlansState.SelectedPlan?.Summary.Id == item.Id ? "selected" : null)" @onclick="() => SelectPlanAsync.InvokeAsync(item.Id)">
+                <span><strong>@item.Name</strong><small>@(item.StrategyTitle ?? "Strategy grounding unavailable")@(item.StrategyVersion is null ? "" : $" · version {item.StrategyVersion}")</small><small>@item.StartsUtc.ToLocalTime().ToString("d") – @item.EndsUtc.ToLocalTime().ToString("d")</small></span>
+                <span><strong>@(item.PlannedBudget?.ToString("N0") ?? "No budget") @item.BudgetCurrency</strong><small>@item.CampaignCount campaign@(item.CampaignCount == 1 ? "" : "s")</small><span class="marketing-status @(item.AttentionReason is null ? null : "warning")">@item.ReadinessLabel</span></span>
+            </button>
+        }
+    </div>
+    <article class="vc-panel marketing-section marketing-plan-detail">
+        @if (PlansState.SelectedPlan is null) { <MarketingEmpty Title="Select a plan" Message="Choose a plan to review its strategy, coverage, campaign portfolio, and next action." /> }
+        else
+        {
+            <div class="marketing-section__header"><div><span class="vc-kicker">@PlansState.SelectedPlan.Summary.StatusLabel</span><h2>@PlansState.SelectedPlan.Summary.Name</h2><p>@PlansState.SelectedPlan.Description</p></div><div class="marketing-inline-actions">@if (MarketingAgentId is Guid planAgentId && CompanyId is Guid planCompanyId) { <a class="btn btn-outline-primary" href="@($"/agents/{planAgentId:D}/chat?companyId={planCompanyId:D}")">Message Maya</a> }<button class="btn btn-primary" disabled="@IsSaving" @onclick="() => PrepareSelectedPlanPortfolioAsync.InvokeAsync()">Ask Maya to populate plan</button></div></div>
+            @if (!string.IsNullOrWhiteSpace(PlansState.PlanActionMessage)) { <div class="marketing-plan-attention" role="status"><strong>Plan needs preparation</strong><span>@PlansState.PlanActionMessage</span></div> }
+            <div class="marketing-inline-actions" aria-label="Available plan actions">@if (PlansState.SelectedPlan.AllowedActions.Contains("Submit for review")) { <button class="btn btn-outline-primary" disabled="@IsSaving" @onclick="() => SubmitSelectedPlanAsync.InvokeAsync()">Submit for review</button> }@if (PlansState.SelectedPlan.AllowedActions.Contains("Activate plan")) { <button class="btn btn-outline-primary" disabled="@IsSaving" @onclick="() => ActivateSelectedPlanAsync.InvokeAsync()">Activate plan</button> }</div>
+            @if (PlansState.SelectedPlan.Summary.AttentionReason is not null) { <div class="marketing-plan-attention" role="status"><strong>Needs attention</strong><span>@PlansState.SelectedPlan.Summary.AttentionReason</span></div> }
+            <div class="marketing-plan-facts">
+                <div><span>Strategy</span><strong>@(PlansState.SelectedPlan.Summary.StrategyTitle ?? "Grounding unavailable")</strong><small>@(PlansState.SelectedPlan.Summary.StrategyVersion is null ? "Legacy plan" : $"Version {PlansState.SelectedPlan.Summary.StrategyVersion}")</small></div>
+                <div><span>Budget</span><strong>@(PlansState.SelectedPlan.Summary.AllocatedBudget.ToString("N0")) of @(PlansState.SelectedPlan.Summary.PlannedBudget?.ToString("N0") ?? "unbounded") @PlansState.SelectedPlan.Summary.BudgetCurrency</strong><small>@(PlansState.SelectedPlan.Summary.RemainingBudget?.ToString("N0") ?? "No limit") remaining</small></div>
+                <div><span>Objectives</span><strong>@PlansState.SelectedPlan.Objectives.Count</strong><small>@string.Join(" · ", PlansState.SelectedPlan.Objectives.Select(x => x.Name))</small></div>
+                <div><span>Audience segments</span><strong>@PlansState.SelectedPlan.Segments.Count</strong><small>@string.Join(" · ", PlansState.SelectedPlan.Segments.Select(x => $"{x.SegmentName} v{x.SegmentVersionNumber}"))</small></div>
+            </div>
+            <section class="marketing-plan-section"><h3>Coverage</h3>@if (PlansState.SelectedPlan.Coverage.Count == 0) { <p class="marketing-success">Objectives and target segments are covered by the current portfolio.</p> } else { @foreach (var finding in PlansState.SelectedPlan.Coverage) { <div class="marketing-coverage-row"><strong>@finding.Label</strong><span>@finding.Explanation</span></div> } }</section>
+            <section class="marketing-plan-section"><div class="marketing-section__header"><div><h3>Campaign portfolio</h3><p>Draft campaigns remain subject to Sales readiness and launch controls.</p></div></div>
+                @if (PlansState.SelectedPlan.Campaigns.Count == 0) { <MarketingEmpty Title="No campaign drafts" Message="Ask Maya to prepare a reviewable portfolio for this plan." /> }
+                <div class="marketing-portfolio-grid">@foreach (var campaign in PlansState.SelectedPlan.Campaigns) { <article><div><strong>@campaign.CampaignName</strong><span class="marketing-status">@Friendly(campaign.CampaignLifecycleStatus)</span></div><p>@campaign.Purpose</p><small>@campaign.SegmentVersionIds.Count target segment@(campaign.SegmentVersionIds.Count == 1 ? "" : "s") · @(campaign.AllocatedBudget?.ToString("N0") ?? "No allocation") @campaign.BudgetCurrency</small><small>@campaign.PlanningStartsUtc?.ToLocalTime().ToString("d") → @campaign.EndsUtc?.ToLocalTime().ToString("d")</small><a href="@WithCompany($"/app/sales/campaigns/{campaign.CampaignId:D}")">Open campaign</a></article> }</div>
+            </section>
+            <section class="marketing-plan-section"><h3>Evidence</h3><p>@(PlansState.SelectedPlan.EvidenceReferences.Count == 0 ? "No evidence references recorded." : string.Join(" · ", PlansState.SelectedPlan.EvidenceReferences))</p>@if (PlansState.SelectedPlan.MissingEvidence.Count > 0) { <p class="marketing-warning">Needs evidence: @string.Join(" · ", PlansState.SelectedPlan.MissingEvidence)</p> }</section>
+            @if (PlansState.PortfolioProposal is not null) { <section class="marketing-plan-proposal" aria-live="polite"><div><span class="vc-kicker">MAYA'S REVIEWABLE PROPOSAL</span><h3>@(PlansState.PortfolioProposal.Decision.Allowed ? "Campaign portfolio ready" : "Changes needed before drafts can be created")</h3><p>@PlansState.PortfolioProposal.Decision.Explanation</p></div>@foreach (var finding in PlansState.PortfolioProposal.Findings) { <p><strong>@finding.Label:</strong> @finding.Explanation</p> }@if (PlansState.PortfolioProposal.Decision.Allowed) { <button class="btn btn-primary" disabled="@IsSaving" @onclick="() => CommitSelectedPlanPortfolioAsync.InvokeAsync()">Create campaign drafts</button> }</section> }
+        }
+    </article>
+    <aside class="vc-panel marketing-section marketing-daily-review"><span class="vc-kicker">MAYA DAILY REVIEW</span><h2>@(PlansState.DailyReview?.OutcomeLabel ?? "No daily review yet")</h2><p>@(PlansState.DailyReview?.Summary ?? "Maya will check strategy, plans, campaign coverage, readiness, budgets, dates, and approvals in the next daily run.")</p>@if (PlansState.DailyReview is not null) { <h3>What Maya checked</h3><ul>@foreach (var item in PlansState.DailyReview.CheckedEvidence) { <li>@item</li> }</ul>@if (PlansState.DailyReview.Needs.Count > 0) { <h3>Needs found</h3><ul>@foreach (var need in PlansState.DailyReview.Needs) { <li><strong>@need.Label:</strong> @need.Explanation</li> }</ul> }@if (PlansState.DailyReview.Actions.Count > 0) { <h3>Actions and recommendations</h3><ul>@foreach (var action in PlansState.DailyReview.Actions) { <li>@action</li> }</ul> }@if (PlansState.DailyReview.Blockers.Count > 0) { <h3>Needs attention</h3><ul>@foreach (var blocker in PlansState.DailyReview.Blockers) { <li>@Friendly(blocker)</li> }</ul> }@if (PlansState.DailyReview.NextHumanAction is not null) { <strong>@PlansState.DailyReview.NextHumanAction</strong> } }</aside>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingPlansState PlansState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingSegmentsState SegmentsState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public Guid? MarketingAgentId { get; set; }
+    [Parameter] public Guid? CompanyId { get; set; }
+    private GuidedDraftFieldViewModel? PlanDraftField(string path) => PlansState.PlanWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+    [Parameter, EditorRequired] public Func<string, string> WithCompany { get; set; } = null!;
+    [Parameter] public EventCallback CreateGroundedPlanAsync { get; set; }
+    [Parameter] public EventCallback<Guid> SelectPlanAsync { get; set; }
+    [Parameter] public EventCallback SubmitSelectedPlanAsync { get; set; }
+    [Parameter] public EventCallback ActivateSelectedPlanAsync { get; set; }
+    [Parameter] public EventCallback PrepareSelectedPlanPortfolioAsync { get; set; }
+    [Parameter] public EventCallback CommitSelectedPlanPortfolioAsync { get; set; }
+    [Parameter] public EventCallback OpenPlanForm { get; set; }
+    [Parameter] public EventCallback ClosePlanForm { get; set; }
+}

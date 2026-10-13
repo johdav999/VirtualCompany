@@ -1,0 +1,21 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-kpis" aria-label="Marketing evidence classification">
+    @foreach (var group in PerformanceState.Attribution.GroupBy(x => new { x.Classification, x.Unit }))
+    { <article class="vc-panel"><span>@Friendly(group.Key.Classification)</span><strong>@group.Sum(x => x.AttributedValue).ToString("N1") @group.First().Unit</strong><small>@group.Count() results · confidence @group.Average(x => x.Confidence).ToString("P0")</small></article> }
+</section>
+<section class="marketing-workspace-grid">
+    <article class="vc-panel marketing-section"><span class="vc-kicker">ATTRIBUTION WITH LIMITS</span><h2>Evidence and performance</h2>
+        @if (PerformanceState.Attribution.Count == 0) { <MarketingEmpty Title="No attribution results" Message="Results explicitly distinguish observed evidence, configured rules, correlation, and inference." /> }
+        <div class="marketing-list">@foreach (var item in PerformanceState.Attribution) { <article><div><strong>@Friendly(item.SubjectType) · @item.Model</strong><span>@Friendly(item.Classification) · @item.PeriodStartUtc.ToString("d")–@item.PeriodEndUtc.ToString("d")</span><p>@JsonSummary(item.EvidenceJson)</p></div><strong>@item.AttributedValue.ToString("N1") @item.Unit</strong></article> }</div>
+    </article>
+    <aside class="vc-panel marketing-section"><span class="vc-kicker">EVENT-DRIVEN REVIEW</span><h2>Needs attention</h2>@if (OperationsState.Events.Count == 0) { <p>No unresolved Marketing events.</p> }<div class="marketing-run-list">@foreach (var item in OperationsState.Events) { <article><div><strong>@Friendly(item.EventType)</strong><span>@Friendly(item.Severity) · @item.SourceType</span><p>@(item.FailureSummary ?? JsonSummary(item.EvidenceJson))</p>@if (item.RelatedTaskId is not null) { <small>Durable response task linked</small> }</div><div><span class="marketing-status @(item.Status == "failed" ? "warning" : null)">@Friendly(item.Status)</span>@if (item.Status != "resolved") { <button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick="() => ResolveEventAsync.InvokeAsync(item.Id)">Resolve</button> }</div></article> }</div></aside>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingOperationsState OperationsState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingPerformanceState PerformanceState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public EventCallback<Guid> ResolveEventAsync { get; set; }
+}

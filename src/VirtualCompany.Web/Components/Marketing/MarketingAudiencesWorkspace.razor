@@ -1,0 +1,36 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-two-column">
+    <div class="vc-panel marketing-section">
+        <div class="marketing-section__header"><div><span class="vc-kicker">QUALIFIED DEMAND</span><h2>Audience qualification</h2></div></div>
+        @if (Dashboard.QualificationDefinitions.Count == 0) { <MarketingEmpty Title="No qualification definition" Message="Define measurable B2B or B2C criteria before demand is handed to Sales." /> }
+        <div class="marketing-list">
+            @foreach (var item in Dashboard.QualificationDefinitions)
+            {
+                <article><div><strong>@item.Name</strong><span>@item.AudienceType / @item.Channel / @item.Status</span></div><div class="marketing-inline-actions"><strong>Score @item.MinimumScore.ToString("0")+</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateQualificationAsync.InvokeAsync(item.Id)">Activate</button> }</div></article>
+            }
+        </div>
+        @if (Dashboard.QualificationEvaluations.Count > 0)
+        {
+            <h3>Recent evaluations</h3>
+            <div class="marketing-list">@foreach (var item in Dashboard.QualificationEvaluations.Take(10)) { <article><div><strong>@item.Status</strong><span>Contact @item.ContactId / @item.ObservedUtc.ToLocalTime().ToString("g")</span></div><strong>@item.Score.ToString("0")</strong></article> }</div>
+        }
+    </div>
+    <EditForm Model="AudiencesState.QualificationForm" OnValidSubmit="() => CreateQualificationAsync.InvokeAsync()" class="vc-panel marketing-form">
+        <h2>Create qualification definition</h2>
+        <label>Name<InputText @bind-Value="AudiencesState.QualificationForm.Name" /></label>
+        <div class="marketing-form__row"><label>Audience type<InputSelect @bind-Value="AudiencesState.QualificationForm.AudienceType"><option value="b2b">B2B</option><option value="b2c">B2C</option></InputSelect></label><label>Channel<InputText @bind-Value="AudiencesState.QualificationForm.Channel" /></label></div>
+        <div class="marketing-form__row"><label>Minimum score<InputNumber @bind-Value="AudiencesState.QualificationForm.MinimumScore" /></label><label>Freshness in days<InputNumber @bind-Value="AudiencesState.QualificationForm.FreshnessDays" /></label></div>
+        <label><InputCheckbox @bind-Value="AudiencesState.QualificationForm.RequiresCustomerCompany" /> Require a linked company</label>
+        <button class="btn btn-primary" disabled="@IsSaving">Create definition</button>
+    </EditForm>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingAudiencesState AudiencesState { get; set; } = null!;
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public EventCallback CreateQualificationAsync { get; set; }
+    [Parameter] public EventCallback<Guid> ActivateQualificationAsync { get; set; }
+}

@@ -1,0 +1,77 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-two-column">
+    <div class="vc-panel marketing-section">
+        <h2>Experiments</h2>
+        @if (Dashboard.Experiments.Count == 0) { <MarketingEmpty Title="No experiments" Message="Define a hypothesis, primary metric, guardrail, sample size, and decision window." /> }
+        <div class="marketing-list">@foreach (var item in Dashboard.Experiments) { <article id="marketing-record-@item.Id"><div><strong>@item.Name</strong><span>@item.Hypothesis / @item.Status</span></div><div class="marketing-inline-actions"><strong>@item.PrimaryMetric</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateExperimentAsync.InvokeAsync(item.Id)">Start</button> } else if (item.Status.Equals("active", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => CompleteExperimentAsync.InvokeAsync(item.Id)">Complete</button> }</div></article> }</div>
+    </div>
+    <EditForm Model="ExperimentsState.ExperimentForm" OnValidSubmit="() => CreateExperimentAsync.InvokeAsync()" class="vc-panel marketing-form">
+        <h2>Create experiment</h2>
+        <label>Name<InputText @bind-Value="ExperimentsState.ExperimentForm.Name" /></label>
+        <label>Hypothesis<InputTextArea @bind-Value="ExperimentsState.ExperimentForm.Hypothesis" /></label>
+        <label>Primary metric<InputText @bind-Value="ExperimentsState.ExperimentForm.PrimaryMetric" /></label>
+        <label>Guardrail metric<InputText @bind-Value="ExperimentsState.ExperimentForm.GuardrailMetric" /></label>
+        <label>Minimum sample<InputNumber @bind-Value="ExperimentsState.ExperimentForm.MinimumSampleSize" /></label>
+        <button class="btn btn-primary" disabled="@IsSaving">Create experiment</button>
+    </EditForm>
+</section>
+@if (Dashboard.Content.Any(x => x.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)))
+{
+    <section class="marketing-two-column">
+        <EditForm Model="ContentState.ContentGenerationForm" OnValidSubmit="() => GenerateContentVariantsAsync.InvokeAsync()" class="vc-panel marketing-form">
+            <span class="vc-kicker">MAYA CONTENT STUDIO</span><h2>Generate grounded variants</h2>
+            <label>Draft brief<InputSelect @bind-Value="ContentState.ContentGenerationForm.BriefId">@foreach (var brief in Dashboard.Content.Where(x => x.Status.Equals("draft", StringComparison.OrdinalIgnoreCase))) { <option value="@brief.Id">@brief.Title</option> }</InputSelect></label>
+            <div class="marketing-form__row"><label>Format<InputSelect @bind-Value="ContentState.ContentGenerationForm.ContentFormat"><option value="social_post">Social post</option><option value="email">Email</option><option value="landing_page">Landing page</option><option value="article">Article</option><option value="ad">Ad</option><option value="sales_enablement">Sales enablement</option></InputSelect></label><label>Variants<InputNumber @bind-Value="ContentState.ContentGenerationForm.VariantCount" /></label></div>
+            <label>Instructions<InputTextArea @bind-Value="ContentState.ContentGenerationForm.Instructions" /></label>
+            <button class="btn btn-primary" disabled="@(IsSaving || MarketingAgentId is null)">Generate drafts</button>
+        </EditForm>
+        <aside class="vc-panel marketing-section" aria-live="polite"><span class="vc-kicker">GENERATION SAFETY</span><h2>Evidence before claims</h2><p>Maya stores drafts only when every generated factual claim cites an accessible company source. Publishing remains a separate approved action.</p>@if (ContentState.ContentGenerationResult?.RequiresReview == true) { <div class="marketing-list">@foreach (var gap in ContentState.ContentGenerationResult.MissingEvidence) { <article><div><strong>Needs review</strong><span>@gap</span></div></article> }</div> }</aside>
+    </section>
+}
+<section class="vc-panel marketing-section marketing-creative-studio">
+    <div class="marketing-section__header"><div><span class="vc-kicker">CREATIVE STUDIO</span><h2>Governed visual assets</h2></div><span>@CreativeState.CreativeAssets.Count immutable versions</span></div>
+    <div class="marketing-two-column">
+        <div class="marketing-run-list">
+            @if (CreativeState.CreativeAssets.Count == 0) { <MarketingEmpty Title="No creative assets" Message="Generate from a submitted brief or upload a human-created alternative for review." /> }
+            @foreach (var asset in CreativeState.CreativeAssets.Where(x => !AssetId.HasValue || x.Id == AssetId))
+            {
+                var scan = CreativeState.LatestScan(asset.Id);
+                <article><div><strong>@asset.Name · v@asset.VersionNumber</strong><span>@asset.Dimensions · @asset.MediaType · @Friendly(asset.Status)</span><p>@asset.AltText</p><small>Brand @asset.BrandProfileVersion · scan: @(scan is null ? "not available" : Friendly(scan.Result))</small>@if(scan?.Result != "passed"){<p role="status">Quarantined — an authoritative safety scan must pass before submission, approval, download, or publication. @(scan?.ReasonCode is null ? "" : Friendly(scan.ReasonCode))</p>}<details><summary>Provenance, scan, and audit</summary><pre>@JsonSummary(asset.ProvenanceJson)</pre>@if(scan is not null){<small>@scan.Provider · @scan.ScannerVersion · @scan.ScannedUtc.ToLocalTime().ToString("g")</small><pre>@JsonSummary(scan.EvidenceJson)</pre>}<small>Sources: @JsonSummary(asset.SourceAssetIdsJson) · @asset.AuditReference · checksum @asset.Checksum[..Math.Min(12, asset.Checksum.Length)]</small></details></div><div class="marketing-inline-actions">@if (scan?.Result != "passed") { <button class="btn btn-sm btn-outline-secondary" disabled="@IsSaving" @onclick="() => RescanCreativeAsync.InvokeAsync(asset.Id)">Rescan</button> }@if (asset.Status is "draft" or "changes_requested") { <button class="btn btn-sm btn-primary" disabled="@(IsSaving || scan?.Result != "passed")" @onclick="() => SubmitCreativeAsync.InvokeAsync(asset.Id)">Submit</button> }@if (asset.Status == "submitted") { <button class="btn btn-sm btn-primary" disabled="@(IsSaving || scan?.Result != "passed")" @onclick="() => ReviewCreativeAsync.InvokeAsync((asset.Id, true))">Approve</button><button class="btn btn-sm btn-outline-secondary" disabled="@IsSaving" @onclick="() => RequestCreativeChangesAsync.InvokeAsync(asset.Id)">Request changes</button><button class="btn btn-sm btn-outline-danger" disabled="@IsSaving" @onclick="() => ReviewCreativeAsync.InvokeAsync((asset.Id, false))">Reject</button> }@if (asset.Status == "approved") { <button class="btn btn-sm btn-outline-danger" disabled="@IsSaving" @onclick="() => RetireCreativeAsync.InvokeAsync(asset.Id)">Retire</button> }</div></article>
+            }
+        </div>
+        @if (Dashboard.Content.Any(x => x.Status is "submitted" or "approved"))
+        {
+            <EditForm Model="CreativeState.CreativeForm" OnValidSubmit="() => GenerateCreativeAsync.InvokeAsync()" class="marketing-form marketing-form--compact">
+                <h3>Generate review draft</h3>
+                <label>Approved brief<InputSelect @bind-Value="CreativeState.CreativeForm.BriefId">@foreach(var brief in Dashboard.Content.Where(x=>x.Status is "submitted" or "approved")){<option value="@brief.Id">@brief.Title</option>}</InputSelect></label>
+                <label>Asset name<InputText @bind-Value="CreativeState.CreativeForm.Name" /></label>
+                <label>Art direction<InputTextArea @bind-Value="CreativeState.CreativeForm.Prompt" /></label>
+                <label>Accessible alt text<InputText @bind-Value="CreativeState.CreativeForm.AltText" /></label>
+                <button class="btn btn-primary" disabled="@IsSaving">Generate immutable draft</button>
+            </EditForm>
+        }
+    </div>
+</section>
+
+@code {
+    [Parameter] public Guid? AssetId { get; set; }
+
+    [Parameter, EditorRequired] public MarketingContentState ContentState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingCreativeState CreativeState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingExperimentsState ExperimentsState { get; set; } = null!;
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public Guid? MarketingAgentId { get; set; }
+    [Parameter] public EventCallback CreateExperimentAsync { get; set; }
+    [Parameter] public EventCallback GenerateContentVariantsAsync { get; set; }
+    [Parameter] public EventCallback<Guid> ActivateExperimentAsync { get; set; }
+    [Parameter] public EventCallback<Guid> CompleteExperimentAsync { get; set; }
+    [Parameter] public EventCallback GenerateCreativeAsync { get; set; }
+    [Parameter] public EventCallback<Guid> SubmitCreativeAsync { get; set; }
+    [Parameter] public EventCallback<(Guid AssetId, bool Approved)> ReviewCreativeAsync { get; set; }
+    [Parameter] public EventCallback<Guid> RequestCreativeChangesAsync { get; set; }
+    [Parameter] public EventCallback<Guid> RescanCreativeAsync { get; set; }
+    [Parameter] public EventCallback<Guid> RetireCreativeAsync { get; set; }
+}

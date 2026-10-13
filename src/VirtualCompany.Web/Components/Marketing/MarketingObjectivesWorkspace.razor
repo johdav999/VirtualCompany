@@ -1,0 +1,39 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-two-column">
+    <div class="vc-panel marketing-section">
+        <div class="marketing-section__header"><div><span class="vc-kicker">OUTCOMES</span><h2>Marketing objectives</h2></div></div>
+        @if (Dashboard.Objectives.Count == 0) { <MarketingEmpty Title="No objectives" Message="Objectives connect marketing work to an explicit target and period." /> }
+        <div class="marketing-list">
+            @foreach (var item in Dashboard.Objectives)
+            {
+                <article>
+                    <div><strong>@item.Name</strong><span>@item.PeriodStartUtc.ToString("d") - @item.PeriodEndUtc.ToString("d") / @item.Status</span></div>
+                    <div class="marketing-inline-actions">
+                        <strong>@item.TargetValue.ToString("0.##") @item.Unit</strong>
+                        @if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateObjectiveAsync.InvokeAsync(item.Id)">Activate</button>
+                        }
+                    </div>
+                </article>
+            }
+        </div>
+    </div>
+    <EditForm Model="ObjectivesState.ObjectiveForm" OnValidSubmit="() => CreateObjectiveAsync.InvokeAsync()" class="vc-panel marketing-form">
+        <h2>Create objective</h2>
+        <label>Name<InputText @bind-Value="ObjectivesState.ObjectiveForm.Name" /></label>
+        <label>Measure<InputText @bind-Value="ObjectivesState.ObjectiveForm.ObjectiveType" /></label>
+        <div class="marketing-form__row"><label>Target<InputNumber @bind-Value="ObjectivesState.ObjectiveForm.TargetValue" /></label><label>Unit<InputText @bind-Value="ObjectivesState.ObjectiveForm.Unit" /></label></div>
+        <button class="btn btn-primary" disabled="@IsSaving">Create objective</button>
+    </EditForm>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingObjectivesState ObjectivesState { get; set; } = null!;
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public EventCallback CreateObjectiveAsync { get; set; }
+    [Parameter] public EventCallback<Guid> ActivateObjectiveAsync { get; set; }
+}

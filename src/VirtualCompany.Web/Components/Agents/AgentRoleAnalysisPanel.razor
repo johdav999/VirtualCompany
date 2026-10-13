@@ -1,0 +1,348 @@
+@using VirtualCompany.Web.Features.Agents
+@inject IStringLocalizer<AgentsResources> AgentText
+
+@if (RoleAnalysisOptions.Count > 0)
+{
+    <section class="agent-governance-panel mt-3" aria-labelledby="role-analysis-heading">
+        <div class="agent-governance-panel__header">
+            <div>
+                <h3 id="role-analysis-heading">@AgentText["DepartmentAdvice", Profile?.Department ?? AgentText["Agent"]]</h3>
+                <p>@AgentText["RoleAnalysisDescription"]</p>
+            </div>
+            @if (State.RoleAnalysisResult is not null)
+            {
+                <span class="@(State.RoleAnalysisResult.RequiresReview ? "badge text-bg-warning" : "badge text-bg-success")">
+                    @AgentText[State.RoleAnalysisResult.RequiresReview ? "ReviewNeeded" : "Ready"]
+                </span>
+            }
+        </div>
+        <div class="row g-2 align-items-end">
+            <div class="col-md-5">
+                <label class="form-label" for="role-analysis-type">@AgentText["Analysis"]</label>
+                <select id="role-analysis-type" class="form-select" @bind="State.RoleAnalysisType">
+                    @foreach (var option in RoleAnalysisOptions)
+                    {
+                        <option value="@option.Value">@option.Label</option>
+                    }
+                </select>
+            </div>
+            <div class="col-md-5">
+                <label class="form-label" for="role-analysis-objective">@AgentText["Focus"]</label>
+                <input id="role-analysis-objective" class="form-control" @bind="State.RoleAnalysisObjective" placeholder="@AgentText["OptionalDecisionQuestion"]" />
+            </div>
+            <div class="col-md-2 d-grid">
+                <button class="btn btn-primary" type="button" disabled="@State.IsRunningRoleAnalysis" @onclick="RunRoleAnalysisAsync">
+                    @AgentText[State.IsRunningRoleAnalysis ? "Analyzing" : "Analyze"]
+                </button>
+            </div>
+        </div>
+        @if (Profile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && State.RoleAnalysisType == "cash_liquidity")
+        {
+            <div class="row g-2 mt-1">
+                <div class="col-md-3"><label class="form-label" for="cash-horizon">@AgentText["Horizon"]</label><input id="cash-horizon" class="form-control" type="number" min="1" max="365" @bind="State.FinanceCashRequest.HorizonDays" /></div>
+                <div class="col-md-3"><label class="form-label" for="cash-upside">@AgentText["AdditionalInflows"]</label><input id="cash-upside" class="form-control" type="number" min="0" step="100" @bind="State.FinanceCashRequest.UpsideAdditionalInflows" /></div>
+                <div class="col-md-3"><label class="form-label" for="cash-delayed">@AgentText["DelayedInflows"]</label><input id="cash-delayed" class="form-control" type="number" min="0" step="100" @bind="State.FinanceCashRequest.DownsideDelayedInflows" /></div>
+                <div class="col-md-3"><label class="form-label" for="cash-extra-outflow">@AgentText["AdditionalOutflows"]</label><input id="cash-extra-outflow" class="form-control" type="number" min="0" step="100" @bind="State.FinanceCashRequest.DownsideAdditionalOutflows" /></div>
+            </div>
+        }
+        else if (Profile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && State.RoleAnalysisType == "payables")
+        {
+            <div class="row g-2 mt-1">
+                <div class="col-md-4"><label class="form-label" for="payment-cutoff">@AgentText["PayBillsDueBy"]</label><input id="payment-cutoff" class="form-control" type="date" @bind="State.FinancePaymentRunRequest.CutoffUtc" /></div>
+                <div class="col-md-4"><label class="form-label" for="payment-reserve">@AgentText["MinimumCashReserve"]</label><input id="payment-reserve" class="form-control" type="number" min="0" step="100" @bind="State.FinancePaymentRunRequest.MinimumCashReserve" /></div>
+                <div class="col-md-4"><label class="form-label" for="payment-maximum">@AgentText["MaximumOutflow"]</label><input id="payment-maximum" class="form-control" type="number" min="0" step="100" @bind="State.FinancePaymentRunRequest.MaximumOutflow" /></div>
+            </div>
+        }
+        else if (Profile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && State.RoleAnalysisType == "accounting_treatment")
+        {
+            <div class="row g-2 mt-1">
+                <div class="col-md-8">
+                    <label class="form-label" for="accounting-bill">@AgentText["SupplierBill"]</label>
+                    <select id="accounting-bill" class="form-select" @bind="State.SelectedAccountingBillId">
+                        <option value="@Guid.Empty">@AgentText["ChooseSupplierBill"]</option>
+                        @foreach (var bill in State.FinanceBills.OrderByDescending(x => x.ReceivedUtc).Take(100))
+                        {
+                            <option value="@bill.Id">@bill.CounterpartyName · @bill.BillNumber · @bill.Amount.ToString("N0") @bill.Currency</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-4 d-flex align-items-end"><p class="small text-body-secondary mb-2">@AgentText["AccountingRecommendationReview"]</p></div>
+            </div>
+        }
+        else if (Profile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && State.RoleAnalysisType == "close_analysis")
+        {
+            <div class="row g-2 mt-1">
+                <div class="col-md-6">
+                    <label class="form-label" for="close-period">@AgentText["FiscalPeriod"]</label>
+                    <select id="close-period" class="form-select" @bind="State.SelectedClosePeriodId">
+                        <option value="@Guid.Empty">@AgentText["ChooseFiscalPeriod"]</option>
+                        @foreach (var period in State.FinanceClosePeriods)
+                        {
+                            <option value="@period.Id">@period.Label · @FormatReasonCode(period.Status)</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-3"><label class="form-label" for="close-materiality">@AgentText["MaterialAmount"]</label><input id="close-materiality" class="form-control" type="number" min="0" step="100" @bind="State.FinanceCloseRequest.MaterialityAmount" /></div>
+                <div class="col-md-3"><label class="form-label" for="close-percentage">@AgentText["MaterialPercentage"]</label><input id="close-percentage" class="form-control" type="number" min="0" step="1" @bind="State.FinanceCloseRequest.MaterialityPercentage" /></div>
+            </div>
+        }
+        @if (State.FinanceCashAnalysis is not null)
+        {
+            <div class="finance-agent-scenarios mt-3" aria-label="Cash scenario comparison">
+                @foreach (var scenario in new[] { State.FinanceCashAnalysis.Baseline, State.FinanceCashAnalysis.Upside, State.FinanceCashAnalysis.Downside })
+                {
+                    <article>
+                        <span>@FormatFinanceScenario(scenario.Scenario)</span>
+                        <strong>@scenario.EndingCash.ToString("N0") @scenario.Currency</strong>
+                        <small>@AgentText["FromBaseline", FormatSignedMoney(scenario.ChangeFromBaseline, scenario.Currency)]</small>
+                        <small>@string.Join(" ", scenario.Assumptions)</small>
+                    </article>
+                }
+            </div>
+            @if (State.FinanceCashAnalysis.FreshnessWarnings.Count > 0)
+            {
+                <div class="alert alert-warning mt-2 mb-0">@string.Join(" ", State.FinanceCashAnalysis.FreshnessWarnings)</div>
+            }
+        }
+        @if (State.FinancePaymentRun is not null)
+        {
+            <div class="finance-payment-summary mt-3">
+                @foreach (var currency in State.FinancePaymentRun.CashBeforeByCurrency.Keys.OrderBy(x => x))
+                {
+                    <span><strong>@currency</strong> @AgentText["PaymentCashSummary", LocalNumber.Integer((long)State.FinancePaymentRun.CashBeforeByCurrency[currency]), LocalNumber.Integer((long)State.FinancePaymentRun.RecommendedOutflowByCurrency.GetValueOrDefault(currency)), LocalNumber.Integer((long)State.FinancePaymentRun.CashAfterByCurrency.GetValueOrDefault(currency))]</span>
+                }
+            </div>
+            <div class="table-responsive finance-payment-table mt-2">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["Select"]</th><th scope="col">@AgentText["State"]</th><th scope="col">@AgentText["Supplier"]</th><th scope="col">@AgentText["Due"]</th><th scope="col">@AgentText["Amount"]</th><th scope="col">@AgentText["Reason"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var item in State.FinancePaymentRun.Items.OrderBy(x => PaymentGroupOrder(x.Group)).ThenByDescending(x => x.PriorityScore))
+                        {
+                            <tr>
+                                <td><input type="checkbox" checked="@State.SelectedPaymentBillIds.Contains(item.BillId)" disabled="@(item.Group != "pay")" @onchange="@(e => State.TogglePaymentBill(item.BillId, e.Value as bool? == true))" aria-label="@AgentText["SelectBill", item.BillNumber]" /></td>
+                                <td><span class="@PaymentGroupBadge(item.Group)">@FormatPaymentGroup(item.Group)</span></td>
+                                <td><strong>@item.SupplierName</strong><small class="d-block text-body-secondary">@item.BillNumber</small></td>
+                                <td>@LocalDateTime.Date(DateOnly.FromDateTime(item.DueUtc))</td>
+                                <td>@LocalMoney.Format(item.OutstandingAmount, item.Currency)</td>
+                                <td>@string.Join(" · ", item.ReasonCodes.Select(FormatReasonCode))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="finance-payment-review mt-2">
+                <label><input type="checkbox" @bind="State.PaymentRunReviewed" /> @AgentText["PaymentRunReviewed"]</label>
+                <button class="btn btn-primary" type="button" disabled="@(State.IsCommittingPaymentRun || !State.PaymentRunReviewed || State.SelectedPaymentBillIds.Count == 0)" @onclick="CommitFinancePaymentRunAsync">
+                    @AgentText[State.IsCommittingPaymentRun ? "CreatingProposals" : "ConvertToPaymentProposals"]
+                </button>
+            </div>
+            @if (State.PaymentRunCommitResult is not null)
+            {
+                <div class="alert alert-success mt-2 mb-0">@AgentText["PaymentProposalsCreated", LocalNumber.Integer(State.PaymentRunCommitResult.PaymentProposals.Count), FormatReasonCode(State.PaymentRunCommitResult.Status)]</div>
+            }
+        }
+        @if (State.FinanceCollectionsPlan is not null && State.FinanceCollectionsPlan.Items.Count > 0)
+        {
+            <div class="table-responsive mt-3">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["Customer"]</th><th scope="col">@AgentText["Invoice"]</th><th scope="col">@AgentText["Outstanding"]</th><th scope="col">@AgentText["Risk"]</th><th scope="col">@AgentText["NextStep"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var item in State.FinanceCollectionsPlan.Items.Take(30))
+                        {
+                            <tr><td>@item.CustomerName</td><td>@item.InvoiceNumber<br /><small>@AgentText["DaysOverdue", LocalNumber.Integer(item.DaysOverdue)]</small></td><td>@LocalMoney.Format(item.OutstandingAmount, item.Currency)</td><td><span class="badge text-bg-light">@FormatReasonCode(item.RiskBand)</span></td><td>@FormatReasonCode(item.RecommendedStrategy)<br /><small>@AgentText["ReviewOn", LocalDateTime.Date(DateOnly.FromDateTime(item.NextReviewUtc))]</small></td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        @if (State.FinanceAccountingTreatment is not null)
+        {
+            <div class="table-responsive mt-3">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["Rank"]</th><th scope="col">@AgentText["Account"]</th><th scope="col">@AgentText["Confidence"]</th><th scope="col">@AgentText["Treatment"]</th><th scope="col">@AgentText["Warnings"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var candidate in State.FinanceAccountingTreatment.Candidates)
+                        {
+                            <tr><td>@candidate.Rank</td><td><strong>@candidate.AccountCode</strong><br /><small>@candidate.AccountName</small></td><td>@LocalNumber.Percentage(candidate.Confidence)</td><td>@(candidate.PeriodTreatment ?? AgentText["CurrentPeriod"])<br /><small>@(candidate.VatTreatment ?? AgentText["VatEvidenceRequired"])</small></td><td>@string.Join(" · ", candidate.Warnings.Select(FormatReasonCode))</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (State.FinanceAccountingTreatment.MissingEvidence.Count > 0)
+            {
+                <div class="alert alert-warning mt-2 mb-0">@AgentText["MissingEvidence", string.Join(" ", State.FinanceAccountingTreatment.MissingEvidence)]</div>
+            }
+        }
+        @if (State.FinanceCloseAnalysis is not null)
+        {
+            <div class="finance-payment-summary mt-3">
+                <span><strong>@(State.FinanceCloseAnalysis.IsReadyToClose ? AgentText["Ready"] : AgentText["Blocked"])</strong> @AgentText["AuthoritativeCloseReadiness"]</span>
+                <span><strong>@LocalNumber.Integer(State.FinanceCloseAnalysis.MaterialVariances.Count)</strong> @AgentText["MaterialVariances"]</span>
+            </div>
+            <div class="table-responsive mt-2">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["CloseCheck"]</th><th scope="col">@AgentText["State"]</th><th scope="col">@AgentText["Owner"]</th><th scope="col">@AgentText["Due"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var item in State.FinanceCloseAnalysis.Checklist)
+                        {
+                            <tr><td>@item.Title</td><td><span class="badge text-bg-light">@FormatReasonCode(item.Status)</span></td><td>@item.Owner</td><td>@LocalDateTime.Date(DateOnly.FromDateTime(item.DueUtc))</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        @if (State.SalesNextActions is not null)
+        {
+            <div class="table-responsive mt-3">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["Priority"]</th><th scope="col">@AgentText["CustomerWork"]</th><th scope="col">@AgentText["RecommendedAction"]</th><th scope="col">@AgentText["Communication"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var item in State.SalesNextActions.Actions.Take(30))
+                        {
+                            <tr>
+                                <td><span class="sales-priority-score">@item.PriorityScore</span></td>
+                                <td><strong>@item.Title</strong><small class="d-block text-body-secondary">@FormatReasonCode(item.SubjectType) · @FormatReasonCode(item.Timing)</small></td>
+                                <td>@item.Action<small class="d-block text-body-secondary">@string.Join(" · ", item.ReasonCodes.Select(FormatReasonCode))</small></td>
+                                <td><span class="@(item.CommunicationAllowed ? "badge text-bg-success" : "badge text-bg-warning")">@(item.CommunicationAllowed ? AgentText["Allowed"] : AgentText["InternalOnly"])</span>@if (item.RequiresApproval) { <small class="d-block text-body-secondary">@AgentText["ApprovalRequired"]</small> }</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        @if (State.SalesForecast is not null)
+        {
+            @foreach (var currencyGroup in State.SalesForecast.Scenarios.GroupBy(x => x.Currency))
+            {
+                <div class="sales-scenario-heading mt-3"><strong>@currencyGroup.Key forecast</strong><small>@currencyGroup.First().DealCount deals in horizon</small></div>
+                <div class="finance-agent-scenarios" aria-label="@currencyGroup.Key sales forecast scenarios">
+                    @foreach (var scenario in currencyGroup)
+                    {
+                        <article><span>@FormatSalesScenario(scenario.Scenario)</span><strong>@scenario.ExpectedRevenue.ToString("N0") @scenario.Currency</strong><small>@FormatSignedMoney(scenario.ChangeFromBaseline, scenario.Currency) from commit</small><small>@scenario.HighRiskDeals high risk · @scenario.UnknownRiskDeals unknown risk</small></article>
+                    }
+                </div>
+            }
+            @if (State.SalesForecast.ConcentrationWarnings.Count > 0)
+            {
+                <div class="alert alert-warning mt-2 mb-0">@string.Join(" ", State.SalesForecast.ConcentrationWarnings)</div>
+            }
+        }
+        @if (State.SalesCampaigns is not null)
+        {
+            <div class="table-responsive mt-3">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["Campaign"]</th><th scope="col">@AgentText["Evidence"]</th><th scope="col">@AgentText["Recommendation"]</th><th scope="col">@AgentText["PolicyState"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var campaign in State.SalesCampaigns.Campaigns)
+                        {
+                            <tr><td><strong>@campaign.CampaignName</strong></td><td>@AgentText["DeliveredCount", LocalNumber.Integer(campaign.Delivered)]<br /><small>@AgentText["CampaignRates", LocalNumber.Percentage(campaign.ReplyRate, 1), LocalNumber.Percentage(campaign.ConversionRate, 1)]</small></td><td>@campaign.Recommendation</td><td><span class="@(campaign.LaunchAllowed ? "badge text-bg-success" : "badge text-bg-light")">@(campaign.LaunchAllowed ? AgentText["DraftEligible"] : AgentText["ReviewOnly"])</span>@if (campaign.RequiresApproval) { <small class="d-block text-body-secondary">@AgentText["ApprovalRequired"]</small> }</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        @if (State.SupportQueue is not null)
+        {
+            <div class="table-responsive mt-3">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th scope="col">@AgentText["Priority"]</th><th scope="col">@AgentText["Case"]</th><th scope="col">@AgentText["Target"]</th><th scope="col">@AgentText["WhyNow"]</th></tr></thead>
+                    <tbody>
+                        @foreach (var item in State.SupportQueue.Items)
+                        {
+                            <tr><td><span class="sales-priority-score">@LocalNumber.Decimal(item.PriorityScore)</span><small class="d-block text-body-secondary">@FormatReasonCode(item.PriorityBand)</small></td><td><strong>@item.CaseNumber · @item.Subject</strong><small class="d-block text-body-secondary">@FormatReasonCode(item.Category) · @FormatReasonCode(item.Status)</small></td><td>@FormatSupportDeadline(item.ResolutionDueUtc, item.MinutesToResolutionDue)</td><td>@string.Join(" · ", item.ReasonCodes.Select(FormatReasonCode))@if (item.MandatoryEscalation) { <span class="badge text-bg-danger d-block mt-1">@AgentText["MandatoryEscalation"]</span> }</td></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        @if (State.SupportRisk is not null)
+        {
+            <div class="agent-governance-grid mt-3">
+                @foreach (var risk in State.SupportRisk.Risks)
+                {
+                    <article class="agent-governance-item"><div><strong>@risk.CaseNumber · @risk.Subject</strong><small>@string.Join(" · ", risk.ConfirmedRiskTypes.Select(FormatReasonCode))</small><span>@(risk.Hypotheses.Count > 0 ? AgentText["HypothesesValue", string.Join(", ", risk.Hypotheses.Select(FormatReasonCode))] : AgentText["NoAdditionalHypotheses"])</span><small>@AgentText["RouteTo", FormatReasonCode(risk.RequiredRole), FormatSupportDeadline(risk.ResolutionDueUtc, risk.MinutesToResolutionDue)]</small></div><span class="@(risk.MandatoryEscalation ? "badge text-bg-danger" : "badge text-bg-warning")">@FormatReasonCode(risk.Severity)</span></article>
+                }
+            </div>
+        }
+        @if (State.SupportRecurringIssues is not null)
+        {
+            <div class="agent-governance-grid mt-3">
+                @foreach (var cluster in State.SupportRecurringIssues.Clusters)
+                {
+                    <article class="agent-governance-item"><div><strong>@FormatReasonCode(cluster.Category)</strong><small>@AgentText["RelatedCasesVersion", LocalNumber.Integer(cluster.CaseCount), cluster.Version]</small><span>@cluster.RecommendedInvestigation</span><small>@AgentText["HypothesisValue", string.Join(" ", cluster.RootCauseHypotheses)]</small></div><span class="badge text-bg-warning">@AgentText["Review"]</span></article>
+                }
+            </div>
+        }
+        @if (State.SupportKnowledgeCoverage is not null)
+        {
+            <div class="finance-payment-summary mt-3"><span>@AgentText["OpenKnowledgeGaps", LocalNumber.Integer(State.SupportKnowledgeCoverage.OpenGapCount)]</span><span>@AgentText["RepeatedTopics", LocalNumber.Integer(State.SupportKnowledgeCoverage.RepeatedGapCount)]</span></div>
+            <div class="table-responsive mt-2">
+                <table class="table table-sm align-middle mb-0"><thead><tr><th scope="col">@AgentText["Topic"]</th><th scope="col">@AgentText["Frequency"]</th><th scope="col">@AgentText["MissingInformation"]</th><th scope="col">@AgentText["KnowledgeState"]</th></tr></thead><tbody>
+                        @foreach (var gap in State.SupportKnowledgeCoverage.Recommendations)
+                        {
+                            <tr><td><strong>@gap.Topic</strong><small class="d-block text-body-secondary">@FormatReasonCode(gap.Category)</small></td><td>@LocalNumber.Integer(gap.Frequency)</td><td>@gap.MissingInformation</td><td><span class="@(gap.ResolutionVerified ? "badge text-bg-success" : "badge text-bg-warning")">@(gap.ResolutionVerified ? AgentText["IndexedAndVerified"] : FormatReasonCode(gap.Status))</span></td></tr>
+                        }
+                    </tbody></table>
+            </div>
+        }
+        @if (State.RoleAnalysisResult is not null)
+        {
+            <div class="agent-ai-result mt-3">
+                <p>@State.RoleAnalysisResult.Summary</p>
+                @if (State.RoleAnalysisResult.Metrics.Count > 0)
+                {
+                    <div class="agent-governance-grid">
+                        @foreach (var metric in State.RoleAnalysisResult.Metrics.Take(6))
+                        {
+                            <div class="agent-priority-item">
+                                <span>@LocalNumber.Integer((long)metric.Value)</span>
+                                <div><strong>@metric.Label</strong><small>@AgentText["AsOf", LocalDateTime.DateTime(metric.AsOfUtc)]</small></div>
+                            </div>
+                        }
+                    </div>
+                }
+                @foreach (var priority in State.RoleAnalysisResult.Priorities.Take(6))
+                {
+                    <div class="agent-priority-item">
+                        <span>@priority.Score</span>
+                        <div><strong>@priority.Title</strong><small>@priority.Band.Replace('_', ' ') · @string.Join(" · ", priority.ReasonCodes.Select(x => x.Replace('_', ' ')))</small></div>
+                    </div>
+                }
+                @foreach (var claim in State.RoleAnalysisResult.Claims.Take(6))
+                {
+                    <div class="agent-ai-claim"><strong>@FormatClaimType(claim.Type)</strong><span>@claim.Text</span></div>
+                }
+                @if (State.RoleAnalysisResult.MissingEvidence.Count > 0)
+                {
+                    <div class="alert alert-warning mb-0 mt-2">
+                        @AgentText["MissingEvidence", string.Join(", ", State.RoleAnalysisResult.MissingEvidence)]
+                    </div>
+                }
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public AgentRoleAnalysisState State { get; set; } = null!;
+    [Parameter, EditorRequired] public AgentOperatingProfileViewModel Profile { get; set; } = null!;
+    [Parameter] public EventCallback RunRoleAnalysisAsync { get; set; }
+    [Parameter] public EventCallback CommitFinancePaymentRunAsync { get; set; }
+    private IReadOnlyList<RoleAnalysisOption> RoleAnalysisOptions => AgentRoleAnalysisState.OptionsFor(Profile.Department);
+    private static int PaymentGroupOrder(string group) => group switch { "pay" => 0, "defer" => 1, "dispute_or_review" => 2, _ => 3 };
+    private static string FormatPaymentGroup(string group) => group switch { "pay" => "Pay", "defer" => "Defer", "dispute_or_review" => "Review", _ => "Not eligible" };
+    private static string PaymentGroupBadge(string group) => group switch { "pay" => "badge text-bg-success", "defer" => "badge text-bg-warning", "dispute_or_review" => "badge text-bg-primary", _ => "badge text-bg-light" };
+    private static string FormatReasonCode(string value) => value.Replace('_', ' ');
+    private static string FormatFinanceScenario(string value) => value switch { "baseline" => "Baseline", "upside" => "Upside", "downside" => "Downside", _ => value };
+    private static string FormatSalesScenario(string value) => value switch { "commit" => "Commit", "best_case" => "Best case", "downside" => "Downside", _ => FormatReasonCode(value) };
+    private string FormatSupportDeadline(DateTime? dueUtc, decimal? minutes) =>
+        !dueUtc.HasValue
+            ? AgentText["NoTarget"]
+            : minutes < 0
+                ? AgentText["DeadlineBreached", LocalNumber.Decimal(Math.Abs(minutes!.Value / 60m), 1)]
+                : AgentText["DeadlineRemaining", LocalNumber.Decimal(minutes!.Value / 60m, 1)];
+    private static string FormatSignedMoney(decimal value, string currency) => $"{(value >= 0 ? "+" : string.Empty)}{value:N0} {currency}";
+
+    private static string FormatClaimType(string type) => type switch { "confirmed_fact" => "Confirmed", "inference" => "Inference", _ => "Unknown" };
+
+}

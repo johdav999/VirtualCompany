@@ -1,0 +1,71 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="vc-panel marketing-section">
+    <div class="marketing-section__header"><div><span class="vc-kicker">TARGET SELECTION</span><h2>Strategic customer segments</h2></div><div class="marketing-inline-actions">@if (CompanyId is Guid segmentCompanyId && MarketingAgentId is Guid segmentAgentId) { <a class="btn btn-sm btn-outline-primary" href="@($"/agents/{segmentAgentId:D}/workshops/marketing_segment?companyId={segmentCompanyId:D}")">Discover segment with Maya</a> }<button class="btn btn-sm btn-outline-primary" disabled="@(MarketingAgentId is null || IsSaving)" @onclick="() => PrepareSegmentProposalAsync.InvokeAsync()">Ask Maya</button></div></div>
+    <div class="marketing-form__row"><label>Proposed segment name<InputText @bind-Value="SegmentsState.SegmentProposalForm.Name" /></label><label>Analysis objective<InputText @bind-Value="SegmentsState.SegmentProposalForm.Objective" /></label></div>
+    @if (SegmentsState.SegmentWorkshopDraft is not null)
+    {
+        <section class="marketing-workshop-draft" aria-labelledby="segment-workshop-draft-title">
+            <header>
+                <div><span class="vc-kicker">UNSAVED WORKSHOP DRAFT</span><h3 id="segment-workshop-draft-title">@(DraftField("name") is { } name ? DisplayDraftValue(name.Value) : "Segment workshop")</h3><p>The discussion is preserved, but it has not yet been saved as a Marketing segment. Confirm the required fields, then review and save the workshop.</p></div>
+                <div class="marketing-workshop-draft__actions"><span class="marketing-status warning">@SegmentsState.SegmentWorkshopDraft.ReadyFieldCount of @SegmentsState.SegmentWorkshopDraft.RequiredFieldCount required fields confirmed</span><a class="btn btn-sm btn-primary" href="@SegmentWorkshopUrl(SegmentsState.SegmentWorkshopDraft)">Resume and finish</a></div>
+            </header>
+            <progress max="@SegmentsState.SegmentWorkshopDraft.RequiredFieldCount" value="@SegmentsState.SegmentWorkshopDraft.ReadyFieldCount" aria-label="Confirmed required workshop fields"></progress>
+            <div class="marketing-workshop-draft__fields">
+                @foreach (var field in SegmentsState.SegmentWorkshopDraft.Fields.Where(ShowDraftField))
+                {
+                    <details>
+                        <summary><span><strong>@field.Label</strong><small>@Friendly(field.Status)</small></span><span>@DraftSummary(field.Value)</span></summary>
+                        <p>@DisplayDraftValue(field.Value)</p>
+                    </details>
+                }
+            </div>
+        </section>
+    }
+    @if (SegmentsState.Segments.Count == 0) { <MarketingEmpty Title="No saved strategic segments" Message="Finish the workshop above to save its confirmed conclusions as a reusable Marketing segment." /> }
+    <div class="marketing-segment-grid">
+        @foreach (var segment in SegmentsState.Segments)
+        {
+            var version = segment.Versions.FirstOrDefault();
+            <article><div><strong>@segment.Name</strong><span>@segment.Description</span></div>
+                @if (version is not null) { <dl><div><dt>Needs</dt><dd>@JsonSummary(version.NeedsJson)</dd></div><div><dt>Behaviour</dt><dd>@JsonSummary(version.BehaviorsJson)</dd></div><div><dt>Channels</dt><dd>@JsonSummary(version.ChannelsJson)</dd></div><div><dt>Price sensitivity</dt><dd>@JsonSummary(version.PricingJson)</dd></div><div><dt>Size</dt><dd>@Size(version)</dd></div><div><dt>Confidence</dt><dd>@version.Confidence.ToString("P0")</dd></div></dl><div class="marketing-inline-actions"><span class="marketing-status">@Friendly(version.TargetState) · score @version.AttractivenessScore.ToString("0")</span><button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick="() => ReviewSegmentImpactAsync.InvokeAsync(version.Id)">Review downstream impact</button></div> }
+            </article>
+        }
+    </div>
+    @if (SegmentsState.SegmentDecisionData is not null)
+    {
+        <section class="marketing-segment-decision" aria-label="Structured segment decision evidence">
+            <article><div class="marketing-section__header"><div><span class="vc-kicker">STRUCTURED ESTIMATES</span><h3>Size and economics</h3></div><span>@SegmentsState.SegmentDecisionData.SizeEstimates.Count size source@(SegmentsState.SegmentDecisionData.SizeEstimates.Count == 1 ? "" : "s")</span></div>
+                @if (SegmentsState.SegmentDecisionData.SizeEstimates.Count == 0) { <p>Needs review: no queryable size estimate is available.</p> }
+                @foreach (var estimate in SegmentsState.SegmentDecisionData.SizeEstimates) { <dl><div><dt>Range</dt><dd>@(estimate.Low?.ToString("N0") ?? "?") – @(estimate.High?.ToString("N0") ?? "?") @estimate.Unit</dd></div><div><dt>Scope</dt><dd>@estimate.Period · @estimate.Geography</dd></div><div><dt>Method</dt><dd>@Friendly(estimate.Method) · @estimate.Confidence.ToString("P0")</dd></div><div><dt>Freshness</dt><dd>@estimate.AsOfUtc.ToString("d") · @Friendly(estimate.Classification)</dd></div></dl> }
+                <div class="marketing-economics-grid">@foreach (var estimate in SegmentsState.SegmentDecisionData.EconomicEstimates) { <div><span>@Friendly(estimate.MetricCode)</span><strong>@(estimate.Low?.ToString("N1") ?? "?") – @(estimate.High?.ToString("N1") ?? "?") @estimate.Unit</strong><small>@Friendly(estimate.Method) · @estimate.Confidence.ToString("P0")</small></div> }</div>
+            </article>
+            <article><span class="vc-kicker">DETERMINISTIC SCORE</span><h3>@(SegmentsState.SegmentDecisionData.ScorePolicy?.CalculatedScore?.ToString("0.##") ?? "Needs review")</h3>
+                @if (SegmentsState.SegmentDecisionData.ScorePolicy is null) { <p>No versioned score policy is available.</p> }
+                else { <p>@Friendly(SegmentsState.SegmentDecisionData.ScorePolicy.Decision) · target @SegmentsState.SegmentDecisionData.ScorePolicy.TargetThreshold.ToString("0.##")</p><small>Missing evidence: @Friendly(SegmentsState.SegmentDecisionData.ScorePolicy.MissingEvidenceBehavior)</small><div class="marketing-score-list">@foreach (var dimension in SegmentsState.SegmentDecisionData.ScorePolicy.Dimensions) { <div><span>@Friendly(dimension.Code)</span><strong>@(dimension.Score?.ToString("0.##") ?? "Missing")</strong><small>Weight @dimension.Weight.ToString("P0")</small></div> }</div> }
+            </article>
+            <article><span class="vc-kicker">TARGET DECISION</span><h3>Recommendation is not activation</h3>@if (SegmentsState.SegmentDecisionData.TargetDecisions.Count == 0) { <p>No target recommendation has been recorded. Approval and activation remain separate guarded actions.</p> } else { var decision = SegmentsState.SegmentDecisionData.TargetDecisions.First(); <p>@decision.Rationale</p><span class="marketing-status">@Friendly(decision.ApprovalStatus) · @decision.Confidence.ToString("P0")</span><small>Review @decision.ReviewUtc.ToString("d")</small> }<h3>Explicit mappings</h3>@if (SegmentsState.SegmentDecisionData.Mappings.Count == 0) { <p>No ICP, audience, qualification, or Sales handoff mapping.</p> } else { @foreach (var mapping in SegmentsState.SegmentDecisionData.Mappings) { <p><strong>@mapping.Label</strong><br /><small>@Friendly(mapping.MappingType)</small></p> } }</article>
+        </section>
+    }
+    @if (SegmentsState.SegmentImpact is not null)
+    {
+        <aside class="marketing-segment-impact"><h3>@(SegmentsState.SegmentImpact.RequiresReview ? "Downstream review required" : "Downstream impact")</h3><p>@(SegmentsState.SegmentImpact.IsCurrentVersion ? "These artifacts use the current segment version." : "This is not the current segment version. Linked artifacts were not silently rewritten.")</p><div class="marketing-review-history">@foreach (var item in SegmentsState.SegmentImpact.Artifacts) { <article><strong>@item.Label</strong><span>@Friendly(item.ArtifactType) · @Friendly(item.Status)</span><p>@item.ReviewReason</p></article> }</div></aside>
+    }
+    @if (SegmentsState.SegmentProposal is not null)
+    {
+        <aside class="marketing-segment-impact"><h3>Maya's grounded segment proposal</h3><p>@SegmentsState.SegmentProposal.Summary</p><div class="marketing-review-history">@foreach (var claim in SegmentsState.SegmentProposal.Claims) { <article><strong>@Friendly(claim.Area) · @Friendly(claim.Classification)</strong><span>Confidence @claim.Confidence.ToString("P0")</span><p>@claim.Recommendation</p><small>Sources: @string.Join(", ", claim.SourceIds)</small></article> }</div>@if (SegmentsState.SegmentProposal.MissingEvidence.Count > 0) { <p><strong>Evidence to add before approval:</strong> @string.Join(", ", SegmentsState.SegmentProposal.MissingEvidence)</p> }@if (SegmentsState.SegmentProposal.CanCreateDraft) { <p role="status">You can save this as a reviewable draft now. Evidence gaps remain visible and do not bypass human approval.</p> } else { <p role="alert">Maya did not return any safely grounded draft content. Retry the analysis.</p> }<div class="marketing-inline-actions"><button class="btn btn-primary" disabled="@(IsSaving || !SegmentsState.SegmentProposal.CanCreateDraft)" @onclick="() => CommitSegmentProposalAsync.InvokeAsync()">Create reviewable draft</button>@if (!SegmentsState.SegmentProposal.CanCreateDraft) { <button class="btn btn-outline-primary" disabled="@IsSaving" @onclick="() => PrepareSegmentProposalAsync.InvokeAsync()">Retry Maya</button> }</div></aside>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingOverviewState OverviewState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingSegmentsState SegmentsState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public Guid? MarketingAgentId { get; set; }
+    [Parameter] public Guid? CompanyId { get; set; }
+    private GuidedDraftFieldViewModel? DraftField(string path) => SegmentsState.SegmentWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+    [Parameter] public EventCallback<Guid> ReviewSegmentImpactAsync { get; set; }
+    [Parameter] public EventCallback PrepareSegmentProposalAsync { get; set; }
+    [Parameter] public EventCallback CommitSegmentProposalAsync { get; set; }
+}

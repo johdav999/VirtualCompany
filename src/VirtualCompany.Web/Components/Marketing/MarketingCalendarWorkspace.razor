@@ -1,0 +1,13 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="vc-panel marketing-section">
+    <div class="marketing-section__header"><div><span class="vc-kicker">SCHEDULE</span><h2>Marketing calendar</h2></div><a href="@WithCompany("/app/sales/campaigns")">Manage campaigns</a></div>
+    @if (Dashboard.Calendar.Count == 0) { <MarketingEmpty Title="Calendar is empty" Message="Dated plans, campaigns, and campaign activities are combined here." /> }
+    <div class="marketing-calendar marketing-calendar--wide">@foreach (var item in Dashboard.Calendar.OrderBy(x => x.StartsUtc)) { <article class="marketing-calendar__@item.Kind"><time>@item.StartsUtc.ToLocalTime().ToString("dd MMM yyyy")</time><div><strong>@item.Name</strong><span>@CalendarKind(item.Kind) · @Friendly(item.Status)@(item.IsSpan ? $" · through {item.EndsUtc.ToLocalTime():dd MMM}" : "")</span></div>@if (!string.IsNullOrWhiteSpace(item.NavigationTarget)) { <a href="@WithCompany(item.NavigationTarget)">Open</a> }</article> }</div>
+</section>
+
+@code {
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter, EditorRequired] public Func<string, string> WithCompany { get; set; } = null!;
+}

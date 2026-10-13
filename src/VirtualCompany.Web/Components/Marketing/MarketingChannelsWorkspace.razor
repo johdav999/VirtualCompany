@@ -1,0 +1,57 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-operations-summary">
+    <article class="vc-panel">
+        <span>Connect a channel</span><strong>Provider authorization</strong>
+        <small>Connections open the provider's secure consent screen. The callback must be allowlisted by an operator.</small>
+        <div class="marketing-inline-actions">
+            <button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick='() => StartChannelOAuthAsync.InvokeAsync("linkedin")'>LinkedIn</button>
+            <button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick='() => StartChannelOAuthAsync.InvokeAsync("meta")'>Meta</button>
+            <button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick='() => StartChannelOAuthAsync.InvokeAsync("x")'>X</button>
+        </div>
+    </article>
+    @foreach (var connection in ChannelsState.ChannelConnections)
+    {
+        <article class="vc-panel"><span>@Friendly(connection.Provider)</span><strong>@connection.DisplayName</strong><small class="marketing-status @(connection.HealthStatus == "reauthorization_required" ? "warning" : null)">@Friendly(connection.HealthStatus)</small><div class="marketing-inline-actions"><button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick="() => RefreshDestinationsAsync.InvokeAsync(connection.Id)">Refresh accounts</button><button class="btn btn-sm btn-outline-danger" disabled="@IsSaving" @onclick="() => DisconnectChannelAsync.InvokeAsync(connection.Id)">Disconnect</button></div></article>
+    }
+    @if (ChannelsState.ChannelConnections.Count == 0) { <article class="vc-panel"><span>Connections</span><strong>No provider connected</strong><small>Add protected provider credentials before external delivery.</small></article> }
+</section>
+<section class="marketing-workspace-grid">
+    <article class="vc-panel marketing-section">
+        <div class="marketing-section__header"><div><span class="vc-kicker">APPROVAL-BACKED DELIVERY</span><h2>Channel action queue</h2></div></div>
+        @if (ChannelsState.ChannelDestinations.Count > 0) { <p>@ChannelsState.ChannelDestinations.Count manageable destinations discovered: @string.Join(", ", ChannelsState.ChannelDestinations.Where(x => x.Status == "active").Select(x => x.DisplayName))</p> }
+        @if (ChannelsState.ChannelActions.Count == 0) { <MarketingEmpty Title="No channel actions" Message="Approved content delivery will appear here before it is dispatched by the background worker." /> }
+        <div class="marketing-run-list">@foreach (var action in ChannelsState.ChannelActions.Where(x => !ActionId.HasValue || x.Id == ActionId)) { <article><div><strong>@Friendly(action.ActionType)</strong><span>@action.DestinationReference · @(action.ScheduledUtc?.ToLocalTime().ToString("g") ?? "Ready when approved")</span><p>@(action.FailureCode is null ? $"Attempt {action.AttemptCount}" : Friendly(action.FailureCode))</p></div><div class="marketing-inline-actions"><span class="marketing-status @(action.Status is "failed" or "ambiguous" ? "warning" : null)">@Friendly(action.Status)</span>@if (action.Status == "awaiting_approval") { <button class="btn btn-sm btn-outline-primary" @onclick="() => SynchronizeChannelActionAsync.InvokeAsync(action.Id)">Check approval</button> }@if (action.Status is "ambiguous" or "dispatched") { <button class="btn btn-sm btn-outline-primary" @onclick="() => ReconcileChannelActionAsync.InvokeAsync(action.Id)">Reconcile</button> }@if (action.Status is "proposed" or "awaiting_approval" or "queued" or "retry_scheduled") { <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelChannelActionAsync.InvokeAsync(action.Id)">Cancel</button> }</div></article> }</div>
+    </article>
+    <aside class="vc-panel marketing-section"><span class="vc-kicker">LIFECYCLE AND CREATIVE</span><h2>Governed assets</h2><p>@CreativeState.CreativeAssets.Count creative assets · @JourneysState.Journeys.Count lifecycle journeys</p><div class="marketing-list">@foreach (var asset in CreativeState.CreativeAssets.Take(5)) { <article><div><strong>@asset.Name</strong><span>@asset.Dimensions · @Friendly(asset.Status)</span><small>@asset.AltText</small></div></article> }</div>
+        @if (Dashboard.Content.Any(x => x.Status is "submitted" or "approved"))
+        {
+            <EditForm Model="CreativeState.CreativeForm" OnValidSubmit="() => GenerateCreativeAsync.InvokeAsync()" class="marketing-form marketing-form--compact">
+                <h3>Generate review draft</h3>
+                <label>Content brief<InputSelect @bind-Value="CreativeState.CreativeForm.BriefId">@foreach(var brief in Dashboard.Content.Where(x=>x.Status is "submitted" or "approved")){<option value="@brief.Id">@brief.Title</option>}</InputSelect></label>
+                <label>Asset name<InputText @bind-Value="CreativeState.CreativeForm.Name" /></label>
+                <label>Art direction<InputTextArea @bind-Value="CreativeState.CreativeForm.Prompt" /></label>
+                <label>Alt text<InputText @bind-Value="CreativeState.CreativeForm.AltText" /></label>
+                <button class="btn btn-primary" disabled="@IsSaving">Generate draft</button>
+            </EditForm>
+        }
+    </aside>
+</section>
+
+@code {
+    [Parameter] public Guid? ActionId { get; set; }
+
+    [Parameter, EditorRequired] public MarketingChannelsState ChannelsState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingCreativeState CreativeState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingJourneysState JourneysState { get; set; } = null!;
+    [Parameter] public MarketingDashboardViewModel Dashboard { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public EventCallback<Guid> SynchronizeChannelActionAsync { get; set; }
+    [Parameter] public EventCallback<Guid> CancelChannelActionAsync { get; set; }
+    [Parameter] public EventCallback<Guid> ReconcileChannelActionAsync { get; set; }
+    [Parameter] public EventCallback<Guid> RefreshDestinationsAsync { get; set; }
+    [Parameter] public EventCallback<Guid> DisconnectChannelAsync { get; set; }
+    [Parameter] public EventCallback<string> StartChannelOAuthAsync { get; set; }
+    [Parameter] public EventCallback GenerateCreativeAsync { get; set; }
+}

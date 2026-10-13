@@ -1,0 +1,42 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-operations-summary">
+    <article class="vc-panel"><span>Why Maya started</span><strong>@(OperationsState.OperatingRuns.FirstOrDefault()?.TriggerReference ?? "No operating run yet")</strong></article>
+    <article class="vc-panel"><span>Effective autonomy</span><strong>@Friendly(OperationsState.OperatingRuns.FirstOrDefault()?.EffectiveAuthority ?? "recommend")</strong></article>
+    <article class="vc-panel"><span>Approvals and limits</span><strong>@(OperationsState.OperatingRuns.FirstOrDefault()?.BudgetLimit is decimal limit ? $"Budget limit {limit:N0}" : "Policy limits apply")</strong></article>
+    <article class="vc-panel"><span>Evidence state</span><strong>@(OperationsState.OperatingRuns.FirstOrDefault()?.RecoveryCode is null ? "Current or not yet reviewed" : "Evidence needs review")</strong></article>
+</section>
+<section class="marketing-workspace-grid">
+    <article class="vc-panel marketing-section"><div class="marketing-section__header"><div><span class="vc-kicker">INDEPENDENT DEPARTMENT LOOP</span><h2>Recent Marketing runs</h2></div><button class="btn btn-primary" disabled="@(IsSaving || MarketingAgentId is null)" @onclick="() => RequestOperatingRunAsync.InvokeAsync()">Run governed review</button></div>
+        @if (OperationsState.OperatingRuns.Count == 0) { <MarketingEmpty Title="No Marketing operating runs" Message="Maya will start from company assignments, cadence, material events, or an operator request." /> }
+        <div class="marketing-run-list">@foreach (var run in OperationsState.OperatingRuns) { <button type="button" class="marketing-run-row @(OperationsState.SelectedOperatingRun?.Id == run.Id ? "selected" : null)" @onclick="() => SelectOperatingRunAsync.InvokeAsync(run)"><span><strong>@Friendly(run.TriggerType) · @run.CreatedUtc.ToLocalTime().ToString("g")</strong><small>@run.TriggerReference</small><small>@(run.OutcomeSummary ?? "Waiting for a safe outcome")</small></span><span class="marketing-status @(run.Status == "blocked" ? "warning" : null)">@Friendly(run.Status)</span></button> }</div>
+        @if (OperationsState.SelectedOperatingRun is not null)
+        {
+            <section class="marketing-action-plan" aria-label="Selected Marketing run action plan">
+                <div class="marketing-section__header"><div><span class="vc-kicker">DURABLE ACTION PLAN</span><h3>@OperationsState.OperatingActions.Count action@(OperationsState.OperatingActions.Count == 1 ? "" : "s")</h3></div><span>@OperationsState.SelectedOperatingRun.BudgetUsed.ToString("N2") / @(OperationsState.SelectedOperatingRun.BudgetLimit?.ToString("N2") ?? "policy limit")</span></div>
+                @if (OperationsState.OperatingActions.Count == 0) { <p>No actions were selected for this run.</p> }
+                @foreach (var action in OperationsState.OperatingActions)
+                {
+                    <article class="marketing-action-card">
+                        <div><strong>@action.Sequence. @action.Title</strong><span>@Friendly(action.Tool ?? action.ActionType) · @Friendly(action.AuthorityDecision)</span><p>Expected: @action.ExpectedCompletionEvidence</p>@if (!string.IsNullOrWhiteSpace(action.RecoveryGuidance)) { <p class="marketing-action-warning">@action.RecoveryGuidance</p> }</div>
+                        <div class="marketing-action-state"><span class="marketing-status @(action.Status is "blocked" or "dead_letter" or "retry_wait" ? "warning" : null)">@Friendly(action.Status)</span><small>Attempt @action.AttemptCount / @action.MaximumAttempts</small>@if (action.ArtifactId.HasValue) { <small>@Friendly(action.ArtifactType ?? "artifact") · @action.ArtifactId.Value.ToString("N")[..8]</small> }@if (action.Status is "blocked" or "dead_letter" or "retry_wait") { <button class="btn btn-sm btn-outline-primary" @onclick="() => RetryOperatingActionAsync.InvokeAsync(action)">Retry</button> }@if (action.Status is "planned" or "retry_wait" or "blocked") { <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelOperatingActionAsync.InvokeAsync(action)">Cancel</button> }</div>
+                    </article>
+                }
+            </section>
+        }
+    </article>
+    <aside class="vc-panel marketing-section"><span class="vc-kicker">INSTRUCTION PRECEDENCE</span><h2>Company direction governs</h2><ol class="marketing-precedence"><li>Safety, consent, law, and tenant policy</li><li>Company pause, goals, plans, budgets, and instructions</li><li>Approved Marketing strategy and segments</li><li>Assigned task and dependencies</li><li>Maya's role and cadence</li><li>Model suggestions</li></ol><a href="@WithCompany("/company-operation")">Open Company operation</a></aside>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingOperationsState OperationsState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingSegmentsState SegmentsState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public Guid? MarketingAgentId { get; set; }
+    [Parameter, EditorRequired] public Func<string, string> WithCompany { get; set; } = null!;
+    [Parameter] public EventCallback RequestOperatingRunAsync { get; set; }
+    [Parameter] public EventCallback<MarketingOperatingRunViewModel> SelectOperatingRunAsync { get; set; }
+    [Parameter] public EventCallback<MarketingOperatingActionViewModel> RetryOperatingActionAsync { get; set; }
+    [Parameter] public EventCallback<MarketingOperatingActionViewModel> CancelOperatingActionAsync { get; set; }
+}

@@ -1,0 +1,133 @@
+@using static VirtualCompany.Web.Features.Agents.AgentIdentityPresentation
+@using VirtualCompany.Web.Features.Agents
+@inject IStringLocalizer<AgentsResources> AgentText
+
+<section id="agent-brief" class="agent-brief-workspace" aria-labelledby="agent-brief-title">
+    <header class="agent-brief-header">
+        <div class="agent-brief-agent">
+            <span class="agents-avatar agents-avatar--@GetDepartmentTone(Profile.Department)" aria-hidden="true">@GetInitials(Profile.DisplayName)</span>
+            <div>
+                <span class="dashboard-kicker">@AgentText["AgentProfile"]</span>
+                <h2 id="agent-brief-title">@Profile.DisplayName</h2>
+                <p>@Profile.RoleName</p>
+            </div>
+        </div>
+        <div class="agent-brief-save-state @(State.IsBriefDirty ? "is-dirty" : null)">
+            @AgentText[State.IsBriefDirty ? "UnsavedChanges" : "Saved"]
+        </div>
+    </header>
+
+    <div class="agent-brief-body">
+        <nav class="agent-brief-categories" aria-label="@AgentText["BriefingCategories"]">
+            @foreach (var category in AgentBriefEditorState.Categories)
+            {
+                <button type="button"
+                    class="agent-brief-category @(State.SelectedBriefCategory == category.Key ? "is-selected" : null)"
+                    @onclick="@(() => SelectBriefCategory.InvokeAsync(category.Key))">
+                    <span>@category.ShortLabel</span>
+                    <strong>@AgentText[category.LabelResourceKey]</strong>
+                </button>
+            }
+        </nav>
+
+        <div class="agent-brief-editor">
+            <div class="agent-brief-editor__heading">
+                <div>
+                    <h3>@AgentText[State.SelectedCategory.LabelResourceKey]</h3>
+                    <p>@AgentText[State.SelectedCategory.DescriptionResourceKey]</p>
+                </div>
+                <label class="agent-brief-share">
+                    <input type="checkbox" @bind="State.ShareBriefDocumentsWithTeam" />
+                    @AgentText["ShareBriefDocuments"]
+                </label>
+            </div>
+
+            <label class="form-label" for="agent-brief-text">@AgentText["InformationForAgent", Profile.DisplayName]</label>
+            <textarea id="agent-brief-text"
+                class="form-control agent-brief-textarea"
+                rows="14"
+                value="@State.CurrentText"
+                @oninput="args => HandleBriefTextInput.InvokeAsync(args)"
+                placeholder="@AgentText[State.SelectedCategory.PlaceholderResourceKey]"></textarea>
+
+            <div class="agent-brief-documents">
+                <div class="agent-brief-documents__heading">
+                    <strong>@AgentText["AttachedDocuments"]</strong>
+                    <span>@AgentText["IndexedDocumentsDescription"]</span>
+                </div>
+                @if (BriefDocumentsForSelectedCategory.Count == 0)
+                {
+                    <p class="agent-brief-no-documents">@AgentText["NoBriefDocuments"]</p>
+                }
+                else
+                {
+                    @foreach (var document in BriefDocumentsForSelectedCategory)
+                    {
+                        <div class="agent-brief-document">
+                            <div>
+                                <strong>@document.OriginalFileName</strong>
+                                <span>@FormatFileSize(document.FileSizeBytes)</span>
+                            </div>
+                            <span class="agent-brief-document__status"
+                                title="@AgentBriefDocumentStatusPresenter.GetDetail(document, AgentText)">
+                                @AgentBriefDocumentStatusPresenter.GetLabel(document, AgentText)
+                            </span>
+                        </div>
+                    }
+                }
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(State.BriefErrorMessage))
+            {
+                <div class="alert alert-danger mt-3 mb-0">@State.BriefErrorMessage</div>
+            }
+            @if (!string.IsNullOrWhiteSpace(State.BriefSuccessMessage))
+            {
+                <div class="alert alert-success mt-3 mb-0">@State.BriefSuccessMessage</div>
+            }
+
+            <div class="agent-brief-actions">
+                <InputFile id="agent-brief-file"
+                    class="visually-hidden"
+                    accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx"
+                    OnChange="HandleBriefDocumentUploadAsync" />
+                <label class="btn btn-outline-primary" for="agent-brief-file">
+                    @AgentText[State.IsUploadingBriefDocument ? "Uploading" : "AttachDocument"]
+                </label>
+                <button class="btn btn-outline-primary"
+                    type="button"
+                    disabled="@State.IsGeneratingBriefDraft"
+                    @onclick="GenerateBriefDraftAsync">
+                    @AgentText[State.IsGeneratingBriefDraft ? "Generating" : "GenerateDraft"]
+                </button>
+                <button class="btn btn-primary"
+                    type="button"
+                    disabled="@(!State.IsBriefDirty || State.IsSavingBrief)"
+                    @onclick="SaveAgentBriefAsync">
+                    @AgentText[State.IsSavingBrief ? "Saving" : "SaveBrief"]
+                </button>
+            </div>
+
+            @if (State.IsGeneratedBriefDraft)
+            {
+                <div class="agent-brief-review-note">@AgentText["DraftGeneratedReview"]</div>
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AgentOperatingProfileViewModel Profile { get; set; } = null!;
+    [Parameter, EditorRequired] public AgentBriefEditorState State { get; set; } = null!;
+    [Parameter] public IReadOnlyList<AgentBriefDocumentViewModel> BriefDocumentsForSelectedCategory { get; set; } = [];
+    [Parameter] public EventCallback<string> SelectBriefCategory { get; set; }
+    [Parameter] public EventCallback<ChangeEventArgs> HandleBriefTextInput { get; set; }
+    [Parameter] public EventCallback<InputFileChangeEventArgs> HandleBriefDocumentUploadAsync { get; set; }
+    [Parameter] public EventCallback GenerateBriefDraftAsync { get; set; }
+    [Parameter] public EventCallback SaveAgentBriefAsync { get; set; }
+    private static string FormatFileSize(long sizeBytes) =>
+        sizeBytes >= 1024 * 1024
+            ? $"{sizeBytes / (1024d * 1024d):0.0} MB"
+            : $"{Math.Max(1, sizeBytes / 1024d):0} KB";
+
+}

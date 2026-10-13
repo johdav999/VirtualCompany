@@ -1,0 +1,78 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-workspace-grid">
+    <article class="vc-panel marketing-section marketing-workspace-hero">
+        <div class="marketing-section__header">
+            <div><span class="vc-kicker">ACTIVE DIRECTION</span></div>
+            @if (CompanyId is Guid strategyCompanyId && MarketingAgentId is Guid strategyAgentId)
+            {
+                var strategyTargetId = StrategyState.Strategies.FirstOrDefault(x => x.Status is "draft" or "rejected")?.Id;
+                var strategyWorkshopUrl = StrategyState.StrategyWorkshopDraft is null
+                    ? $"/agents/{strategyAgentId:D}/workshops/marketing_strategy?companyId={strategyCompanyId:D}{(strategyTargetId is Guid targetId ? $"&targetId={targetId:D}" : string.Empty)}"
+                    : StrategyWorkshopUrl(StrategyState.StrategyWorkshopDraft);
+                <a class="btn btn-outline-primary" href="@strategyWorkshopUrl">@(StrategyState.StrategyWorkshopDraft is null ? "Define Market Strategy" : "Resume workshop")</a>
+            }
+        </div>
+        @if (StrategyState.StrategyWorkshopDraft is not null)
+        {
+            <section class="marketing-workshop-draft" aria-labelledby="strategy-workshop-draft-title">
+                <header>
+                    <div><span class="vc-kicker">UNSAVED WORKSHOP DRAFT</span><h3 id="strategy-workshop-draft-title">@(StrategyDraftField("title") is { } title ? DisplayDraftValue(title.Value) : "Market strategy workshop")</h3><p>The discussion is preserved, but it has not yet been saved as a Marketing strategy. Confirm the required sections, then review and save the workshop.</p></div>
+                    <div class="marketing-workshop-draft__actions"><span class="marketing-status warning">@StrategyState.StrategyWorkshopDraft.ReadyFieldCount of @StrategyState.StrategyWorkshopDraft.RequiredFieldCount required fields confirmed</span><a class="btn btn-sm btn-primary" href="@StrategyWorkshopUrl(StrategyState.StrategyWorkshopDraft)">Resume and finish</a></div>
+                </header>
+                <progress max="@StrategyState.StrategyWorkshopDraft.RequiredFieldCount" value="@StrategyState.StrategyWorkshopDraft.ReadyFieldCount" aria-label="Confirmed required workshop fields"></progress>
+                <div class="marketing-workshop-draft__fields">
+                    @foreach (var field in StrategyState.StrategyWorkshopDraft.Fields.Where(ShowDraftField))
+                    {
+                        <details>
+                            <summary><span><strong>@field.Label</strong><small>@Friendly(field.Status)</small></span><span>@DraftSummary(field.Value)</span></summary>
+                            <p>@DisplayDraftValue(field.Value)</p>
+                        </details>
+                    }
+                </div>
+            </section>
+        }
+        @if (StrategyState.Strategies.Count == 0) { <MarketingEmpty Title="No saved Marketing strategy" Message="Finish the workshop above to save its confirmed conclusions as a reviewable Marketing strategy." /> }
+        else
+        {
+            var item = StrategyState.Strategies.First();
+            <div class="marketing-section__header"><div><h2>@item.Title</h2><span class="marketing-status">@Friendly(item.Status) · version @item.Version</span></div><strong>@item.ValidFromUtc.ToString("d") – @item.ValidToUtc.ToString("d")</strong></div>
+            <p>@item.Summary</p><div class="marketing-evidence"><strong>Evidence and gaps</strong><span>@JsonSummary(item.MissingEvidenceJson, "No missing evidence recorded")</span></div>
+        }
+    </article>
+    <article class="vc-panel marketing-section"><span class="vc-kicker">GOVERNANCE</span><h2>Next action</h2><p>Strategy activation requires completed company approval. Maya can prepare recommendations and drafts, but cannot approve or activate them.</p></article>
+</section>
+@if (SegmentsState.Segments.SelectMany(x => x.Versions).Any(x => x.Status is "approved" or "active"))
+{
+    <section class="marketing-two-column">
+        <EditForm Model="StrategyState.StrategyProposalForm" OnValidSubmit="() => PrepareStrategyProposalAsync.InvokeAsync()" class="vc-panel marketing-form">
+            <span class="vc-kicker">ASK MAYA</span><h2>Prepare a grounded strategy</h2>
+            <label>Strategy title<InputText @bind-Value="StrategyState.StrategyProposalForm.Title" /></label>
+            <label>Business objective<InputTextArea @bind-Value="StrategyState.StrategyProposalForm.Objective" /></label>
+            <label>Approved target segment<InputSelect @bind-Value="StrategyState.StrategyProposalForm.SegmentVersionId">@foreach (var segment in SegmentsState.Segments) { @foreach (var version in segment.Versions.Where(x => x.Status is "approved" or "active")) { <option value="@version.Id">@segment.Name · v@version.VersionNumber</option> } }</InputSelect></label>
+            <button class="btn btn-primary" disabled="@(IsSaving || MarketingAgentId is null)">Preview proposal</button>
+        </EditForm>
+        <aside class="vc-panel marketing-section" aria-live="polite">
+            <span class="vc-kicker">PROPOSAL REVIEW</span><h2>@(StrategyState.StrategyProposal?.Title ?? "No proposal prepared")</h2>
+            @if (StrategyState.StrategyProposal is not null)
+            {
+                <p>@StrategyState.StrategyProposal.Summary</p><div class="marketing-list">@foreach (var item in StrategyState.StrategyProposal.MarketCustomerSynthesis.Concat(StrategyState.StrategyProposal.StpAndPositioning).Concat(StrategyState.StrategyProposal.FourPs).Concat(StrategyState.StrategyProposal.CompetitiveAnalysis).Concat(StrategyState.StrategyProposal.SwotAndFiveForces)) { <article><div><strong>@Friendly(item.Area)</strong><span>@item.Recommendation</span><small>@item.Classification · @item.Confidence.ToString("P0") · @string.Join(", ", item.SourceIds)</small></div></article> }</div>
+                <div class="marketing-evidence"><strong>Source inspection</strong><span>@string.Join(" · ", StrategyState.StrategyProposal.Sources.Select(x => x.Title))</span></div>
+                <button class="btn btn-primary" disabled="@(IsSaving || StrategyState.StrategyProposal.RequiresReview)" @onclick="() => CommitStrategyProposalAsync.InvokeAsync()">Create draft</button>
+                @if (StrategyState.StrategyProposal.RequiresReview) { <p>Resolve missing or invalid evidence before creating a draft: @string.Join("; ", StrategyState.StrategyProposal.MissingEvidence)</p> }
+            }
+        </aside>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public MarketingSegmentsState SegmentsState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingStrategyState StrategyState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public Guid? MarketingAgentId { get; set; }
+    [Parameter] public Guid? CompanyId { get; set; }
+    private GuidedDraftFieldViewModel? StrategyDraftField(string path) => StrategyState.StrategyWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+    [Parameter] public EventCallback PrepareStrategyProposalAsync { get; set; }
+    [Parameter] public EventCallback CommitStrategyProposalAsync { get; set; }
+}

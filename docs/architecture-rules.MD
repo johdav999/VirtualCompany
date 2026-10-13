@@ -248,7 +248,7 @@ Tests are partitioned by ownership and dependency:
 - `VirtualCompany.Finance.Tests`: focused Finance policy and module tests.
 - `VirtualCompany.SupportGrounding.Tests`: Support grounding/safety tests without unrelated Finance/Web dependencies.
 - `VirtualCompany.SalesSource.Tests`: focused Sales source/provider tests.
-- `VirtualCompany.Web.Tests`: Blazor components, presentation, routes, and Web client transport tests.
+- `VirtualCompany.Web.Tests`: Blazor components, Web presentation, routes, and typed client tests using fixed transport fixtures and HTTP test handlers; references Web only.
 - `VirtualCompany.Web.Contract.Tests`: Web/API contract integration tests.
 - `VirtualCompany.TestSupport`: shared composed API host, integration fixtures, and test doubles; a library without executable tests, consumed only by API/contract tests and the disposable UAT host.
 
@@ -256,7 +256,9 @@ Rules:
 
 - Add a test to the narrowest project that can execute it.
 - Pure domain or policy tests must not gain Web/API references.
-- Web component/presentation/client tests reference Web and Application, without API or Infrastructure dependencies. Tests that compose backend implementations with Web belong in Web.Contract.Tests.
+- Web component/presentation/client tests reference Web and its Shared contracts, without Application, Domain, API, Infrastructure, or TestSupport dependencies. Application-owned presentation calculations belong in the corresponding backend module's tests.
+- Component fixtures do not execute backend report builders or services. Use fixed transport data; backend suites separately verify its contract against real transformations. Shared JSON fixture data may be copied into each owning suite without linking executable test sources.
+- Web.Contract.Tests owns client/API composition and wire compatibility tests and has no bUnit dependency. Component rendering belongs in Web.Tests; split mixed suites at this boundary.
 - Test suites live in their owning project and use default SDK source inclusion. Do not link executable tests across projects or maintain filename-based exclusions to assign ownership.
 - Non-Web test projects must not require Web output binaries or a running Web process.
 - Tests do not depend on an already running API, Docker, SQL Server, or external provider unless explicitly categorized as external integration tests.

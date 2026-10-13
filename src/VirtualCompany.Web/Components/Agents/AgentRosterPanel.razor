@@ -1,0 +1,89 @@
+@using static VirtualCompany.Web.Features.Agents.AgentIdentityPresentation
+@using VirtualCompany.Web.Features.Agents
+@inject IStringLocalizer<AgentsResources> AgentText
+
+<section class="agents-roster-section" aria-labelledby="agents-roster-title">
+    <div class="agents-section-heading">
+        <div>
+            <h2 id="agents-roster-title">@AgentText["YourAgentTeam"]</h2>
+            <p>@AgentText["AgentTeamSummary", Roster.Items.Count, CompanyName ?? AgentText["ThisCompany"]]</p>
+        </div>
+        <span class="agents-count">@AgentText["AgentCount", Roster.Items.Count]</span>
+    </div>
+
+    @if (!CanViewDirectory)
+    {
+        <div class="agents-empty-state">@AgentText["RestrictedAgentTeam"]</div>
+    }
+    else if (Roster.Items.Count == 0)
+    {
+        <div class="agents-empty-state">@AgentText["NoAgentsMatch"]</div>
+    }
+    else
+    {
+        <div class="agents-roster-cards">
+            @foreach (var agent in Roster.Items)
+            {
+                <article class="agents-roster-card @(SelectedAgentId == agent.Id ? "is-selected" : null)">
+                    <div class="agents-roster-card__identity">
+                        <span class="agents-avatar agents-avatar--@GetDepartmentTone(agent.Department)" aria-hidden="true">@GetInitials(agent.DisplayName)</span>
+                        <div>
+                            <h3>@agent.DisplayName</h3>
+                            <p>@agent.RoleName</p>
+                        </div>
+                        <span class="agents-status @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
+                    </div>
+
+                    <dl class="agents-facts">
+                        <div><dt>@AgentText["Department"]</dt><dd>@agent.Department</dd></div>
+                        <div><dt>@AgentText["Autonomy"]</dt><dd>@ToDisplayText(agent.AutonomyLevel)</dd></div>
+                        <div><dt>@AgentText["Workload"]</dt><dd class="@GetHealthCss(agent.WorkloadSummary.HealthStatus)">@agent.WorkloadSummary.Summary</dd></div>
+                    </dl>
+
+                    <div class="agents-priority">
+                        <span>@AgentText["CurrentActivity"]</span>
+                        <strong>@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</strong>
+                    </div>
+
+                    <div class="agents-card-actions">
+                        @if (IsDirectChatEligible(agent.Status))
+                        {
+                            <a class="btn btn-outline-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">@AgentText["MessageAgent"]</a>
+                        }
+                        <a class="btn btn-outline-secondary" href="@GetProfileRoute(agent)">@AgentText["ViewProfile"]</a>
+                        @if (CanManageProfiles)
+                        {
+                            <button class="btn btn-link" type="button" @onclick="@(() => OpenEditor.InvokeAsync(agent.Id))">@AgentText["Configure"]</button>
+                        }
+                    </div>
+                </article>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public AgentRosterResponseViewModel Roster { get; set; } = null!;
+    [Parameter] public Guid? SelectedAgentId { get; set; }
+    [Parameter] public string? CompanyName { get; set; }
+    [Parameter] public bool CanViewDirectory { get; set; }
+    [Parameter] public bool CanManageProfiles { get; set; }
+    [Parameter, EditorRequired] public Func<AgentRosterItemViewModel, string> GetProfileRoute { get; set; } = null!;
+    [Parameter] public EventCallback<Guid> OpenEditor { get; set; }
+    private string GetStatusLabel(string? status) => SharedStatusPresenter.Format(status, CommonText);
+
+    private string ToDisplayText(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "level_0" => AgentText["AutonomyLevel0"],
+        "level_1" => AgentText["AutonomyLevel1"],
+        "level_2" => AgentText["AutonomyLevel2"],
+        "level_3" => AgentText["AutonomyLevel3"],
+        _ => AgentText["Unknown"]
+    };
+
+    private string FormatRosterActivity(DateTime? lastActivityUtc) =>
+        lastActivityUtc is null
+            ? AgentText["NoRecentActivity"]
+            : AgentText["LastActivityAt", LocalDateTime.DateTime(lastActivityUtc.Value)];
+
+}

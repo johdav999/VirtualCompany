@@ -1,0 +1,59 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-journey-workspace">
+    <div class="vc-panel marketing-section marketing-journey-list">
+        <div class="marketing-section__header"><div><span class="vc-kicker">LIFECYCLE</span><h2>Customer journeys</h2></div></div>
+        @if (JourneysState.Journeys.Count == 0) { <MarketingEmpty Title="No lifecycle journeys" Message="Create a consent-aware journey to coordinate nurture, activation, retention, or follow-up." /> }
+        @foreach (var journey in JourneysState.Journeys)
+        {
+            <button type="button" class="marketing-select-row @(JourneysState.SelectedJourney?.Id == journey.Id ? "selected" : null)" @onclick="() => SelectJourneyAsync.InvokeAsync(journey)">
+                <span><strong>@journey.Name</strong><small>Version @journey.Version · @journey.ValidToUtc.ToLocalTime().ToString("d")</small></span>
+                <span class="marketing-status">@Friendly(journey.Status)</span>
+            </button>
+        }
+    </div>
+    <article class="vc-panel marketing-section marketing-journey-builder">
+        @if (JourneysState.SelectedJourney is null) { <p>Select a journey to review its definition and operating state.</p> }
+        else
+        {
+            <div class="marketing-section__header"><div><span class="vc-kicker">VERSION @JourneysState.SelectedJourney.Version</span><h2>@JourneysState.SelectedJourney.Name</h2></div><span class="marketing-status">@Friendly(JourneysState.SelectedJourney.Status)</span></div>
+            <div class="marketing-journey-guardrails"><span>Consent checked</span><span>Suppression checked</span><span>@JourneysState.SelectedJourney.FrequencyCap per day</span></div>
+            <h3>Audience and entry</h3><pre>@JsonSummary(JourneysState.SelectedJourney.AudienceEligibilityJson)</pre>
+            <h3>Journey steps</h3><pre>@JsonSummary(JourneysState.SelectedJourney.StepsJson)</pre>
+            <h3>Exit criteria and guardrails</h3><pre>@JsonSummary(JourneysState.SelectedJourney.EntryExitCriteriaJson)</pre><pre>@JsonSummary(JourneysState.SelectedJourney.GuardrailsJson)</pre>
+        }
+    </article>
+    <aside class="vc-panel marketing-section marketing-journey-review">
+        <span class="vc-kicker">REVIEW AND OPERATE</span><h2>Readiness</h2>
+        @if (JourneysState.JourneyValidation is not null)
+        {
+            <div class="marketing-analysis-status">@(JourneysState.JourneyValidation.Valid ? "Validation passed" : "Changes required") · @JourneysState.JourneyValidation.StepCount steps</div>
+            @foreach (var error in JourneysState.JourneyValidation.Errors) { <p class="text-danger">@error</p> }
+            @foreach (var warning in JourneysState.JourneyValidation.Warnings) { <small>@warning</small> }
+        }
+        @if (JourneysState.JourneyAudiencePreview is not null)
+        {
+            <h3>Audience preview</h3><div class="marketing-journey-counts"><span><strong>@JourneysState.JourneyAudiencePreview.EligibleCount</strong> eligible</span><span><strong>@JourneysState.JourneyAudiencePreview.SuppressedCount</strong> suppressed</span><span><strong>@JourneysState.JourneyAudiencePreview.MissingConsentCount</strong> missing consent</span></div>
+        }
+        @if (JourneysState.SelectedJourney is not null)
+        {
+            <div class="marketing-inline-actions">
+                @if (JourneysState.SelectedJourney.Status == "active") { <button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick='() => TransitionSelectedJourneyAsync.InvokeAsync("pause")'>Pause</button> }
+                @if (JourneysState.SelectedJourney.Status == "paused") { <button class="btn btn-sm btn-primary" disabled="@IsSaving" @onclick='() => TransitionSelectedJourneyAsync.InvokeAsync("resume")'>Resume</button> }
+                @if (JourneysState.SelectedJourney.Status is "active" or "paused") { <button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick='() => TransitionSelectedJourneyAsync.InvokeAsync("complete")'>Complete</button> }
+                @if (JourneysState.SelectedJourney.Status is "draft" or "in_review" or "paused") { <button class="btn btn-sm btn-outline-danger" disabled="@IsSaving" @onclick='() => TransitionSelectedJourneyAsync.InvokeAsync("cancel")'>Cancel</button> }
+            </div>
+            <h3>Active instances and exceptions</h3>
+            <div class="marketing-review-history">@foreach (var enrollment in JourneysState.JourneyEnrollments.Where(x => x.JourneyId == JourneysState.SelectedJourney.Id).Take(12)) { <article><strong>@Friendly(enrollment.Status)</strong><span>Contact @enrollment.ContactId.ToString("N")[..8] · step @enrollment.NextStepIndex</span>@if (enrollment.FailureCode is not null) { <p>@Friendly(enrollment.FailureCode)</p> }</article> }</div>
+        }
+    </aside>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingJourneysState JourneysState { get; set; } = null!;
+    [Parameter, EditorRequired] public MarketingOverviewState OverviewState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public EventCallback<MarketingJourneyViewModel> SelectJourneyAsync { get; set; }
+    [Parameter] public EventCallback<string> TransitionSelectedJourneyAsync { get; set; }
+}

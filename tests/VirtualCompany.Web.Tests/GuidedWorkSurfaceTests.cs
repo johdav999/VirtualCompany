@@ -143,7 +143,7 @@ public sealed class GuidedWorkSurfaceTests
     [InlineData("Support/SupportSlaSettings.razor", "support_sla_policy")]
     public void Department_surfaces_expose_real_start_or_resume_control(string page, string artifactType)
     {
-        var source = Read(["src", "VirtualCompany.Web", "Pages", .. page.Split('/')]);
+        var source = page == "Marketing/MarketingDashboard.razor" ? MarketingWorkspaceSources.Read() : Read(["src", "VirtualCompany.Web", "Pages", .. page.Split('/')]);
         Assert.True(source.Contains($"ArtifactType=\"{artifactType}\"", StringComparison.Ordinal) ||
                     source.Contains($"/workshops/{artifactType}", StringComparison.Ordinal),
             $"{page} must expose the {artifactType} workshop route.");
@@ -213,7 +213,7 @@ public sealed class GuidedWorkSurfaceTests
     [Fact]
     public void Marketing_segments_surface_preserves_unfinished_workshop_drafts_and_links_saved_results()
     {
-        var marketing = Read("src", "VirtualCompany.Web", "Pages", "Marketing", "MarketingDashboard.razor");
+        var marketing = MarketingWorkspaceSources.Read();
         var workshop = Read("src", "VirtualCompany.Web", "Pages", "GuidedWorkSession.razor");
 
         Assert.Contains("GuidedWorkApi.ListAsync(companyId, artifactType: \"marketing_segment\")", marketing, StringComparison.Ordinal);

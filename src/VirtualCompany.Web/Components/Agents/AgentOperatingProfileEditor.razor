@@ -1,0 +1,230 @@
+@using VirtualCompany.Web.Features.Agents
+@inject IStringLocalizer<AgentsResources> AgentText
+
+<details id="agent-operating-profile" class="agents-advanced-panel mt-4">
+    <summary>
+        <span>@AgentText["AdvancedOperatingProfile"]</span>
+        <small>@AgentText["AdvancedOperatingProfileDescription"]</small>
+    </summary>
+    <div class="wizard-card">
+        <div class="agent-roster-header">
+            <div>
+                <span class="dashboard-kicker">@AgentText["OperatingProfile"]</span>
+                <h2 class="h4 mb-0 mt-2">@AgentText["AgentConfiguration"]</h2>
+            </div>
+            <p class="text-body-secondary mb-0">@AgentText["AgentConfigurationDescription"]</p>
+        </div>
+
+        @if (Profile is null)
+        {
+            <p class="text-body-secondary mb-0 mt-3">@AgentText["SelectAgentForOperatingProfile"]</p>
+        }
+        else
+        {
+            @if (!string.IsNullOrWhiteSpace(State.ProfileErrorMessage))
+            {
+                <div class="alert alert-danger mt-3">@State.ProfileErrorMessage</div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(State.ProfileSuccessMessage))
+            {
+                <div class="alert alert-success mt-3">@State.ProfileSuccessMessage</div>
+            }
+
+            <EditForm Model="@State.ProfileModel" OnValidSubmit="@HandleProfileSaveAsync" class="mt-4">
+                <DataAnnotationsValidator />
+                <ValidationSummary />
+
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label" for="profile-status">@AgentText["Status"]</label>
+                        <InputSelect id="profile-status" class="form-select" @bind-Value="State.ProfileModel.Status" disabled="@(!CanEditSelectedAgentStatus)">
+                            @foreach (var status in GetStatusOptionsForSelectedAgent())
+                            {
+                                <option value="@status">@status</option>
+                            }
+                        </InputSelect>
+                        <ValidationMessage For="@(() => State.ProfileModel.Status)" />
+                            <div class="form-text">
+                                @AgentText["PausedArchivedAssignmentHelp"]
+                                @if (Profile.Visibility.CanPauseOrRestrictAgent)
+                                {
+                                    <span> @AgentText["StatusOwnerAdminHelp"]</span>
+                                }
+                                else
+                                {
+                                    <span> @AgentText["StatusManagerHelp"]</span>
+                                }
+                            </div>
+                            @foreach (var error in State.GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
+                            {
+                                <div class="text-danger small mt-1">@error</div>
+                            }
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="profile-autonomy">@AgentText["Autonomy"]</label>
+                            <InputSelect id="profile-autonomy" class="form-select" @bind-Value="State.ProfileModel.AutonomyLevel" disabled="@(!Profile.Visibility.CanEditSensitiveGovernance)">
+                                @foreach (var level in GetAutonomyOptionsForSelectedAgent())
+                                {
+                                    <option value="@level">@ToDisplayText(level)</option>
+                                }
+                            </InputSelect>
+                            <div class="form-text">
+                                @if (Profile.Visibility.CanEditSensitiveGovernance)
+                                {
+                                    <span>@AgentText["GovernanceSettingsHelp"]</span>
+                                }
+                                else
+                                {
+                                    <span>@AgentText["AutonomyRestrictedHelp"]</span>
+                                }
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" for="profile-updated">@AgentText["LastUpdated"]</label>
+                            <input id="profile-updated" class="form-control" value="@LocalDateTime.DateTime(Profile.UpdatedUtc)" disabled />
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <label class="form-label" for="role-brief">@AgentText["RoleBrief"]</label>
+                        <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="State.ProfileModel.RoleBrief" disabled="@(!Profile.Visibility.CanEditRoleBrief)" />
+                        <ValidationMessage For="@(() => State.ProfileModel.RoleBrief)" />
+                            @foreach (var error in State.GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
+                            {
+                                <div class="text-danger small mt-1">@error</div>
+                            }
+                        </div>
+
+                        @RenderJsonEditor(AgentText["ObjectivesJson"], "Objectives", () => State.ProfileModel.ObjectivesJson, !Profile.Visibility.CanEditObjectives)
+                        @RenderJsonEditor(AgentText["Kpis"], "Kpis", () => State.ProfileModel.KpisJson, !Profile.Visibility.CanEditKpis)
+
+                        @if (Profile.Visibility.CanViewPermissions)
+                        {
+                            @RenderJsonEditor(AgentText["DetailToolPermissions"], "ToolPermissions", () => State.ProfileModel.ToolPermissionsJson, !Profile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["DataScopes"], "DataScopes", () => State.ProfileModel.DataScopesJson, !Profile.Visibility.CanEditSensitiveGovernance)
+                        }
+                        else
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">@AgentText["PermissionsHidden"]</p>
+                        }
+
+                        @if (Profile.Visibility.CanViewThresholds)
+                        {
+                            @RenderJsonEditor(AgentText["DetailApprovalThresholds"], "ApprovalThresholds", () => State.ProfileModel.ApprovalThresholdsJson, !Profile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["DetailEscalationRules"], "EscalationRules", () => State.ProfileModel.EscalationRulesJson, !Profile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["TriggerLogic"], "TriggerLogic", () => State.ProfileModel.TriggerLogicJson, !Profile.Visibility.CanEditSensitiveGovernance)
+                        }
+                        else
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">@AgentText["ThresholdsHidden"]</p>
+                        }
+
+                        @if (Profile.Visibility.CanViewWorkingHours)
+                        {
+                            @RenderJsonEditor(AgentText["DetailWorkingHours"], "WorkingHours", () => State.ProfileModel.WorkingHoursJson, !Profile.Visibility.CanEditWorkingHours)
+                        }
+                        else
+                        {
+                            <p class="text-body-secondary mt-3 mb-0">@AgentText["WorkingHoursHidden"]</p>
+                        }
+
+                        <div class="dashboard-actions mt-3">
+                            <button class="btn btn-primary" type="submit" disabled="@State.IsSavingProfile">@AgentText["SaveOperatingProfile"]</button>
+                            <a class="btn btn-outline-secondary" href="@ProfileHref">@AgentText["OpenCanonicalProfile"]</a>
+                        </div>
+                    </EditForm>
+                }
+            </div>
+        </details>
+
+@code {
+    [Parameter] public string ProfileHref { get; set; } = "";
+    [Parameter, EditorRequired] public AgentOperatingProfileEditorState State { get; set; } = null!;
+    [Parameter] public AgentOperatingProfileViewModel? Profile { get; set; }
+    [Parameter] public EventCallback HandleProfileSaveAsync { get; set; }
+    private readonly string[] autonomyOptions = [ "level_0", "level_1", "level_2", "level_3" ];
+    private readonly string[] statusOptions = [ "active", "paused", "restricted", "archived" ];
+    private bool CanEditSelectedAgentStatus =>
+        Profile is not null &&
+        Profile.Visibility.CanEditStatus &&
+        (Profile.Visibility.CanPauseOrRestrictAgent || IsManagerEditableStatus(Profile.Status));
+
+    private IEnumerable<string> GetStatusOptionsForSelectedAgent() =>
+        EnsureCurrentOption(statusOptions, Profile?.Status, IsManagerEditableStatus, Profile?.Visibility.CanPauseOrRestrictAgent == true);
+
+    private IEnumerable<string> GetAutonomyOptionsForSelectedAgent() => EnsureCurrentOption(autonomyOptions, Profile?.AutonomyLevel, static _ => true, true);
+
+    private static IEnumerable<string> EnsureCurrentOption(IEnumerable<string> options, string? currentValue, Func<string, bool> predicate, bool allowAll)
+    {
+        var resolved = allowAll
+            ? options.ToList()
+            : options.Where(predicate).ToList();
+
+        if (!string.IsNullOrWhiteSpace(currentValue) &&
+            !resolved.Contains(currentValue.Trim(), StringComparer.OrdinalIgnoreCase))
+        {
+            resolved.Add(currentValue.Trim());
+        }
+
+        return resolved;
+    }
+
+    private static bool IsManagerEditableStatus(string? status) => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase);
+
+    private string ToDisplayText(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "level_0" => AgentText["AutonomyLevel0"],
+        "level_1" => AgentText["AutonomyLevel1"],
+        "level_2" => AgentText["AutonomyLevel2"],
+        "level_3" => AgentText["AutonomyLevel3"],
+        _ => AgentText["Unknown"]
+    };
+
+    private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor, bool isReadOnly = false) => builder =>
+    {
+        var sequence = 0;
+
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "mt-3");
+
+        builder.OpenElement(sequence++, "label");
+        builder.AddAttribute(sequence++, "class", "form-label");
+        builder.AddAttribute(sequence++, "for", fieldName);
+        builder.AddContent(sequence++, label);
+        builder.CloseElement();
+
+        builder.OpenElement(sequence++, "textarea");
+        builder.AddAttribute(sequence++, "id", fieldName);
+        builder.AddAttribute(sequence++, "class", "form-control");
+        builder.AddAttribute(sequence++, "rows", "8");
+        builder.AddAttribute(sequence++, "value", valueAccessor());
+        builder.AddAttribute(sequence++, "disabled", isReadOnly);
+        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string>(this, value =>
+        {
+            switch (fieldName)
+            {
+                case "Objectives": State.ProfileModel.ObjectivesJson = value; break;
+                case "Kpis": State.ProfileModel.KpisJson = value; break;
+                case "ToolPermissions": State.ProfileModel.ToolPermissionsJson = value; break;
+                case "DataScopes": State.ProfileModel.DataScopesJson = value; break;
+                case "ApprovalThresholds": State.ProfileModel.ApprovalThresholdsJson = value; break;
+                case "EscalationRules": State.ProfileModel.EscalationRulesJson = value; break;
+                case "TriggerLogic": State.ProfileModel.TriggerLogicJson = value; break;
+                case "WorkingHours": State.ProfileModel.WorkingHoursJson = value; break;
+            }
+        }, valueAccessor()));
+        builder.CloseElement();
+
+        foreach (var error in State.GetProfileErrors(fieldName))
+        {
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "text-danger small mt-1");
+            builder.AddContent(sequence++, error);
+            builder.CloseElement();
+        }
+
+        builder.CloseElement();
+    };
+
+}

@@ -1,0 +1,45 @@
+@using VirtualCompany.Web.Features.Marketing
+@using static VirtualCompany.Web.Features.Marketing.MarketingEvidencePresentation
+
+<section class="marketing-workspace-grid marketing-intelligence-workspace">
+    <article class="vc-panel marketing-section">
+        <div class="marketing-section__header"><div><span class="vc-kicker">SOURCE-GROUNDED</span><h2>Market intelligence</h2><p>Every record shows what we know, how certain it is, and when it needs review.</p></div></div>
+        <div class="marketing-intelligence-filter"><label>Find intelligence<InputText @bind-Value="IntelligenceState.IntelligenceSearch" placeholder="Search market, customer, or competitor evidence" /></label><label>Freshness<InputSelect @bind-Value="IntelligenceState.IntelligenceFreshness"><option value="all">All records</option><option value="due">Needs review</option><option value="current">Current</option></InputSelect></label></div>
+        @if (IntelligenceState.FilteredIntelligence.Count == 0) { <MarketingEmpty Title="No intelligence records" Message="Dated hypotheses, insights, competitor claims, sources, confidence, and review dates will appear here." /> }
+        <div class="marketing-intelligence-list">
+            @foreach (var item in IntelligenceState.FilteredIntelligence)
+            {
+                <button type="button" class="marketing-intelligence-row @(IntelligenceState.SelectedIntelligence?.Id == item.Id ? "selected" : null)" @onclick="() => SelectIntelligenceAsync.InvokeAsync(item)">
+                    <span><strong>@item.Subject</strong><small>@Friendly(item.Kind) · @Friendly(item.Classification) · confidence @item.Confidence.ToString("P0")</small><small>@item.Summary</small></span>
+                    <span class="marketing-status @(item.ReviewDueUtc <= DateTime.UtcNow ? "warning" : null)">@(item.ReviewDueUtc <= DateTime.UtcNow ? "Needs review" : $"Review {item.ReviewDueUtc:d}")</span>
+                </button>
+            }
+        </div>
+    </article>
+    <aside class="vc-panel marketing-section marketing-intelligence-detail">
+        @if (IntelligenceState.SelectedIntelligence is null)
+        {
+            <MarketingEmpty Title="No intelligence selected" Message="Select a record to inspect its evidence, uncertainty, and review history." />
+        }
+        else
+        {
+            <div class="marketing-section__header"><div><span class="vc-kicker">@Friendly(IntelligenceState.SelectedIntelligence.Kind)</span><h2>@IntelligenceState.SelectedIntelligence.Subject</h2></div><span class="marketing-status @(IntelligenceState.SelectedIntelligence.ReviewDueUtc <= DateTime.UtcNow ? "warning" : null)">@Friendly(IntelligenceState.SelectedIntelligence.ReviewStatus)</span></div>
+            <h3>What this means</h3><p>@IntelligenceState.SelectedIntelligence.Summary</p>
+            <dl class="marketing-intelligence-facts"><div><dt>Classification</dt><dd>@Friendly(IntelligenceState.SelectedIntelligence.Classification)</dd></div><div><dt>Confidence</dt><dd>@IntelligenceState.SelectedIntelligence.Confidence.ToString("P0")</dd></div><div><dt>Data used</dt><dd>@IntelligenceState.SelectedIntelligence.SourceReference</dd></div><div><dt>Observed</dt><dd>@IntelligenceState.SelectedIntelligence.ObservedUtc.ToString("d")</dd></div><div><dt>Review due</dt><dd>@IntelligenceState.SelectedIntelligence.ReviewDueUtc.ToString("d")</dd></div></dl>
+            <details><summary>Comparison dimensions</summary><pre>@JsonSummary(IntelligenceState.SelectedIntelligence.DimensionsJson)</pre></details>
+            <label>Review note<InputTextArea @bind-Value="IntelligenceState.IntelligenceReviewRationale" /></label>
+            <div class="marketing-inline-actions"><button class="btn btn-sm btn-primary" disabled="@IsSaving" @onclick="() => ReviewIntelligenceAsync.InvokeAsync(true)">Mark reviewed</button><button class="btn btn-sm btn-outline-primary" disabled="@IsSaving" @onclick="() => ReviewIntelligenceAsync.InvokeAsync(false)">Needs more evidence</button><button class="btn btn-sm btn-outline-danger" disabled="@IsSaving" @onclick="() => ArchiveIntelligenceAsync.InvokeAsync()">Archive</button></div>
+            <h3>Review history</h3>
+            @if (IntelligenceState.IntelligenceReviews.Count == 0) { <p>No reviews recorded yet.</p> }
+            else { <div class="marketing-review-history">@foreach (var review in IntelligenceState.IntelligenceReviews) { <article><strong>@Friendly(review.Outcome)</strong><span>@review.CreatedUtc.ToLocalTime().ToString("g")</span><p>@review.Rationale</p></article> }</div> }
+        }
+    </aside>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public MarketingIntelligenceState IntelligenceState { get; set; } = null!;
+    [Parameter] public bool IsSaving { get; set; }
+    [Parameter] public EventCallback<MarketingIntelligenceViewModel> SelectIntelligenceAsync { get; set; }
+    [Parameter] public EventCallback<bool> ReviewIntelligenceAsync { get; set; }
+    [Parameter] public EventCallback ArchiveIntelligenceAsync { get; set; }
+}
